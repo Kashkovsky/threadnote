@@ -8,9 +8,9 @@ import {docsArticleHref, setDocumentMeta} from '../lib/site';
 const categories: Array<{id: 'all' | ProTip['category']; label: string}> = [
   {id: 'all', label: 'All workflows'},
   {id: 'team', label: 'Team'},
-  {id: 'continuity', label: 'Continuity'},
-  {id: 'operations', label: 'Operations'},
-  {id: 'graph', label: 'Code graph'},
+  {id: 'continuity', label: 'Task context'},
+  {id: 'operations', label: 'Health & trust'},
+  {id: 'graph', label: 'Current code'},
 ];
 
 export default function ProTipsPage() {
@@ -49,7 +49,7 @@ export default function ProTipsPage() {
   useEffect(() => {
     setDocumentMeta(
       'Pro tips',
-      'Practical Threadnote workflows for reviews, continuity, source-aware memory, and graph search.',
+      'Practical Threadnote 5 workflows for cited task context, reviewed closeout, cross-agent reuse, and continuous health.',
     );
   }, []);
 
@@ -63,11 +63,12 @@ export default function ProTipsPage() {
     <SiteShell page="pro-tips" fullBleed>
       <section className="subpage-hero">
         <div>
-          <span className="eyebrow">Threadnote 4.4 field guide</span>
-          <h1>Keep context moving at the speed of the work.</h1>
+          <span className="eyebrow">Threadnote 5 field guide</span>
+          <h1>Make context trustworthy across the whole task.</h1>
           <p>
-            Practical patterns for turning individual agent sessions into durable team leverage—with source-aware
-            memory, optional code citations, reusable graph work, and explicit trust boundaries.
+            Threadnote is the source-verifiable context lifecycle for engineering work. These practical patterns cover a
+            bounded Context Brief, exact local evidence, a reviewed Knowledge Delta, Git sharing, and context health
+            across agent vendors.
           </p>
         </div>
         <div className="subpage-hero__metric">
@@ -142,13 +143,13 @@ export default function ProTipsPage() {
       <section className="content-section content-section--cta">
         <div className="cta-panel cta-panel--compact">
           <span className="eyebrow">Make it your default loop</span>
-          <h2>Recall first. Check the evidence. Preserve what changed.</h2>
+          <h2>Start with evidence. Review what changed. Prove another agent can use it.</h2>
           <p>
-            Connect each agent you use and Threadnote installs the same memory, citation, and graph-search contract only
-            for that host.
+            Surface support comes from the public agent catalog. Connect the hosts you use, then follow one local and
+            Git-backed context lifecycle without product-specific forks.
           </p>
-          <a className="button" href={docsArticleHref('connect-an-agent')}>
-            Connect an agent
+          <a className="button" href={docsArticleHref('threadnote-5-journey')}>
+            Follow the Threadnote 5 journey
             <Icon name="arrow" aria-hidden="true" />
           </a>
         </div>

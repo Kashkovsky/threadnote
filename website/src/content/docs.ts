@@ -14,6 +14,18 @@ import {
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalImageProjectionCliCommand, optionalImageProjectionDocsArticle} from './docsImageProjection.js';
 import {projectGuidanceDocsArticle} from './docsGuidance.js';
+import {
+  contextLifecycleConceptDocsArticle,
+  contextLifecycleDocsSection,
+  memorySchemaV5DocsArticle,
+  threadnote5JourneyDocsArticle,
+} from './docsLifecycle.js';
+import {
+  activationCliCommands,
+  activationMcpTools,
+  lifecycleCliCommands,
+  lifecycleMcpTools,
+} from './docsLifecycleReference.js';
 import {localAiDocsArticle} from './docsLocalAi.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
@@ -30,8 +42,9 @@ export type {
   DocsVisualBlock,
   McpToolReference,
 } from './docsTypes.js';
-export const defaultDocId = 'what-is-threadnote';
+export const defaultDocId = 'threadnote-5-journey';
 export const cliCommands: CliCommandReference[] = [
+  ...activationCliCommands,
   {
     command: 'install',
     summary: 'Initialize the self-contained home, core embedding model, and indexes.',
@@ -103,15 +116,7 @@ export const cliCommands: CliCommandReference[] = [
       'threadnote workset prepare commerce --concurrency 4',
     ],
   },
-  {
-    command: 'context brief',
-    summary:
-      'Compile task-relevant graph evidence, durable decisions, active handoffs, freshness, and gaps into one bounded agent brief.',
-    examples: [
-      'threadnote context brief --task "Trace checkout retries" --budget-tokens 1250',
-      'threadnote context brief --task "Trace checkout retries" --workset commerce --mode trace --json',
-    ],
-  },
+  ...lifecycleCliCommands,
   {
     command: 'models / index',
     summary: 'Inspect pinned local model state and rebuild or verify the selected vector generation.',
@@ -211,7 +216,6 @@ export const cliCommands: CliCommandReference[] = [
     examples: ['threadnote models list'],
   },
 ];
-
 export const mcpTools: McpToolReference[] = [
   {
     name: 'threadnote_guide',
@@ -289,6 +293,7 @@ export const mcpTools: McpToolReference[] = [
     summary: 'Preview and, after confirmation, publish an active durable personal memory to a configured team.',
     keyInputs: ['uri', 'preview', 'team', 'redact', 'push', 'message'],
   },
+  ...activationMcpTools,
   {
     name: 'obsidian_publish',
     toolset: 'core',
@@ -304,9 +309,10 @@ export const mcpTools: McpToolReference[] = [
   {
     name: 'recall_feedback',
     toolset: 'full',
-    summary: 'Record bounded useful, wrong, pin, or dismiss feedback without storing the full query.',
+    summary: 'Record bounded useful, wrong, pin, dismiss, or applied feedback without storing the full query.',
     keyInputs: ['query', 'uri', 'action', 'project'],
   },
+  ...lifecycleMcpTools,
   {
     name: 'health',
     toolset: 'full',
@@ -367,13 +373,14 @@ export const docsSections: DocsSection[] = [
   {
     id: 'getting-started',
     title: 'Getting started',
-    description: 'Install the standalone runtime, connect an agent, and complete the first recall-to-handoff loop.',
+    description: 'Follow the complete journey from local setup to reviewed cross-agent reuse.',
     articles: [
+      threadnote5JourneyDocsArticle,
       {
         id: 'what-is-threadnote',
         title: 'What is Threadnote?',
         summary:
-          'A local-first memory and current-source intelligence layer shared by the coding agents your team already uses.',
+          'A source-verifiable context lifecycle shared by the coding agents your engineering team already uses.',
         keywords: [
           'code search',
           'polyglot code graph',
@@ -385,21 +392,21 @@ export const docsSections: DocsSection[] = [
         body: [
           {
             type: 'paragraph',
-            text: 'Threadnote gives [supported agents](/agents/) two complementary evidence systems without forcing the team into one chat product: durable engineering memory for what people learned, and a snapshot-aware polyglot code graph for what the current source actually contains. Personal working state and code indexes stay local. Curated durable knowledge can be published to a Git-backed team store, then recalled by another teammate using another agent.',
+            text: 'Threadnote gives [supported agents](/agents/) one source-verifiable context lifecycle without forcing the team into one chat product. It compiles reviewed engineering decisions, active work state, compatible procedures, and current code evidence into a bounded task brief; then it turns task closeout into a Knowledge Delta for explicit review. Personal working state and code indexes stay local. Approved durable knowledge can move through a Git-backed team store and be reused from another agent surface.',
           },
           {
             type: 'list',
             items: [
-              'Memory recall answers what the team learned, decided, or handed off.',
-              'Polyglot graph search finds current symbols and concepts across language and project boundaries, then follows definitions, calls, imports, inheritance, paths, and reverse impact.',
-              'Whole-repository graph analysis surfaces structural communities, groups, hubs, confidence, and surprising cross-boundary links without flooding an agent context window.',
-              'A pinned local embedding model improves recall without sending memory text to a hosted embedding service.',
-              'The Manager and Obsidian bridge provide visual and human-readable views while canonical files remain authoritative.',
+              'Context Brief starts a task with a bounded, cited set of relevant decisions, handoffs, procedures, and current-code evidence.',
+              'Knowledge Delta makes decisions, constraints, verification, invalidated knowledge, and unresolved risks reviewable at closeout.',
+              'Git-backed sharing and catalog-driven project guidance carry approved knowledge between agent surfaces without copying private sessions.',
+              'Context health, Context CI, and reviewed repairs keep stale, contradictory, expired, or drifted context visible.',
+              'Local value reports show activation and reuse outcomes without collecting source, memory, path, repository, or stable user identity.',
             ],
           },
           {
             type: 'note',
-            text: 'Repository files remain authoritative. Threadnote is the operational context layer that helps an agent find the right file, memory, and current-code evidence at the right time.',
+            text: 'Repository files remain authoritative for current code, and Git remains authoritative for reviewed shared knowledge. Threadnote compiles the smallest trustworthy task context and preserves only what a person reviews.',
           },
           {
             type: 'heading',
@@ -411,11 +418,11 @@ export const docsSections: DocsSection[] = [
           },
           {
             type: 'heading',
-            text: 'Self-contained in 4.0',
+            text: 'Local and self-contained',
           },
           {
             type: 'paragraph',
-            text: 'Threadnote 4 is a standalone executable with an embedded Bun runtime. It owns canonical content, models, SQLite indexes, locks, logs, migration receipts, and share metadata below ~/.threadnote. It needs no Python, OpenViking service, separately installed Node or Bun runtime, database server, or background daemon.',
+            text: 'Threadnote 5 is a standalone executable with an embedded Bun runtime. It owns canonical content, models, SQLite indexes, locks, logs, migration receipts, and share metadata below ~/.threadnote. The complete local and Git-team workflow needs no Python, OpenViking service, separately installed Node or Bun runtime, database server, hosted organization account, or background daemon.',
           },
         ],
       },
@@ -453,7 +460,7 @@ threadnote doctor`,
           },
           {
             type: 'warning',
-            text: 'Threadnote 4.6 publishes unsigned Windows x64 and arm64 archives. The PowerShell installer verifies the immutable GitHub release and SHA-256 checksum and warns before activation; Windows may still show a SmartScreen warning.',
+            text: 'Threadnote publishes unsigned Windows x64 and arm64 archives. The PowerShell installer verifies the immutable GitHub release and SHA-256 checksum and warns before activation; Windows may still show a SmartScreen warning.',
           },
           {
             type: 'note',
@@ -463,8 +470,8 @@ threadnote doctor`,
       },
       {
         id: 'connect-an-agent',
-        title: 'Connect your agent',
-        summary: 'Preview one resumable local setup plan and verify the first source-backed Context Brief.',
+        title: 'Connect your first agent',
+        summary: 'Preview one resumable local setup and finish with a real, source-backed Context Brief.',
         body: [
           {
             type: 'code',
@@ -476,7 +483,7 @@ threadnote setup <surface> --undo --apply`,
           },
           {
             type: 'paragraph',
-            text: 'Preview prints a deterministic operation plan without writing. Apply initializes the local core, current repository manifest and seed, selected catalog surface and declared hooks, code graph, doctor checks, and a final source-backed Context Brief. A private bounded receipt resumes interrupted work and makes an unchanged completed apply a no-op. Undo is also preview-first and removes only unchanged setup-created artifacts, never pre-existing user configuration. Private value reports count applied starts, failures, completions, and bounded time to the verified brief without storing the task, surface, repository, or path. Organization and team-sharing setup are separate.',
+            text: 'Choose a surface from `threadnote agents list`. Preview prints the complete plan without writing. Apply initializes the local core, current repository guidance seed, selected catalog adapter and declared hooks, code graph, doctor checks, and a final source-backed Context Brief. Interrupted work resumes safely and an unchanged completed apply is a no-op. Undo is also preview-first and removes only unchanged setup-created artifacts, never pre-existing user configuration. Private value reports count starts, failures, completions, and time to the verified brief without storing the task, surface, repository, or path.',
           },
           {
             type: 'paragraph',
@@ -620,36 +627,39 @@ bun run check:self-contained`,
       },
       {
         id: 'first-workflow',
-        title: 'Your first memory loop',
-        summary: 'Recall before work, read selected evidence, and leave a stable handoff when the work pauses.',
+        title: 'Work one task with evidence',
+        summary: 'Start with a Context Brief, verify exact local evidence, and close with reviewed knowledge.',
         body: [
           {
             type: 'heading',
-            text: 'From an agent',
+            text: 'Start the task',
           },
           {
             type: 'list',
             items: [
-              'At the start of a non-trivial task, call recall_context with a focused query, stable project, and absolute callerCwd.',
-              'Treat returned threadnote:// URIs as pointers. Read only the records that matter.',
-              'Use inspect_code_graph for a scoped current-source question and analyze_code_graph for whole-repository topology.',
-              'Store reusable decisions and contracts as durable memory. Store status, checks, blockers, and next steps as a handoff.',
+              'Ask for a Context Brief with the task, stable project, absolute callerCwd, and any known current-code anchors.',
+              'Read selected `threadnote://` pointers before relying on them; a ranked pointer is not evidence by itself.',
+              'Use exact files and `inspect_code_graph` for current-source claims. The local worktree wins over historical context.',
+              'At closeout, write the required handoff and review the Knowledge Delta before applying reusable durable knowledge.',
             ],
           },
           {
             type: 'heading',
-            text: 'From the CLI',
+            text: 'A compact CLI version',
           },
           {
             type: 'code',
             language: 'sh',
-            code: `threadnote recall --query "mobile auth latest handoff" --caller-cwd "$PWD"
-threadnote read threadnote://user/me/memories/handoffs/active/mobile/auth-rollout.md
+            code: `threadnote context brief \\
+  --task "Continue the mobile auth rollout" \\
+  --project mobile \\
+  --budget-tokens 1250
 threadnote graph query --query "refresh token boundary"
 threadnote handoff --project mobile --topic auth-rollout \\
   --task "Finish refresh-token rollout" \\
   --tests "bun test auth" \\
-  --next-step "Update the iOS caller"`,
+  --next-step "Update the iOS caller"
+threadnote closeout preview --review-id <review-id>`,
           },
           {
             type: 'note',
@@ -659,12 +669,12 @@ threadnote handoff --project mobile --topic auth-rollout \\
       },
       {
         id: 'upgrade-from-3',
-        title: 'Upgrade from 3.x',
-        summary: 'Migrate legacy content once, without changing or deleting the rollback source.',
+        title: 'Migrate from 3.x',
+        summary: 'Move a legacy OpenViking home directly into Threadnote 5 without deleting the rollback source.',
         body: [
           {
             type: 'paragraph',
-            text: 'Threadnote 3 cannot cross the standalone-runtime boundary with threadnote update. Install Threadnote 4 with the bootstrap installer, then migrate the legacy ~/.openviking home.',
+            text: 'The stable `/docs/upgrade-from-3/` route remains the migration guide for existing links. Threadnote 3 cannot cross the standalone-runtime boundary with `threadnote update`; install Threadnote 5 with the bootstrap installer, then run the one-time, non-destructive migration from the legacy ~/.openviking home. Users already on Threadnote 4 should use [Updates and channels](updates/) instead.',
           },
           {
             type: 'code',
@@ -676,7 +686,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'Migration inventories, stages, hashes, validates, and atomically promotes canonical content into ~/.threadnote. It can recover an earlier beta home without overwriting different current content. A completed matching receipt makes reruns idempotent.',
+            text: 'Migration inventories, stages, hashes, validates, and atomically promotes canonical content into ~/.threadnote. Existing v4 memories remain readable; schema v5 migration does not invent ownership, review, or expiry metadata. A completed matching receipt makes reruns idempotent, and derived indexes rebuild from canonical content rather than being treated as migration authority.',
           },
           {
             type: 'warning',
@@ -689,8 +699,9 @@ threadnote index status`,
   {
     id: 'concepts',
     title: 'Core concepts',
-    description: 'Understand authority, lifecycle, stable identifiers, hybrid recall, and local inference.',
+    description: 'Understand the context lifecycle, authority, review, freshness, stable identity, and local evidence.',
     articles: [
+      contextLifecycleConceptDocsArticle,
       {
         id: 'authority-and-storage',
         title: 'Authority and storage',
@@ -763,6 +774,7 @@ threadnote index status`,
           },
         ],
       },
+      memorySchemaV5DocsArticle,
       {
         id: 'stable-uris',
         title: 'Stable URIs and replacement',
@@ -879,6 +891,7 @@ threadnote recall --query "checkout retry contract" --threshold 0.3 --caller-cwd
       },
     ],
   },
+  contextLifecycleDocsSection,
   memoryWorkflowsDocsSection,
   cursorCloudPersonalDocsSection,
   {
@@ -1706,7 +1719,7 @@ threadnote repair`,
           },
           {
             type: 'note',
-            text: 'Threadnote 4 has no daemon to restart. start verifies on-demand readiness; stop is a compatibility no-op.',
+            text: 'Threadnote has no daemon to restart. start verifies on-demand readiness; stop is a compatibility no-op.',
           },
         ],
       },
@@ -1816,7 +1829,7 @@ threadnote report-issue \\
   {
     id: 'reference',
     title: 'Reference',
-    description: 'CLI, MCP, configuration, storage, and architecture contracts for Threadnote 4.',
+    description: 'CLI, MCP, configuration, storage, and architecture contracts for Threadnote 5.',
     articles: [
       {
         id: 'cli-reference',
@@ -1826,7 +1839,7 @@ threadnote report-issue \\
         body: [
           {
             type: 'paragraph',
-            text: 'Run threadnote <command> --help for the installed version’s exact flags. The groups below cover the stable 4.1 operator surface.',
+            text: 'Run threadnote <command> --help for the installed version’s exact flags. The groups below cover the stable Threadnote 5 operator surface.',
           },
           {
             type: 'table',

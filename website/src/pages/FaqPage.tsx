@@ -6,7 +6,12 @@ const questions = [
   {
     question: 'Is Threadnote a hosted memory service?',
     answer:
-      'No. Threadnote 4 is a standalone local runtime. Canonical Markdown, models, SQLite indexes, graph snapshots, and share metadata live under ~/.threadnote. A network boundary is crossed only for explicit operations such as downloading a verified release or model, syncing a configured team share, submitting an approved issue, or after explicitly enabling anonymous operational telemetry.',
+      'No. Threadnote 5 has a complete standalone local and Git-team workflow. Canonical Markdown, models, SQLite indexes, graph snapshots, and share metadata live under ~/.threadnote. A network boundary is crossed only for explicit operations such as downloading a verified release or model, syncing a configured team share, submitting an approved issue, or after explicitly enabling anonymous operational telemetry. Hosted organization deployment is a separate track, not a prerequisite.',
+  },
+  {
+    question: 'What is a Knowledge Delta?',
+    answer:
+      'It is a small, reviewable closeout proposal—not a transcript. It can cover decisions and rationale, constraints, verification performed, knowledge invalidated by the task, and unresolved risks. A person approves, edits, defers, or rejects each candidate at an exact revision. Applying a candidate changes personal memory; publishing it to a team is a separate explicit Git action.',
   },
   {
     question: 'Does Threadnote send prompts or memory to an AI provider?',
@@ -34,9 +39,9 @@ const questions = [
       'Yes. Pass up to eight canonical graph-indexed repository-relative paths or exact local cgs_<32 lowercase hex> symbols as Context Brief codeRefs, or repeat --code-ref in the CLI. Context Brief v3 retrieves active memories with explicit matching citations alongside normal task recall, validates their evidence against an already-ready graph, and reports bounded relation and coverage receipts. Noncanonical paths, malformed handles, and cgr_ handles are argument errors. It does not guess semantic links, start cold indexing, or support Workset code-reference backlinks in this first milestone.',
   },
   {
-    question: 'Will my existing memories disappear after upgrading to 4.4?',
+    question: 'Will my existing memories disappear after upgrading to 5.0?',
     answer:
-      'No. v1 and other uncited memories stay recallable and can appear in Context Brief. They keep conservative commit-level freshness when Threadnote can resolve it and otherwise show unknown; Threadnote does not invent precise citations or require a migration just to keep recall working. Portable checkpoint operations touch only disposable graph storage, so they do not migrate or filter existing memory either.',
+      'No. Existing v4, v1, and other uncited memories stay readable and recallable. Schema v5 migration does not invent owners, review dates, expiry, or precise citations. Older uncited records keep conservative commit-level freshness when Threadnote can resolve it and otherwise show unknown. Portable checkpoint operations touch only disposable graph storage, so they do not migrate or filter existing memory either.',
   },
   {
     question: 'Do I need a Workset to use code citations or Context Brief?',
@@ -61,17 +66,17 @@ const questions = [
   {
     question: 'Do large monorepos have a hard graph-size cap?',
     answer:
-      'There is no repository-size admission cap. Threadnote 4 stores graph generations in SQLite instead of one monolithic JSON document; a bounded parser pool, one backpressured writer, generated-root pruning, and metadata-only snapshot data bound transient work. Individual query responses still honor explicit node, edge, and result limits so an agent receives a useful evidence set rather than an unbounded dump.',
+      'There is no repository-size admission cap. Threadnote stores graph generations in SQLite instead of one monolithic JSON document; a bounded parser pool, one backpressured writer, generated-root pruning, and metadata-only snapshot data bound transient work. Individual query responses still honor explicit node, edge, and result limits so an agent receives a useful evidence set rather than an unbounded dump.',
   },
   {
     question: 'Will every new worktree rebuild its graph from scratch?',
     answer:
-      'No. Linked worktrees share one checkout graph store. Threadnote 4.1 can immediately alias a graph-equivalent commit, build a compatible clean commit as a bounded delta from a ready full anchor, or construct an already-dirty worktree directly from that anchor. Extractor, workspace, manifest, or unbounded resolution changes still fall back to a full build for correctness.',
+      'No. Linked worktrees share one checkout graph store. Threadnote can immediately alias a graph-equivalent commit, build a compatible clean commit as a bounded delta from a ready full anchor, or construct an already-dirty worktree directly from that anchor. Extractor, workspace, manifest, or unbounded resolution changes still fall back to a full build for correctness.',
   },
   {
     question: 'How does Manager keep long graph work responsive?',
     answer:
-      'In Threadnote 4.4, Manager launches graph indexing and Workset preparation in isolated processes instead of running those builds inside the UI service. Workset repositories prepare with bounded concurrency and report progress independently. Queries still read only a ready, atomically published generation rather than partial build state.',
+      'Manager launches graph indexing and Workset preparation in isolated processes instead of running those builds inside the UI service. Workset repositories prepare with bounded concurrency and report progress independently. Queries still read only a ready, atomically published generation rather than partial build state.',
   },
   {
     question: 'Can I move a graph to another machine without a Workset or cloud?',
@@ -93,7 +98,7 @@ const questions = [
 export default function FaqPage() {
   setDocumentMeta(
     'FAQ',
-    'Threadnote 4 frequently asked questions about local data, code citations, memory compatibility, scope, and sharing.',
+    'Threadnote 5 frequently asked questions about local data, Knowledge Deltas, source freshness, compatibility, and sharing.',
   );
 
   return (
