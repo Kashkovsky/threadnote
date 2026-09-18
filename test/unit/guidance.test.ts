@@ -980,7 +980,7 @@ describe('project guidance blocks', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('counts host limits in Unicode characters and applies the strictest shared-target limit', () =>
+  effectIt.effect('counts host limits in Unicode characters', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const unicodeFixture = yield* makeGuidanceFixture('é'.repeat(10_000));
@@ -993,7 +993,13 @@ describe('project guidance blocks', () => {
             project: 'threadnote',
           }),
         ).toMatchObject({mode: 'preview'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
+  effectIt.effect('applies the strictest shared-target limit', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
         const sharedFixture = yield* makeGuidanceFixture('x'.repeat(80_000));
         const failure = yield* runGuidanceProject(sharedFixture.config, getAgentAdapter('codex-cli')!, {
           apply: false,
@@ -1003,7 +1009,13 @@ describe('project guidance blocks', () => {
           project: 'threadnote',
         }).pipe(Effect.flip);
         expect(String(failure)).toContain('80000-character file limit');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
+  effectIt.effect('reports oversized shared-target status and health', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
         const statusFixture = yield* makeGuidanceFixture('Small shared guidance.');
         yield* runGuidanceProject(statusFixture.config, getAgentAdapter('codex-cli')!, {
           apply: true,
