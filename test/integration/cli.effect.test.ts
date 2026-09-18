@@ -1711,6 +1711,107 @@ describe('Effect CLI', () => {
   it('returns a non-zero exit code for an unknown subcommand', async () => {
     await expect(runCli(['definitely-not-a-command'])).rejects.toMatchObject({code: 1});
   });
+
+  it('manages workset definitions through the CLI with stable JSON output and explicit deletion confirmation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-worksets-'));
+    const manifestPath = join(root, 'seed-manifest.yaml');
+    try {
+      await writeFile(
+        manifestPath,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: api',
+          '    path: /workspace/api',
+          '    uri: threadnote://resources/repos/api',
+          '    seed: []',
+          '  - name: worker',
+          '    path: /workspace/worker',
+          '    uri: threadnote://resources/repos/worker',
+          '    seed: []',
+          '',
+        ].join('\n'),
+      );
+      const environment = {THREADNOTE_HOME: root, THREADNOTE_MANIFEST: manifestPath};
+
+      await expect(runCli(['workset', 'create', 'empty', '--json'], environment)).rejects.toMatchObject({code: 1});
+      const created = await runCli(
+        ['workset', 'create', 'platform', '--project', 'api', '--description', 'Shared runtime', '--json'],
+        environment,
+      );
+      expect(JSON.parse(created.stdout)).toMatchObject({changed: true, operation: 'create', version: 1});
+
+      const listed = await runCli(['workset', 'list', '--json'], environment);
+      expect(JSON.parse(listed.stdout)).toMatchObject({
+        version: 1,
+        worksets: [{description: 'Shared runtime', memberCount: 1, name: 'platform'}],
+      });
+
+      const shown = await runCli(['workset', 'show', 'PLATFORM', '--json'], environment);
+      expect(JSON.parse(shown.stdout)).toMatchObject({
+        version: 1,
+        workset: {
+          name: 'platform',
+          members: [{configured: true, project: 'api', uri: 'threadnote://resources/repos/api'}],
+        },
+      });
+      const shownText = await runCli(['workset', 'show', 'platform'], environment);
+      expect(shownText.stdout).toContain('- api (threadnote://resources/repos/api)');
+
+      const updated = await runCli(
+        ['workset', 'update', 'platform', '--name', 'core', '--project', 'worker', '--json'],
+        environment,
+      );
+      expect(JSON.parse(updated.stdout)).toMatchObject({changed: true, operation: 'update', version: 1});
+
+      const renamedText = await runCli(['workset', 'update', 'core', '--name', 'platform'], environment);
+      expect(renamedText.stdout).toContain('Updated workset: platform');
+
+      const unchanged = await runCli(['workset', 'update', 'platform', '--json'], environment);
+      expect(JSON.parse(unchanged.stdout)).toMatchObject({changed: false, operation: 'update', version: 1});
+
+      await expect(runCli(['workset', 'delete', 'platform'], environment)).rejects.toMatchObject({code: 1});
+      expect((await runCli(['workset', 'show', 'platform', '--json'], environment)).stdout).toContain('"platform"');
+
+      const deleted = await runCli(['workset', 'delete', 'platform', '--confirm', '--json'], environment);
+      expect(JSON.parse(deleted.stdout)).toMatchObject({changed: true, operation: 'delete', version: 1});
+
+      // Manager permits U+0085, so every CLI selector must use its shared validator rather than a Unicode category check.
+      const c1Name = 'platform\u0085';
+      await runCli(['workset', 'create', c1Name, '--project', 'api'], environment);
+      expect(JSON.parse((await runCli(['workset', 'show', c1Name, '--json'], environment)).stdout)).toMatchObject({
+        workset: {name: c1Name},
+      });
+      await expect(runCli(['workset', 'update', c1Name, '--json'], environment)).resolves.toBeDefined();
+      await expect(runCli(['workset', 'delete', c1Name, '--confirm', '--json'], environment)).resolves.toBeDefined();
+
+      for (const invalid of [' ', 'bad\u001fname', 'x'.repeat(257)]) {
+        await expect(runCli(['workset', 'show', invalid], environment)).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining('workset must be bounded text without control characters.'),
+        });
+        await expect(runCli(['workset', 'update', invalid], environment)).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining('workset must be bounded text without control characters.'),
+        });
+        await expect(runCli(['workset', 'delete', invalid, '--confirm'], environment)).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining('workset must be bounded text without control characters.'),
+        });
+      }
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('makes the full Workset lifecycle discoverable without changing prepare compatibility', async () => {
+    const help = await runCli(['workset', '--help']);
+    expect(help.stdout).toContain('create');
+    expect(help.stdout).toContain('update');
+    expect(help.stdout).toContain('delete');
+    expect(help.stdout).toContain('prepare');
+    expect((await runCli(['workset', 'delete', '--help'])).stdout).toContain('--confirm');
+  });
 });
 
 function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}, cwd = process.cwd()) {
