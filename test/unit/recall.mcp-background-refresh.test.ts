@@ -13,6 +13,9 @@ import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
+import {formatMemoryDocument} from '../../src/memory/document.js';
+import {applyMaintenanceMetadata, previewMaintenanceMetadata} from '../../src/memory/maintenance_metadata_commands.js';
+import {storeMemory} from '../../src/memory/commands.js';
 import {expireRecallIndexValidation, loadRecallIndexData, recallIndexStatus} from '../../src/recall/index.js';
 import {
   refreshRecallDerivedIndexesFromSelection,
@@ -30,6 +33,106 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 const manifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-small-en-v1.5-q8')!;
 
 describe('MCP recall background vector refresh', () => {
+  effectIt.effect('keeps lexical and selected vector indexes current after an approved metadata write', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-metadata-recall-refresh-'});
+        const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/metadata-refresh.md';
+        const resource = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          'metadata-refresh.md',
+        );
+        const config = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'test',
+          manifestPath: path.join(home, 'manifest.json'),
+          user: 'tester',
+        };
+        yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
+        yield* fs.writeFileString(
+          resource,
+          formatMemoryDocument(
+            'MEMORY',
+            {
+              kind: 'durable',
+              memoryId: 'tn_metadata_refresh',
+              project: 'threadnote',
+              sourceAgentClient: 'test',
+              status: 'active',
+              timestamp: '2026-09-18T00:00:00.000Z',
+              topic: 'metadata-refresh',
+            },
+            'Synthetic metadata refresh regression body.',
+          ),
+        );
+        const runtime = fakeRuntime((inputs, dimensions) => Effect.succeed(inputs.map(() => unitVector(dimensions))));
+
+        yield* Effect.gen(function* () {
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          const initial = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
+          yield* ensureVectorIndex(config, manifest, initial.candidates, {corpusGeneration: initial.generation});
+          const preview = yield* previewMaintenanceMetadata(config, {owner: 'maintainer', uri});
+          expect(preview.status).toBe('preview');
+          if (preview.status !== 'preview') return;
+
+          const applied = yield* applyMaintenanceMetadata(config, {
+            approved: true,
+            expectedContentHash: preview.proposal.expectedContentHash,
+            owner: 'maintainer',
+            proposalId: preview.proposal.proposalId,
+            revision: preview.proposal.revision,
+            uri,
+          });
+
+          expect(applied.status).toBe('applied');
+          const refreshed = yield* recallIndexStatus(config);
+          expect(refreshed.ready).toBe(true);
+          expect(refreshed.generation).not.toBe(initial.generation);
+          expect(yield* vectorIndexGenerationReadiness(home, manifest, refreshed.generation!)).toBe('current');
+
+          const replacementUri = yield* storeMemory(config, {
+            bodyText: 'Synthetic direct replacement regression body.',
+            dryRun: false,
+            expectedReplaceContent: yield* fs.readFileString(resource),
+            expectedReplaceMemoryId: 'tn_metadata_refresh',
+            metadata: {
+              kind: 'durable',
+              memoryId: 'tn_metadata_refresh',
+              project: 'threadnote',
+              sourceAgentClient: 'test',
+              status: 'active',
+              timestamp: '2026-09-18T00:01:00.000Z',
+              topic: 'metadata-refresh',
+            },
+            replaceUri: uri,
+            title: 'MEMORY',
+          });
+
+          expect(replacementUri).toBe(uri);
+          const replaced = yield* recallIndexStatus(config);
+          expect(replaced.ready).toBe(true);
+          expect(replaced.generation).not.toBe(refreshed.generation);
+          expect(yield* vectorIndexGenerationReadiness(home, manifest, replaced.generation!)).toBe('current');
+        }).pipe(
+          Effect.provideService(LocalModelRuntime, runtime),
+          Effect.provideService(LocalModelStore, installedModelStore(home)),
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('restores lexical and selected installed vector indexes after a trusted mutation', () =>
     Effect.scoped(
       Effect.gen(function* () {
