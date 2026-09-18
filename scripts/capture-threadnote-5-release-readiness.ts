@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Effect, Path} from 'effect';
+import {Console, Effect, Path} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {
   canonicalizeThreadnote5CaptureOutputPathsV1,
@@ -14,7 +14,12 @@ const DEFAULT_FIXTURE = new URL('../test/evaluation/fixtures/threadnote-5-task-l
 
 const program = Effect.gen(function* () {
   const path = yield* Path.Path;
-  const options = parseArguments(yield* scriptArguments());
+  const args = yield* scriptArguments();
+  if (args.includes('--help') || args.includes('-h')) {
+    yield* Console.log(usage());
+    return;
+  }
+  const options = parseArguments(args);
   const outputPaths = canonicalizeThreadnote5CaptureOutputPathsV1({
     canonicalReceiptsOutputPath: options.canonicalReceiptsOutputPath,
     evidenceOutputPath: options.evidenceOutputPath,
@@ -117,6 +122,18 @@ const OPTIONS = new Set([
 function required(value: string | undefined, option: string): string {
   if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
+}
+
+function usage(): string {
+  return [
+    'Usage: bun run capture:threadnote-5-release-readiness -- [options]',
+    '',
+    'Captures bounded Threadnote 5 release-readiness evidence from supplied JSON inputs.',
+    'Required options: --authority-manifest <json> --authority-manifest-sha256 <64-hex>',
+    '  --candidate <json> --canonical-receipts-output <json> --evidence-output <json>',
+    '  --retained-subsystem-receipts <json> --runtime-boundaries <json>',
+    'Optional: --fixture <json>',
+  ].join('\n');
 }
 
 if (import.meta.main) BunRuntime.runMain(provideScriptLayer(program, ApplicationLayer));
