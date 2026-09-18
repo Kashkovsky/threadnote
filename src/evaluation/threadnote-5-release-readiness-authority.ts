@@ -50,14 +50,30 @@ export interface Threadnote5ActivationVerificationAuthorityV1 {
   readonly type: 'activation-verification';
 }
 
+export interface Threadnote5ContextBriefPlanAuthorityV1 {
+  readonly recordDigest: string;
+  readonly trials: readonly {
+    readonly attemptDigest: string;
+    readonly firstPlanCorrect: true;
+    readonly firstPlanSourceCited: true;
+  }[];
+  readonly type: 'context-brief-plan-citation';
+}
+
+export interface Threadnote5ValueReportAuthorityV1 {
+  readonly recordDigest: string;
+  readonly trials: readonly {
+    readonly feedbackEventDigest: string;
+    readonly laneId: string;
+    readonly offlineObservationDigest: string | null;
+  }[];
+  readonly type: 'value-report-verification';
+}
+
 export interface Threadnote5ExternalReceiptAuthorityV1 {
   readonly assertions: readonly string[];
   readonly recordDigest: string;
-  readonly type:
-    | 'context-brief-plan-citation'
-    | 'context-check-read-fence'
-    | 'guidance-stale-precondition-rejection'
-    | 'migration-execution';
+  readonly type: 'context-check-read-fence' | 'guidance-stale-precondition-rejection' | 'migration-execution';
 }
 
 export interface Threadnote5ContextHealthReadOnlyAuthorityV1 {
@@ -84,9 +100,11 @@ export interface Threadnote5ContextHealthReadOnlyAuthorityV1 {
 
 export type Threadnote5LocalAuthorityEntryV1 =
   | Threadnote5ActivationVerificationAuthorityV1
+  | Threadnote5ContextBriefPlanAuthorityV1
   | Threadnote5ContextHealthReadOnlyAuthorityV1
   | Threadnote5GitProposalAuthorityV1
   | Threadnote5ProcedureAuthorityV1
+  | Threadnote5ValueReportAuthorityV1
   | Threadnote5ExternalReceiptAuthorityV1;
 
 export interface Threadnote5LocalAuthorityManifestV1 {
@@ -120,6 +138,18 @@ export function threadnote5ActivationAttestationDigest(value: unknown): string {
 
 export function threadnote5ActivationOfflineObservationDigest(value: unknown): string {
   return sha256HexSync(`threadnote-5-activation-offline-observation-v1\0${canonicalJson(value)}`);
+}
+
+export function threadnote5ContextBriefAttemptDigest(value: unknown): string {
+  return sha256HexSync(`threadnote-5-context-brief-attempt-v1\0${canonicalJson(value)}`);
+}
+
+export function threadnote5RecallFeedbackEventDigest(value: unknown): string {
+  return sha256HexSync(`threadnote-5-recall-feedback-event-v1\0${canonicalJson(value)}`);
+}
+
+export function threadnote5ValueReportOfflineObservationDigest(value: unknown): string {
+  return sha256HexSync(`threadnote-5-value-report-offline-observation-v1\0${canonicalJson(value)}`);
 }
 
 export function parseThreadnote5LocalAuthorityManifestV1(value: unknown): Threadnote5LocalAuthorityManifestV1 {
@@ -167,6 +197,24 @@ function parseEntry(value: unknown): Threadnote5LocalAuthorityEntryV1 {
       recordDigest: hash(source.recordDigest, 'authority record digest'),
       trials,
       type: 'activation-verification',
+    };
+  }
+  if (source.type === 'context-brief-plan-citation') {
+    exactKeys(source, ['recordDigest', 'trials', 'type'], 'Context Brief plan authority');
+    if (!Array.isArray(source.trials) || source.trials.length < 1 || source.trials.length > MAX_AUTHORITY_ENTRIES) {
+      throw new Error('Context Brief plan authority trials are out of bounds.');
+    }
+    const trials = source.trials
+      .map(parseContextBriefTrial)
+      .sort((left, right) => left.attemptDigest.localeCompare(right.attemptDigest));
+    unique(
+      trials.map(trial => trial.attemptDigest),
+      'Context Brief authority attempt digests',
+    );
+    return {
+      recordDigest: hash(source.recordDigest, 'authority record digest'),
+      trials,
+      type: 'context-brief-plan-citation',
     };
   }
   if (source.type === 'git-proposal-review') {
@@ -224,8 +272,29 @@ function parseEntry(value: unknown): Threadnote5LocalAuthorityEntryV1 {
       type: 'procedure-verification',
     };
   }
+  if (source.type === 'value-report-verification') {
+    exactKeys(source, ['recordDigest', 'trials', 'type'], 'Value Report authority');
+    if (!Array.isArray(source.trials) || source.trials.length < 1 || source.trials.length > MAX_AUTHORITY_ENTRIES) {
+      throw new Error('Value Report authority trials are out of bounds.');
+    }
+    const trials = source.trials
+      .map(parseValueReportTrial)
+      .sort((left, right) => left.feedbackEventDigest.localeCompare(right.feedbackEventDigest));
+    unique(
+      trials.map(trial => trial.feedbackEventDigest),
+      'Value Report authority feedback-event digests',
+    );
+    unique(
+      trials.map(trial => trial.laneId),
+      'Value Report authority lane IDs',
+    );
+    return {
+      recordDigest: hash(source.recordDigest, 'authority record digest'),
+      trials,
+      type: 'value-report-verification',
+    };
+  }
   if (
-    source.type === 'context-brief-plan-citation' ||
     source.type === 'context-check-read-fence' ||
     source.type === 'guidance-stale-precondition-rejection' ||
     source.type === 'migration-execution'
@@ -239,7 +308,6 @@ function parseEntry(value: unknown): Threadnote5LocalAuthorityEntryV1 {
     );
     unique(assertions, 'external receipt authority assertions');
     const expectedAssertions = {
-      'context-brief-plan-citation': ['first-plan-correct', 'first-plan-source-cited'],
       'context-check-read-fence': ['dirty-evidence-not-current', 'outcome-unknown'],
       'guidance-stale-precondition-rejection': ['stale-precondition-rejected'],
       'migration-execution': ['migration-runtime-executed'],
@@ -316,6 +384,35 @@ function parseHealthTeamSnapshot(
     preIndexDigest: hash(source.preIndexDigest, 'context health pre index digest'),
     preWorktreeDigest: hash(source.preWorktreeDigest, 'context health pre worktree digest'),
     team: matching(source.team, /^[a-z0-9][a-z0-9._-]*$/u, 'context health team'),
+  };
+}
+
+function parseContextBriefTrial(value: unknown): Threadnote5ContextBriefPlanAuthorityV1['trials'][number] {
+  const source = exactObject(
+    value,
+    ['attemptDigest', 'firstPlanCorrect', 'firstPlanSourceCited'],
+    'Context Brief authority trial',
+  );
+  if (source.firstPlanCorrect !== true || source.firstPlanSourceCited !== true) {
+    throw new Error('Context Brief authority trial must independently attest a cited correct plan.');
+  }
+  return {
+    attemptDigest: hash(source.attemptDigest, 'Context Brief attempt digest'),
+    firstPlanCorrect: true,
+    firstPlanSourceCited: true,
+  };
+}
+
+function parseValueReportTrial(value: unknown): Threadnote5ValueReportAuthorityV1['trials'][number] {
+  const source = exactObject(
+    value,
+    ['feedbackEventDigest', 'laneId', 'offlineObservationDigest'],
+    'Value Report authority trial',
+  );
+  return {
+    feedbackEventDigest: hash(source.feedbackEventDigest, 'feedback event digest'),
+    laneId: hash(source.laneId, 'Value Report lane ID'),
+    offlineObservationDigest: nullableHash(source.offlineObservationDigest, 'Value Report offline observation digest'),
   };
 }
 
