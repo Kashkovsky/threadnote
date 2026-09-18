@@ -162,6 +162,7 @@ import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import * as valueReportCommands from '../value_report/commands.js';
+import {runPilotCommand, withPilotHome} from '../value_report/pilot_commands.js';
 import {runKnowledgeDeltaGitProposalExport, runKnowledgeDeltaGitProposalMaterialize} from '../git_proposal/commands.js';
 import {makeShareMemoryCommands, publishFlags} from './share_memory_cli.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
@@ -1456,6 +1457,7 @@ const value = makeValueCommand(
   options => withRuntimeEffect(config => valueReportCommands.runValueReportExport(config, options)),
   options => withRuntimeEffect(config => valueReportCommands.runValueReportRetention(config, options)),
   options => withRuntimeEffect(config => valueReportCommands.runValueReportDelete(config, options)),
+  options => Effect.flatMap(root, ({home}) => withPilotHome(home, config => runPilotCommand(config, options))),
 );
 const procedure = makeProcedureCommand(
   options => withRuntimeEffect(() => runProcedureVerify(options)),
@@ -1963,7 +1965,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('recall-feedback', recallFeedback),
   registerTopLevelCommand('workset', workset),
   registerTopLevelCommand('context', context),
-  registerTopLevelCommand('value', value, {productionLog: {subcommands: {report: 'requires-apply'}}}),
+  registerTopLevelCommand('value', value, {productionLog: {subcommands: {report: 'requires-apply', pilot: 'never'}}}),
   registerTopLevelCommand('procedure', procedure, {productionLog: {subcommands: {verify: 'requires-apply'}}}),
   registerTopLevelCommand('compact', compact, {productionLog: {mode: 'requires-apply'}}),
   registerTopLevelCommand('closeout', closeout, {productionLog: {subcommands: {apply: 'always'}}}),
