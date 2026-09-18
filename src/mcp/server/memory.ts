@@ -84,6 +84,7 @@ import {
 } from './common.js';
 import {memoryReadErrorResult} from './memory_read_recovery.js';
 import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../../recall/memory_identity.js';
+import {refreshRecallDerivedIndexesAfterCanonicalMutation} from '../../recall/mcp_refresh.js';
 export function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'compact_context',
@@ -491,12 +492,19 @@ export function writeDurableMemory(config: RuntimeConfig, inputParams: WriteDura
           : {...inputParams.metadata, memoryId: replacementMemoryId},
       replaceUri: replacement?.canonicalUri ?? inputParams.replaceUri,
     };
-    return yield* writeDurableMemoryResolved(config, params);
+    const result = (yield* writeDurableMemoryResolved(config, params)) as CallToolResult;
+    if (result.isError !== true) {
+      const memoryUri = memoryUriFromWriteResult(result);
+      const invalidatedUris = [memoryUri, params.replaceUri].filter((uri): uri is string => uri !== undefined);
+      if (invalidatedUris.length > 0) {
+        yield* refreshRecallDerivedIndexesAfterCanonicalMutation(config, invalidatedUris);
+      }
+    }
+    return result;
   }).pipe(
     Effect.catch(error =>
       Effect.succeed(error instanceof MemoryRelationWriteError ? argumentError(error.message) : mcpErrorResult(error)),
     ),
-    Effect.map(result => result as CallToolResult),
   );
 }
 

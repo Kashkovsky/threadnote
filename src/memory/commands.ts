@@ -109,6 +109,7 @@ import {
   type RecallSemanticScoresResult,
 } from '../recall/runtime.js';
 import {loadRecallExactMatches} from '../recall/index.js';
+import {refreshRecallDerivedIndexesAfterCanonicalMutation} from '../recall/mcp_refresh.js';
 import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../recall/memory_identity.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../recall/eligibility.js';
 import {
@@ -1560,6 +1561,7 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
         sharedWrite,
       ),
     );
+    yield* refreshRecallDerivedIndexesAfterCanonicalMutation(config, [replaceUri]);
     return replaceUri;
   }
   // Two-pass formatting: assume the caller's replaceUri is a true supersede,
@@ -1685,6 +1687,7 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
         ],
         write,
       );
+  yield* refreshRecallDerivedIndexesAfterCanonicalMutation(config, [memoryUri, ...(replaceUri ? [replaceUri] : [])]);
   return memoryUri;
 });
 
