@@ -1,5 +1,9 @@
 import {Console, Effect, FileSystem, Path, Result} from 'effect';
-import {enrichMemoryWithInstalledLocalAi, isUnusableMemoryEnrichmentOutput} from '../effect/ai/enrichment.js';
+import {
+  enrichMemoryWithInstalledLocalAi,
+  isMemoryKeywordEnrichmentEligible,
+  isUnusableMemoryEnrichmentOutput,
+} from '../effect/ai/enrichment.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {withSharedRepositoryLock} from '../effect/share_lock.js';
@@ -52,7 +56,7 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
     [
       `Memory enrichment: ${candidates.length} ${dryRun ? 'would be processed' : 'to process'}`,
       `${plan.alreadyEnriched} already enriched`,
-      `${plan.skippedKinds} smoke record(s) skipped`,
+      `${plan.skippedKinds} handoff/smoke memory record(s) skipped`,
       `${plan.invalid} non-memory file(s) skipped`,
       `${plan.pendingAnchors} pending-anchor memory file(s) skipped`,
       `${plan.personalScanned} personal markdown file(s) scanned`,
@@ -114,7 +118,7 @@ export const runEnrichMemories = Effect.fn('runEnrichMemories')(function* (
       yield* Console.error(`${prefix} Failed ${candidate.uri}: file is no longer a valid memory document.`);
       continue;
     }
-    if (record.metadata.kind === 'smoke') {
+    if (!isMemoryKeywordEnrichmentEligible(record.metadata.kind)) {
       noKeywords += 1;
       yield* Console.log(`${prefix} Became ineligible since the scan; left unchanged.`);
       continue;
@@ -284,7 +288,7 @@ const memoryEnrichmentPlan = Effect.fn('memory.memoryEnrichmentPlan')(function* 
       invalid += 1;
       continue;
     }
-    if (record.metadata.kind === 'smoke') {
+    if (!isMemoryKeywordEnrichmentEligible(record.metadata.kind)) {
       skippedKinds += 1;
       continue;
     }
