@@ -1,9 +1,16 @@
+import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Layer, Path} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
+import {recordContextBriefValueEvent} from '../../src/value_report/events.js';
+import {recordRecallFeedback} from '../../src/recall/feedback.js';
+import {CliOutput} from '../../src/effect/cli_output.js';
 import {captureConsole} from '../../src/effect/console.js';
-import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {TestClock} from 'effect/testing';
+import {parsePilotInput} from '../../src/value_report/pilot_contract.js';
+import {pilotInput} from '../helpers/value-pilot-fixture.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runValueReportExport, VALUE_REPORT_EXPORT_DIRECTORY} from '../../src/value_report/commands.js';
 import {
@@ -116,9 +123,57 @@ describe('redacted value-report export', () => {
         const repeated = yield* captureConsole(runValueReportExport(config, {...options, apply: true}));
         expect(repeated.output).toBe(applied.output);
       }),
-    ).pipe(provideTestLayer(ApplicationLayer)),
+    ).pipe(
+      provideTestLayer(CliOutput.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunServices.layer, SystemInfo.layer)))),
+    ),
   );
 });
+
+effectIt.effect('preserves rolling non-midnight periods and generates pilot-aligned absolute UTC exports', () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'value-export-window-'});
+      yield* TestClock.setTime(Date.parse('2026-09-01T15:24:00.000Z'));
+      const rolling = yield* captureConsole(runValueReportExport(runtimeConfig(home), {period: 28}));
+      expect(JSON.parse(rolling.output).report.period.to).toBe('2026-09-01T15:24:00.000Z');
+      for (const timestamp of ['2026-08-03T00:00:00.000Z', '2026-08-30T23:59:59.999Z', '2026-08-31T00:00:00.000Z']) {
+        yield* recordContextBriefValueEvent(home, {
+          timestamp,
+          coverageGaps: 0,
+          durationMilliseconds: 1,
+          estimatedTokens: 1,
+          requestedCodeAnchors: 0,
+          resolvedCodeAnchors: 0,
+          successful: true,
+        });
+        yield* recordRecallFeedback(home, {
+          timestamp,
+          action: 'applied',
+          query: 'synthetic boundary',
+          uri: 'threadnote://user/tester/memories/test.md',
+        });
+      }
+      const aligned = yield* captureConsole(
+        runValueReportExport(runtimeConfig(home), {from: '2026-08-03', to: '2026-08-31'}),
+      );
+      const value = parseValueReportExportV1(JSON.parse(aligned.output));
+      expect(value.report.contextBrief.attempts).toBe(2);
+      expect(value.report.feedback.total).toBe(2);
+      expect(value.report.period).toEqual({from: '2026-08-03T00:00:00.000Z', to: '2026-08-31T00:00:00.000Z'});
+      expect(parsePilotInput({...pilotInput(), sources: [{actor: 0, value}]}).sources).toHaveLength(1);
+      for (const options of [
+        {from: '2026-08-03'},
+        {from: '2026-08-03', to: '2026-08-31', period: 28},
+        {from: '2026-02-30', to: '2026-08-31'},
+      ]) {
+        expect((yield* Effect.result(runValueReportExport(runtimeConfig(home), options)))._tag).toBe('Failure');
+      }
+    }),
+  ).pipe(
+    provideTestLayer(CliOutput.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunServices.layer, SystemInfo.layer)))),
+  ),
+);
 
 function objectKeys(value: unknown, keys = new Set<string>()): ReadonlySet<string> {
   if (Array.isArray(value)) {

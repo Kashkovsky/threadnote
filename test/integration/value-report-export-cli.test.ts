@@ -25,6 +25,12 @@ describe('value report export CLI', () => {
     expect(preview.stdout).not.toContain('private-project');
     await expect(stat(join(home, 'exports', 'value-reports'))).rejects.toThrow();
 
+    const aligned = await runCli(['value', 'report', 'export', '--from', '2026-08-03', '--to', '2026-08-31'], home);
+    expect(parseValueReportExportV1(JSON.parse(aligned.stdout)).report.period).toEqual({
+      from: '2026-08-03T00:00:00.000Z',
+      to: '2026-08-31T00:00:00.000Z',
+    });
+
     const applied = await runCli(
       ['value', 'report', 'export', '--project', 'private-project', '--period', '1', '--apply'],
       home,

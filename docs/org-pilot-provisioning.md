@@ -342,3 +342,14 @@ are verified. For rollback, pause every schedule, stop the platform timer, and r
 Leave hosted memory read access and the canonical Git share unchanged. Restore the previous versioned health policy by
 creating and reviewing a new schedule rather than editing an existing policy version. If health processing remains
 unavailable, keep local stdio Context Health available and do not widen any OAuth or memory grant.
+
+## Operations and recovery (O5a)
+
+Use the [operations runbook](org-operations.md) to prepare a provider-neutral backup/PITR, recovery, rotation and rollback
+manifest, produce an explicitly pending drill checklist, and verify content-free operator evidence and receipts. These
+offline file commands require no database credentials and perform no provider actions. The reviewed manifest expires
+at its evidence-age limit, requires distinct deployment and owner IDs, and covers 22 alerts including auth, recall,
+read/write, CAS, Git synchronization, registry publication, database saturation, and canaries. Each alert requires
+named ownership, escalation, safe action, rollback, and delivery proof. Rotation evidence must cover approved
+overlap/handoff and uninterrupted authenticated service and reads. The real isolated restore and
+rotation/rollback drills remain required before O5 acceptance; passing contract tests does not complete that gate.

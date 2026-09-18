@@ -5,6 +5,7 @@ import {
   ciSerializedLongRunningTestGroups,
   type CiLongRunningTestGroupName,
 } from './test/ci/vitest-plan.js';
+import {isOrdinaryCiTestPath} from './test/ci/ci-scopes.js';
 
 const lifecycleAlphaVerbs =
   'aliases|atomically|attaches|batches|builds|changes|coalesces|collapses|counts|falls|materializes|serves|shares';
@@ -40,6 +41,27 @@ if (ciLongRunningGroupName && !ciLongRunningGroup) {
 
 const ciLongRunningTests = [...new Set(Object.values(ciLongRunningTestGroups).flat())];
 
+export function decodeCiTestSelection(encoded: string | undefined): string[] | undefined {
+  if (!encoded) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(encoded);
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length === 0 ||
+      !parsed.every(path => typeof path === 'string' && isOrdinaryCiTestPath(path))
+    ) {
+      throw new Error('selection must be a non-empty array of ordinary test paths');
+    }
+    return [...new Set(parsed)].sort((left, right) => left.localeCompare(right));
+  } catch (error) {
+    throw new Error(`Invalid CI Vitest selection: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
+  }
+}
+
+const ciSelectedTests = decodeCiTestSelection(process.env.THREADNOTE_VITEST_SELECTION);
+
 export default defineConfig({
   assetsInclude: ['**/*.gguf'],
   test: {
@@ -54,7 +76,7 @@ export default defineConfig({
     maxWorkers: ciSerializedLongGroup ? 1 : 2,
     ...(ciSerializedLongGroup ? {fileParallelism: false} : {}),
     hookTimeout: 30_000,
-    include: ciLongRunningGroup ? [...ciLongRunningGroup] : ['test/**/*.test.ts'],
+    include: ciLongRunningGroup ? [...ciLongRunningGroup] : (ciSelectedTests ?? ['test/**/*.test.ts']),
     exclude: process.env.THREADNOTE_VITEST_STANDARD_SHARD ? ciLongRunningTests : undefined,
     testNamePattern: ciLongRunningGroupName ? ciLongRunningTestPatterns[ciLongRunningGroupName] : undefined,
     // Long groups are independently bounded jobs; ordinary shards retain the

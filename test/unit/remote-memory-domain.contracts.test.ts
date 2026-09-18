@@ -17,6 +17,15 @@ import {
   parseRemoteMemoryReceiptV1,
   type RemoteMemoryReceiptV1,
 } from '../../src/memory_domain/receipts.js';
+import {validatePortableSegment} from '../../src/storage/resource-id.js';
+
+const portableSegment = FC.stringMatching(/^[a-z][a-z0-9]{0,8}$/u).filter(value => {
+  try {
+    return validatePortableSegment(value) === value;
+  } catch {
+    return false;
+  }
+});
 
 const receipt: RemoteMemoryReceiptV1 = {
   actor: {cloudAgentId: 'agent-1', principalId: 'principal-1', provider: 'cursor', turnId: 'turn-1'},
@@ -140,14 +149,20 @@ describe('remote memory versioned schemas', () => {
     }
   });
 
+  it('rejects Windows-reserved remote-memory project segments', () => {
+    expect(() => formatRemoteMemoryUri({kind: 'durable', project: 'prn', shareId: 'share-1', topic: 'topic'})).toThrow(
+      /Windows reserved name/u,
+    );
+  });
+
   fcProp(
     it,
     'canonical relation ordering preserves declaration identity across input permutations',
     {
       relations: FC.uniqueArray(
         FC.record({
-          project: FC.stringMatching(/^[a-z][a-z0-9]{0,8}$/u),
-          topic: FC.stringMatching(/^[a-z][a-z0-9]{0,8}$/u),
+          project: portableSegment,
+          topic: portableSegment,
           type: FC.constantFrom(
             'depends_on' as const,
             'evidence_for' as const,
@@ -193,8 +208,8 @@ describe('remote memory versioned schemas', () => {
     'an explicit remote replacement URI identifies exactly one generated memory topic',
     {
       kind: FC.constantFrom('durable' as const, 'handoff' as const),
-      project: FC.stringMatching(/^[a-z][a-z0-9]{0,8}$/u),
-      topic: FC.stringMatching(/^[a-z][a-z0-9]{0,8}$/u),
+      project: portableSegment,
+      topic: portableSegment,
     },
     ({kind, project, topic}) => {
       const replaceUri = formatRemoteMemoryUri({kind, project, shareId: 'share-1', topic});

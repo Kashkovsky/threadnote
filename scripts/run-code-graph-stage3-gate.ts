@@ -4,6 +4,7 @@ import {
   parseStage3Arguments,
   scanStage3Observations,
   stage3Plan,
+  stage3Usage,
 } from './support/code-graph-stage3-contract.js';
 import {Stage3Driver} from './support/code-graph-stage3-driver.js';
 import {runStage3Scenarios} from './support/code-graph-stage3-scenarios.js';
@@ -63,16 +64,20 @@ export async function runStage3Gate(arguments_: readonly string[]) {
 }
 
 if (import.meta.main) {
-  try {
-    const result = await runStage3Gate(process.argv.slice(2));
-    process.stdout.write(`${JSON.stringify(result, undefined, 2)}\n`);
-  } catch (cause) {
-    // Native exceptions and subprocess output are deliberately excluded from retained output.
-    const reason =
-      Schema.is(ScriptError)(cause) && /^Stage 3 gate refused: [a-z0-9-]+\.$/u.test(cause.message)
-        ? cause.message
-        : 'Stage 3 gate failed closed.';
-    process.stderr.write(`${reason} No passing observation was returned.\n`);
-    process.exitCode = 1;
+  if (process.argv.slice(2).includes('--help') || process.argv.slice(2).includes('-h')) {
+    process.stdout.write(`${stage3Usage()}\n`);
+  } else {
+    try {
+      const result = await runStage3Gate(process.argv.slice(2));
+      process.stdout.write(`${JSON.stringify(result, undefined, 2)}\n`);
+    } catch (cause) {
+      // Native exceptions and subprocess output are deliberately excluded from retained output.
+      const reason =
+        Schema.is(ScriptError)(cause) && /^Stage 3 gate refused: [a-z0-9-]+\.$/u.test(cause.message)
+          ? cause.message
+          : 'Stage 3 gate failed closed.';
+      process.stderr.write(`${reason} No passing observation was returned.\n`);
+      process.exitCode = 1;
+    }
   }
 }

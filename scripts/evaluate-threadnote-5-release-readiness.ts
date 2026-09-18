@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {Effect, Path} from 'effect';
+import {Console, Effect, Path} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {
   THREADNOTE_5_BASELINE_COMMIT,
@@ -15,7 +15,12 @@ const DEFAULT_FIXTURE = new URL('../test/evaluation/fixtures/threadnote-5-task-l
 
 const program = Effect.gen(function* () {
   const path = yield* Path.Path;
-  const options = parseArguments(yield* scriptArguments());
+  const args = yield* scriptArguments();
+  if (args.includes('--help') || args.includes('-h')) {
+    yield* Console.log(usage());
+    return;
+  }
+  const options = parseArguments(args);
   const fixturePath = options.fixturePath ?? (yield* path.fromFileUrl(DEFAULT_FIXTURE));
   const [fixture, evidence, retainedSubsystemReceiptRecords, baselineTrialLedger, localAuthorityManifest] =
     yield* Effect.all(
@@ -185,6 +190,24 @@ function parseArguments(args: readonly string[]): {
 function required(value: string | undefined, option: string): string {
   if (!value?.trim()) throw ScriptError.make({message: `${option} requires a value`});
   return value;
+}
+
+function usage(): string {
+  return [
+    'Usage: bun run eval:threadnote-5-release-readiness -- [options]',
+    '',
+    'Evaluates bounded Threadnote 5 release-readiness evidence and emits a release gate result.',
+    'Required options: --candidate-commit <40-hex> --candidate-executable-sha256 <64-hex>',
+    '  --capture-manifest-sha256 <64-hex> --evidence <json>',
+    'Optional:',
+    '  --fixture <json> --output <json> --retained-subsystem-receipts <json>',
+    '  Trusted baseline comparison (all five together):',
+    '    --baseline-version <version> --baseline-commit <40-hex>',
+    '    --baseline-executable-sha256 <64-hex> --baseline-trial-ledger <json>',
+    '    --baseline-trial-ledger-sha256 <64-hex>',
+    '  Local authority verification (both together):',
+    '    --authority-manifest <json> --authority-manifest-sha256 <64-hex>',
+  ].join('\n');
 }
 
 if (import.meta.main) BunRuntime.runMain(provideScriptLayer(program, ApplicationLayer));

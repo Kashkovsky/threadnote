@@ -1,3 +1,4 @@
+import {controlHostedContextCi} from './hosted_context_ci_control.js';
 import type {Sql, TransactionSql} from 'postgres';
 import {Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
@@ -71,6 +72,7 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
     'apply_git_beta_import',
     'export_records',
     'inspect_records',
+    'manage_context_ci',
     'manage_context_health',
     'migrate_schema',
     'provision_control_plane',
@@ -84,6 +86,9 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
   ) {
     this.controlPlane = new PostgresRemoteControlPlane(sql);
   }
+
+  readonly controlContextCi = (input: unknown, webhookKey?: string) =>
+    controlHostedContextCi(this.sql, input, webhookKey);
 
   readonly migrateSchema = async () => {
     await migrateRemoteMemoryDatabase(this.sql, {executablePath: this.options.executablePath});

@@ -30,7 +30,7 @@ describe('Bun distribution contract', () => {
     }
     expect(manifest.overrides?.['@effect/platform-node-shared']).toBe(effectVersion);
     expect(manifest.devDependencies?.['@effect/tsgo']).toBe('0.45.0');
-    expect(manifest.devDependencies?.oxlint).toBe('1.81.0');
+    expect(manifest.devDependencies?.oxlint).toBe('1.82.0');
     expect(manifest.devDependencies?.['oxlint-tsgolint']).toBe('7.0.2001');
     expect(allDependencies['@effect/platform-node']).toBeUndefined();
     expect(allDependencies['@effect/sql-sqlite-node']).toBeUndefined();
@@ -53,6 +53,21 @@ describe('Bun distribution contract', () => {
     expect(lockfile).toContain('"nanoid": ["nanoid@5.1.16"');
     expect(lockfile).toContain('"postcss/nanoid": ["nanoid@3.3.18"');
     expect(lockfile).not.toContain('"postcss/nanoid": ["nanoid@3.3.16"');
+  });
+
+  it('pins the MCP SDK Ajv fast-uri edge to a patched release', async () => {
+    const [manifestText, lockfile] = await Promise.all([
+      readFile(join(process.cwd(), 'package.json'), 'utf8'),
+      readFile(join(process.cwd(), 'bun.lock'), 'utf8'),
+    ]);
+    const manifest = JSON.parse(manifestText) as PackageManifest;
+
+    expect(manifest.overrides?.['fast-uri']).toBe('3.1.8');
+    expect(lockfile).toContain('"fast-uri": ["fast-uri@3.1.8"');
+    expect(lockfile).toMatch(
+      /^\s+"@modelcontextprotocol\/sdk": \["@modelcontextprotocol\/sdk@1\.30\.0"[^\r\n]*"ajv": "\^8\.17\.1"/mu,
+    );
+    expect(lockfile).toMatch(/^\s+"ajv": \["ajv@8\.20\.0"[^\r\n]*"fast-uri": "\^3\.0\.1"/mu);
   });
 
   it('keeps Vitest and Istanbul coverage on one exact release', async () => {
