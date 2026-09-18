@@ -21,6 +21,16 @@ export interface Stage3Options {
   readonly output: string;
 }
 
+export function stage3Usage(): string {
+  return [
+    'Usage: bun run gate:code-graph:stage3 -- [options]',
+    '',
+    'Runs the live Stage 3 code-graph release gate or prints its non-executing plan.',
+    'Required options: --mode <plan|execute> --candidate-commit <40-hex> --candidate-ref <ref>',
+    '  --candidate-executable <absolute-path> --candidate-executable-sha256 <64-hex> --output <absolute-path>',
+  ].join('\n');
+}
+
 /** There is deliberately no observation-file, evidence-input, or replay mode. */
 export function parseStage3Arguments(arguments_: readonly string[]): Stage3Options {
   const values = new Map<string, string>();

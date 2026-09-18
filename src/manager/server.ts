@@ -114,7 +114,7 @@ import {runCodeGraphPurge, runCodeGraphRepair} from '../code_graph/commands.js';
 import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated_index.js';
 import {
   compactCodeGraphStorageIsolated,
-  runCodeGraphAutomaticCompactionLoop,
+  runCodeGraphAutomaticCompactionScheduler,
   type CodeGraphAutomaticCompactionStatus,
 } from '../code_graph/automatic_compaction.js';
 import {inspectAllCodeGraphsLocal} from '../code_graph/diagnostics.js';
@@ -374,7 +374,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
             createManagerServer({automaticCompactionStatus, config, jobs: new Map(), token, worksetScope}),
           );
           yield* Effect.forkScoped(
-            runCodeGraphAutomaticCompactionLoop(config.agentContextHome, status =>
+            runCodeGraphAutomaticCompactionScheduler(config.agentContextHome, status =>
               Ref.set(automaticCompactionStatus, status),
             ),
           );

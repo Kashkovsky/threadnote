@@ -1,5 +1,6 @@
 import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, Predicate, Schema, Stdio, Stream} from 'effect';
 import {CommandExecutor, type CommandExecutionError} from '../effect/command.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {CODE_GRAPH_COMPACTION_WORKER_ARGUMENT} from '../worker_protocol.js';
 import {
@@ -13,8 +14,9 @@ import {
   codeGraphAutomaticCompactionCooldownMilliseconds,
   recordCodeGraphAutomaticCompactionAttempt,
 } from './automatic_compaction_receipt.js';
-import {codeGraphRepositoriesRoot} from './layout.js';
+import {codeGraphAutomaticCompactionSchedulerLockPath, codeGraphRepositoriesRoot} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
+import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES} from './store_session.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
 import {
   codeGraphCompactionRequiredFreeBytes,
@@ -34,10 +36,20 @@ class CodeGraphAutomaticCompactionError extends Schema.TaggedError<CodeGraphAuto
 
 export const CODE_GRAPH_AUTOMATIC_COMPACTION_INITIAL_DELAY_MILLISECONDS = 15_000;
 export const CODE_GRAPH_AUTOMATIC_COMPACTION_INTERVAL_MILLISECONDS = 60_000;
+export const CODE_GRAPH_AUTOMATIC_COMPACTION_LEADERSHIP_RETRY_MILLISECONDS = 60_000;
 export const CODE_GRAPH_AUTOMATIC_COMPACTION_DATABASE_LIMIT = 128;
 const CODE_GRAPH_AUTOMATIC_COMPACTION_PROTOCOL = 1;
 export const CODE_GRAPH_AUTOMATIC_COMPACTION_INPUT_BYTES_MAXIMUM = 16 * 1_024;
 const CODE_GRAPH_AUTOMATIC_COMPACTION_OUTPUT_BYTES_MAXIMUM = 4 * 1_024;
+const CODE_GRAPH_AUTOMATIC_COMPACTION_SCHEDULER_LOCK_OPTIONS = {
+  heartbeatIntervalMilliseconds: 20_000,
+  recoverReusedProcessIdImmediately: true,
+  retryIntervalMilliseconds: 25,
+  staleAfterMilliseconds: 60_000,
+  useCanonicalProcessStartIdentity: true,
+  waitTimeoutMilliseconds: 0,
+  windowsSharingViolationRetryLimit: 4,
+} as const;
 
 export {
   CODE_GRAPH_AUTOMATIC_COMPACTION_COOLDOWN_MILLISECONDS,
@@ -53,6 +65,8 @@ export {
 
 export interface CodeGraphAutomaticCompactionCandidate {
   readonly checkoutId: string;
+  /** `journal` is checkpoint-only; `compact` retains the established VACUUM path. */
+  readonly operation?: 'compact' | 'journal';
   readonly opportunityBytes: number;
   readonly opportunityRatio: number;
 }
@@ -106,7 +120,7 @@ export type CodeGraphAutomaticCompactionStatus =
 interface CodeGraphAutomaticCompactionWorkerRequest {
   readonly checkoutId: string;
   readonly force: boolean;
-  readonly operation: 'compact' | 'probe';
+  readonly operation: 'compact' | 'journal' | 'probe';
   readonly protocol: 1;
   readonly threadnoteHome: string;
 }
@@ -129,6 +143,7 @@ export interface CodeGraphAutomaticCompactionDependencies<R = never> {
   readonly compact: (
     threadnoteHome: string,
     checkoutId: string,
+    options?: {readonly operation: 'compact' | 'journal'},
   ) => Effect.Effect<CodeGraphAutomaticCompactionResult, unknown, R>;
   readonly claimCandidate?: (
     threadnoteHome: string,
@@ -214,20 +229,31 @@ export const runCodeGraphAutomaticCompactionPassWith = Effect.fn('codeGraph.auto
   const inspectionFailures = observations.filter(observation => observation === undefined).length;
   const rankedCandidates = [
     ...observations.flatMap(observation => {
-      if (
-        observation === undefined ||
-        observation.storage.state !== 'available' ||
-        observation.storage.pageStorage.state !== 'available' ||
-        observation.storage.pageStorage.threshold.reason !== 'freelist' ||
-        !automaticCompactionHasDiskHeadroom(observation.storage)
-      ) {
+      if (observation === undefined || observation.storage.state !== 'available') {
         return [];
       }
+      // A checkpoint can reclaim WAL allocation, but cannot shrink a dormant
+      // rollback journal. Writers bound that separately with journal_size_limit.
+      const reclaimableSidecarBytes = observation.storage.walBytes;
+      const pageStorage = observation.storage.pageStorage;
+      const vacuumOpportunity =
+        pageStorage.state === 'available' &&
+        pageStorage.threshold.reason === 'freelist' &&
+        automaticCompactionHasDiskHeadroom(observation.storage)
+          ? {bytes: pageStorage.reclaimableBytes, ratio: pageStorage.reclaimableRatio}
+          : undefined;
+      const requiresJournalReclamation = reclaimableSidecarBytes > CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES;
+      if (vacuumOpportunity === undefined && !requiresJournalReclamation) return [];
       return [
         {
           checkoutId: observation.checkoutId,
-          opportunityBytes: observation.storage.pageStorage.reclaimableBytes,
-          opportunityRatio: observation.storage.pageStorage.reclaimableRatio,
+          operation: vacuumOpportunity ? 'compact' : 'journal',
+          opportunityBytes: vacuumOpportunity
+            ? vacuumOpportunity.bytes
+            : reclaimableSidecarBytes - CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES,
+          opportunityRatio: vacuumOpportunity
+            ? vacuumOpportunity.ratio
+            : reclaimableSidecarBytes / Math.max(1, observation.storage.filesystemBytes),
         } satisfies CodeGraphAutomaticCompactionCandidate,
       ];
     }),
@@ -264,7 +290,7 @@ export const runCodeGraphAutomaticCompactionPassWith = Effect.fn('codeGraph.auto
   }
   yield* dependencies.onCandidate?.(candidate) ?? Effect.void;
   const result = yield* dependencies
-    .compact(threadnoteHome, candidate.checkoutId)
+    .compact(threadnoteHome, candidate.checkoutId, {operation: candidate.operation ?? 'compact'})
     .pipe(Effect.tapError(() => dependencies.recordAttempt?.(threadnoteHome, candidate, undefined) ?? Effect.void));
   yield* dependencies.recordAttempt?.(threadnoteHome, candidate, result) ?? Effect.void;
   return {
@@ -281,7 +307,7 @@ export const runCodeGraphAutomaticCompactionPassWith = Effect.fn('codeGraph.auto
 export const compactCodeGraphStorageIsolated: (
   threadnoteHome: string,
   checkoutId: string,
-  options?: {readonly force?: boolean; readonly operation?: 'compact' | 'probe'},
+  options?: {readonly force?: boolean; readonly operation?: 'compact' | 'journal' | 'probe'},
 ) => Effect.Effect<
   CodeGraphAutomaticCompactionResult,
   CodeGraphAutomaticCompactionError | CommandExecutionError,
@@ -289,7 +315,7 @@ export const compactCodeGraphStorageIsolated: (
 > = Effect.fn('codeGraph.compactStorageIsolated')(function* (
   threadnoteHome: string,
   checkoutId: string,
-  options: {readonly force?: boolean; readonly operation?: 'compact' | 'probe'} = {},
+  options: {readonly force?: boolean; readonly operation?: 'compact' | 'journal' | 'probe'} = {},
 ) {
   const command = yield* CommandExecutor;
   const system = yield* SystemInfo;
@@ -461,6 +487,52 @@ export const runCodeGraphAutomaticCompactionLoop = Effect.fn('codeGraph.automati
   );
 });
 
+/**
+ * Keep the bounded home-wide inventory single-owner across Manager and MCP
+ * processes. Contenders never inspect storage and retry after a bounded delay
+ * so they can take over when the owner exits.
+ */
+export const runCodeGraphAutomaticCompactionSchedulerWith = Effect.fn('codeGraph.automaticCompactionSchedulerWith')(
+  function* <R>(
+    dependencies: CodeGraphAutomaticCompactionDependencies<R>,
+    threadnoteHome: string,
+    onStatus: (status: CodeGraphAutomaticCompactionStatus) => Effect.Effect<void, never, R>,
+    timing: {
+      readonly initialDelayMilliseconds?: number;
+      readonly intervalMilliseconds?: number;
+      readonly leadershipRetryMilliseconds?: number;
+    } = {},
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const retryMilliseconds =
+      timing.leadershipRetryMilliseconds ?? CODE_GRAPH_AUTOMATIC_COMPACTION_LEADERSHIP_RETRY_MILLISECONDS;
+    const lockPath = codeGraphAutomaticCompactionSchedulerLockPath(path, threadnoteHome);
+    while (true) {
+      const led = yield* withExclusiveFileLock(
+        fs,
+        lockPath,
+        CODE_GRAPH_AUTOMATIC_COMPACTION_SCHEDULER_LOCK_OPTIONS,
+        runCodeGraphAutomaticCompactionLoopWith(dependencies, threadnoteHome, onStatus, timing).pipe(Effect.as(true)),
+      ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed(false)));
+      if (led) return;
+      yield* Effect.sleep(retryMilliseconds);
+    }
+  },
+);
+
+/** Start the recoverable, cross-process automatic-compaction scheduler. */
+export const runCodeGraphAutomaticCompactionScheduler = Effect.fn('codeGraph.automaticCompactionScheduler')(function* (
+  threadnoteHome: string,
+  onStatus: (status: CodeGraphAutomaticCompactionStatus) => Effect.Effect<void> = () => Effect.void,
+) {
+  return yield* runCodeGraphAutomaticCompactionSchedulerWith(
+    productionAutomaticCompactionDependencies(),
+    threadnoteHome,
+    onStatus,
+  );
+});
+
 function productionAutomaticCompactionDependencies(
   onCandidate?: (candidate: CodeGraphAutomaticCompactionCandidate) => Effect.Effect<void>,
 ): CodeGraphAutomaticCompactionDependencies<
@@ -530,6 +602,7 @@ export const codeGraphAutomaticCompactionWorkerProgram = Effect.gen(function* ()
     response = yield* compactCodeGraphStorage(request.threadnoteHome, request.checkoutId, {
       dryRun: false,
       force: request.force,
+      ...(request.operation === 'journal' ? {operation: 'automatic-journal' as const} : {}),
     }).pipe(
       Effect.map(automaticCompactionResult),
       Effect.match({onFailure: automaticCompactionWorkerFailure, onSuccess: automaticCompactionWorkerSuccess}),
@@ -675,7 +748,7 @@ function isAutomaticCompactionAction(value: unknown): value is CodeGraphAutomati
 function isAutomaticCompactionOperation(
   value: unknown,
 ): value is CodeGraphAutomaticCompactionWorkerRequest['operation'] {
-  return value === 'compact' || value === 'probe';
+  return value === 'compact' || value === 'journal' || value === 'probe';
 }
 
 function isAutomaticCompactionReason(
