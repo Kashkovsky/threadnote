@@ -4,9 +4,9 @@ import {
   type CiLongRunningTestGroupName,
 } from './vitest-plan.js';
 import {
-  isPurePrivateEvaluationProductCaptureDiff,
-  privateEvaluationProductCaptureFocusedTestPath,
-} from './private-evaluation-product-capture-scope.js';
+  classifyPurePrivateReleaseEvidenceDiff,
+  isPurePrivateReleaseEvidenceDiff,
+} from './private-release-evidence-family.js';
 
 export const ciScopeKeys = [
   'actions',
@@ -279,7 +279,7 @@ export function classifyCiScopes(paths: Iterable<string>): CiScopeClassification
   if (invalidPath || sortedPaths.length === 0)
     return {changedCount: sortedPaths.length, invalidPath, paths: sortedPaths, scopes: allScopes()};
 
-  if (isPurePrivateEvaluationProductCaptureDiff(sortedPaths)) {
+  if (isPurePrivateReleaseEvidenceDiff(sortedPaths)) {
     return {changedCount: sortedPaths.length, invalidPath, paths: sortedPaths, scopes: selectedScopes('build', 'code')};
   }
 
@@ -310,9 +310,12 @@ export function selectCiTestPlanForClassification(classification: CiScopeClassif
   };
   if (!classification.scopes.code) return none;
 
-  if (!classification.invalidPath && isPurePrivateEvaluationProductCaptureDiff(classification.paths)) {
+  const privateReleaseEvidence = !classification.invalidPath
+    ? classifyPurePrivateReleaseEvidenceDiff(classification.paths)
+    : undefined;
+  if (privateReleaseEvidence) {
     return {
-      standard: {mode: 'selected', paths: [privateEvaluationProductCaptureFocusedTestPath]},
+      standard: {mode: 'selected', paths: privateReleaseEvidence.focusedTestPaths},
       long: {mode: 'none', groups: []},
       postgres: {mode: 'none', paths: []},
     };
