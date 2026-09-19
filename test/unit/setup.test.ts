@@ -6,7 +6,11 @@ import {describe, expect, it} from 'vitest';
 import {getAgentAdapter} from '../../src/agent_integration/adapters.js';
 import type {AgentAdapter} from '../../src/agent_integration/adapters/contract.js';
 import {planAgentSurface} from '../../src/agent_integration/surfaces.js';
-import {parseContextBriefRequestV1} from '../../src/context_brief/types.js';
+import {
+  parseContextBriefRequestV1,
+  type ContextBriefGraphEvidenceV1,
+  type ProjectedContextBriefV1,
+} from '../../src/context_brief/types.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {sha256Hex} from '../../src/effect/digest.js';
 import {ApplicationLayer, type ApplicationServices} from '../../src/effect/runtime.js';
@@ -33,10 +37,12 @@ import {
   productionSetupDependencies,
   resolveSetupRuntimeConfig,
   seedSetupProject,
+  setupContextBriefAnchor,
   setupBriefIsSourceVerified,
   setupContextBriefRequest,
   setupRepositorySourceHash,
   setupSurfaceAction,
+  verifySetupSourceVerificationWith,
 } from '../../src/setup/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {runOmpHooksInstall} from '../../src/omp_hooks.js';
@@ -166,7 +172,7 @@ describe('setup contracts', () => {
 
   it('requires fresh, complete, non-empty repository evidence', () => {
     const brief = {
-      coverage: {graph: {complete: true}, omissions: {graphCards: 0, graphContracts: 0}},
+      coverage: {gaps: [], graph: {complete: true}, omissions: {graphCards: 0, graphContracts: 0}},
       graph: {cards: [{}], contracts: []},
       scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
     } as unknown as Parameters<typeof setupBriefIsSourceVerified>[0];
@@ -175,25 +181,16 @@ describe('setup contracts', () => {
     expect(setupBriefIsSourceVerified({...brief, scope: {...brief.scope, freshness: 'stale'}})).toBe(false);
   });
 
-  it('accepts graph evidence omitted by the projection budget', () => {
+  it('rejects graph evidence omitted by the projection budget', () => {
     const brief = {
-      coverage: {graph: {complete: true}, omissions: {graphCards: 1, graphContracts: 2}},
+      coverage: {gaps: [], graph: {complete: true}, omissions: {graphCards: 1, graphContracts: 2}},
       graph: {cards: [], contracts: []},
       scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
     } as unknown as Parameters<typeof setupBriefIsSourceVerified>[0];
-    expect(setupBriefIsSourceVerified(brief)).toBe(true);
-    expect(
-      setupBriefIsSourceVerified({
-        ...brief,
-        coverage: {
-          ...brief.coverage,
-          omissions: {...brief.coverage.omissions, graphCards: 0, graphContracts: 0},
-        },
-      }),
-    ).toBe(false);
+    expect(setupBriefIsSourceVerified(brief)).toBe(false);
   });
 
-  it('counts returned and omitted graph evidence as one source-evidence total', () => {
+  it('requires returned graph evidence even when omitted graph evidence exists', () => {
     fc.assert(
       fc.property(
         fc.nat({max: 4}),
@@ -203,6 +200,7 @@ describe('setup contracts', () => {
         (cards, contracts, omittedCards, omittedContracts) => {
           const brief = {
             coverage: {
+              gaps: [],
               graph: {complete: true},
               omissions: {graphCards: omittedCards, graphContracts: omittedContracts},
             },
@@ -212,7 +210,9 @@ describe('setup contracts', () => {
             },
             scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
           } as unknown as Parameters<typeof setupBriefIsSourceVerified>[0];
-          expect(setupBriefIsSourceVerified(brief)).toBe(cards + contracts + omittedCards + omittedContracts > 0);
+          expect(setupBriefIsSourceVerified(brief)).toBe(
+            cards + contracts > 0 && omittedCards === 0 && omittedContracts === 0,
+          );
         },
       ),
       {numRuns: 100},
@@ -224,9 +224,104 @@ describe('setup contracts', () => {
       1_500,
     );
   });
+
+  it('rejects graph query partiality but permits unrelated projected truncation with returned source evidence', () => {
+    const brief = {
+      coverage: {gaps: [], graph: {complete: true}, omissions: {graphCards: 0, graphContracts: 0}},
+      graph: {cards: [{ref: `cgs_${'a'.repeat(32)}`}], contracts: []},
+      output: {truncated: true},
+      scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
+    } as unknown as Parameters<typeof setupBriefIsSourceVerified>[0];
+    expect(setupBriefIsSourceVerified(brief)).toBe(true);
+    expect(
+      setupBriefIsSourceVerified({...brief, coverage: {...brief.coverage, gaps: ['graph-evidence-partial']}}),
+    ).toBe(false);
+    expect(setupBriefIsSourceVerified({...brief, coverage: {...brief.coverage, gaps: ['graph-query-warning']}})).toBe(
+      false,
+    );
+  });
+
+  it('selects the first graph card as the locator anchor before verifying the exact result', () => {
+    const anchor = `cgs_${'b'.repeat(32)}`;
+    const request = setupContextBriefRequest('/repository', 'verify setup', 'canonical-repository', anchor);
+    expect(request).toMatchObject({
+      codeRefs: [anchor],
+      mode: 'locate',
+      scope: {callerCwd: '/repository', kind: 'repository', project: 'canonical-repository'},
+    });
+    const locator = {cards: [{ref: anchor}]} as unknown as Parameters<typeof setupContextBriefAnchor>[0];
+    const partialLocator = {
+      ...locator,
+      warnings: ['Graph traversal reached a configured result limit.'],
+    };
+    expect(setupContextBriefAnchor(partialLocator)).toBe(anchor);
+    expect(setupContextBriefAnchor({cards: []})).toBeUndefined();
+    expect(
+      setupBriefIsSourceVerified({
+        coverage: {gaps: [], graph: {complete: true}, omissions: {graphCards: 0, graphContracts: 0}},
+        graph: {cards: [{ref: anchor}], contracts: []},
+        scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
+      } as unknown as Parameters<typeof setupBriefIsSourceVerified>[0]),
+    ).toBe(true);
+  });
 });
 
 describe('setup orchestration', () => {
+  effectIt.effect('uses a graph-only locator and records only the delivered setup Context Brief', () =>
+    Effect.gen(function* () {
+      const anchor = `cgs_${'c'.repeat(32)}`;
+      const calls: string[] = [];
+      const valueEvents: string[] = [];
+      const result = yield* verifySetupSourceVerificationWith(
+        {
+          compileFinal: request =>
+            Effect.sync(() => {
+              calls.push(`final:${request.mode}:${request.codeRefs?.join(',')}:${request.scope.project}`);
+              valueEvents.push('final-context-brief');
+              return verifiedContextBrief(anchor);
+            }),
+          graphLocator: request =>
+            Effect.sync(() => {
+              calls.push(`locator:${request.mode}:${request.codeRefs?.length ?? 0}:${request.scope.project}`);
+              return {
+                cards: [{ref: anchor}],
+                warnings: ['Graph traversal reached a configured result limit.'],
+              } as unknown as ContextBriefGraphEvidenceV1;
+            }),
+          resolveProject: () => Effect.succeed('remote-less-repository'),
+          sourceHash: () => Effect.succeed(digest),
+        },
+        '/repository',
+        'verify setup',
+      );
+      expect(calls).toEqual([
+        `locator:brief:0:remote-less-repository`,
+        `final:locate:${anchor}:remote-less-repository`,
+      ]);
+      expect(valueEvents).toEqual(['final-context-brief']);
+      expect(result.status).toBe('verified');
+      expect(result.verification?.sourceVerified).toBe(true);
+    }).pipe(run),
+  );
+
+  effectIt.effect('fails when the graph-only locator cannot choose an anchor', () =>
+    Effect.gen(function* () {
+      let finalCompiles = 0;
+      const result = yield* verifySetupSourceVerificationWith(
+        {
+          compileFinal: () => Effect.sync(() => ++finalCompiles).pipe(Effect.as(verifiedContextBrief(digest))),
+          graphLocator: () => Effect.succeed({cards: []} as unknown as ContextBriefGraphEvidenceV1),
+          resolveProject: () => Effect.succeed('remote-less-repository'),
+          sourceHash: () => Effect.succeed(digest),
+        },
+        '/repository',
+        'verify setup',
+      ).pipe(Effect.exit);
+      expect(result._tag).toBe('Failure');
+      expect(finalCompiles).toBe(0);
+    }).pipe(run),
+  );
+
   effectIt.effect('uses the user manifest for setup unless a manifest override is explicit', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -928,6 +1023,17 @@ function validVerification(repositorySourceHash = digest) {
     requestedRepositories: 1 as const,
     sourceVerified: true as const,
   };
+}
+
+function verifiedContextBrief(anchor: string) {
+  return {
+    text: 'verified brief',
+    structuredContent: {
+      coverage: {gaps: [], graph: {complete: true}, omissions: {graphCards: 0, graphContracts: 0}},
+      graph: {cards: [{ref: anchor}], contracts: []},
+      scope: {freshness: 'fresh', readyRepositories: 1, requestedRepositories: 1},
+    },
+  } as unknown as ProjectedContextBriefV1;
 }
 
 function validReceipt() {
