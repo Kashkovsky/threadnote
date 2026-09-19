@@ -1,9 +1,8 @@
 # Threadnote
 
-Use the installed Threadnote skills: `threadnote-context`, `threadnote-code-graph`, and `threadnote-memory` for non-trivial work. Repository files and
-checked-in guidance are authoritative. For repo work, start with Context Brief (task + absolute `callerCwd`);
-`recall_context` + `read_context` is the memory-focused alternative. Read `threadnote://` pointers, use the code graph
-before broad source search, then exact source. End with a required handoff; optional five-field Knowledge Delta needs approval.
+Use the installed Threadnote skills: `threadnote-context`, `threadnote-code-graph`, and `threadnote-memory` for non-trivial work. Repository files/guidance are
+authoritative. For repo work, call MCP `context_brief` (task + absolute `callerCwd`); CLI fallback: `threadnote context brief --cwd <cwd> --task <task>`.
+`recall_context` + `read_context` is the memory-focused option. Read `threadnote://` pointers, use the code graph
+before broad source search, then exact source. End with required handoff; optional five-field Knowledge Delta needs approval.
 `remember_context(kind=handoff)` is the required private direct write; optional proposals are never auto-applied/auto-shared.
-Use CLI fallback when unavailable. Never store secrets, credentials, customer data, or raw production logs. Confirm before
-durable sharing.
+Never store secrets, credentials, customer data, or raw production logs. Confirm before durable sharing.

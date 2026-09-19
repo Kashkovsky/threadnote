@@ -14,7 +14,7 @@ import {
   requiredChoice,
   requiredString,
 } from './cli_flags.js';
-import type {runContextBrief} from '../context_brief/commands.js';
+import {CONTEXT_BRIEF_CWD_OPTION, type runContextBrief} from '../context_brief/commands.js';
 import type {runCompact} from '../memory/commands.js';
 import type {runRecallFeedback} from '../recall/feedback_commands.js';
 import type {runContextHealth} from '../memory/context_health_commands.js';
@@ -95,7 +95,7 @@ export function makeContextBriefCommand<E, R>(
         8,
       ),
       cwd: optionalString(
-        'cwd',
+        CONTEXT_BRIEF_CWD_OPTION.name,
         'Absolute repository path, at most 4096 UTF-8 bytes; defaults to the current directory',
       ),
       json: boolean('json', 'Print the structured Context Brief projection'),

@@ -77,6 +77,8 @@ describe('Effect CLI', () => {
     expect(handoff.stdout).toContain('--require-current-code-refs');
     expect(contextBrief.stdout).toContain('1-4096 UTF-8 bytes');
     expect(contextBrief.stdout).toContain('at most 256 UTF-8 bytes');
+    expect(contextBrief.stdout).toContain('--cwd string');
+    expect(contextBrief.stdout).not.toContain('--caller-cwd');
   });
 
   it('stores repeatable typed relations as stable memory identities', async () => {
