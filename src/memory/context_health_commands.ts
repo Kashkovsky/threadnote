@@ -51,6 +51,7 @@ export const runContextHealth = Effect.fn('memory.contextHealth.command')(functi
   const report = yield* collectContextHealth(config, project, selectedRecords, system.currentDirectory(), {
     after: selector?.after,
     duplicateCorpus: records,
+    ...(selector === undefined ? {} : {includeFindingCombination: 'all' as const}),
     ...(selector?.findingCategory === undefined ? {} : {includeFindingCategories: [selector.findingCategory]}),
     ...(contextHealthSelectorFindingUris(selector, selectedRecords) === undefined
       ? {}
@@ -76,6 +77,7 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
     readonly after?: string;
     readonly duplicateCorpus?: Parameters<typeof buildContextHealthReport>[0]['records'];
     readonly includeFindingCategories?: Parameters<typeof buildContextHealthReport>[0]['includeFindingCategories'];
+    readonly includeFindingCombination?: Parameters<typeof buildContextHealthReport>[0]['includeFindingCombination'];
     readonly includeFindingUris?: readonly string[];
     readonly relationCorpus?: Parameters<typeof buildContextHealthReport>[0]['records'];
   } = {},
@@ -102,6 +104,7 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
     citationValidations,
     duplicateCorpus: options.duplicateCorpus,
     includeFindingCategories: options.includeFindingCategories,
+    includeFindingCombination: options.includeFindingCombination,
     includeFindingUris: options.includeFindingUris,
     now,
     project,

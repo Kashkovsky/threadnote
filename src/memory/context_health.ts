@@ -89,6 +89,8 @@ export interface ContextHealthReportInputV1 {
   readonly citationValidations?: readonly ContextBriefMemoryCitationValidationV2[];
   readonly duplicateCorpus?: readonly MemoryRecord[];
   readonly includeFindingCategories?: readonly ContextHealthFindingCategoryV1[];
+  /** How category and URI filters combine when both are present. Defaults to the legacy `any` behavior. */
+  readonly includeFindingCombination?: 'all' | 'any';
   readonly includeFindingUris?: readonly string[];
   readonly limit?: number;
   readonly now: Date;
@@ -135,11 +137,14 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
       ...guidanceFindings(input.guidanceEvidence ?? []),
       ...semanticFindings(semanticAnalysis.contradictions),
     ].sort(compareFindings),
-  ).filter(
-    finding =>
-      (includeFindingCategories === undefined || includeFindingCategories.has(finding.category)) &&
-      (includeFindingUris === undefined || findingMatchesSelectedUris(finding, includeFindingUris)),
-  );
+  ).filter(finding => {
+    const categoryMatches = includeFindingCategories?.has(finding.category);
+    const uriMatches =
+      includeFindingUris === undefined ? undefined : findingMatchesSelectedUris(finding, includeFindingUris);
+    if (categoryMatches === undefined) return uriMatches ?? true;
+    if (uriMatches === undefined) return categoryMatches;
+    return input.includeFindingCombination === 'all' ? categoryMatches && uriMatches : categoryMatches || uriMatches;
+  });
   const limit = findingLimit(input.limit);
   const cursorDigest = contextHealthCursorDigest(records, findings);
   const start = contextHealthCursorStart(input.after, findings.length, cursorDigest);

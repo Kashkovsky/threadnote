@@ -232,13 +232,34 @@ describe('buildContextHealthReport', () => {
     expect(selectedSurvivor.findings).toEqual([]);
   });
 
-  it('intersects selected project-level categories with URI-scoped findings', () => {
+  it('preserves legacy any-match filtering for internal report consumers', () => {
     const affected = record('threadnote://memory/affected', 'affected', {reviewAfter: '2026-09-16'});
     const unrelated = record('threadnote://memory/unrelated', 'unrelated', {
       relations: [{type: 'depends_on', uri: 'threadnote://memory/conflicted'}],
     });
     const report = buildContextHealthReport({
       includeFindingCategories: ['relation-target-conflicted'],
+      includeFindingUris: [affected.uri],
+      now,
+      project: 'threadnote',
+      records: [unrelated, affected],
+      relationEvidence: [
+        {sourceUri: unrelated.uri, status: 'conflicted', targetUri: 'threadnote://memory/conflicted'},
+        {sourceUri: unrelated.uri, status: 'missing', targetUri: 'threadnote://memory/missing'},
+      ],
+    });
+
+    expect(report.findings.map(finding => finding.category)).toEqual(['relation-target-conflicted', 'review-overdue']);
+  });
+
+  it('intersects normalized user selectors across category and URI filters', () => {
+    const affected = record('threadnote://memory/affected', 'affected', {reviewAfter: '2026-09-16'});
+    const unrelated = record('threadnote://memory/unrelated', 'unrelated', {
+      relations: [{type: 'depends_on', uri: 'threadnote://memory/conflicted'}],
+    });
+    const report = buildContextHealthReport({
+      includeFindingCategories: ['relation-target-conflicted'],
+      includeFindingCombination: 'all',
       includeFindingUris: [affected.uri],
       now,
       project: 'threadnote',

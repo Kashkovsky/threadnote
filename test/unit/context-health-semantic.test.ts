@@ -214,6 +214,7 @@ describe('context health semantic contradictions', () => {
     const strictIntersection = buildContextHealthReport({
       ...evidence,
       includeFindingCategories: ['candidate-contradiction'],
+      includeFindingCombination: 'all',
       includeFindingUris: [selected.uri],
       now,
       project: 'threadnote',
@@ -393,6 +394,7 @@ function selectedReport(records: readonly MemoryRecord[], selector: ContextHealt
   return buildContextHealthReport({
     after: selector?.after,
     ...(selector?.findingCategory === undefined ? {} : {includeFindingCategories: [selector.findingCategory]}),
+    ...(selector === undefined ? {} : {includeFindingCombination: 'all' as const}),
     ...(hasRecordSelector ? {includeFindingUris: selected.map(item => item.uri)} : {}),
     now,
     project: 'threadnote',

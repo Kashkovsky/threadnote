@@ -61,6 +61,7 @@ export function registerContextHealthTool(server: EffectMcpServerAdapter, config
         const report = yield* collectContextHealth(config, checkedProject.value, selectedRecords, checkedCwd.value, {
           after: selector?.after,
           duplicateCorpus: records,
+          ...(selector === undefined ? {} : {includeFindingCombination: 'all' as const}),
           ...(selector?.findingCategory === undefined ? {} : {includeFindingCategories: [selector.findingCategory]}),
           ...(contextHealthSelectorFindingUris(selector, selectedRecords) === undefined
             ? {}

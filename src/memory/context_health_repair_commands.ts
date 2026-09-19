@@ -133,6 +133,7 @@ export const previewContextHealthRepairs = Effect.fn('memory.contextHealthRepair
   const report = yield* collectContextHealth(config, project, selectedRecords, cwd, {
     after: selector?.after,
     duplicateCorpus: activeRecords,
+    ...(selector === undefined ? {} : {includeFindingCombination: 'all' as const}),
     ...(selector?.findingCategory === undefined ? {} : {includeFindingCategories: [selector.findingCategory]}),
     ...(contextHealthSelectorFindingUris(selector, selectedRecords) === undefined
       ? {}
