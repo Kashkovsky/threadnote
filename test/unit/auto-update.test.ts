@@ -18,22 +18,47 @@ import {
   type AutoUpdateState,
   type AutoUpdateWorkerResult,
 } from '../../src/release/auto_update.js';
+import type {UpdateOptions} from '../../src/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const AutoUpdateTestLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
 
 describe('automatic update state', () => {
-  it('treats JSON as an output modifier for release checks without weakening mode conflicts', () => {
+  it('treats JSON as an output modifier for explicit release options without weakening mode conflicts', () => {
+    const releaseOptions: UpdateOptions[] = [
+      {allowUntrustedSource: true},
+      {beta: true},
+      {check: true},
+      {dryRun: true},
+      {force: true},
+      {postUpdate: false},
+      {repair: false},
+      {source: 'https://example.com/releases'},
+      {stable: true},
+      {yes: true},
+    ];
+    for (const options of releaseOptions) {
+      expect(threadnoteUpdateCommandMode({...options, json: true})).toBe('release');
+    }
     fc.assert(
-      fc.property(fc.boolean(), fc.boolean(), (beta, stable) => {
-        expect(threadnoteUpdateCommandMode({beta, check: true, json: true, stable})).toBe('release');
+      fc.property(fc.subarray(releaseOptions, {minLength: 1}), selectedOptions => {
+        const options = Object.assign({}, ...selectedOptions);
+        expect(threadnoteUpdateCommandMode({...options, json: true})).toBe('release');
       }),
     );
+    expect(threadnoteUpdateCommandMode({auto: 'on', dryRun: true})).toBe('policy');
+    expect(threadnoteUpdateCommandMode({auto: 'off', dryRun: true})).toBe('policy');
+    expect(threadnoteUpdateCommandMode({beta: true, dryRun: true, json: true})).toBe('release');
+    expect(threadnoteUpdateCommandMode({beta: true, dryRun: true, json: true, yes: true})).toBe('release');
+    expect(threadnoteUpdateCommandMode({beta: true, json: true})).toBe('release');
+    expect(threadnoteUpdateCommandMode({stable: true, json: true})).toBe('release');
     expect(threadnoteUpdateCommandMode({json: true})).toBe('status');
     expect(threadnoteUpdateCommandMode({json: true, status: true})).toBe('status');
     expect(threadnoteUpdateCommandMode({auto: 'off', json: true})).toBe('invalid');
     expect(threadnoteUpdateCommandMode({check: true, json: true, status: true})).toBe('invalid');
+    expect(threadnoteUpdateCommandMode({dryRun: true, status: true})).toBe('invalid');
+    expect(threadnoteUpdateCommandMode({beta: true, auto: 'on'})).toBe('invalid');
   });
 
   effectIt.effect('defaults to notify and persists explicit policy changes atomically', () =>
