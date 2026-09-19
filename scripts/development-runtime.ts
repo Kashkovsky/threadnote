@@ -107,6 +107,10 @@ export function parseDevelopmentInstallReceipt(value: unknown): Option.Option<De
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return Option.none();
   const candidate = value as Partial<DevelopmentInstallReceiptV1>;
   const payloadManifest = parsePayloadManifest(candidate.payloadManifest);
+  const versionSourceCommit =
+    typeof candidate.version === 'string'
+      ? Option.getOrUndefined(developmentVersionSourceCommit(candidate.version))
+      : undefined;
   return candidate.schemaVersion === DEVELOPMENT_INSTALL_RECEIPT_VERSION &&
     typeof candidate.builtAt === 'string' &&
     Number.isFinite(Date.parse(candidate.builtAt)) &&
@@ -115,6 +119,7 @@ export function parseDevelopmentInstallReceipt(value: unknown): Option.Option<De
     isDevelopmentBuildVersion(candidate.version) &&
     typeof candidate.sourceCommit === 'string' &&
     SOURCE_COMMIT_PATTERN.test(candidate.sourceCommit) &&
+    versionSourceCommit === candidate.sourceCommit &&
     candidate.sourceDirty === false &&
     typeof candidate.executableSha256 === 'string' &&
     SHA256_PATTERN.test(candidate.executableSha256) &&

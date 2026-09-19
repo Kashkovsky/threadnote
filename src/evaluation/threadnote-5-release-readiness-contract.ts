@@ -192,6 +192,52 @@ export interface Threadnote5CaptureV1 {
   readonly manifestHash: string;
 }
 
+export const THREADNOTE_5_BASELINE_EVIDENCE_SUITE = 'threadnote-5-baseline-evidence' as const;
+
+/**
+ * A privacy-safe, independently judged baseline trial.  It deliberately does
+ * not name a Threadnote 5 scenario or subsystem: neither existed in 4.7.8.
+ */
+export interface Threadnote5BaselineObservationV1 {
+  readonly capturePlanSha256: string;
+  readonly contextBriefOutputSha256: string;
+  readonly estimatedTokensToFirstCitedCorrectPlan: number;
+  readonly firstCitedPlanIndependentlyJudgedCorrect: true;
+  readonly firstCitedPlanSha256: string;
+  readonly observationHash: string;
+  readonly provenance: Threadnote5BaselineProvenanceV1;
+  readonly postRuntime: Threadnote5RuntimeIdentityV1;
+  readonly preRuntime: Threadnote5RuntimeIdentityV1;
+  readonly timeToFirstCitedCorrectPlanMilliseconds: number;
+  readonly trialId: string;
+  readonly wrongMemoryEligible: boolean;
+  readonly wrongMemoryObserved: boolean;
+}
+
+export interface Threadnote5BaselineProvenanceV1 {
+  readonly judgeExecutableSha256: string;
+  readonly judgeId: string;
+  readonly judgeProtocol: 'threadnote-5-baseline-judge';
+  readonly judgeRequestSha256: string;
+  readonly judgeResponseSha256: string;
+  readonly judgmentReceiptSha256: string;
+  readonly measurementReceiptSha256: string;
+  readonly observerExecutableSha256: string;
+  readonly observerId: string;
+  readonly observerProtocol: 'threadnote-5-baseline-observer';
+  readonly observerRequestSha256: string;
+  readonly observerResponseSha256: string;
+  readonly version: 1;
+}
+
+export interface Threadnote5BaselineEvidenceV1 {
+  readonly evidenceHash: string;
+  readonly observations: readonly Threadnote5BaselineObservationV1[];
+  readonly source: Threadnote5SourceV1;
+  readonly suite: typeof THREADNOTE_5_BASELINE_EVIDENCE_SUITE;
+  readonly version: typeof THREADNOTE_5_RELEASE_READINESS_VERSION;
+}
+
 export type Threadnote5BaselineV1 =
   | {
       readonly reason: 'not-captured' | 'source-unavailable';
@@ -199,8 +245,7 @@ export type Threadnote5BaselineV1 =
       readonly state: 'unavailable';
     }
   | {
-      readonly observations: readonly Threadnote5ObservationV1[];
-      readonly source: Threadnote5SourceV1;
+      readonly evidence: Threadnote5BaselineEvidenceV1;
       readonly state: 'available';
     };
 
@@ -451,6 +496,95 @@ export function threadnote5ReleaseReadinessFixtureHash(value: unknown): string {
   );
 }
 
+export function threadnote5BaselineEvidenceHash(evidence: Omit<Threadnote5BaselineEvidenceV1, 'evidenceHash'>): string {
+  return sha256HexSync(
+    `threadnote-5-baseline-evidence-v1\0${canonicalJson({...evidence, observations: sortBaselineObservations(evidence.observations)})}`,
+  );
+}
+
+export function threadnote5BaselineObservationHash(
+  observation: Omit<Threadnote5BaselineObservationV1, 'observationHash'>,
+): string {
+  return sha256HexSync(`threadnote-5-baseline-observation-v1\0${canonicalJson(observation)}`);
+}
+
+export function parseThreadnote5BaselineEvidenceV1(value: unknown): Threadnote5BaselineEvidenceV1 {
+  const evidence = record(value, 'baseline evidence');
+  exactKeys(evidence, ['evidenceHash', 'observations', 'source', 'suite', 'version']);
+  if (evidence.version !== 1 || evidence.suite !== THREADNOTE_5_BASELINE_EVIDENCE_SUITE) {
+    invalid('baseline evidence version or suite is invalid');
+  }
+  if (!Array.isArray(evidence.observations)) invalid('baseline evidence observations must be an array');
+  const source = parseSource(evidence.source, 'baseline');
+  const observations = evidence.observations.map(value => parseBaselineObservation(value, source));
+  if (observations.length < 10 || observations.length > 10_000) {
+    invalid('baseline evidence requires 10 through 10000 observations');
+  }
+  unique(
+    observations.map(observation => observation.observationHash),
+    'baseline evidence observation hashes',
+  );
+  unique(
+    observations.map(observation => observation.trialId),
+    'baseline evidence trial ids',
+  );
+  unique(
+    observations.map(observation => observation.provenance.observerRequestSha256),
+    'baseline observer request hashes',
+  );
+  unique(
+    observations.map(observation => observation.provenance.observerResponseSha256),
+    'baseline observer response hashes',
+  );
+  unique(
+    observations.map(observation => observation.provenance.judgeRequestSha256),
+    'baseline judge request hashes',
+  );
+  unique(
+    observations.map(observation => observation.provenance.judgeResponseSha256),
+    'baseline judge response hashes',
+  );
+  unique(
+    observations.map(observation => observation.provenance.judgmentReceiptSha256),
+    'baseline judgment receipt hashes',
+  );
+  unique(
+    observations.map(observation => observation.provenance.measurementReceiptSha256),
+    'baseline measurement receipt hashes',
+  );
+  if (new Set(observations.map(observation => observation.capturePlanSha256)).size !== 1) {
+    invalid('baseline observations must share one reviewed capture plan');
+  }
+  if (
+    new Set(
+      observations.map(observation =>
+        canonicalJson({
+          judgeExecutableSha256: observation.provenance.judgeExecutableSha256,
+          judgeId: observation.provenance.judgeId,
+          judgeProtocol: observation.provenance.judgeProtocol,
+          observerExecutableSha256: observation.provenance.observerExecutableSha256,
+          observerId: observation.provenance.observerId,
+          observerProtocol: observation.provenance.observerProtocol,
+          version: observation.provenance.version,
+        }),
+      ),
+    ).size !== 1
+  ) {
+    invalid('baseline observations must share one reviewed observer and judge identity');
+  }
+  const projection = {
+    observations: sortBaselineObservations(observations),
+    source,
+    suite: THREADNOTE_5_BASELINE_EVIDENCE_SUITE,
+    version: THREADNOTE_5_RELEASE_READINESS_VERSION,
+  } as const;
+  const evidenceHash = hash(evidence.evidenceHash, 'baseline evidence hash');
+  if (evidenceHash !== threadnote5BaselineEvidenceHash(projection)) {
+    invalid('baseline evidence hash does not match');
+  }
+  return {...projection, evidenceHash};
+}
+
 export function parseThreadnote5ReleaseEvidenceV1(
   value: unknown,
   fixture: Threadnote5ReleaseReadinessFixtureV1,
@@ -477,7 +611,6 @@ export function parseThreadnote5ReleaseEvidenceV1(
   const capture = parseCapture(evidence.capture, fixtureHash);
   const expectedManifest = threadnote5CaptureManifestForEvidence({
     adapterId: capture.manifest.adapterId,
-    baseline,
     candidateObservations,
     fixtureHash,
     mode: capture.manifest.mode,
@@ -517,15 +650,11 @@ export function threadnote5ObservationReceiptHash(observation: Omit<Threadnote5O
 
 export function threadnote5CaptureManifestForEvidence(input: {
   readonly adapterId: Threadnote5CaptureManifestV1['adapterId'];
-  readonly baseline: Threadnote5BaselineV1;
   readonly candidateObservations: readonly Threadnote5ObservationV1[];
   readonly fixtureHash: string;
   readonly mode: Threadnote5EvidenceClass;
 }): Threadnote5CaptureManifestV1 {
-  const observations = [
-    ...input.candidateObservations,
-    ...(input.baseline.state === 'available' ? input.baseline.observations : []),
-  ].sort(compareObservationIdentity);
+  const observations = [...input.candidateObservations].sort(compareObservationIdentity);
   return {
     adapterId: input.adapterId,
     entries: observations.map(observation => ({
@@ -553,7 +682,13 @@ export function threadnote5ReleaseEvidenceHash(evidence: Omit<Threadnote5Release
     ...evidence,
     baseline:
       evidence.baseline.state === 'available'
-        ? {...evidence.baseline, observations: sort(evidence.baseline.observations)}
+        ? {
+            ...evidence.baseline,
+            evidence: {
+              ...evidence.baseline.evidence,
+              observations: sortBaselineObservations(evidence.baseline.evidence.observations),
+            },
+          }
         : evidence.baseline,
     candidateObservations: sort(evidence.candidateObservations),
   };
@@ -661,7 +796,7 @@ function parseCaptureManifest(value: unknown): Threadnote5CaptureManifestV1 {
   ) {
     invalid('capture mode and adapter do not match');
   }
-  if (!Array.isArray(manifest.entries) || manifest.entries.length > THREADNOTE_5_RELEASE_SCENARIOS.length * 2) {
+  if (!Array.isArray(manifest.entries) || manifest.entries.length > THREADNOTE_5_RELEASE_SCENARIOS.length) {
     invalid('capture manifest entries must be a bounded array');
   }
   const entries = manifest.entries.map(parseCaptureManifestEntry);
@@ -700,7 +835,7 @@ function parseCaptureManifestEntry(value: unknown): Threadnote5CaptureManifestEn
   };
 }
 
-function parseBaseline(value: unknown, fixture: Threadnote5ReleaseReadinessFixtureV1): Threadnote5BaselineV1 {
+function parseBaseline(value: unknown, _fixture: Threadnote5ReleaseReadinessFixtureV1): Threadnote5BaselineV1 {
   const baseline = record(value, 'baseline');
   const state = literal(baseline.state, ['available', 'unavailable'] as const, 'baseline state');
   if (state === 'unavailable') {
@@ -712,9 +847,126 @@ function parseBaseline(value: unknown, fixture: Threadnote5ReleaseReadinessFixtu
       state,
     };
   }
-  exactKeys(baseline, ['observations', 'source', 'state']);
-  const source = parseSource(baseline.source, 'baseline');
-  return {observations: parseObservations(baseline.observations, source, fixture), source, state};
+  exactKeys(baseline, ['evidence', 'state']);
+  return {evidence: parseThreadnote5BaselineEvidenceV1(baseline.evidence), state};
+}
+
+function parseBaselineObservation(value: unknown, source: Threadnote5SourceV1): Threadnote5BaselineObservationV1 {
+  const observation = record(value, 'baseline observation');
+  exactKeys(observation, [
+    'capturePlanSha256',
+    'contextBriefOutputSha256',
+    'estimatedTokensToFirstCitedCorrectPlan',
+    'firstCitedPlanIndependentlyJudgedCorrect',
+    'firstCitedPlanSha256',
+    'observationHash',
+    'provenance',
+    'postRuntime',
+    'preRuntime',
+    'timeToFirstCitedCorrectPlanMilliseconds',
+    'trialId',
+    'wrongMemoryEligible',
+    'wrongMemoryObserved',
+  ]);
+  if (observation.firstCitedPlanIndependentlyJudgedCorrect !== true) {
+    invalid('baseline observation must be independently judged correct');
+  }
+  if (typeof observation.wrongMemoryEligible !== 'boolean' || typeof observation.wrongMemoryObserved !== 'boolean') {
+    invalid('baseline wrong-memory eligibility and observation must be boolean');
+  }
+  if (observation.wrongMemoryObserved && !observation.wrongMemoryEligible) {
+    invalid('baseline wrong-memory observation requires eligibility');
+  }
+  const parsed = {
+    capturePlanSha256: hash(observation.capturePlanSha256, 'baseline capture plan hash'),
+    contextBriefOutputSha256: hash(observation.contextBriefOutputSha256, 'baseline Context Brief output hash'),
+    estimatedTokensToFirstCitedCorrectPlan: boundedInteger(
+      observation.estimatedTokensToFirstCitedCorrectPlan,
+      'baseline estimated tokens',
+      0,
+      1_000_000_000,
+    ),
+    firstCitedPlanIndependentlyJudgedCorrect: true,
+    firstCitedPlanSha256: hash(observation.firstCitedPlanSha256, 'baseline first cited plan hash'),
+    provenance: parseBaselineProvenance(observation.provenance, source),
+    postRuntime: parseRuntimeIdentity(observation.postRuntime, source, 'baseline post-runtime'),
+    preRuntime: parseRuntimeIdentity(observation.preRuntime, source, 'baseline pre-runtime'),
+    timeToFirstCitedCorrectPlanMilliseconds: boundedInteger(
+      observation.timeToFirstCitedCorrectPlanMilliseconds,
+      'baseline time to first cited correct plan',
+      0,
+      1_000_000_000_000,
+    ),
+    trialId: matching(observation.trialId, /^[a-z0-9][a-z0-9._-]{0,127}$/u, 'baseline trial id'),
+    wrongMemoryEligible: observation.wrongMemoryEligible,
+    wrongMemoryObserved: observation.wrongMemoryObserved,
+  } as const;
+  const observationHash = hash(observation.observationHash, 'baseline observation hash');
+  if (observationHash !== threadnote5BaselineObservationHash(parsed)) {
+    invalid('baseline observation hash does not match its source-native provenance');
+  }
+  return {...parsed, observationHash};
+}
+
+function parseBaselineProvenance(value: unknown, source: Threadnote5SourceV1): Threadnote5BaselineProvenanceV1 {
+  const provenance = record(value, 'baseline provenance');
+  exactKeys(provenance, [
+    'judgeExecutableSha256',
+    'judgeId',
+    'judgeProtocol',
+    'judgeRequestSha256',
+    'judgeResponseSha256',
+    'judgmentReceiptSha256',
+    'measurementReceiptSha256',
+    'observerExecutableSha256',
+    'observerId',
+    'observerProtocol',
+    'observerRequestSha256',
+    'observerResponseSha256',
+    'version',
+  ]);
+  if (
+    provenance.judgeProtocol !== 'threadnote-5-baseline-judge' ||
+    provenance.observerProtocol !== 'threadnote-5-baseline-observer' ||
+    provenance.version !== 1
+  ) {
+    invalid('baseline provenance protocol or version is invalid');
+  }
+  const observerId = matching(provenance.observerId, /^[a-z0-9][a-z0-9._-]{0,127}$/u, 'baseline observer id');
+  const judgeId = matching(provenance.judgeId, /^[a-z0-9][a-z0-9._-]{0,127}$/u, 'baseline judge id');
+  const observerExecutableSha256 = hash(provenance.observerExecutableSha256, 'baseline observer executable hash');
+  const judgeExecutableSha256 = hash(provenance.judgeExecutableSha256, 'baseline judge executable hash');
+  if (
+    observerId === judgeId ||
+    observerId === source.id ||
+    judgeId === source.id ||
+    observerExecutableSha256 === judgeExecutableSha256 ||
+    observerExecutableSha256 === source.executableSha256 ||
+    judgeExecutableSha256 === source.executableSha256
+  ) {
+    invalid('baseline source, observer, and judge identities and executable bytes must be distinct');
+  }
+  return {
+    judgeExecutableSha256,
+    judgeId,
+    judgeProtocol: 'threadnote-5-baseline-judge',
+    judgeRequestSha256: hash(provenance.judgeRequestSha256, 'baseline judge request hash'),
+    judgeResponseSha256: hash(provenance.judgeResponseSha256, 'baseline judge response hash'),
+    judgmentReceiptSha256: hash(provenance.judgmentReceiptSha256, 'baseline judgment receipt hash'),
+    measurementReceiptSha256: hash(provenance.measurementReceiptSha256, 'baseline measurement receipt hash'),
+    observerExecutableSha256,
+    observerId,
+    observerProtocol: 'threadnote-5-baseline-observer',
+    observerRequestSha256: hash(provenance.observerRequestSha256, 'baseline observer request hash'),
+    observerResponseSha256: hash(provenance.observerResponseSha256, 'baseline observer response hash'),
+    version: 1,
+  };
+}
+
+function sortBaselineObservations(
+  observations: readonly Threadnote5BaselineObservationV1[],
+): readonly Threadnote5BaselineObservationV1[] {
+  return [...observations].sort((left, right) => left.observationHash.localeCompare(right.observationHash));
 }
 
 function parseSource(value: unknown, role: 'baseline' | 'candidate'): Threadnote5SourceV1 {
@@ -724,7 +976,9 @@ function parseSource(value: unknown, role: 'baseline' | 'candidate'): Threadnote
   const id = literal(source.id, ['threadnote-4.7.x', 'threadnote-5.0.0'] as const, `${role} source id`);
   const version = matching(
     source.version,
-    role === 'candidate' ? new RegExp(`^5\\.0\\.0-local\\.g${commit}$`, 'u') : /^4\.7\.\d+(?:-[0-9A-Za-z.-]+)?$/u,
+    role === 'candidate'
+      ? new RegExp(`^5\\.0\\.0(?:-local|-beta\\.1\\.local)\\.g${commit}$`, 'u')
+      : /^4\.7\.\d+(?:-[0-9A-Za-z.-]+)?$/u,
     `${role} version`,
   );
   if ((role === 'candidate' && id !== 'threadnote-5.0.0') || (role === 'baseline' && id !== 'threadnote-4.7.x')) {

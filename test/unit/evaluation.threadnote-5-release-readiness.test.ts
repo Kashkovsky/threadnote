@@ -6,8 +6,11 @@ import {
   THREADNOTE_5_BASELINE_COMPARABLE_METRICS,
   THREADNOTE_5_BASELINE_COMMIT,
   THREADNOTE_5_BASELINE_NOT_APPLICABLE_METRICS,
+  parseThreadnote5BaselineEvidenceV1,
   parseThreadnote5ReleaseEvidenceV1,
   parseThreadnote5ReleaseReadinessFixtureV1,
+  threadnote5BaselineEvidenceHash,
+  threadnote5BaselineObservationHash,
   threadnote5CaptureManifestForEvidence,
   threadnote5CaptureManifestHash,
   threadnote5ObservationReceiptHash,
@@ -25,10 +28,7 @@ import {
   type Threadnote5SourceV1,
 } from '../../src/evaluation/threadnote-5-release-readiness-contract.js';
 import {evaluateThreadnote5ReleaseReadiness} from '../../src/evaluation/threadnote-5-release-readiness.js';
-import {
-  threadnote5BaselineTrialLedger,
-  threadnote5BaselineTrialLedgerHash,
-} from '../../src/evaluation/threadnote-5-release-readiness-baseline-ledger.js';
+import {threadnote5BaselineTrialLedgerHash} from '../../src/evaluation/threadnote-5-release-readiness-baseline-ledger.js';
 import {
   THREADNOTE_5_LOCAL_RECEIPT_ADAPTERS,
   verifyThreadnote5LocalSubsystemReceipts,
@@ -139,11 +139,7 @@ describe('Threadnote 5 release-readiness evidence', () => {
   });
 
   it('keeps a passing candidate independent from trusted not-applicable baseline lanes', () => {
-    const baseline: Threadnote5BaselineV1 = {
-      observations: observationsFor(BASELINE, 'baseline'),
-      source: BASELINE,
-      state: 'available',
-    };
+    const baseline = availableBaseline();
     const evidence = evidenceBundle({baseline, mode: 'fixture-replay'});
     const result = evaluate(evidence, BASELINE);
 
@@ -172,11 +168,7 @@ describe('Threadnote 5 release-readiness evidence', () => {
   });
 
   it('keeps candidate threshold failures dominant when trusted baseline lanes are not applicable', () => {
-    const baseline: Threadnote5BaselineV1 = {
-      observations: observationsFor(BASELINE, 'baseline'),
-      source: BASELINE,
-      state: 'available',
-    };
+    const baseline = availableBaseline();
     const failing = rewriteScenarioMeasurements(
       evidenceBundle({baseline, mode: 'fixture-replay'}),
       'solo',
@@ -197,11 +189,7 @@ describe('Threadnote 5 release-readiness evidence', () => {
   });
 
   it('keeps malformed retained receipt inputs unknown', () => {
-    const baseline: Threadnote5BaselineV1 = {
-      observations: observationsFor(BASELINE, 'baseline'),
-      source: BASELINE,
-      state: 'available',
-    };
+    const baseline = availableBaseline();
     const evidence = evidenceBundle({baseline, mode: 'release-candidate'});
     const records = [{}];
     const result = evaluateWithManifest(evidence, evidence.capture.manifestHash, BASELINE, records);
@@ -316,49 +304,8 @@ describe('Threadnote 5 release-readiness evidence', () => {
     ).toBe(true);
   });
 
-  it('keeps unrelated trusted-baseline lanes observed when exactly one baseline lane is undersized', () => {
-    const baseline: Threadnote5BaselineV1 = {
-      observations: observationsFor(BASELINE, 'baseline'),
-      source: BASELINE,
-      state: 'available',
-    };
-    const evidence = rewriteBaselineScenarioMeasurements(
-      evidenceBundle({baseline, mode: 'fixture-replay'}),
-      'solo',
-      measurement =>
-        measurement.id === 'time-to-first-cited-correct-plan' && 'sampleCount' in measurement
-          ? {...measurement, sampleCount: 9, total: (measurement.total / measurement.sampleCount) * 9}
-          : measurement,
-    );
-    const result = evaluate(evidence, BASELINE);
-
-    expect(result.metrics.find(item => item.id === 'time-to-first-cited-correct-plan')).toMatchObject({
-      baseline: {reason: 'source-incomplete', state: 'unknown'},
-      delta: {reason: 'source-incomplete', state: 'unknown'},
-    });
-    expect(
-      result.metrics
-        .filter(
-          metric =>
-            metric.id !== 'time-to-first-cited-correct-plan' &&
-            THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(metric.id as never),
-        )
-        .every(metric => metric.baseline.state === 'observed' && metric.delta.state === 'observed'),
-    ).toBe(true);
-    expect(
-      result.metrics
-        .filter(metric => THREADNOTE_5_BASELINE_NOT_APPLICABLE_METRICS.includes(metric.id as never))
-        .every(metric => metric.baseline.state === 'not-applicable' && metric.delta.state === 'not-applicable'),
-    ).toBe(true);
-    expect(result.gate.insufficiencies).toContain('4.7.8 baseline metric is unknown: time-to-first-cited-correct-plan');
-  });
-
   it('withholds every comparison when the baseline identity is absent or mismatched', () => {
-    const baseline: Threadnote5BaselineV1 = {
-      observations: observationsFor(BASELINE, 'baseline'),
-      source: BASELINE,
-      state: 'available',
-    };
+    const baseline = availableBaseline();
     const evidence = evidenceBundle({baseline, mode: 'fixture-replay'});
     for (const expectedBaselineSource of [undefined, {...BASELINE, executableSha256: '9'.repeat(64)}]) {
       const result = evaluate(evidence, expectedBaselineSource);
@@ -383,19 +330,36 @@ describe('Threadnote 5 release-readiness evidence', () => {
     }
   });
 
+  it('rejects observer or judge provenance that impersonates the baseline source identity', () => {
+    const evidence = availableBaseline().evidence;
+    const {evidenceHash: _, ...unsealedEvidence} = evidence;
+    for (const role of ['judgeId', 'observerId'] as const) {
+      const [first, ...remaining] = evidence.observations;
+      const {observationHash: _observationHash, ...unsealed} = first;
+      const changed = {
+        ...unsealed,
+        provenance: {...unsealed.provenance, [role]: evidence.source.id},
+      };
+      const observations = [{...changed, observationHash: threadnote5BaselineObservationHash(changed)}, ...remaining];
+      const projection = {...unsealedEvidence, observations};
+      expect(() =>
+        parseThreadnote5BaselineEvidenceV1({
+          ...projection,
+          evidenceHash: threadnote5BaselineEvidenceHash(projection),
+        }),
+      ).toThrow(/source, observer, and judge identities/u);
+    }
+  });
+
   it('requires an independently supplied 4.7 trial-ledger hash when a ledger is requested', () => {
-    const baseline: Threadnote5BaselineV1 = {
-      observations: observationsFor(BASELINE, 'baseline'),
-      source: BASELINE,
-      state: 'available',
-    };
+    const baseline = availableBaseline();
     const evidence = evidenceBundle({baseline, mode: 'fixture-replay'});
-    const ledger = threadnote5BaselineTrialLedger(baseline.source, baseline.observations);
+    const ledger = baseline.evidence;
     const trusted = evaluateThreadnote5ReleaseReadiness({
-      baselineTrialLedger: ledger,
+      baselineTrialLedger: {ledger, ledgerHash: ledger.evidenceHash, version: 2},
       evidence,
       expectedBaselineSource: BASELINE,
-      expectedBaselineTrialLedgerSha256: threadnote5BaselineTrialLedgerHash(ledger),
+      expectedBaselineTrialLedgerSha256: ledger.evidenceHash,
       expectedCandidateCommit: CANDIDATE.commit,
       expectedCandidateExecutableSha256: CANDIDATE.executableSha256,
       expectedCaptureManifestSha256: evidence.capture.manifestHash,
@@ -443,66 +407,61 @@ describe('Threadnote 5 release-readiness evidence', () => {
     ).toBe(true);
   });
 
-  it('canonicalizes baseline observation and common-measurement ordering before hashing', () => {
-    const observations = observationsFor(BASELINE, 'baseline');
-    const expected = threadnote5BaselineTrialLedger(BASELINE, observations);
-    const expectedHash = threadnote5BaselineTrialLedgerHash(expected);
-    expect(
-      new Set(expected.observations.flatMap(observation => observation.measurements.map(item => item.id))),
-    ).toEqual(new Set(THREADNOTE_5_BASELINE_COMPARABLE_METRICS));
-    expect(
-      expected.observations
-        .flatMap(observation => observation.measurements)
-        .filter(measurement => measurement.id === 'wrong-memory-rate')
-        .every(measurement => 'eligibleCount' in measurement && 'positiveCount' in measurement),
-    ).toBe(true);
+  it('continues to accept the historical baseline trial-ledger v1 when its metrics match', () => {
+    const baseline = availableBaseline();
+    const evidence = evidenceBundle({baseline, mode: 'fixture-replay'});
+    const ledger = legacyLedgerFor(baseline.evidence);
+    const ledgerHash = threadnote5BaselineTrialLedgerHash(ledger);
+    const result = evaluateThreadnote5ReleaseReadiness({
+      baselineTrialLedger: {ledger, ledgerHash, version: 1},
+      evidence,
+      expectedBaselineSource: BASELINE,
+      expectedBaselineTrialLedgerSha256: ledgerHash,
+      expectedCandidateCommit: CANDIDATE.commit,
+      expectedCandidateExecutableSha256: CANDIDATE.executableSha256,
+      expectedCaptureManifestSha256: evidence.capture.manifestHash,
+      fixture,
+    });
 
-    fc.assert(
-      fc.property(
-        fc.shuffledSubarray([...observations.keys()], {
-          minLength: observations.length,
-          maxLength: observations.length,
-        }),
-        fc.boolean(),
-        (order, reverseMeasurements) => {
-          const reordered = order.map(index => {
-            const observation = observations[index];
-            return reverseMeasurements
-              ? {
-                  ...observation,
-                  transcript: {
-                    ...observation.transcript,
-                    measurements: [...observation.transcript.measurements].reverse(),
-                  },
-                }
-              : observation;
-          });
-          const actual = threadnote5BaselineTrialLedger(BASELINE, reordered);
-          expect(actual).toEqual(expected);
-          expect(threadnote5BaselineTrialLedgerHash(actual)).toBe(expectedHash);
-        },
-      ),
-      {numRuns: 50},
-    );
+    expect(
+      result.metrics
+        .filter(metric => THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(metric.id as never))
+        .every(metric => metric.baseline.state === 'observed'),
+    ).toBe(true);
   });
 
-  it('rejects Threadnote 5-only metrics from an externally supplied baseline ledger', () => {
-    const ledger = threadnote5BaselineTrialLedger(BASELINE, observationsFor(BASELINE, 'baseline'));
-    const incompatible = {
-      ...ledger,
-      observations: ledger.observations.map((observation, index) =>
-        index === 0
-          ? {
-              ...observation,
-              measurements: [{eligibleCount: 1, id: 'setup-success-rate', positiveCount: 1}],
-            }
-          : observation,
-      ),
-    };
+  it('rejects baseline evidence wrapped with the historical v1 label and a trial ledger wrapped with v2', () => {
+    const baseline = availableBaseline();
+    const evidence = evidenceBundle({baseline, mode: 'fixture-replay'});
+    const legacyLedger = legacyLedgerFor(baseline.evidence);
+    const legacyHash = threadnote5BaselineTrialLedgerHash(legacyLedger);
+    const crossLabeled = [
+      {
+        baselineTrialLedger: {ledger: baseline.evidence, ledgerHash: baseline.evidence.evidenceHash, version: 1},
+        expectedBaselineTrialLedgerSha256: baseline.evidence.evidenceHash,
+      },
+      {
+        baselineTrialLedger: {ledger: legacyLedger, ledgerHash: legacyHash, version: 2},
+        expectedBaselineTrialLedgerSha256: legacyHash,
+      },
+    ];
 
-    expect(() => threadnote5BaselineTrialLedgerHash(incompatible)).toThrow(
-      /metric is not comparable with Threadnote 4\.7\.8/u,
-    );
+    for (const ledger of crossLabeled) {
+      const result = evaluateThreadnote5ReleaseReadiness({
+        ...ledger,
+        evidence,
+        expectedBaselineSource: BASELINE,
+        expectedCandidateCommit: CANDIDATE.commit,
+        expectedCandidateExecutableSha256: CANDIDATE.executableSha256,
+        expectedCaptureManifestSha256: evidence.capture.manifestHash,
+        fixture,
+      });
+      expect(
+        result.metrics
+          .filter(metric => THREADNOTE_5_BASELINE_COMPARABLE_METRICS.includes(metric.id as never))
+          .every(metric => metric.baseline.state === 'unknown'),
+      ).toBe(true);
+    }
   });
 
   it('fails closed when a candidate scenario is missing', () => {
@@ -623,6 +582,27 @@ describe('Threadnote 5 release-readiness evidence', () => {
     ).toThrow(/candidate version is invalid/u);
   });
 
+  it('accepts only commit-bound prerelease local candidate versions', () => {
+    const evidence = evidenceBundle({baseline: unavailableBaseline(), mode: 'fixture-replay'});
+    const prerelease = `5.0.0-beta.1.local.g${CANDIDATE.commit}`;
+    expect(
+      parseThreadnote5ReleaseEvidenceV1(withCandidateVersion(evidence, prerelease), fixture).candidate.version,
+    ).toBe(prerelease);
+    for (const version of [
+      `5.0.0-beta.1.local.g${'9'.repeat(40)}`,
+      `5.0.1-beta.1.local.g${CANDIDATE.commit}`,
+      `5.0.0-beta.1-local.g${CANDIDATE.commit}`,
+      `5.0.0-alpha.1.local.g${CANDIDATE.commit}`,
+      `5.0.0-beta.2.local.g${CANDIDATE.commit}`,
+      `5.0.0-rc.1.local.g${CANDIDATE.commit}`,
+      `5.0.0-preview.local.g${CANDIDATE.commit}`,
+    ]) {
+      expect(() => parseThreadnote5ReleaseEvidenceV1(withCandidateVersion(evidence, version), fixture)).toThrow(
+        /candidate version is invalid/u,
+      );
+    }
+  });
+
   it('has order-independent deterministic evidence hashes', () => {
     fc.assert(
       fc.property(
@@ -686,16 +666,13 @@ function evaluateWithManifest(
   expectedBaselineSource?: unknown,
   retainedSubsystemReceiptRecords?: unknown,
 ) {
-  const baselineLedger =
-    evidence.baseline.state === 'available'
-      ? threadnote5BaselineTrialLedger(evidence.baseline.source, evidence.baseline.observations)
-      : undefined;
+  const baselineLedger = evidence.baseline.state === 'available' ? evidence.baseline.evidence : undefined;
   return evaluateThreadnote5ReleaseReadiness({
     ...(baselineLedger === undefined
       ? {}
       : {
           baselineTrialLedger: baselineLedger,
-          expectedBaselineTrialLedgerSha256: threadnote5BaselineTrialLedgerHash(baselineLedger),
+          expectedBaselineTrialLedgerSha256: baselineLedger.evidenceHash,
         }),
     evidence,
     expectedBaselineSource,
@@ -719,7 +696,6 @@ function evidenceBundle(input: {
       : ('threadnote-5-local-task-loop-adapter-v1' as const);
   const manifest = threadnote5CaptureManifestForEvidence({
     adapterId,
-    baseline: input.baseline,
     candidateObservations,
     fixtureHash,
     mode: input.mode,
@@ -735,7 +711,7 @@ function evidenceBundle(input: {
   });
 }
 
-function observationsFor(source: Threadnote5SourceV1, variant: 'baseline' | 'candidate'): Threadnote5ObservationV1[] {
+function observationsFor(source: Threadnote5SourceV1, variant: 'candidate'): Threadnote5ObservationV1[] {
   const sourceHash = threadnote5SourceHash(source);
   let previousTranscriptDigest: string | null = null;
   return fixture.scenarios.map((contract, index) => {
@@ -768,23 +744,14 @@ function observationsFor(source: Threadnote5SourceV1, variant: 'baseline' | 'can
   });
 }
 
-function measurementFor(id: Threadnote5ReleaseMetric, variant: 'baseline' | 'candidate'): Threadnote5MeasurementV1 {
+function measurementFor(id: Threadnote5ReleaseMetric, _variant: 'candidate'): Threadnote5MeasurementV1 {
   if (id === 'time-to-first-cited-correct-plan') {
-    return {id, sampleCount: 10, total: variant === 'candidate' ? 300_000 : 600_000};
+    return {id, sampleCount: 10, total: 300_000};
   }
   if (id === 'estimated-tokens-to-first-cited-correct-plan') {
-    return {id, sampleCount: 10, total: variant === 'candidate' ? 10_000 : 14_000};
+    return {id, sampleCount: 10, total: 10_000};
   }
-  const positiveCount =
-    id === 'wrong-memory-rate'
-      ? variant === 'candidate'
-        ? 0
-        : 1
-      : variant === 'candidate'
-        ? 10
-        : id === 'second-agent-reuse-rate'
-          ? 5
-          : 8;
+  const positiveCount = id === 'wrong-memory-rate' ? 0 : 10;
   return {eligibleCount: 10, id, positiveCount};
 }
 
@@ -792,10 +759,87 @@ function unavailableBaseline(): Threadnote5BaselineV1 {
   return {reason: 'not-captured', sourceFamily: '4.7.x', state: 'unavailable'};
 }
 
+function availableBaseline(): Extract<Threadnote5BaselineV1, {readonly state: 'available'}> {
+  const runtime = {executableSha256: BASELINE.executableSha256, sourceCommit: BASELINE.commit};
+  const observations = Array.from({length: 10}, (_, index) => {
+    const observation = {
+      capturePlanSha256: '5'.repeat(64),
+      contextBriefOutputSha256: sha256HexSync(`baseline-output-${index}`),
+      estimatedTokensToFirstCitedCorrectPlan: 1_400,
+      firstCitedPlanIndependentlyJudgedCorrect: true as const,
+      firstCitedPlanSha256: sha256HexSync(`baseline-plan-${index}`),
+      provenance: {
+        judgeExecutableSha256: '7'.repeat(64),
+        judgeId: 'independent-plan-judge',
+        judgeProtocol: 'threadnote-5-baseline-judge' as const,
+        judgeRequestSha256: sha256HexSync(`baseline-judge-request-${index}`),
+        judgeResponseSha256: sha256HexSync(`baseline-judge-response-${index}`),
+        judgmentReceiptSha256: sha256HexSync(`baseline-judgment-${index}`),
+        measurementReceiptSha256: sha256HexSync(`baseline-measurement-${index}`),
+        observerExecutableSha256: '6'.repeat(64),
+        observerId: 'independent-agent-harness',
+        observerProtocol: 'threadnote-5-baseline-observer' as const,
+        observerRequestSha256: sha256HexSync(`baseline-request-${index}`),
+        observerResponseSha256: sha256HexSync(`baseline-response-${index}`),
+        version: 1 as const,
+      },
+      postRuntime: runtime,
+      preRuntime: runtime,
+      timeToFirstCitedCorrectPlanMilliseconds: 60_000,
+      trialId: `trial-${index}`,
+      wrongMemoryEligible: true,
+      wrongMemoryObserved: index === 0,
+    };
+    return {...observation, observationHash: threadnote5BaselineObservationHash(observation)};
+  });
+  const projection = {
+    observations,
+    source: BASELINE,
+    suite: 'threadnote-5-baseline-evidence' as const,
+    version: 1 as const,
+  };
+  return {evidence: {...projection, evidenceHash: threadnote5BaselineEvidenceHash(projection)}, state: 'available'};
+}
+
+function legacyLedgerFor(evidence: Extract<Threadnote5BaselineV1, {readonly state: 'available'}>['evidence']) {
+  return {
+    observations: evidence.observations
+      .map((observation, index) => ({
+        measurements: [
+          {
+            id: 'time-to-first-cited-correct-plan' as const,
+            sampleCount: 1,
+            total: observation.timeToFirstCitedCorrectPlanMilliseconds,
+          },
+          {
+            id: 'estimated-tokens-to-first-cited-correct-plan' as const,
+            sampleCount: 1,
+            total: observation.estimatedTokensToFirstCitedCorrectPlan,
+          },
+          {
+            eligibleCount: observation.wrongMemoryEligible ? 1 : 0,
+            id: 'wrong-memory-rate' as const,
+            positiveCount: observation.wrongMemoryObserved ? 1 : 0,
+          },
+        ],
+        outcome: 'passed' as const,
+        receiptHash: sha256HexSync(`legacy-receipt-${index}`),
+        scenario: APPROVED_THREADNOTE_5_SCENARIOS[index].id,
+        transcriptDigest: sha256HexSync(`legacy-transcript-${index}`),
+      }))
+      .sort((left, right) =>
+        left.scenario === right.scenario
+          ? left.receiptHash.localeCompare(right.receiptHash)
+          : left.scenario.localeCompare(right.scenario),
+      ),
+    source: evidence.source,
+    version: 1 as const,
+  };
+}
+
 function resealEvidence(evidence: Omit<Threadnote5ReleaseEvidenceV1, 'evidenceHash'>): Threadnote5ReleaseEvidenceV1 {
   const manifest = threadnote5CaptureManifestForEvidence({
     adapterId: evidence.capture.manifest.adapterId,
-    baseline: evidence.baseline,
     candidateObservations: evidence.candidateObservations,
     fixtureHash: evidence.fixtureHash,
     mode: evidence.capture.manifest.mode,
@@ -831,17 +875,14 @@ function rewriteScenarioMeasurements(
   return resealEvidence({...withoutEvidenceHash(evidence), candidateObservations});
 }
 
-function rewriteBaselineScenarioMeasurements(
-  evidence: Threadnote5ReleaseEvidenceV1,
-  scenario: Threadnote5ObservationV1['scenario'],
-  rewrite: (measurement: Threadnote5MeasurementV1) => Threadnote5MeasurementV1,
-): Threadnote5ReleaseEvidenceV1 {
-  if (evidence.baseline.state !== 'available') throw new Error('test baseline must be available');
-  const baseline = {
-    ...evidence.baseline,
-    observations: rewriteObservationMeasurements(evidence.baseline.observations, scenario, rewrite),
-  };
-  return resealEvidence({...withoutEvidenceHash(evidence), baseline});
+function withCandidateVersion(evidence: Threadnote5ReleaseEvidenceV1, version: string): Threadnote5ReleaseEvidenceV1 {
+  const candidate = {...evidence.candidate, version};
+  const sourceHash = threadnote5SourceHash(candidate);
+  const candidateObservations = evidence.candidateObservations.map(observation => {
+    const base = {...withoutReceiptHash(observation), sourceHash};
+    return {...base, receiptHash: threadnote5ObservationReceiptHash(base)};
+  });
+  return resealEvidence({...withoutEvidenceHash(evidence), candidate, candidateObservations});
 }
 
 function rewriteObservationMeasurements(

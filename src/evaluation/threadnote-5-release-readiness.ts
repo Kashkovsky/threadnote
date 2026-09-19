@@ -2,12 +2,14 @@ import {
   parseThreadnote5ReleaseEvidenceV1,
   parseThreadnote5ReleaseReadinessFixtureV1,
   parseThreadnote5TrustedSourceV1,
+  parseThreadnote5BaselineEvidenceV1,
   threadnote5ReleaseReadinessFixtureHash,
   THREADNOTE_5_BASELINE_VERSION,
   type Threadnote5MeasurementV1,
   type Threadnote5BaselineV1,
   type Threadnote5MetricDefinitionV1,
   type Threadnote5ObservationV1,
+  type Threadnote5BaselineEvidenceV1,
   type Threadnote5ReleaseMetric,
   type Threadnote5ReleaseReadinessFixtureV1,
   type Threadnote5ReleaseScenario,
@@ -21,8 +23,8 @@ import {
 } from './threadnote-5-release-readiness-receipts.js';
 import {
   parseThreadnote5BaselineTrialLedger,
-  threadnote5BaselineTrialLedger,
   threadnote5BaselineTrialLedgerHash,
+  type Threadnote5BaselineTrialLedgerV1,
 } from './threadnote-5-release-readiness-baseline-ledger.js';
 
 export interface Threadnote5ObservedMetricV1 {
@@ -160,23 +162,18 @@ export function evaluateThreadnote5ReleaseReadiness(input: {
   const baselineLedgerTrusted =
     input.expectedBaselineTrialLedgerSha256 !== undefined &&
     input.baselineTrialLedger !== undefined &&
-    threadnote5BaselineTrialLedgerHash(baselineLedgerValue(input.baselineTrialLedger)) ===
-      input.expectedBaselineTrialLedgerSha256 &&
     evidence.baseline.state === 'available' &&
-    canonicalBaselineLedgerMatches(
-      parseThreadnote5BaselineTrialLedger(baselineLedgerValue(input.baselineTrialLedger)),
-      evidence.baseline,
-    );
+    baselineLedgerMatches(input.baselineTrialLedger, input.expectedBaselineTrialLedgerSha256, evidence.baseline);
   const baselineTrusted =
     evidence.baseline.state === 'available' &&
     expectedBaseline !== undefined &&
-    sameSource(evidence.baseline.source, expectedBaseline) &&
+    sameSource(evidence.baseline.evidence.source, expectedBaseline) &&
     baselineLedgerTrusted;
   const baselineMetrics =
     evidence.baseline.state === 'unavailable'
       ? unavailableBaselineMetrics(fixture, 'baseline-unavailable')
       : captureTrusted && baselineTrusted
-        ? aggregateBaselineMetrics(fixture, evidence.baseline.source, evidence.baseline.observations)
+        ? aggregateBaselineMetrics(fixture, evidence.baseline.evidence)
         : unavailableBaselineMetrics(fixture, captureTrusted ? 'baseline-untrusted' : 'capture-untrusted');
   const metrics = fixture.metrics.map(definition => {
     const candidate = candidateMetrics.get(definition.id)!;
@@ -356,17 +353,51 @@ function unknownMetrics(
 
 function aggregateBaselineMetrics(
   fixture: Threadnote5ReleaseReadinessFixtureV1,
-  source: Threadnote5SourceV1,
-  observations: readonly Threadnote5ObservationV1[],
+  evidence: Threadnote5BaselineEvidenceV1,
 ): ReadonlyMap<Threadnote5ReleaseMetric, Threadnote5MetricValueV1> {
   const comparable = new Set(fixture.baselineComparison.comparableMetricIds);
-  const aggregated = aggregateMetrics(fixture, source, observations);
   return new Map(
     fixture.metrics.map(definition => [
       definition.id,
-      comparable.has(definition.id) ? aggregated.get(definition.id)! : notApplicableBaselineMetric(),
+      comparable.has(definition.id) ? observedBaselineMetric(evidence, definition) : notApplicableBaselineMetric(),
     ]),
   );
+}
+
+function observedBaselineMetric(
+  evidence: Threadnote5BaselineEvidenceV1,
+  definition: Threadnote5MetricDefinitionV1,
+): Threadnote5MetricValueV1 {
+  if (definition.id === 'time-to-first-cited-correct-plan') {
+    return {
+      sourceVersion: evidence.source.version,
+      state: 'observed',
+      value:
+        evidence.observations.reduce(
+          (total, observation) => total + observation.timeToFirstCitedCorrectPlanMilliseconds,
+          0,
+        ) / evidence.observations.length,
+    };
+  }
+  if (definition.id === 'estimated-tokens-to-first-cited-correct-plan') {
+    return {
+      sourceVersion: evidence.source.version,
+      state: 'observed',
+      value:
+        evidence.observations.reduce(
+          (total, observation) => total + observation.estimatedTokensToFirstCitedCorrectPlan,
+          0,
+        ) / evidence.observations.length,
+    };
+  }
+  const eligible = evidence.observations.filter(observation => observation.wrongMemoryEligible);
+  return eligible.length === 0
+    ? {reason: 'source-incomplete', sourceVersion: evidence.source.version, state: 'unknown'}
+    : {
+        sourceVersion: evidence.source.version,
+        state: 'observed',
+        value: eligible.filter(observation => observation.wrongMemoryObserved).length / eligible.length,
+      };
 }
 
 function unavailableBaselineMetrics(
@@ -450,18 +481,118 @@ function sameSource(left: Threadnote5SourceV1, right: Threadnote5SourceV1): bool
   );
 }
 
-function canonicalBaselineLedgerMatches(
-  ledger: ReturnType<typeof parseThreadnote5BaselineTrialLedger>,
+function baselineLedgerMatches(
+  value: unknown,
+  expectedHash: string,
   baseline: Extract<Threadnote5BaselineV1, {readonly state: 'available'}>,
 ): boolean {
-  return (
-    sameSource(ledger.source, baseline.source) &&
-    canonicalJson(ledger) === canonicalJson(threadnote5BaselineTrialLedger(baseline.source, baseline.observations))
+  const envelope = baselineLedgerEnvelope(value);
+  const ledger = envelope.ledger;
+  if (envelope.version === 1) {
+    try {
+      const legacy = parseThreadnote5BaselineTrialLedger(ledger);
+      return (
+        envelope.declaredHash === threadnote5BaselineTrialLedgerHash(legacy) &&
+        envelope.declaredHash === expectedHash &&
+        sameSource(legacy.source, baseline.evidence.source) &&
+        legacyLedgerMetricsMatch(legacy, baseline.evidence)
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (envelope.version === 2) {
+    try {
+      const evidence = parseThreadnote5BaselineEvidenceV1(ledger);
+      return (
+        envelope.declaredHash === evidence.evidenceHash &&
+        evidence.evidenceHash === expectedHash &&
+        canonicalJson(evidence) === canonicalJson(baseline.evidence)
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (envelope.declaredHash !== undefined && envelope.declaredHash !== expectedHash) return false;
+  try {
+    const evidence = parseThreadnote5BaselineEvidenceV1(ledger);
+    return evidence.evidenceHash === expectedHash && canonicalJson(evidence) === canonicalJson(baseline.evidence);
+  } catch {
+    const legacy = parseThreadnote5BaselineTrialLedger(ledger);
+    return (
+      threadnote5BaselineTrialLedgerHash(legacy) === expectedHash &&
+      sameSource(legacy.source, baseline.evidence.source) &&
+      legacyLedgerMetricsMatch(legacy, baseline.evidence)
+    );
+  }
+}
+
+function legacyLedgerMetricsMatch(
+  ledger: Threadnote5BaselineTrialLedgerV1,
+  evidence: Threadnote5BaselineEvidenceV1,
+): boolean {
+  if (ledger.observations.some(observation => observation.outcome !== 'passed')) return false;
+  const legacy = new Map<
+    string,
+    {eligibleCount?: number; positiveCount?: number; sampleCount?: number; total?: number}
+  >();
+  for (const observation of ledger.observations) {
+    for (const measurement of observation.measurements) {
+      const previous = legacy.get(measurement.id) ?? {};
+      legacy.set(
+        measurement.id,
+        'sampleCount' in measurement
+          ? {
+              sampleCount: (previous.sampleCount ?? 0) + measurement.sampleCount,
+              total: (previous.total ?? 0) + measurement.total,
+            }
+          : {
+              eligibleCount: (previous.eligibleCount ?? 0) + measurement.eligibleCount,
+              positiveCount: (previous.positiveCount ?? 0) + measurement.positiveCount,
+            },
+      );
+    }
+  }
+  const comparable = {
+    'estimated-tokens-to-first-cited-correct-plan': {
+      sampleCount: evidence.observations.length,
+      total: evidence.observations.reduce(
+        (total, observation) => total + observation.estimatedTokensToFirstCitedCorrectPlan,
+        0,
+      ),
+    },
+    'time-to-first-cited-correct-plan': {
+      sampleCount: evidence.observations.length,
+      total: evidence.observations.reduce(
+        (total, observation) => total + observation.timeToFirstCitedCorrectPlanMilliseconds,
+        0,
+      ),
+    },
+    'wrong-memory-rate': {
+      eligibleCount: evidence.observations.filter(observation => observation.wrongMemoryEligible).length,
+      positiveCount: evidence.observations.filter(observation => observation.wrongMemoryObserved).length,
+    },
+  };
+  return Object.entries(comparable).every(
+    ([id, expected]) => canonicalJson(legacy.get(id)) === canonicalJson(expected),
   );
 }
 
-function baselineLedgerValue(value: unknown): unknown {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+function baselineLedgerEnvelope(value: unknown): {
+  readonly declaredHash?: string;
+  readonly ledger: unknown;
+  readonly version?: 1 | 2;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {ledger: value};
   const source = value as Record<string, unknown>;
-  return source.ledger === undefined ? value : source.ledger;
+  if (source.ledger === undefined) return {ledger: value};
+  if (
+    canonicalJson(Object.keys(source).sort()) !== canonicalJson(['ledger', 'ledgerHash', 'version']) ||
+    (source.version !== 1 && source.version !== 2) ||
+    typeof source.ledgerHash !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(source.ledgerHash)
+  ) {
+    throw new Error('Baseline ledger wrapper is invalid.');
+  }
+  return {declaredHash: source.ledgerHash, ledger: source.ledger, version: source.version};
 }

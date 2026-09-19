@@ -160,7 +160,6 @@ export function captureThreadnote5ReleaseCandidateV1(input: {
   const fixtureHash = threadnote5ReleaseReadinessFixtureHash(fixture);
   const manifest = threadnote5CaptureManifestForEvidence({
     adapterId: 'threadnote-5-local-task-loop-adapter-v1',
-    baseline,
     candidateObservations,
     fixtureHash,
     mode: 'release-candidate',

@@ -122,12 +122,81 @@ scheduling is outside this procedure. Measured lanes retain the ten-eligible-sam
 ## Compare with the last 4.x release
 
 The baseline is fixed to Threadnote 4.7.8 at commit
-`80ca4acdb7347a4d00b0381f3757a5ac984d9fbf`. Capture its evidence in a separate local artifact, then independently
-record the executable hash for the exact platform binary that produced it:
+`80ca4acdb7347a4d00b0381f3757a5ac984d9fbf`. Capture it from the exact native standalone executable and a separately
+reviewed capture plan. The plan names at least ten unique trials, content-pinned home and repository fixtures, the task,
+the required and allowed memory URIs, the token budget, and wrong-memory eligibility. It never supplies outcomes,
+measurements, or observation hashes. It separately names the exact reviewed observer and judge executables, their
+provider-neutral protocols, and their identities. The runner copies all three executables into a private capture root
+through no-follow handles, verifies each copied object, and executes only those copies. The three executable hashes and
+identities must be distinct. All three inputs must be native executable images; interpreted scripts are unsupported.
+The still-open reviewed descriptor crosses the sandbox boundary through helper source held in memory and passed as
+an argument to an isolated, root-owned Python interpreter. No writable helper pathname is executed. On macOS this
+uses the Command Line Tools Python framework, suspends the native child before its first instruction, verifies the
+actual mapped vnode and exact image hash, and keeps the pinned private image immutable until the child exits. Linux uses `/usr/bin/python3`
+and a write-sealed memory file executed with `fexecve`. Each trial uses private fixture copies, runs 4.7.8 without network access,
+owns and reaps its process groups, bounds time and output, and verifies the same pinned executable objects before and
+after execution.
+
+Threadnote 4.7.8 emits a Context Brief but does not emit an agent plan, correctness judgment, time/token measurement,
+or wrong-memory result. A separately governed observer harness produces the first-plan bytes, citations, and timing/token
+measurement without claiming that the plan is correct. Its request carries the task and native Context Brief but
+withholds the plan's allowed and required-memory answer keys. Its response must cite only memories actually returned by
+that Context Brief and include every required citation. The capture derives wrong-memory results from the native Context
+Brief rather than accepting that claim from the observer.
+
+A separately governed judge executable is the only component allowed to author correctness. It receives the exact
+observer request, raw native Context Brief output and hash, exact citations and hash, and actual first-plan bytes and
+hash. It returns a receipt bound to those inputs through `threadnote-5-baseline-judge` version 1. The observer and judge
+each receive `--request <private-json>` and return one JSON object on stdout. Their identities, requests, responses, and
+domain-separated receipts are recomputed and bound into the final observation. The recorded time combines the measured
+native Context Brief duration with the observer's receipted time to its first cited plan, and is promoted to
+time-to-first-cited-correct-plan only after the separate judge accepts those exact plan bytes:
 
 ```sh
+bun run capture:threadnote-5-baseline-evidence -- \
+  --baseline-version 4.7.8 \
+  --baseline-commit 80ca4acdb7347a4d00b0381f3757a5ac984d9fbf \
+  --baseline-executable /absolute/path/to/threadnote-4.7.8 \
+  --baseline-executable-sha256 <independently-reviewed-4.7.8-executable-sha256> \
+  --observer-executable /absolute/path/to/reviewed-observer-harness \
+  --observer-executable-sha256 <independently-reviewed-observer-executable-sha256> \
+  --judge-executable /absolute/path/to/reviewed-independent-judge \
+  --judge-executable-sha256 <independently-reviewed-judge-executable-sha256> \
+  --plan baseline-capture-plan.json \
+  --plan-sha256 <independently-reviewed-plan-sha256> \
+  --private-replay-output baseline-private-replay.json \
+  --output baseline-evidence.json
+```
+
+The plan, 4.7.8, observer, and judge hashes must be reviewed outside the capture. The content-free
+`baseline-evidence.json` binds the plan, exact 4.7.8 source/version/executable, native Context Brief output, observer and
+judge executable identities, requests, responses, receipts, first plan, and resulting measurements by hash. The mode-
+`0600` `baseline-private-replay.json` retains the full plan, Context Brief output, first-plan content, exact observer and
+judge requests, parsed receipts, and raw response bytes needed for private replay. It may contain repository context and
+must follow the local sensitive-evidence retention policy; never publish it or pass it to the compose step.
+
+Capture writes neither an available evidence artifact nor a partial available result if any trial, citation, receipt,
+identity check, network boundary, or required observation is missing. The independently governed observer and judge
+implementations and their reviewed hashes remain external prerequisites. On Linux the runner capability-tests
+unprivileged user plus network namespaces (`unshare --user --map-root-user --net`) and reports a precise unsupported-host
+error when the host disables them. macOS uses a deny-network sandbox profile. Other hosts remain unsupported unless an
+equivalent reviewed operating-system mechanism is added.
+
+```sh
+
+bun run compose:threadnote-5-release-readiness -- \
+  --candidate-evidence candidate-evidence.json \
+  --candidate-evidence-sha256 <independently-reviewed-candidate-evidence-sha256> \
+  --expected-candidate expected-candidate.json \
+  --baseline-evidence baseline-evidence.json \
+  --baseline-evidence-sha256 <independently-reviewed-baseline-evidence-sha256> \
+  --baseline-version 4.7.8 \
+  --baseline-commit 80ca4acdb7347a4d00b0381f3757a5ac984d9fbf \
+  --baseline-executable-sha256 <independently-reviewed-4.7.8-executable-sha256> \
+  --output composed-release-evidence.json
+
 bun run capture:threadnote-5-baseline-ledger -- \
-  --evidence baseline-evidence.json \
+  --evidence composed-release-evidence.json \
   --output baseline-trial-ledger.json
 
 bun run eval:threadnote-5-release-readiness -- \
@@ -142,12 +211,18 @@ bun run eval:threadnote-5-release-readiness -- \
   --baseline-trial-ledger baseline-trial-ledger.json \
   --baseline-trial-ledger-sha256 <independently-reviewed-ledger-hash> \
   --retained-subsystem-receipts retained-receipts.json \
-  --evidence candidate-evidence.json
+  --evidence composed-release-evidence.json
 ```
 
 Do not treat the baseline artifact as its own authority. Version, commit, executable hash, ledger, and the ledger hash
 reviewed outside that ledger are one mandatory trust boundary; omitting or mismatching any part keeps the comparison
 unknown and cannot admit a release.
+
+The historical trial-ledger schema remains version 1 and is still accepted with its original domain-separated hash.
+The source-native baseline-evidence wrapper is version 2; its `ledgerHash` is exactly the nested evidence's canonical
+`evidenceHash`, not a second hash that includes that field. A mismatched wrapper or independently supplied hash fails
+closed. The observer-and-judge provenance makes the external origin of non-4.7.8 plans, measurements, and judgments
+explicit; neither the capture nor the wrapper relabels them as fields emitted by Threadnote 4.7.8.
 
 Only measurements that both releases genuinely share are compared: time and estimated tokens to the first cited correct
 Context Brief plan, plus the raw eligible/wrong feedback counts used to calculate wrong-memory rate. Setup success,

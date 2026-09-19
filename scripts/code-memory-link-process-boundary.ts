@@ -7,6 +7,7 @@ export interface CodeMemoryLinkProcessCaptureOptions {
   readonly command: string;
   readonly cwd: string;
   readonly environment: Readonly<NodeJS.ProcessEnv>;
+  readonly inheritedFileDescriptors?: readonly number[];
   readonly label: string;
   readonly maxOutputBytes: number;
   readonly terminationGraceMilliseconds?: number;
@@ -30,12 +31,19 @@ export async function captureCodeMemoryLinkProcessGroup(
   if (process.platform === 'win32') {
     throw new Error(`${options.label} process-group isolation requires macOS or Linux.`);
   }
+  const inheritedFileDescriptors = [...(options.inheritedFileDescriptors ?? [])];
+  if (
+    inheritedFileDescriptors.length > 8 ||
+    inheritedFileDescriptors.some(descriptor => !Number.isSafeInteger(descriptor) || descriptor < 0)
+  ) {
+    throw new Error(`${options.label} inherited file descriptors are invalid.`);
+  }
   const child = spawn(options.command, [...options.arguments], {
     cwd: options.cwd,
     detached: true,
     env: {...options.environment},
     shell: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe', ...inheritedFileDescriptors],
   });
   const groupId = child.pid;
   if (groupId === undefined || groupId <= 0) {
@@ -66,8 +74,8 @@ export async function captureCodeMemoryLinkProcessGroup(
     }
     destination.push(chunk);
   };
-  child.stdout.on('data', collect(stdout));
-  child.stderr.on('data', collect(stderr));
+  child.stdout!.on('data', collect(stdout));
+  child.stderr!.on('data', collect(stderr));
   const timeout = setTimeout(() => {
     timedOut = true;
     beginTermination();

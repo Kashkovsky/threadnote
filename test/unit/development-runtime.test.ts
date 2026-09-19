@@ -558,6 +558,7 @@ describe('exact-head development runtime', () => {
     expect(Option.isNone(parseDevelopmentInstallReceipt({...receipt, sourceDirty: true}))).toBe(true);
     expect(Option.isNone(parseDevelopmentInstallReceipt({...receipt, executableSha256: 'not-a-digest'}))).toBe(true);
     expect(Option.isNone(parseDevelopmentInstallReceipt({...receipt, sourceCommit: 'short'}))).toBe(true);
+    expect(Option.isNone(parseDevelopmentInstallReceipt({...receipt, sourceCommit: 'b'.repeat(40)}))).toBe(true);
   });
 
   effectIt.effect('validates a managed release without exposing local paths', () =>
