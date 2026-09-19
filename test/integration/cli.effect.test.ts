@@ -33,6 +33,17 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('--stable');
   });
 
+  it('keeps the setup verification task built in', async () => {
+    const help = await runCli(['setup', 'gemini-cli', '--help']);
+    expect(help.stdout).not.toContain('--task');
+
+    const error = await runCli(['setup', 'gemini-cli', '--task', 'custom verification']).catch(
+      cause => cause as NodeJS.ErrnoException & {stderr?: string},
+    );
+    expect(error).toMatchObject({code: 1});
+    expect(String(error.stderr)).toContain('--task');
+  });
+
   it('exposes explicit preview/apply telemetry consent commands', async () => {
     const telemetry = await runCli(['telemetry', '--help']);
     const enable = await runCli(['telemetry', 'enable', '--help']);

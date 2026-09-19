@@ -53,6 +53,8 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const run = <A, E>(effect: Effect.Effect<A, E, ApplicationServices>) => effect.pipe(provideTestLayer(ApplicationLayer));
 const digest = 'a'.repeat(64);
+const EXPECTED_SETUP_TASK =
+  'Orient this agent to the current repository architecture, durable decisions, active handoffs, and next safe step.';
 
 describe('setup contracts', () => {
   it('rejects excess receipt fields and invalid recovery references', () => {
@@ -599,6 +601,7 @@ describe('setup orchestration', () => {
         ).not.toBe(firstPlan.planHash);
 
         const calls: string[] = [];
+        const contextTasks: string[] = [];
         let inspectionFails = false;
         let surfaceInstalled = false;
         const applied = (name: string, extra: Partial<SetupOperationOutcome> = {}) =>
@@ -606,9 +609,10 @@ describe('setup orchestration', () => {
             Effect.as({ownership: 'setup-created', status: 'applied', ...extra} as SetupOperationOutcome),
           );
         const dependencies: SetupOrchestratorDependencies<ApplicationServices> = {
-          contextBrief: () =>
+          contextBrief: (_config, _projectRoot, task) =>
             Effect.gen(function* () {
               calls.push('context-brief');
+              contextTasks.push(task);
               return {
                 finalOutput: 'verified brief',
                 ownership: 'preexisting',
@@ -681,16 +685,17 @@ describe('setup orchestration', () => {
         };
 
         const first = yield* captureConsole(
-          runSetupWith(config, adapter, {apply: true, cwd: repository, task: 'verify setup'}, dependencies),
+          runSetupWith(config, adapter, {apply: true, cwd: repository}, dependencies),
         );
         const firstCalls = [...calls];
         const second = yield* captureConsole(
-          runSetupWith(config, adapter, {apply: true, cwd: repository, task: 'verify setup'}, dependencies),
+          runSetupWith(config, adapter, {apply: true, cwd: repository}, dependencies),
         );
 
         expect(first.value?.status).toBe('completed');
         expect(second.value).toEqual(first.value);
         expect(calls).toEqual([...firstCalls, 'doctor', 'context-brief']);
+        expect(contextTasks).toEqual([EXPECTED_SETUP_TASK, EXPECTED_SETUP_TASK]);
         expect(second.output).toContain('Setup is already complete');
         expect(second.output).toContain('verified brief');
         const firstEvents = yield* readLocalValueEvents(home);
@@ -716,7 +721,7 @@ describe('setup orchestration', () => {
           `${JSON.stringify(previousVersionReceipt, undefined, 2)}\n`,
         );
         const upgraded = yield* captureConsole(
-          runSetupWith(config, adapter, {apply: true, cwd: repository, task: 'verify setup'}, dependencies),
+          runSetupWith(config, adapter, {apply: true, cwd: repository}, dependencies),
         );
         expect(upgraded.value?.operations.find(operation => operation.kind === 'surface.ensure')).toMatchObject({
           ownership: 'setup-created',
@@ -726,24 +731,20 @@ describe('setup orchestration', () => {
         inspectionFails = true;
         yield* fs.writeFileString(`${repository}/tracked.txt`, 'inspection changed source\n');
         const inspectionFailure = yield* captureConsole(
-          runSetupWith(config, adapter, {apply: true, cwd: repository, task: 'verify setup'}, dependencies),
+          runSetupWith(config, adapter, {apply: true, cwd: repository}, dependencies),
         ).pipe(Effect.exit);
         expect(inspectionFailure._tag).toBe('Failure');
         expect(yield* fs.readFileString(`${home}/setup/${receiptFiles[0]}`)).toBe(receiptBeforeInspectionFailure);
         inspectionFails = false;
         yield* fs.writeFileString(config.manifestPath, 'version: 1\nprojects: []\n');
-        yield* captureConsole(
-          runSetupWith(config, adapter, {apply: true, cwd: repository, task: 'verify setup'}, dependencies),
-        );
+        yield* captureConsole(runSetupWith(config, adapter, {apply: true, cwd: repository}, dependencies));
         expect(calls).toHaveLength(firstCalls.length * 3 + 2);
         expect((yield* readLocalValueEvents(home)).filter(event => event.kind === 'setup')).toHaveLength(3);
         expect(
           parseSetupReceiptV1(JSON.parse(yield* fs.readFileString(`${home}/setup/${receiptFiles[0]}`))).status,
         ).toBe('completed');
         yield* fs.writeFileString(`${repository}/tracked.txt`, 'changed source\n');
-        yield* captureConsole(
-          runSetupWith(config, adapter, {apply: true, cwd: repository, task: 'verify setup'}, dependencies),
-        );
+        yield* captureConsole(runSetupWith(config, adapter, {apply: true, cwd: repository}, dependencies));
         expect(calls).toHaveLength(firstCalls.length * 4 + 2);
         expect((yield* readLocalValueEvents(home)).filter(event => event.kind === 'setup')).toHaveLength(4);
         const undoPreview = yield* captureConsole(
@@ -773,7 +774,7 @@ describe('setup orchestration', () => {
         expect(finalized.value?.status).toBe('rolled-back');
         const beforeReapply = calls.length;
         const reapplied = yield* captureConsole(
-          runSetupWith(config, adapter, {apply: true, cwd: repository, task: 'verify setup'}, dependencies),
+          runSetupWith(config, adapter, {apply: true, cwd: repository}, dependencies),
         );
         expect(reapplied.value?.status).toBe('completed');
         expect(calls).toHaveLength(beforeReapply + firstCalls.length);
@@ -917,7 +918,7 @@ describe('setup orchestration', () => {
         };
         const adapter = getAgentAdapter('gemini-cli')!;
         const resolvedRepository = yield* fs.realPath(repository);
-        const task = 'verify crash recovery';
+        const task = EXPECTED_SETUP_TASK;
         const threadnoteVersion = yield* getThreadnoteVersion();
         const plan = yield* createSetupPlan({
           adapter,
@@ -990,7 +991,7 @@ describe('setup orchestration', () => {
           seedProject: unexpected,
         };
         const interrupted = yield* captureConsole(
-          runSetupWith(config, adapter, {apply: true, cwd: repository, task}, dependencies),
+          runSetupWith(config, adapter, {apply: true, cwd: repository}, dependencies),
         ).pipe(Effect.exit);
         expect(interrupted._tag).toBe('Failure');
         const failed = parseSetupReceiptV1(JSON.parse(yield* fs.readFileString(receiptPath)));
@@ -998,7 +999,7 @@ describe('setup orchestration', () => {
         expect(failed.verification).toBeUndefined();
         expect(failed.operations.find(operation => operation.kind === 'context-brief.verify')?.status).toBe('failed');
         const completed = yield* captureConsole(
-          runSetupWith(config, adapter, {apply: true, cwd: repository, task}, dependencies),
+          runSetupWith(config, adapter, {apply: true, cwd: repository}, dependencies),
         );
         expect(completed.value?.status).toBe('completed');
         expect(completed.value?.verification).toEqual(verification);

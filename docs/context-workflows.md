@@ -56,8 +56,8 @@ graph, runs structured doctor checks, and finishes with a real Context Brief. Co
 coverage for the one requested repository and at least one source-evidence card or contract accounted for by projection,
 whether returned or reported in the nonnegative projection-omission counts.
 
-Setup uses a general repository-orientation task for that final verification brief. `--task "..."` is optional and
-only replaces that one-time verification task; it is not needed to start normal work after the agent restarts.
+Setup uses a built-in general repository-orientation task for that final verification brief. It is not needed to start
+normal work after the agent restarts.
 
 Preview is non-mutating. Apply writes a private `SetupReceiptV1` under `$THREADNOTE_HOME/setup/` with a deterministic
 plan hash, per-operation input hashes and attempts, subsystem receipt references, and bounded recovery IDs. It never
