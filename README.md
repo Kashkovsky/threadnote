@@ -67,9 +67,8 @@ threadnote setup <surface> --apply
 ```
 
 Setup initializes the local core, repository seed, selected catalog integration and declared hooks, current code graph,
-doctor checks, and a real source-backed Context Brief. Preview does not write; interrupted apply is resumable; undo is
-also preview-first and removes only unchanged setup-owned artifacts. The optional `--task` flag only customizes this
-one-time verification brief; everyday agent tasks do not require it.
+doctor checks, and a real source-backed Context Brief using its built-in repository-orientation task. Preview does not
+write; interrupted apply is resumable; undo is also preview-first and removes only unchanged setup-owned artifacts.
 
 Once your agent restarts, give it a normal engineering task. The installed instructions and skills make Context Brief
 and closeout part of the agent's normal lifecycle, so you do not need a special Threadnote prompt. Ask “What can I do

@@ -25,14 +25,13 @@ import {productionSetupDependencies, resolveSetupRuntimeConfig, setupRepositoryS
 
 export {SetupOperationError} from './contract.js';
 
-const DEFAULT_SETUP_TASK =
+const SETUP_VERIFICATION_TASK =
   'Orient this agent to the current repository architecture, durable decisions, active handoffs, and next safe step.';
 
 export interface RunSetupOptions {
   readonly apply?: boolean;
   readonly cwd?: string;
   readonly scope?: 'user' | 'project' | 'local';
-  readonly task?: string;
   readonly undo?: boolean;
 }
 
@@ -132,14 +131,13 @@ export const runSetupWith = Effect.fn('setup.runWith')(function* <R>(
   const scope = adapter.kind === 'json' ? (options.scope ?? adapter.json?.defaultScope ?? 'user') : undefined;
   if (options.undo === true)
     return yield* runSetupUndo(config, adapter, projectRoot, scope, options.apply === true, dependencies);
-  const task = options.task?.trim() || DEFAULT_SETUP_TASK;
   const threadnoteVersion = yield* getThreadnoteVersion();
   const plan = yield* createSetupPlan({
     adapter,
     manifestPath: config.manifestPath,
     projectRoot,
     scope,
-    task,
+    task: SETUP_VERIFICATION_TASK,
     threadnoteVersion,
   });
   yield* Console.log(renderSetupPlan(plan, adapter.catalog.displayName));
@@ -153,7 +151,7 @@ export const runSetupWith = Effect.fn('setup.runWith')(function* <R>(
   const receiptPath = setupReceiptPath(path, config.agentContextHome, plan.surfaceId, receiptId);
   return yield* withSetupMutationLock(
     config.agentContextHome,
-    applySetupPlan(config, adapter, plan, task, receiptId, receiptPath, dependencies),
+    applySetupPlan(config, adapter, plan, receiptId, receiptPath, dependencies),
   );
 });
 
@@ -324,7 +322,6 @@ const applySetupPlan = Effect.fn('setup.applyPlan')(function* <R>(
   config: RuntimeConfig,
   adapter: AgentAdapter,
   plan: SetupPlanV1,
-  task: string,
   receiptId: string,
   receiptPath: string,
   dependencies: SetupOrchestratorDependencies<R>,
@@ -334,7 +331,7 @@ const applySetupPlan = Effect.fn('setup.applyPlan')(function* <R>(
     manifestPath: plan.manifestPath,
     projectRoot: plan.projectRoot,
     scope: plan.scope,
-    task,
+    task: SETUP_VERIFICATION_TASK,
     threadnoteVersion: plan.threadnoteVersion,
   });
   if (replanned.planHash !== plan.planHash)
@@ -350,7 +347,6 @@ const applySetupPlan = Effect.fn('setup.applyPlan')(function* <R>(
       config,
       adapter,
       plan,
-      task,
       previous.receipt,
       dependencies,
     );
@@ -401,7 +397,7 @@ const applySetupPlan = Effect.fn('setup.applyPlan')(function* <R>(
         existing = receipt.operations.find(candidate => candidate.id === operation.id)!;
       }
       const attempt = existing.status === 'pending' ? existing.attempt : existing.attempt + 1;
-      const outcome = yield* executeSetupOperation(config, adapter, plan, task, operation, dependencies).pipe(
+      const outcome = yield* executeSetupOperation(config, adapter, plan, operation, dependencies).pipe(
         Effect.filterOrFail(
           outcome =>
             (!operation.reversible || outcome.ownership !== undefined) &&
@@ -476,7 +472,6 @@ function executeSetupOperation<R>(
   config: RuntimeConfig,
   adapter: AgentAdapter,
   plan: SetupPlanV1,
-  task: string,
   operation: SetupPlanOperationV1,
   dependencies: SetupOrchestratorDependencies<R>,
 ) {
@@ -488,7 +483,7 @@ function executeSetupOperation<R>(
   if (operation.kind === 'surface.hooks') return dependencies.ensureHooks(config, adapter, true);
   if (operation.kind === 'graph.index') return dependencies.indexGraph(config, plan.projectRoot, true);
   if (operation.kind === 'doctor.verify') return dependencies.doctor(config);
-  return dependencies.contextBrief(config, plan.projectRoot, task);
+  return dependencies.contextBrief(config, plan.projectRoot, SETUP_VERIFICATION_TASK);
 }
 
 const revalidatedSetupOwnershipIds = Effect.fn('setup.revalidatedOwnership')(function* <R>(
@@ -737,7 +732,6 @@ const completedReceiptEvidenceIsCurrent = Effect.fn('setup.completedReceiptEvide
   config: RuntimeConfig,
   adapter: AgentAdapter,
   plan: SetupPlanV1,
-  task: string,
   receipt: SetupReceiptV1,
   dependencies: SetupOrchestratorDependencies<R>,
 ) {
@@ -759,7 +753,7 @@ const completedReceiptEvidenceIsCurrent = Effect.fn('setup.completedReceiptEvide
     Effect.orElseSucceed(() => false),
   );
   if (!healthy) return undefined;
-  return yield* dependencies.contextBrief(config, plan.projectRoot, task).pipe(
+  return yield* dependencies.contextBrief(config, plan.projectRoot, SETUP_VERIFICATION_TASK).pipe(
     Effect.map(outcome =>
       outcome.status === 'verified' &&
       outcome.verification?.repositorySourceHash === receipt.verification?.repositorySourceHash

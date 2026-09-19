@@ -47,7 +47,7 @@ threadnote setup <surface> --apply`,
     },
     {
       type: 'note',
-      text: 'You do not need `--task` for setup. Threadnote uses a built-in repository-orientation task for its final verification brief. Add `--task "..."` only when you want to customize that one-time check; it does not start or configure later agent tasks.',
+      text: 'Setup uses a built-in repository-orientation task for its final verification brief. Normal agent tasks receive their own Context Brief automatically after setup.',
     },
     {
       type: 'heading',

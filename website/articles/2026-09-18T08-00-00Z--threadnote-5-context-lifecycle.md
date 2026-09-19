@@ -43,8 +43,8 @@ for that surface, prepares the local project context, verifies the runtime, and 
 brief. The catalog remains the source of truth as support expands; the workflow is not built around a four-product
 allowlist.
 
-Setup already has a general repository-orientation task for that verification brief. Its optional `--task` flag only
-customizes this one-time check; it is not needed for everyday agent work.
+Setup uses a built-in general repository-orientation task for that verification brief; it is not needed for everyday
+agent work.
 
 For teams that want to prove the whole loop, guided activation connects two catalog-supported surfaces, imports
 selected guidance or ADRs into review, reaches the first cited brief, and later asks the second surface to retrieve the
