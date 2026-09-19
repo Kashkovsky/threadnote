@@ -25,6 +25,7 @@ import {
   type SetupReceiptOperationV1,
 } from '../../src/setup/contract.js';
 import {
+  resolveSetupScope,
   runSetupWith,
   SetupOperationError,
   type SetupOperationOutcome,
@@ -135,6 +136,25 @@ describe('setup contracts', () => {
         reversible: operation.reversible,
       }));
     expect(shape(gemini)).toEqual(shape(qwen));
+  });
+
+  it('treats explicit user scope as omission for compatibility setup surfaces', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('codex-cli', 'claude-code', 'cursor-desktop', 'copilot-vscode', 'omp-agent'),
+        surfaceId => {
+          const adapter = getAgentAdapter(surfaceId)!;
+          expect(resolveSetupScope(adapter, undefined)).toEqual({scope: undefined});
+          expect(resolveSetupScope(adapter, 'user')).toEqual({scope: undefined});
+          for (const unsupportedScope of ['project', 'local'] as const) {
+            expect(resolveSetupScope(adapter, unsupportedScope)).toMatchObject({
+              error: {_tag: 'SetupOperationError'},
+            });
+          }
+        },
+      ),
+      {numRuns: 25},
+    );
   });
 
   it('plans managed hooks only when the adapter declares an executable strategy', () => {

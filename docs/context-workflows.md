@@ -71,8 +71,8 @@ customizations are never rollback targets. Interrupted rollback persists its rem
 
 Choose one coding-agent environment from `threadnote agents list`; the catalog calls its declared integration a surface. Catalog-only surfaces fail with their
 manual guidance instead of being presented as managed. `--scope` is available for managed JSON adapters; compatibility
-adapters retain their established user-scope lifecycle. This command does not configure composer, team sharing, or any
-organization service.
+adapters retain their established user-scope lifecycle, and explicit `--scope user` is equivalent to omitting the flag.
+This command does not configure composer, team sharing, or any organization service.
 
 ## Project guidance into agent surfaces
 
