@@ -3,15 +3,17 @@ import {
   deferredCodeAnchorPathEntryKind,
   ensurePrivateDeferredCodeAnchorDirectory,
 } from '../memory/deferred_code_anchor_private_fs.js';
-import {runtimePlatform} from '../effect/system.js';
+import {runtimePlatform, SystemInfo} from '../effect/system.js';
 import {
   createThreadnote5ProductCaptureV1,
   parseProductCaptureConfiguration,
   productCaptureCanonicalJson,
   productCaptureFilename,
   productCaptureIdentityDigest,
+  productCaptureScenarioSupportsSource,
+  type Threadnote5ProductCaptureIdentityV1,
 } from './threadnote-5-product-capture.js';
-import type {Threadnote5ProductEventV1} from './threadnote-5-product-capture-events.js';
+import type {ProductCaptureSource, Threadnote5ProductEventV1} from './threadnote-5-product-capture-events.js';
 
 export const PRODUCT_CAPTURE_ENVIRONMENT_VARIABLE = 'THREADNOTE_PRIVATE_CAPTURE_V1' as const;
 
@@ -23,6 +25,17 @@ export class ProductCaptureError extends Schema.TaggedError<ProductCaptureError>
 export interface ProductCaptureTestHooks {
   readonly beforeLink?: () => Effect.Effect<void, never, never>;
   readonly afterLink?: () => Effect.Effect<void, never, never>;
+}
+
+/** Internal exporter options for collision-free append lanes and exact replay. */
+export interface ProductCapturePublicationOptionsV1 {
+  readonly appendOnlyIdentity?: string;
+  readonly idempotent?: 'exact';
+}
+
+export interface ConfiguredProductCaptureContextV1 {
+  readonly identity: Threadnote5ProductCaptureIdentityV1;
+  readonly laneId: string;
 }
 
 interface DirectoryAuthorityInput {
@@ -66,6 +79,7 @@ export const captureThreadnote5ProductEventV1 = Effect.fn('productCapture.publis
   configuration: string | undefined,
   event: () => Threadnote5ProductEventV1,
   hooks: ProductCaptureTestHooks | undefined = undefined,
+  options: ProductCapturePublicationOptionsV1 | undefined = undefined,
 ) {
   if (configuration === undefined) return undefined;
   const capture = yield* Effect.try({
@@ -108,11 +122,29 @@ export const captureThreadnote5ProductEventV1 = Effect.fn('productCapture.publis
     catch: () => ProductCaptureError.make({message: 'Invalid private product capture configuration or native event.'}),
     try: () => createThreadnote5ProductCaptureV1(capture.identity, event()),
   });
-  const output = path.join(directory, productCaptureFilename(envelope));
+  const output = path.join(directory, productCaptureOutputFilename(envelope, options?.appendOnlyIdentity));
   const pending = `${output}.pending`;
   const bytes = new TextEncoder().encode(`${productCaptureCanonicalJson(envelope)}\n`);
   yield* assertAncestors(fs, ancestors, root, effectiveUid, ancestorAuthority);
   yield* assertDirectories(fs, [root, directory], effectiveUid, directoryAuthority);
+  if (options?.idempotent === 'exact' && (yield* deferredCodeAnchorPathEntryKind(fs, output)) !== 'missing') {
+    if (
+      yield* existingProductCaptureMatches(
+        fs,
+        output,
+        bytes,
+        effectiveUid,
+        ancestors,
+        root,
+        ancestorAuthority,
+        [root, directory],
+        directoryAuthority,
+      )
+    ) {
+      return output;
+    }
+    return yield* ProductCaptureError.make({message: 'Private product capture destination is occupied.'});
+  }
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const file = yield* fs.open(pending, {flag: 'wx', mode: 0o600});
@@ -128,9 +160,8 @@ export const captureThreadnote5ProductEventV1 = Effect.fn('productCapture.publis
         yield* assertPathMatchesFile(fs, pending, file, written, effectiveUid, BigInt(bytes.byteLength), 1);
         yield* assertAncestors(fs, ancestors, root, effectiveUid, ancestorAuthority);
         yield* assertDirectories(fs, [root, directory], effectiveUid, directoryAuthority);
-        if ((yield* deferredCodeAnchorPathEntryKind(fs, output)) !== 'missing') {
+        if ((yield* deferredCodeAnchorPathEntryKind(fs, output)) !== 'missing')
           return yield* ProductCaptureError.make({message: 'Private product capture destination is occupied.'});
-        }
         yield* assertPathMatchesFile(fs, pending, file, written, effectiveUid, BigInt(bytes.byteLength), 1);
         if (hooks?.beforeLink !== undefined) yield* hooks.beforeLink();
         yield* fs.link(pending, output);
@@ -150,6 +181,63 @@ export const captureThreadnote5ProductEventV1 = Effect.fn('productCapture.publis
           ),
         ),
       );
+    }),
+  );
+});
+
+/** Candidate-owned entry point. Disabled capture never evaluates native product data. */
+export const captureConfiguredThreadnote5ProductEventV1 = Effect.fn('productCapture.publishConfigured')(function* (
+  source: ProductCaptureSource,
+  event: (context: ConfiguredProductCaptureContextV1) => Threadnote5ProductEventV1,
+  options: ProductCapturePublicationOptionsV1 | undefined = undefined,
+) {
+  const configuration = (yield* SystemInfo).environment()[PRODUCT_CAPTURE_ENVIRONMENT_VARIABLE];
+  if (configuration === undefined) return undefined;
+  const parsed = yield* Effect.try({
+    catch: () => ProductCaptureError.make({message: 'Invalid private product capture configuration.'}),
+    try: () => parseProductCaptureConfiguration(configuration),
+  });
+  if (!productCaptureScenarioSupportsSource(parsed.identity.scenario, source)) return undefined;
+  const context = {identity: parsed.identity, laneId: productCaptureIdentityDigest(parsed.identity)};
+  return yield* captureThreadnote5ProductEventV1(configuration, () => event(context), undefined, options);
+});
+
+function productCaptureOutputFilename(
+  envelope: ReturnType<typeof createThreadnote5ProductCaptureV1>,
+  appendOnlyIdentity: string | undefined,
+): string {
+  const filename = productCaptureFilename(envelope);
+  if (appendOnlyIdentity === undefined) return filename;
+  if (!/^[a-z0-9][a-z0-9-]{0,95}$/u.test(appendOnlyIdentity)) {
+    throw new Error('Product capture append-only identity is invalid.');
+  }
+  return `${filename.slice(0, -'.json'.length)}-${appendOnlyIdentity}.json`;
+}
+
+const existingProductCaptureMatches = Effect.fn('productCapture.exactReplay')(function* (
+  fs: FileSystem.FileSystem,
+  output: string,
+  bytes: Uint8Array,
+  effectiveUid: number,
+  ancestors: readonly string[],
+  root: string,
+  ancestorAuthority: readonly DirectoryAuthority[],
+  directories: readonly string[],
+  directoryAuthority: readonly DirectoryAuthority[],
+) {
+  if ((yield* deferredCodeAnchorPathEntryKind(fs, output)) !== 'file') {
+    return yield* ProductCaptureError.make({message: 'Private product capture destination is not a trusted file.'});
+  }
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const file = yield* fs.open(output, {flag: 'r'});
+      const expected = yield* inspectFileHandle(file, effectiveUid, BigInt(bytes.byteLength), 2);
+      yield* assertPathMatchesFile(fs, output, file, expected, effectiveUid, BigInt(bytes.byteLength), 2);
+      const observed = Option.getOrElse(yield* file.readAlloc(bytes.byteLength + 1), () => new Uint8Array());
+      yield* assertPathMatchesFile(fs, output, file, expected, effectiveUid, BigInt(bytes.byteLength), 2);
+      yield* assertAncestors(fs, ancestors, root, effectiveUid, ancestorAuthority);
+      yield* assertDirectories(fs, directories, effectiveUid, directoryAuthority);
+      return observed.length === bytes.length && observed.every((value, index) => value === bytes[index]);
     }),
   );
 });

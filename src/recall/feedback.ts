@@ -1,6 +1,7 @@
 import {Crypto, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {captureThreadnote5RecallFeedbackV1} from '../evaluation/threadnote-5-lifecycle-capture.js';
 import {RECALL_RANKER_VERSION} from './rank.js';
 
 export const RECALL_FEEDBACK_ACTIONS = ['useful', 'wrong', 'pin', 'dismiss', 'applied'] as const;
@@ -69,7 +70,7 @@ export const recordRecallFeedback = Effect.fn('recall.recordFeedback')(function*
     uri: input.uri,
     version: 1,
   };
-  return yield* withExclusiveFileLock(
+  const result = yield* withExclusiveFileLock(
     fs,
     `${path}.lock`,
     FEEDBACK_LOCK_OPTIONS,
@@ -95,6 +96,8 @@ export const recordRecallFeedback = Effect.fn('recall.recordFeedback')(function*
       return {event, recorded: true};
     }),
   );
+  if (result.recorded) yield* captureThreadnote5RecallFeedbackV1(result.event);
+  return result;
 });
 
 export const loadRecallFeedback = Effect.fn('recall.loadFeedback')(function* (

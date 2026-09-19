@@ -3,8 +3,9 @@ import {agentAdapterStatus} from '../agent_integration/adapter_actions.js';
 import {canonicalJson} from '../code_graph/checkpoint/canonical_json.js';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {worktreeBuildRequestState} from '../code_graph/inventory.js';
-import {compileContextBrief} from '../context_brief/index.js';
+import {compileActivationContextBrief} from '../context_brief/index.js';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {captureThreadnote5ActivationChallengeV1} from '../evaluation/threadnote-5-lifecycle-capture.js';
 import {
   buildReviewedKnowledgeDeltaGitProposal,
   runKnowledgeDeltaGitProposalMaterialize,
@@ -247,8 +248,8 @@ const verifyActivationBrief = Effect.fn('activation.production.verifyBrief')(fun
   observation: ActivationProductionObservationV1,
 ) {
   const sourceBefore = yield* setupRepositorySourceHash(observation.request.repositoryRoot);
-  const projected = yield* compileContextBrief(config, {
-    budgetTokens: 2_000,
+  const projected = yield* compileActivationContextBrief(config, {
+    budgetTokens: 1_500,
     mode: 'brief',
     scope: {callerCwd: observation.request.repositoryRoot, kind: 'repository'},
     task: observation.request.task,
@@ -557,6 +558,7 @@ const proveActivationSecondSurface = Effect.fn('activation.production.proveSecon
     startedAt: DateTime.formatIso(yield* DateTime.now),
   });
   const challenge = yield* issueSecondSurfaceProofChallengeV1(config, proposedContext);
+  yield* captureThreadnote5ActivationChallengeV1(challenge);
   if (challenge.receipt === undefined) {
     yield* Console.log(
       JSON.stringify(

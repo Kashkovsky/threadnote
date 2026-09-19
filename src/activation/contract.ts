@@ -260,6 +260,18 @@ const ActivationReceiptV1Schema = Schema.Struct({
   version: Schema.Literal(ACTIVATION_RECEIPT_VERSION),
 });
 
+const ActivationApprovalV1Schema = Schema.Struct({
+  approvalHash: Sha256,
+  approved: Schema.Literal(true),
+  kind: Schema.Literals(ACTIVATION_APPROVAL_KINDS),
+  operationId: Identifier,
+  planHash: Sha256,
+  receiptRevision: Sha256,
+  reviewRevisionHash: Sha256,
+  type: Schema.Literal('threadnote-activation-approval'),
+  version: Schema.Literal(ACTIVATION_RECEIPT_VERSION),
+});
+
 const ActivationUndoPlanOperationV1Schema = Schema.Struct({
   inputHash: Sha256,
   operationId: Identifier,
@@ -330,6 +342,15 @@ export function parseActivationReceiptV1(value: unknown): ActivationReceiptV1 {
   }
   validateReceiptTiming(receipt);
   return receipt;
+}
+
+export function parseActivationApprovalV1(value: unknown): ActivationApprovalV1 {
+  const approval = Schema.decodeUnknownSync(ActivationApprovalV1Schema, STRICT_PARSE_OPTIONS)(value);
+  const {approvalHash, ...body} = approval;
+  if (sha256HexSync(canonicalJson(body)) !== approvalHash) {
+    throw new Error('Activation approval hash does not match its body.');
+  }
+  return approval;
 }
 
 export function parseActivationUndoPlanV1(value: unknown): ActivationUndoPlanV1 {

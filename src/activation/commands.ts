@@ -1,6 +1,11 @@
 import {Effect, Schema} from 'effect';
 import type {RuntimeConfig} from '../types.js';
 import {
+  captureThreadnote5ActivationInitializationV1,
+  captureThreadnote5ActivationTransitionV1,
+  captureThreadnote5ContextBriefCompletionV1,
+} from '../evaluation/threadnote-5-lifecycle-capture.js';
+import {
   type ActivationApprovalV1,
   type ActivationOperationOutcomeV1,
   type ActivationPlanV1,
@@ -70,7 +75,10 @@ export const continueActivationV1 = Effect.fn('activation.continue')(function* <
       status: resume.status === 'drifted' ? 'drifted' : resume.status === 'completed' ? 'completed' : 'preview',
     } satisfies ActivationContinuationV1;
   }
+  const existing = yield* readActivationStateV1(config, suppliedPlan.activationId);
   let state = yield* initializeActivationStateV1(config, suppliedPlan, initialReceipt);
+  if (existing === undefined) yield* captureThreadnote5ActivationInitializationV1(state.plan, state.receipt);
+  let resumedTransitionPending = existing !== undefined;
   let usedApproval = false;
   for (;;) {
     const resume = previewActivationResumeV1(state.plan, state.receipt);
@@ -122,6 +130,23 @@ export const continueActivationV1 = Effect.fn('activation.continue')(function* <
         throw new Error(`Activation ${state.plan.activationId} disappeared during continuation.`);
       state = reread;
       continue;
+    }
+    yield* captureThreadnote5ActivationTransitionV1({
+      ...(approval === undefined ? {} : {approval}),
+      plan: state.plan,
+      previous: state.receipt,
+      receipt: saved.receipt,
+      resumed: resumedTransitionPending,
+    });
+    resumedTransitionPending = false;
+    const completedOperation = state.plan.operations.find(operation => operation.id === resume.operationId);
+    if (completedOperation?.kind === 'brief.verify' && saved.receipt.firstBrief !== undefined) {
+      yield* captureThreadnote5ContextBriefCompletionV1({
+        activationId: state.plan.activationId,
+        activationReceiptRevision: saved.receipt.revision,
+        completedAt: saved.receipt.firstBrief.completedAt,
+        durationMilliseconds: saved.receipt.firstBrief.durationMilliseconds,
+      });
     }
     state = {plan: state.plan, receipt: saved.receipt};
     if (outcome.status === 'failed') return {state, status: 'operation-failed'} satisfies ActivationContinuationV1;

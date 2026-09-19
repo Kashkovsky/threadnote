@@ -1,7 +1,7 @@
 import {Console, Effect, FileSystem, Path, Schema} from 'effect';
 import {canonicalJson} from '../code_graph/checkpoint/canonical_json.js';
 import {readBoundedContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
-import {compileContextBrief} from '../context_brief/index.js';
+import {compileContextBriefForValidation} from '../context_brief/index.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {shellQuote} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
@@ -489,8 +489,8 @@ const currentBriefSourceHash = Effect.fn('activation.production.currentBriefSour
   request: ActivationProductionRequestV1,
 ) {
   const sourceBefore = yield* setupRepositorySourceHash(request.repositoryRoot);
-  const projected = yield* compileContextBrief(config, {
-    budgetTokens: 2_000,
+  const projected = yield* compileContextBriefForValidation(config, {
+    budgetTokens: 1_500,
     mode: 'brief',
     scope: {callerCwd: request.repositoryRoot, kind: 'repository'},
     task: request.task,

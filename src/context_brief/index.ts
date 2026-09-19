@@ -2,6 +2,11 @@ import {Clock, DateTime, Effect, Exit} from 'effect';
 import {succeedUndefined} from '../effect/optional.js';
 import type {AnonymousTelemetryContextBriefCitationUnknownReason} from '../effect/telemetry.js';
 import {
+  captureThreadnote5ContextBriefCompletionV1,
+  captureThreadnote5ContextBriefRequestV1,
+  captureThreadnote5ContextBriefResultV1,
+} from '../evaluation/threadnote-5-lifecycle-capture.js';
+import {
   makeContextBriefAnonymousTelemetryReporter,
   type ContextBriefCitationTelemetrySummary,
 } from '../telemetry/context_brief.js';
@@ -83,6 +88,7 @@ export interface ContextBriefRuntimeCompilerSources<
 interface ContextBriefCompilerOptions {
   readonly codeLinkedMemoryOnly?: boolean;
   readonly includeProcedureEvidence?: boolean;
+  readonly productCapture?: 'complete' | 'deferred-event' | 'disabled';
 }
 
 /**
@@ -268,6 +274,16 @@ const compileContextBriefRuntime = Effect.fn('contextBrief.compileRuntime')(func
 ) {
   const startedAt = yield* Clock.currentTimeMillis;
   const request = planContextBrief(input);
+  const nativeRequest: ContextBriefRequestV1 = {
+    budgetTokens: request.outputBudgetTokens,
+    ...(request.codeAnchors.codeRefs.length === 0 ? {} : {codeRefs: request.codeAnchors.codeRefs}),
+    mode: request.mode,
+    scope: request.scope,
+    ...(request.surface === undefined ? {} : {surface: request.surface}),
+    task: request.task,
+  };
+  const productCapture = options.productCapture ?? 'complete';
+  if (productCapture !== 'disabled') yield* captureThreadnote5ContextBriefRequestV1(nativeRequest);
   const requestedRepositories = request.scope.kind === 'repository' ? 1 : 0;
   const reporter = makeContextBriefAnonymousTelemetryReporter(request.scope.kind === 'workset' ? 'workset' : 'local', {
     contract: request.codeAnchors.codeRefs.length === 0 ? 'task-only-v2' : 'code-anchored-v3',
@@ -316,17 +332,22 @@ const compileContextBriefRuntime = Effect.fn('contextBrief.compileRuntime')(func
         },
         requestedRepositories,
       ),
-      {
-        budgetTokens: request.outputBudgetTokens,
-        ...(request.codeAnchors.codeRefs.length === 0 ? {} : {codeRefs: request.codeAnchors.codeRefs}),
-        mode: request.mode,
-        scope: request.scope,
-        ...(request.surface === undefined ? {} : {surface: request.surface}),
-        task: request.task,
-      },
+      nativeRequest,
     );
   });
   return yield* compilation.pipe(
+    Effect.tap(projected =>
+      Effect.gen(function* () {
+        if (productCapture === 'disabled') return;
+        yield* captureThreadnote5ContextBriefResultV1(projected);
+        if (productCapture !== 'complete') return;
+        const completedAt = yield* Clock.currentTimeMillis;
+        yield* captureThreadnote5ContextBriefCompletionV1({
+          completedAt: DateTime.formatIso(DateTime.makeUnsafe(completedAt)),
+          durationMilliseconds: Math.max(0, completedAt - startedAt),
+        });
+      }),
+    ),
     Effect.onExit(exit =>
       Clock.currentTimeMillis.pipe(
         Effect.flatMap(completedAt =>
@@ -355,6 +376,22 @@ export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
   return yield* compileContextBriefRuntime(config, input);
 });
 
+/** Activation records the completion event after its receipt revision is durably persisted. */
+export const compileActivationContextBrief = Effect.fn('contextBrief.compileActivation')(function* (
+  config: RuntimeConfig,
+  input: ContextBriefRequestV1 | unknown,
+) {
+  return yield* compileContextBriefRuntime(config, input, {productCapture: 'deferred-event'});
+});
+
+/** Revalidation must not masquerade as a user's first Context Brief attempt. */
+export const compileContextBriefForValidation = Effect.fn('contextBrief.compileForValidation')(function* (
+  config: RuntimeConfig,
+  input: ContextBriefRequestV1 | unknown,
+) {
+  return yield* compileContextBriefRuntime(config, input, {productCapture: 'disabled'});
+});
+
 /** Compile the final source-verification brief used only by setup. */
 export const compileSetupSourceVerificationBrief = Effect.fn('contextBrief.compileSetupSourceVerification')(function* (
   config: RuntimeConfig,
@@ -363,6 +400,7 @@ export const compileSetupSourceVerificationBrief = Effect.fn('contextBrief.compi
   return yield* compileContextBriefRuntime(config, input, {
     codeLinkedMemoryOnly: true,
     includeProcedureEvidence: false,
+    productCapture: 'disabled',
   });
 });
 

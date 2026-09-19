@@ -1,11 +1,12 @@
 import {DateTime, Effect, Path, Schema} from 'effect';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {sha256Hex} from '../effect/digest.js';
+import {captureThreadnote5ValueReportV1} from '../evaluation/threadnote-5-lifecycle-capture.js';
 import {listCandidateReviews} from '../memory/candidate.js';
 import {readRecallFeedbackEvents} from '../recall/feedback.js';
 import type {RuntimeConfig} from '../types.js';
 import {buildValueReportExportV1, serializeValueReportExportV1, type ValueReportExportV1} from './export.js';
-import {aggregateValueReportV1, type ValueReportV1} from './index.js';
+import {aggregateValueReportV1, type ValueReportInputV1, type ValueReportV1} from './index.js';
 import {readLocalValueEvents, summarizeCandidateReviewValue, summarizeLocalValueEvents} from './events.js';
 import {deleteValueReportData, pruneValueReportData, VALUE_REPORT_EXPORT_DIRECTORY} from './storage.js';
 import {ValueArtifactError, writeValueArtifact} from './artifact.js';
@@ -172,7 +173,7 @@ export const buildLocalValueReport = Effect.fn('valueReport.buildLocal')(functio
     to: DateTime.toDateUtc(DateTime.makeUnsafe(absolute ? to - 1 : to)),
   };
   const eventCounts = summarizeLocalValueEvents(valueEvents, range);
-  const report = aggregateValueReportV1({
+  const input: ValueReportInputV1 = {
     counts: {
       ...eventCounts,
       knowledgeDelta: summarizeCandidateReviewValue(candidateReviews, range),
@@ -180,7 +181,9 @@ export const buildLocalValueReport = Effect.fn('valueReport.buildLocal')(functio
     feedbackEvents: absolute ? feedbackEvents.filter(event => Date.parse(event.timestamp) < to) : feedbackEvents,
     period,
     ...(project ? {project} : {}),
-  });
+  };
+  const report = aggregateValueReportV1(input);
+  yield* captureThreadnote5ValueReportV1(input, report);
   return report;
 });
 

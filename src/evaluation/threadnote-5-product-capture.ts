@@ -58,6 +58,13 @@ const scenarioSources: Readonly<Record<Threadnote5ReleaseScenario, readonly Prod
   'output-budgets': ['context-brief', 'closeout'],
 };
 
+export function productCaptureScenarioSupportsSource(
+  scenario: Threadnote5ReleaseScenario,
+  source: ProductCaptureSource,
+): boolean {
+  return scenarioSources[scenario].includes(source);
+}
+
 /** Canonical JSON is validated before native parsing; accessors and exotic objects never reach parsers. */
 export function productCaptureCanonicalJson(value: unknown): string {
   const limits = PRODUCT_CAPTURE_LIMITS;
@@ -110,7 +117,7 @@ export function createThreadnote5ProductCaptureV1(identity: unknown, event: unkn
   const parsedIdentity = parseThreadnote5ProductCaptureIdentityV1(identity);
   const snapshot: unknown = JSON.parse(productCaptureCanonicalJson(event));
   const parsedEvent = parseThreadnote5ProductEventV1(snapshot);
-  if (!scenarioSources[parsedIdentity.scenario].includes(parsedEvent.source)) {
+  if (!productCaptureScenarioSupportsSource(parsedIdentity.scenario, parsedEvent.source)) {
     throw new Error('Product capture source does not belong to the scenario.');
   }
   const body = {...parsedIdentity, ...parsedEvent, type: 'threadnote-product-capture' as const};

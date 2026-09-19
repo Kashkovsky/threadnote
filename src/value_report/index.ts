@@ -17,6 +17,8 @@ const boundedDuration = Schema.Int.check(
 );
 const rate = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(1));
 const isoInstant = Schema.String.check(Schema.isPattern(ISO_INSTANT));
+const boundedText = (maximumLength: number) =>
+  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maximumLength));
 
 export interface ValueReportPeriodV1 {
   readonly from: string;
@@ -119,6 +121,67 @@ export interface ValueReportInputV1 {
 export type ValueReport = ValueReportV1;
 export type ValueReportInput = ValueReportInputV1;
 
+const RecallFeedbackEventV1Schema = Schema.Struct({
+  action: Schema.Literals(['useful', 'wrong', 'pin', 'dismiss', 'applied']),
+  project: Schema.optionalKey(boundedText(256)),
+  queryFingerprint: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+  rankerVersion: boundedText(128),
+  timestamp: isoInstant,
+  uri: boundedText(2_048),
+  version: Schema.Literal(1),
+});
+
+const ValueReportContextBriefInputV1Schema = Schema.Struct({
+  attempts: Schema.optionalKey(boundedCount),
+  coverageGaps: Schema.optionalKey(boundedCount),
+  estimatedTokens: Schema.optionalKey(boundedCount),
+  followUpGraphOperations: Schema.optionalKey(boundedCount),
+  followUpRecallOperations: Schema.optionalKey(boundedCount),
+  requestedCodeAnchors: Schema.optionalKey(boundedCount),
+  resolvedCodeAnchors: Schema.optionalKey(boundedCount),
+  successful: Schema.optionalKey(boundedCount),
+  timeToFirstSuccessfulMilliseconds: Schema.optionalKey(boundedDuration),
+  timeToFirstSuccessfulMillisecondsSamples: Schema.optionalKey(
+    Schema.Array(boundedDuration).check(Schema.isMaxLength(VALUE_REPORT_MAX_TIMING_SAMPLES)),
+  ),
+});
+
+const ValueReportSetupInputV1Schema = Schema.Struct({
+  availability: Schema.optionalKey(Schema.Literals(['available', 'unavailable'])),
+  completed: Schema.optionalKey(boundedCount),
+  failed: Schema.optionalKey(boundedCount),
+  started: Schema.optionalKey(boundedCount),
+  supportedAgentReuse: Schema.optionalKey(boundedCount),
+  timeToFirstEvidenceMilliseconds: Schema.optionalKey(boundedDuration),
+  timeToFirstEvidenceMillisecondsSamples: Schema.optionalKey(
+    Schema.Array(boundedDuration).check(Schema.isMaxLength(VALUE_REPORT_MAX_TIMING_SAMPLES)),
+  ),
+});
+
+const ValueReportInputV1Schema = Schema.Struct({
+  counts: Schema.optionalKey(
+    Schema.Struct({
+      contextBrief: Schema.optionalKey(ValueReportContextBriefInputV1Schema),
+      health: Schema.optionalKey(
+        Schema.Struct({opened: Schema.optionalKey(boundedCount), resolved: Schema.optionalKey(boundedCount)}),
+      ),
+      knowledgeDelta: Schema.optionalKey(
+        Schema.Struct({
+          approved: Schema.optionalKey(boundedCount),
+          deferred: Schema.optionalKey(boundedCount),
+          edited: Schema.optionalKey(boundedCount),
+          proposed: Schema.optionalKey(boundedCount),
+          rejected: Schema.optionalKey(boundedCount),
+        }),
+      ),
+      setup: Schema.optionalKey(ValueReportSetupInputV1Schema),
+    }),
+  ),
+  feedbackEvents: Schema.optionalKey(Schema.Array(RecallFeedbackEventV1Schema).check(Schema.isMaxLength(5_000))),
+  period: Schema.Struct({from: isoInstant, to: isoInstant}),
+  project: Schema.optionalKey(boundedText(256)),
+});
+
 export const ValueReportV1Schema = Schema.Struct({
   contextBrief: Schema.Struct({
     attempts: boundedCount,
@@ -196,6 +259,13 @@ export function parseValueReportV1(value: unknown): ValueReportV1 {
     throw new Error('Value report successful briefs cannot exceed attempts.');
   }
   return report;
+}
+
+/** Strict parser for the exact private input used to build a local value report. */
+export function parseValueReportInputV1(value: unknown): ValueReportInputV1 {
+  const input = Schema.decodeUnknownSync(ValueReportInputV1Schema, STRICT_PARSE_OPTIONS)(value);
+  if (input.period.from > input.period.to) throw new Error('Value report input period must be ordered.');
+  return input;
 }
 
 export function aggregateValueReportV1(input: ValueReportInputV1): ValueReportV1 {

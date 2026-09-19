@@ -1,5 +1,6 @@
 import {Crypto, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {captureThreadnote5ActivationValueEventV1} from '../evaluation/threadnote-5-lifecycle-capture.js';
 import type {CandidateReview} from '../memory/candidate.js';
 import type {ValueReportCountsInputV1} from './index.js';
 
@@ -75,12 +76,15 @@ export const recordActivationValueEvent = Effect.fn('valueReport.recordActivatio
   agentContextHome: string,
   event: Omit<ActivationValueEventV1, 'kind' | 'version'>,
 ) {
-  yield* appendValueEvent(agentContextHome, {
+  const nativeEvent: ActivationValueEventV1 = {
     ...event,
     durationMilliseconds: boundedDuration(event.durationMilliseconds),
     kind: 'activation',
     version: VALUE_EVENT_VERSION,
-  });
+  };
+  if (yield* appendValueEvent(agentContextHome, nativeEvent)) {
+    yield* captureThreadnote5ActivationValueEventV1(nativeEvent);
+  }
 });
 
 export const recordContextBriefValueEvent = Effect.fn('valueReport.recordContextBrief')(function* (
@@ -290,7 +294,7 @@ const appendValueEvent = Effect.fn('valueReport.appendEvent')(function* (
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const path = valueEventPath(pathService, agentContextHome);
-  yield* withExclusiveFileLock(
+  return yield* withExclusiveFileLock(
     fs,
     `${path}.lock`,
     LOCK_OPTIONS,
@@ -300,9 +304,10 @@ const appendValueEvent = Effect.fn('valueReport.appendEvent')(function* (
         'eventId' in event &&
         existing.some(candidate => 'eventId' in candidate && candidate.eventId === event.eventId)
       ) {
-        return;
+        return false;
       }
       yield* writeValueEvents(fs, path, retainEvents([...existing, event], event.timestamp));
+      return true;
     }),
   );
 });
