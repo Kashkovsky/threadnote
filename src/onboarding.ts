@@ -1,6 +1,6 @@
 import {Effect} from 'effect';
 import {readSeedManifest} from './manifest.js';
-import type {McpToolset} from './mcp/toolset.js';
+import {DEFAULT_MCP_TOOLSET, mcpToolCapabilities, type McpToolset} from './mcp/toolset.js';
 import {readTeamsFile} from './share/index.js';
 
 // Minimal config shape the onboarding probes need, structurally satisfied by
@@ -97,7 +97,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
       : 'No seeded project guidance yet — recall draws on personal memories and shared team memories.';
 
   const hasTeam = state.teams.length > 0;
-  const fullToolset = state.toolset === 'full';
+  const capabilities = mcpToolCapabilities(state.toolset ?? DEFAULT_MCP_TOOLSET);
 
   return [
     '# Threadnote — what you can do here',
@@ -137,15 +137,21 @@ export function buildOnboardingGuide(state: OnboardingState): string {
       ? '  Run: share_publish({"uri":"threadnote://user/<you>/memories/durable/projects/<p>/<m>.md"}).'
       : '  First (one-time): `threadnote share init git@github.com:org/team-memories.git`, then share_publish({"uri":"..."}).',
     '',
-    ...(fullToolset
+    ...(capabilities.lifecycle
       ? [
-          'Discover progressively: use context health aggregate/metadata and preview repair; inspect verified procedures without',
-          'auto-executing them; import/project guidance; prove guided activation; then use `recall_feedback`/ValueReport.',
-          'The full toolset exposes `context_health`, `context_health_aggregate`, `context_health_schedule`,',
-          '`context_health_repair_preview`, `context_health_repair_apply`, `context_metadata_preview`, and',
-          '`context_metadata_apply`. Publish procedures with `procedure_publish_preview` then explicit',
-          '`procedure_publish_apply`; they are admitted only when compatible and never auto-execute.',
-          'Use `complete_activation_retrieval_proof` for activation proof. Preview guidance import/projection, review candidates or selected memories, then apply explicitly.',
+          'Health and repair are available here: inspect health/metadata, preview repair, then apply only after confirmation.',
+          '  Run: context_health({"project":"<repo>","callerCwd":"<abs cwd>"}), context_health_aggregate({"project":"<repo>","callerCwd":"<abs cwd>"}),',
+          '  context_health_schedule({"project":"<repo>","cadenceMinutes":60}), context_health_repair_preview({"project":"<repo>","callerCwd":"<abs cwd>"}),',
+          '  context_health_repair_apply({"project":"<repo>","callerCwd":"<abs cwd>","proposalId":"<preview id>","revision":"<preview revision>","approved":true}),',
+          '  context_metadata_preview({"uri":"threadnote://...","owner":"<owner>"}), or context_metadata_apply({"uri":"threadnote://...","owner":"<owner>","approved":true,"expectedContentHash":"<preview hash>","proposalId":"<preview id>","revision":"<preview revision>"}).',
+          '  Record recall feedback with recall_feedback({"action":"useful","query":"<recall query>","uri":"threadnote://..."}). Publish verified procedures with',
+          '  procedure_publish_preview({"artifact":"<path>","manifest":"<path>","receipt":"<path>"}) then explicit procedure_publish_apply({"artifact":"<path>","manifest":"<path>","receipt":"<path>","proposalId":"<preview id>","approved":true}); they are admitted only when compatible and never auto-execute.',
+          'Use complete_activation_retrieval_proof for activation proof. Use the CLI only for workflows that do not have an MCP call.',
+          '',
+        ]
+      : []),
+    ...(capabilities.maintenance
+      ? [
           'Tidy memory — when recall surfaces overlapping notes for one topic, preview a scoped merge.',
           '  Run: compact_context({"project":"<repo>","topic":"<topic>","dryRun":true}) and review before applying.',
           '',
@@ -156,16 +162,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
           '  then install_shared_skill({"name":"<name>"}).',
           '',
         ]
-      : [
-          '## Advanced capabilities',
-          '',
-          'Health and repair, verified procedures, guidance import/projection, activation proof, recall feedback, and ValueReport are',
-          'available progressively. Procedures are admitted only after verification and are never auto-executed.',
-          'Use the equivalent `threadnote` CLI command when a needed feature is unavailable in this core toolset. To expose their',
-          'MCP tools in future sessions, run `threadnote mcp-install <agent> --toolset full --apply` and',
-          'start a fresh agent session.',
-          '',
-        ]),
+      : []),
     'Setup & health — verify the local home, indexes, and optional model files.',
     state.runtimeReady === false
       ? '  Run: `threadnote install`, then `threadnote doctor`.'

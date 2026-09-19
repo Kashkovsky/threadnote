@@ -2,7 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {buildOnboardingGuide} from '../../src/onboarding.js';
 
 describe('buildOnboardingGuide', () => {
-  it('lists core calls and catalogs advanced capability categories', () => {
+  it('lists core calls, including lifecycle MCP calls, and catalogs full-only capabilities', () => {
     const guide = buildOnboardingGuide({seededProjects: [], teams: []});
     expect(guide).toContain('# Threadnote — what you can do here');
     for (const call of [
@@ -11,6 +11,16 @@ describe('buildOnboardingGuide', () => {
       'apply_memory_candidates',
       'remember_context(',
       'share_publish(',
+      'context_health(',
+      'context_health_aggregate(',
+      'context_health_schedule(',
+      'context_health_repair_preview(',
+      'context_health_repair_apply(',
+      'context_metadata_preview(',
+      'context_metadata_apply(',
+      'recall_feedback(',
+      'procedure_publish_preview(',
+      'procedure_publish_apply(',
     ]) {
       expect(guide).toContain(call);
     }
@@ -19,7 +29,8 @@ describe('buildOnboardingGuide', () => {
     expect(guide).toContain('Health and repair');
     expect(guide).toContain('verified procedures');
     expect(guide).toContain('activation proof');
-    expect(guide).toContain('mcp-install <agent> --toolset full --apply');
+    expect(guide).toContain('recall_feedback({"action":"useful","query":"<recall query>","uri":"threadnote://..."})');
+    expect(guide).not.toContain('mcp-install <agent> --toolset full --apply');
     // It instructs the agent to present + offer, not to paste verbatim.
     expect(guide).toMatch(/OFFER to run it/);
     expect(guide).toMatch(/Do NOT paste this list verbatim/);
@@ -46,12 +57,12 @@ describe('buildOnboardingGuide', () => {
     expect(guide).toContain('approve (optional editedText), defer, or reject');
     expect(guide).toContain('a Context Brief is the usual starting point');
     expect(guide).not.toContain('recall for the current repo is the usual starting point');
-    expect(guide).not.toContain('context_health/context_health_aggregate');
+    expect(guide).toContain('context_health({');
     expect(guide).toContain('recall feedback');
     expect(guide).toContain('owner');
     expect(guide).toContain('review_after');
     expect(guide).toContain('validTo/valid_to');
-    expect(guide).toContain('CLI command when a needed feature is unavailable');
+    expect(guide).toContain('Use the CLI only for workflows that do not have an MCP call');
   });
 
   it('includes runnable advanced MCP calls for the full toolset', () => {
@@ -64,8 +75,6 @@ describe('buildOnboardingGuide', () => {
     expect(guide).toContain('recall_feedback');
     expect(guide).toContain('<agent-skill-dir>/<name>/SKILL.md');
     expect(guide).not.toContain('~/.claude/skills/');
-    expect(guide).toContain('Preview guidance import/projection');
-    expect(guide).not.toContain('Guidance import/projection requires explicit proof');
   });
 
   it('describes shared durable writes and transient local handoffs for Cursor Cloud', () => {

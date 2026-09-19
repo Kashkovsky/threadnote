@@ -517,6 +517,7 @@ describe('Cursor Cloud integration', () => {
           fixture,
           ['engineering'],
           async client => {
+            expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(CLOUD_TOOL_NAMES);
             await expect(
               callError(client, 'read_context', {
                 uri: 'threadnote://user/cloud-user/memories/durable/projects/threadnote/private.md',
