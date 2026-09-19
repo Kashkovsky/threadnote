@@ -11,7 +11,7 @@ Do not run `bun test` / `bun run test` locally. PR CI is the authoritative full-
 
 - The specific `test/unit/...` or `test/integration/...` files for the behavior you changed.
 - `bun run lint` and `bun run typecheck` when the change is TypeScript or script logic.
-- Effect tests use `@effect/vitest` (`effectIt.effect` / `effectIt.scoped` / `effectIt.effect.prop`). Convert a touched `runEffect(Effect...)` async test unless it is a Promise/OS/CLI boundary.
+- Effect tests use `@effect/vitest`: import `it` as `effectIt` and use `effectIt.effect` for Effect examples (it already scopes the test), `effectIt.effect.prop` for Effect properties, and `Effect.scoped` inside the returned Effect only when an intentional nested sub-scope is needed. Convert a touched `runEffect(Effect...)` async test unless it is a Promise/OS/CLI boundary.
 
 ## After the PR opens
 
