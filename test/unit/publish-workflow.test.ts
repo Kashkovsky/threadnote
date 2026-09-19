@@ -2,7 +2,23 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {BunFileSystem} from '@effect/platform-bun';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
+import {JSON_SCHEMA, load} from 'js-yaml';
 import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
+
+interface PublisherWorkflow {
+  readonly env?: Readonly<Record<string, string>>;
+  readonly jobs: Readonly<{
+    readonly publish?: {
+      readonly env?: Readonly<Record<string, string>>;
+      readonly steps?: readonly {
+        readonly name?: string;
+        readonly run?: string;
+        readonly uses?: string;
+        readonly with?: Readonly<Record<string, string>>;
+      }[];
+    };
+  }>;
+}
 
 const readProjectFile = (path: string) =>
   FileSystem.FileSystem.pipe(
@@ -137,6 +153,46 @@ describe('standalone release workflows', () => {
       );
       expect(workflow).toContain('actions: write');
       expect(workflow).not.toContain('types: [published]');
+    }),
+  );
+
+  it.effect('sets up the pinned Bun runtime before every publisher Bun invocation', () =>
+    Effect.gen(function* () {
+      const publisher = load(yield* readProjectFile('.github/workflows/publish-release-assets.yml'), {
+        schema: JSON_SCHEMA,
+      }) as PublisherWorkflow;
+      const releaseWorkflow = load(yield* readProjectFile('.github/workflows/publish.yml'), {
+        schema: JSON_SCHEMA,
+      }) as PublisherWorkflow;
+      const job = publisher.jobs.publish;
+      const steps = job?.steps ?? [];
+      const setupIndex = steps.findIndex(step => step.uses === 'oven-sh/setup-bun@v2');
+      const bunRunSteps = steps
+        .map((step, index) => ({index, run: step.run ?? ''}))
+        .filter(({run}) => /(?:^|[\s;&|])bun(?:\s|$)/.test(run));
+      const releaseStep = steps
+        .map((step, index) => ({index, run: step.run ?? ''}))
+        .find(({run}) => run.includes('verify_beta_release_freeze() {'));
+      const releaseRun = releaseStep?.run ?? '';
+      const freezeStart = releaseRun.indexOf('verify_beta_release_freeze() {');
+      const freezeEnd =
+        freezeStart >= 0
+          ? releaseRun.indexOf('verify_release_source() {', freezeStart + 'verify_beta_release_freeze() {'.length)
+          : -1;
+      const freezeFunction =
+        freezeStart >= 0 && freezeEnd > freezeStart ? releaseRun.slice(freezeStart, freezeEnd) : '';
+
+      expect(releaseWorkflow?.env?.BUN_VERSION).toBe('1.4.2');
+      expect(job?.env?.BUN_VERSION).toBe(releaseWorkflow?.env?.BUN_VERSION);
+      expect(setupIndex).toBeGreaterThanOrEqual(0);
+      expect(steps[setupIndex]?.with).toEqual({'bun-version': '${{ env.BUN_VERSION }}'});
+      expect(bunRunSteps.length).toBeGreaterThan(0);
+      expect(bunRunSteps.every(({index}) => setupIndex < index)).toBe(true);
+      expect(releaseStep).toBeDefined();
+      expect(setupIndex).toBeLessThan(releaseStep?.index ?? Number.POSITIVE_INFINITY);
+      expect(freezeStart).toBeGreaterThanOrEqual(0);
+      expect(freezeEnd).toBeGreaterThan(freezeStart);
+      expect(freezeFunction).toContain('RELEASE_FREEZE_RULESET="$freeze_ruleset" bun -e');
     }),
   );
 

@@ -19,6 +19,8 @@ jobs:
   publish:
     name: Publish complete immutable release
     runs-on: ubuntu-latest
+    env:
+      BUN_VERSION: 1.4.2
     permissions:
       contents: write
 
@@ -28,6 +30,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ inputs.release_sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
 
       - uses: actions/download-artifact@v8
         with:
