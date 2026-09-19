@@ -1,4 +1,4 @@
-import {isPurePrivateEvaluationProductCaptureDiff} from './private-evaluation-product-capture-scope.js';
+import {isPurePrivateReleaseEvidenceDiff} from './private-release-evidence-family.js';
 
 export interface PlatformBenchmarkDiff {
   readonly afterPackageJson?: string;
@@ -252,7 +252,7 @@ export function classifyPlatformBenchmarkScope(diff: PlatformBenchmarkDiff): Pla
   if (invalidPath || sortedPaths.length === 0) {
     return {changedCount: sortedPaths.length, invalidPath, paths: sortedPaths, runCodeGraphPr: true, runRecallPr: true};
   }
-  if (isPurePrivateEvaluationProductCaptureDiff(sortedPaths)) {
+  if (isPurePrivateReleaseEvidenceDiff(sortedPaths)) {
     return {
       changedCount: sortedPaths.length,
       invalidPath,
