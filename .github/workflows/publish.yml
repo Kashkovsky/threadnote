@@ -570,6 +570,8 @@ jobs:
     with:
       release_tag: ${{ github.ref_name }}
       release_sha: ${{ github.sha }}
+    secrets:
+      release_coordinator_token: ${{ secrets.THREADNOTE_RELEASE_COORDINATOR_TOKEN }}
 
   refresh-website:
     name: Refresh website after stable release publication

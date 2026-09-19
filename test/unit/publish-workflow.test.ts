@@ -289,6 +289,7 @@ describe('standalone release workflows', () => {
         expect(workflow.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(5);
         expect(workflow.match(/persist-credentials: false/g)).toHaveLength(5);
         expect(workflow).toContain('release_sha: ${{ github.sha }}');
+        expect(workflow).toContain('release_coordinator_token: ${{ secrets.THREADNOTE_RELEASE_COORDINATOR_TOKEN }}');
         expect(publisher).toContain('ref: ${{ inputs.release_sha }}');
         expect(publisher).toContain('persist-credentials: false');
         expect(publisher).toContain('refs/tags/${RELEASE_TAG}:refs/threadnote-release-tag');
@@ -299,6 +300,16 @@ describe('standalone release workflows', () => {
         expect(publisher).toContain('Threadnote 5.0 beta publication freeze');
         expect(publisher).toContain('repository_is_fork');
         expect(publisher).toContain("--jq '.fork'");
+        expect(publisher).toContain(
+          "RELEASE_COORDINATOR_TOKEN: ${{ startsWith(inputs.release_tag, 'v5.0.0-beta.') && secrets.release_coordinator_token || '' }}",
+        );
+        expect(publisher.match(/GH_TOKEN="\$RELEASE_COORDINATOR_TOKEN" gh api/g)).toHaveLength(2);
+        expect(publisher).toContain('GH_TOKEN: ${{ github.token }}');
+        expect(publisher).not.toContain('GH_TOKEN: ${{ secrets.release_coordinator_token }}');
+        expect(publisher.indexOf('unset RELEASE_COORDINATOR_TOKEN')).toBeLessThan(
+          publisher.indexOf('gh release create'),
+        );
+        expect(publisher).toContain('requires a release coordinator token with read access to repository rulesets');
         expect(publisher).toContain('ruleset.conditions?.ref_name?.exclude?.length === 0');
         expect(publisher).toContain('update_allows_fetch_and_merge !== true');
         expect(publisher).toContain('GitHub omits update parameters when false');

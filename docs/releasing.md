@@ -513,6 +513,13 @@ macOS:
 The workflow selects the single valid Developer ID Application identity imported from the PKCS#12 file and signs by
 its certificate fingerprint. An identity-name secret is not required.
 
+Beta publication coordination:
+
+- `THREADNOTE_RELEASE_COORDINATOR_TOKEN`: a fine-grained token scoped to this repository with read-only
+  Administration permission. The publisher uses it only to inspect the active beta freeze ruleset; release creation
+  continues to use the job-scoped GitHub token. The default GitHub Actions token cannot prove that a ruleset has no
+  bypass actors and is intentionally rejected for this check.
+
 Deferred Windows configuration, not required for the current release line:
 
 - `AZURE_CLIENT_ID`
