@@ -18,10 +18,22 @@ import {readActiveProjectMemoryRecords, readMaintenanceMemoryRecords} from './ma
 import {memoryIdFromIdentityAlias} from './identity_alias.js';
 import {MemoryOperationError} from './migrations.js';
 import {guidanceHealthEvidence} from '../guidance/index.js';
+import {
+  contextHealthSelectorCliFlags,
+  contextHealthSelectorDescription,
+  contextHealthSelectorFindingUris,
+  normalizeContextHealthSelector,
+  projectContextHealthRecords,
+  type ContextHealthSelectorV1,
+} from './context_health_selector.js';
 
 export interface RunContextHealthOptionsV1 {
+  readonly after?: string;
+  readonly findingCategory?: string;
   readonly json?: boolean;
+  readonly kind?: string;
   readonly project: string;
+  readonly topic?: string;
 }
 
 export const runContextHealth = Effect.fn('memory.contextHealth.command')(function* (
@@ -33,14 +45,26 @@ export const runContextHealth = Effect.fn('memory.contextHealth.command')(functi
     return yield* MemoryOperationError.make({message: 'Provide --project for scoped context health.'});
   }
   const records = yield* readActiveProjectMemoryRecords(config, project);
+  const selector = normalizeContextHealthSelector(options);
+  const selectedRecords = projectContextHealthRecords(records, selector);
   const system = yield* SystemInfo;
-  const report = yield* collectContextHealth(config, project, records, system.currentDirectory());
-  yield* recordHealthValueSnapshot(config.agentContextHome, {
-    activeFindings: report.findings.length + report.omittedFindings,
-    project,
-    timestamp: (yield* DateTime.nowAsDate).toISOString(),
-  }).pipe(Effect.ignore);
-  yield* writeFinalCliOutput(options.json ? JSON.stringify(report) : renderContextHealth(report));
+  const report = yield* collectContextHealth(config, project, selectedRecords, system.currentDirectory(), {
+    after: selector?.after,
+    duplicateCorpus: records,
+    ...(selector === undefined ? {} : {includeFindingCombination: 'all' as const}),
+    ...(selector?.findingCategory === undefined ? {} : {includeFindingCategories: [selector.findingCategory]}),
+    ...(contextHealthSelectorFindingUris(selector, selectedRecords) === undefined
+      ? {}
+      : {includeFindingUris: contextHealthSelectorFindingUris(selector, selectedRecords)}),
+  });
+  if (selector === undefined) {
+    yield* recordHealthValueSnapshot(config.agentContextHome, {
+      activeFindings: report.findings.length + report.omittedFindings,
+      project,
+      timestamp: (yield* DateTime.nowAsDate).toISOString(),
+    }).pipe(Effect.ignore);
+  }
+  yield* writeFinalCliOutput(options.json ? JSON.stringify(report) : renderContextHealth(report, selector));
 });
 
 /** Shared read-only evidence collection for health and CI; never prepares a graph. */
@@ -50,7 +74,10 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
   records: Parameters<typeof buildContextHealthReport>[0]['records'],
   cwd: string,
   options: {
+    readonly after?: string;
+    readonly duplicateCorpus?: Parameters<typeof buildContextHealthReport>[0]['records'];
     readonly includeFindingCategories?: Parameters<typeof buildContextHealthReport>[0]['includeFindingCategories'];
+    readonly includeFindingCombination?: Parameters<typeof buildContextHealthReport>[0]['includeFindingCombination'];
     readonly includeFindingUris?: readonly string[];
     readonly relationCorpus?: Parameters<typeof buildContextHealthReport>[0]['records'];
   } = {},
@@ -71,10 +98,13 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
   const candidateEvidence = yield* candidateStatusEvidence(config, project);
   const guidanceEvidence = yield* guidanceHealthEvidence(config, project, cwd);
   return buildContextHealthReport({
+    after: options.after,
     candidateEvidence,
     guidanceEvidence,
     citationValidations,
+    duplicateCorpus: options.duplicateCorpus,
     includeFindingCategories: options.includeFindingCategories,
+    includeFindingCombination: options.includeFindingCombination,
     includeFindingUris: options.includeFindingUris,
     now,
     project,
@@ -183,11 +213,15 @@ const candidateStatusEvidence = Effect.fn('memory.contextHealth.candidateEvidenc
     );
 });
 
-export function renderContextHealth(report: ReturnType<typeof buildContextHealthReport>): string {
+export function renderContextHealth(
+  report: ReturnType<typeof buildContextHealthReport>,
+  selector?: ContextHealthSelectorV1,
+): string {
   const shownFindings = report.findings.length;
   const totalFindings = shownFindings + report.omittedFindings;
   const lines = [
     `Context health for ${report.project}: status=${report.status}; ${report.recordsScanned} active record${report.recordsScanned === 1 ? '' : 's'}; ${totalFindings} total finding${totalFindings === 1 ? '' : 's'} (${shownFindings} shown${report.omittedFindings > 0 ? `, ${report.omittedFindings} omitted` : ''}).`,
+    ...(selector === undefined ? [] : [`Active selector: ${contextHealthSelectorDescription(selector)}.`]),
     `Semantic evidence: ${report.semanticCompleteness.state}; ${report.semanticCompleteness.analyzedRecords}/${report.semanticCompleteness.eligibleRecords} durable record(s) analyzed, ${report.semanticCompleteness.unknownRecords} unknown.`,
   ];
   if (report.findings.length <= 12) {
@@ -219,15 +253,30 @@ export function renderContextHealth(report: ReturnType<typeof buildContextHealth
         .join(', ')}.`,
     );
   }
+  if (report.status === 'unknown' && report.semanticCompleteness.state !== 'complete') {
+    lines.push('Known findings remain actionable, but partial semantic evidence cannot establish clean health.');
+  }
+  const project = shellQuote(report.project);
+  const selectorFlags = contextHealthSelectorCliFlags(selector, shellQuote);
+  if (report.omittedFindings > 0) {
+    lines.push(
+      `- ${report.omittedFindings} finding(s) are outside this bounded page${report.remainingFindings === undefined ? '' : `; ${report.remainingFindings} remain after it`}.`,
+    );
+    if (report.nextCursor !== undefined) {
+      const nextSelector = {...selector, after: report.nextCursor};
+      lines.push(
+        `- Continue this exact scope without duplicates: threadnote context health --project ${project}${contextHealthSelectorCliFlags(nextSelector, shellQuote)}`,
+      );
+    }
+  }
   if (report.findings.length > 0) {
     const reviewable = report.findings.filter(finding => finding.repairability === 'reviewable').length;
     const manualReview = report.findings.filter(finding => finding.repairability === 'manual-review').length;
     const requiresEvidence = report.findings.filter(finding => finding.repairability === 'requires-evidence').length;
-    const project = shellQuote(report.project);
     lines.push('Next steps for the shown findings:');
     if (reviewable > 0) {
       lines.push(
-        `- Preview ${reviewable} reviewable finding${reviewable === 1 ? '' : 's'} with owner metadata: threadnote context repair preview --project ${project} --json`,
+        `- Preview ${reviewable} reviewable finding${reviewable === 1 ? '' : 's'} with owner metadata: threadnote context repair preview --project ${project}${selectorFlags} --json`,
       );
     }
     if (manualReview > 0) {
@@ -239,7 +288,7 @@ export function renderContextHealth(report: ReturnType<typeof buildContextHealth
       );
     }
     lines.push(
-      `- Inspect structured details for the shown findings: threadnote context health --project ${project} --json`,
+      `- Inspect structured details for the shown findings: threadnote context health --project ${project}${selectorFlags} --json`,
     );
   }
   return lines.join('\n');

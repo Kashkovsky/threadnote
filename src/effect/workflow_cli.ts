@@ -18,6 +18,7 @@ import {CONTEXT_BRIEF_CWD_OPTION, type runContextBrief} from '../context_brief/c
 import type {runCompact} from '../memory/commands.js';
 import type {runRecallFeedback} from '../recall/feedback_commands.js';
 import type {runContextHealth} from '../memory/context_health_commands.js';
+import {CONTEXT_HEALTH_FINDING_CATEGORIES, CONTEXT_HEALTH_MEMORY_KINDS} from '../memory/context_health_selector.js';
 import type {runContextHealthAggregate, runContextHealthSchedule} from '../memory/context_health_aggregate_commands.js';
 import type {
   runContextHealthRepairApply,
@@ -136,8 +137,16 @@ export function makeContextHealthCommand<E, R>(
   return Command.make(
     'health',
     {
+      after: optionalString('after', 'Opaque continuation cursor returned by the prior exact-scope page'),
+      findingCategory: optionalChoice(
+        'finding-category',
+        CONTEXT_HEALTH_FINDING_CATEGORIES,
+        'Exact finding category; intersects with --kind and --topic',
+      ),
       json: boolean('json', 'Emit the bounded ContextHealthReportV1 as JSON'),
+      kind: optionalChoice('kind', CONTEXT_HEALTH_MEMORY_KINDS, 'Exact memory kind to inspect'),
       project: requiredString('project', 'Project/repo namespace to inspect'),
+      topic: optionalString('topic', 'Exact memory topic to inspect; may be combined with --kind'),
     },
     handler,
   ).pipe(
@@ -154,15 +163,23 @@ export function makeContextHealthRepairCommand<E, R>(
   const preview = Command.make(
     'preview',
     {
+      after: optionalString('after', 'Opaque continuation cursor returned by the prior exact-scope page'),
       contradictionId: optionalString(
         'contradiction-id',
         'Analyzer contradiction ID being explicitly directed; requires the other semantic direction flags',
       ),
       currentUri: optionalString('current-uri', 'Reviewed current memory URI for the selected contradiction'),
+      findingCategory: optionalChoice(
+        'finding-category',
+        CONTEXT_HEALTH_FINDING_CATEGORIES,
+        'Exact finding category; intersects with --kind and --topic',
+      ),
       json: boolean('json', 'Emit the bounded ContextHealthRepairPlanV1 as JSON'),
+      kind: optionalChoice('kind', CONTEXT_HEALTH_MEMORY_KINDS, 'Exact memory kind to inspect'),
       project: requiredString('project', 'Project/repo namespace to inspect'),
       reportRevision: optionalString('report-revision', 'Exact health report revision being reviewed'),
       staleUri: optionalString('stale-uri', 'Reviewed stale memory URI for the selected contradiction'),
+      topic: optionalString('topic', 'Exact memory topic to inspect; may be combined with --kind'),
     },
     previewHandler,
   ).pipe(Command.withDescription('Preview exact, bounded repairs without changing memory'));
@@ -170,11 +187,19 @@ export function makeContextHealthRepairCommand<E, R>(
   const apply = Command.make(
     'apply',
     {
+      after: optionalString('after', 'Exact continuation cursor used for preview'),
       approved: boolean('approved', 'Confirm explicit approval for this exact repair proposal revision'),
+      findingCategory: optionalChoice(
+        'finding-category',
+        CONTEXT_HEALTH_FINDING_CATEGORIES,
+        'Exact finding category used for preview; intersects with --kind and --topic',
+      ),
       json: boolean('json', 'Emit the ContextHealthRepairApplyResultV1 as JSON'),
+      kind: optionalChoice('kind', CONTEXT_HEALTH_MEMORY_KINDS, 'Exact memory kind used for preview'),
       project: requiredString('project', 'Project/repo namespace containing the reviewed proposal'),
       proposalId: requiredString('proposal-id', 'Exact proposal ID from context repair preview'),
       revision: requiredString('revision', 'Exact proposal revision from context repair preview'),
+      topic: optionalString('topic', 'Exact memory topic used for preview'),
     },
     applyHandler,
   ).pipe(Command.withDescription('Apply one explicitly approved, revision-checked personal-memory repair'));

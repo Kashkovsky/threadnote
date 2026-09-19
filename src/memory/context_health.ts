@@ -10,6 +10,7 @@ import {
   type ContextHealthSemanticCompletenessV1,
   type ContextHealthSemanticContradictionV1,
 } from './context_health_semantic.js';
+import {sha256HexSync} from '../crypto/sha256.js';
 
 export const CONTEXT_HEALTH_REPORT_VERSION = 1 as const;
 export const DEFAULT_CONTEXT_HEALTH_FINDING_LIMIT = 100 as const;
@@ -82,10 +83,14 @@ export interface ContextHealthGuidanceEvidenceV1 {
 }
 
 export interface ContextHealthReportInputV1 {
+  readonly after?: string;
   readonly candidateEvidence?: readonly ContextHealthCandidateEvidenceV1[];
   readonly guidanceEvidence?: readonly ContextHealthGuidanceEvidenceV1[];
   readonly citationValidations?: readonly ContextBriefMemoryCitationValidationV2[];
+  readonly duplicateCorpus?: readonly MemoryRecord[];
   readonly includeFindingCategories?: readonly ContextHealthFindingCategoryV1[];
+  /** How category and URI filters combine when both are present. Defaults to the legacy `any` behavior. */
+  readonly includeFindingCombination?: 'all' | 'any';
   readonly includeFindingUris?: readonly string[];
   readonly limit?: number;
   readonly now: Date;
@@ -98,8 +103,11 @@ export interface ContextHealthReportV1 {
   readonly findings: readonly ContextHealthFindingV1[];
   readonly limit: number;
   readonly omittedFindings: number;
+  readonly nextCursor?: string;
   readonly project: string;
   readonly recordsScanned: number;
+  /** Findings after this page; unlike omittedFindings, excludes earlier pages. */
+  readonly remainingFindings?: number;
   readonly semanticCompleteness: ContextHealthSemanticCompletenessV1;
   readonly status: 'clean' | 'findings' | 'unknown';
   readonly version: typeof CONTEXT_HEALTH_REPORT_VERSION;
@@ -115,31 +123,45 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
     input.includeFindingCategories === undefined ? undefined : new Set(input.includeFindingCategories);
   const includeFindingUris = input.includeFindingUris === undefined ? undefined : new Set(input.includeFindingUris);
   const semanticAnalysis = analyzeContextHealthSemantics({project: input.project, records});
+  const duplicateCorpus = (input.duplicateCorpus ?? records)
+    .filter(record => record.metadata.status === 'active' && record.metadata.project === input.project)
+    .sort(compareRecords);
   const findings = deduplicateFindings(
     [
       ...validityFindings(records, input.now),
       ...reviewFindings(records, input.now),
       ...citationFindings(input.citationValidations ?? [], recordUris),
       ...relationFindings(input.relationEvidence ?? [], records),
-      ...duplicateFindings(records, input.project, input.now),
+      ...duplicateFindings(duplicateCorpus, input.project, input.now),
       ...candidateFindings(input.candidateEvidence ?? [], input.project),
       ...guidanceFindings(input.guidanceEvidence ?? []),
       ...semanticFindings(semanticAnalysis.contradictions),
     ].sort(compareFindings),
-  ).filter(
-    finding =>
-      (includeFindingUris === undefined && includeFindingCategories === undefined) ||
-      includeFindingCategories?.has(finding.category) === true ||
-      finding.uris.some(uri => includeFindingUris?.has(uri) === true),
-  );
+  ).filter(finding => {
+    const categoryMatches = includeFindingCategories?.has(finding.category);
+    const uriMatches =
+      includeFindingUris === undefined ? undefined : findingMatchesSelectedUris(finding, includeFindingUris);
+    if (categoryMatches === undefined) return uriMatches ?? true;
+    if (uriMatches === undefined) return categoryMatches;
+    return input.includeFindingCombination === 'all' ? categoryMatches && uriMatches : categoryMatches || uriMatches;
+  });
   const limit = findingLimit(input.limit);
+  const cursorDigest = contextHealthCursorDigest(records, findings);
+  const start = contextHealthCursorStart(input.after, findings.length, cursorDigest);
+  const selectedFindings = findings.slice(start, start + limit);
+  const omittedFindings = Math.max(0, findings.length - selectedFindings.length);
+  const remainingFindings = Math.max(0, findings.length - start - selectedFindings.length);
   const filtered = includeFindingUris !== undefined || includeFindingCategories !== undefined;
   return {
-    findings: findings.slice(0, limit),
+    findings: selectedFindings,
     limit,
-    omittedFindings: Math.max(0, findings.length - limit),
+    ...(remainingFindings === 0
+      ? {}
+      : {nextCursor: contextHealthCursor(start + selectedFindings.length, cursorDigest)}),
+    omittedFindings,
     project: input.project,
     recordsScanned: records.length,
+    ...(input.after === undefined && remainingFindings === 0 ? {} : {remainingFindings}),
     semanticCompleteness: semanticAnalysis.completeness,
     status:
       semanticAnalysis.completeness.state !== 'complete' || (filtered && findings.length === 0)
@@ -149,6 +171,46 @@ export function buildContextHealthReport(input: ContextHealthReportInputV1): Con
           : 'clean',
     version: CONTEXT_HEALTH_REPORT_VERSION,
   };
+}
+
+function findingMatchesSelectedUris(finding: ContextHealthFindingV1, includeFindingUris: ReadonlySet<string>): boolean {
+  return finding.repair.subjectUri === undefined
+    ? finding.uris.some(uri => includeFindingUris.has(uri))
+    : includeFindingUris.has(finding.repair.subjectUri);
+}
+
+function contextHealthCursor(position: number, digest: string): string {
+  return `hcx1_${position.toString(36)}_${digest.slice(0, 40)}`;
+}
+
+function contextHealthCursorStart(after: string | undefined, findingCount: number, digest: string): number {
+  if (after === undefined) return 0;
+  const match = /^hcx1_([1-9a-z][0-9a-z]*)_([0-9a-f]{40})$/u.exec(after);
+  const position = match === null ? Number.NaN : Number.parseInt(match[1] ?? '', 36);
+  if (
+    !Number.isSafeInteger(position) ||
+    position <= 0 ||
+    position >= findingCount ||
+    match?.[2] !== digest.slice(0, 40)
+  ) {
+    throw new Error('Context-health continuation cursor is invalid or stale; rerun the first page.');
+  }
+  return position;
+}
+
+function contextHealthCursorDigest(
+  records: readonly MemoryRecord[],
+  findings: readonly ContextHealthFindingV1[],
+): string {
+  return sha256HexSync(
+    JSON.stringify({
+      findings: findings.map(finding => finding.id),
+      records: records
+        .map(record => ({contentHash: sha256HexSync(record.content), uri: record.uri}))
+        .sort((left, right) => compareText(`${left.uri}\0${left.contentHash}`, `${right.uri}\0${right.contentHash}`)),
+      version: CONTEXT_HEALTH_REPORT_VERSION,
+    }),
+  );
 }
 
 function semanticFindings(

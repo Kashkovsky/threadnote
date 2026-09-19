@@ -9,6 +9,13 @@ import {
   renderContextHealthSchedulePlan,
 } from '../../memory/context_health_schedule.js';
 import {readActiveProjectMemoryRecords} from '../../memory/maintenance_records.js';
+import {
+  CONTEXT_HEALTH_FINDING_CATEGORIES,
+  CONTEXT_HEALTH_MEMORY_KINDS,
+  contextHealthSelectorFindingUris,
+  normalizeContextHealthSelector,
+  projectContextHealthRecords,
+} from '../../memory/context_health_selector.js';
 import type {RuntimeConfig} from '../../types.js';
 import {errorMessage} from '../../utils.js';
 import {argumentError, mcpErrorResult, requiredText} from './common.js';
@@ -21,11 +28,18 @@ export function registerContextHealthTool(server: EffectMcpServerAdapter, config
       description:
         'Inspect one project for stale, conflicting, duplicate, or invalid context using current local evidence. This is read-only and never prepares a graph or applies repairs.',
       inputSchema: {
+        after: McpInput.string('Opaque continuation cursor returned by the prior exact-scope page'),
         callerCwd: McpInput.string('Required absolute repository or worktree path'),
+        findingCategory: McpInput.literals(
+          CONTEXT_HEALTH_FINDING_CATEGORIES,
+          'Optional exact finding category; intersects with kind and topic',
+        ),
+        kind: McpInput.literals(CONTEXT_HEALTH_MEMORY_KINDS, 'Optional exact memory kind'),
         project: McpInput.string('Required project/repo namespace'),
+        topic: McpInput.string('Optional exact memory topic; may be combined with kind'),
       },
     },
-    ({callerCwd, project}) => {
+    ({after, callerCwd, findingCategory, kind, project, topic}) => {
       const checkedProject = requiredText(project, 'context_health', 'project', {
         callerCwd: '/workspace/project',
         project: 'threadnote',
@@ -42,9 +56,19 @@ export function registerContextHealthTool(server: EffectMcpServerAdapter, config
           return argumentError('context_health callerCwd must be an absolute repository or worktree path.');
         }
         const records = yield* readActiveProjectMemoryRecords(config, checkedProject.value);
-        const report = yield* collectContextHealth(config, checkedProject.value, records, checkedCwd.value);
+        const selector = normalizeContextHealthSelector({after, findingCategory, kind, topic});
+        const selectedRecords = projectContextHealthRecords(records, selector);
+        const report = yield* collectContextHealth(config, checkedProject.value, selectedRecords, checkedCwd.value, {
+          after: selector?.after,
+          duplicateCorpus: records,
+          ...(selector === undefined ? {} : {includeFindingCombination: 'all' as const}),
+          ...(selector?.findingCategory === undefined ? {} : {includeFindingCategories: [selector.findingCategory]}),
+          ...(contextHealthSelectorFindingUris(selector, selectedRecords) === undefined
+            ? {}
+            : {includeFindingUris: contextHealthSelectorFindingUris(selector, selectedRecords)}),
+        });
         return {
-          content: [{type: 'text' as const, text: renderContextHealth(report)}],
+          content: [{type: 'text' as const, text: renderContextHealth(report, selector)}],
           structuredContent: report,
         };
       }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));

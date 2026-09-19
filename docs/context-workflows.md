@@ -174,10 +174,16 @@ Inspect active records in one project with the read-only health command:
 ```sh
 threadnote context health --project <project>
 threadnote context health --project <project> --json
+threadnote context health --project <project> --kind durable
+threadnote context health --project <project> --topic <exact-topic>
+threadnote context health --project <project> --finding-category citation-changed
 ```
 
 Agents using the full MCP toolset can request the same bounded report with `context_health`, passing the project and
-an absolute `callerCwd`. The MCP adapter is read-only and does not prepare a graph or record a local value event.
+an absolute `callerCwd`. Both surfaces accept exact `kind`, `topic`, and `findingCategory` selectors. Supplied fields are
+always a strict intersection: adding a field cannot widen the result. Selector text is trimmed, limited to 256 UTF-8
+bytes, and rejects control characters; otherwise topics remain literal so every valid stored topic stays selectable.
+The MCP adapter is read-only and does not prepare a graph or record a local value event.
 
 The `ContextHealthReportV1` planner reports expired validity, overdue `review_after`, changed/missing/unknown code
 citations, missing or inactive relation targets, exact duplicates, and contradictions or possible duplicates in pending
@@ -187,17 +193,32 @@ Health proposes reviewable repairs; it never silently archives, deletes, overwri
 coverage remains unknown rather than being presented as current. Shared records remain read-only until the user enters
 the existing conflict or publish workflow.
 
+Reports are bounded. If findings are omitted, the report returns an opaque `nextCursor`; pass it as `--after` (or MCP
+`after`) with the unchanged exact category/kind/topic intersection to retrieve the next deterministic page without
+duplicates. Cursors are bound to the ordered filtered evidence and fail closed when invalid or stale. Partial or
+unavailable semantic evidence leaves health `unknown`: surfaced findings are still actionable, but the run cannot
+establish that the project is clean. Selector runs do not write a value-health snapshot, so a narrow view cannot mark
+unselected findings as resolved. Kind/topic selectors exclude unrelated project-global candidate and guidance evidence;
+category-only selectors may still surface matching project-global evidence.
+
 Preview the bounded repair plan separately from the read-only health report, then apply one exact proposal only after
 reviewing its content-bound revision:
 
 ```sh
 threadnote context repair preview --project <project> --json
+threadnote context repair preview --project <project> --kind handoff
+threadnote context repair preview --project <project> --finding-category citation-changed
 threadnote context repair apply \
   --project <project> \
+  --kind handoff \
   --proposal-id <proposal-id> \
   --revision <revision> \
   --approved
 ```
+
+Apply must repeat the exact normalized selector used for preview, including every supplied category, kind, and topic.
+For a continued page, this includes the exact `after` cursor. Omitting or changing any part cannot rediscover or apply
+the selector-bound proposal.
 
 Only personal durable, handoff, and incident records receive automatic archive proposals. A relation to a direct
 personal URI proven missing or inactive can produce an exact relation-removal proposal. Shared targets and stable
