@@ -8,10 +8,10 @@ import {
   selectCiTestPlanForClassification,
   type CiScopeKey,
 } from '../ci/ci-scopes.js';
-import {
-  privateEvaluationProductCaptureFocusedTestPath,
-  privateEvaluationProductCapturePaths,
-} from '../ci/private-evaluation-product-capture-scope.js';
+import {privateReleaseEvidenceFamilies} from '../ci/private-release-evidence-family.js';
+
+const productCaptureFamily = privateReleaseEvidenceFamilies[0];
+const releaseCollectionFamily = privateReleaseEvidenceFamilies[1];
 
 const pathSegment = FC.stringMatching(/^[a-z][a-z0-9_-]{0,20}$/u);
 const websitePath = FC.array(pathSegment, {maxLength: 5, minLength: 1}).map(parts => `website/${parts.join('/')}.tsx`);
@@ -200,28 +200,32 @@ describe('CI changed-path scope properties', () => {
     });
   });
 
-  it('selects the exact PR #606 private-evaluation family without unrelated CI lanes', () => {
-    const classification = classifyCiScopes(privateEvaluationProductCapturePaths);
-    expect(classification.scopes).toEqual({
-      actions: false,
-      build: true,
-      code: true,
-      guidance: false,
-      quality: false,
-      release: false,
-      site_build: false,
-      site_check: false,
-      windows: false,
-    });
-    expect(selectCiTestPlanForClassification(classification)).toEqual({
-      standard: {mode: 'selected', paths: [privateEvaluationProductCaptureFocusedTestPath]},
-      long: {mode: 'none', groups: []},
-      postgres: {mode: 'none', paths: []},
-    });
+  it('selects exact private release-evidence families without unrelated CI lanes', () => {
+    for (const family of privateReleaseEvidenceFamilies) {
+      const classification = classifyCiScopes(family.paths);
+      expect(classification.scopes).toEqual({
+        actions: false,
+        build: true,
+        code: true,
+        guidance: false,
+        quality: false,
+        release: false,
+        site_build: false,
+        site_check: false,
+        windows: false,
+      });
+      expect(selectCiTestPlanForClassification(classification)).toEqual({
+        standard: {mode: 'selected', paths: family.focusedTestPaths},
+        long: {mode: 'none', groups: []},
+        postgres: {mode: 'none', paths: []},
+      });
+    }
     for (const paths of [
-      [...privateEvaluationProductCapturePaths, 'src/evaluation/threadnote-5-product-capture-adjacent.ts'],
-      [...privateEvaluationProductCapturePaths, 'unknown/private-evaluation-payload.bin'],
-      [...privateEvaluationProductCapturePaths, ''],
+      [...productCaptureFamily.paths, 'src/evaluation/threadnote-5-product-capture-adjacent.ts'],
+      [...releaseCollectionFamily.paths, 'scripts/threadnote-5-collection-transport-next.ts'],
+      [...productCaptureFamily.paths, ...releaseCollectionFamily.paths],
+      [...productCaptureFamily.paths, 'unknown/private-evaluation-payload.bin'],
+      [...productCaptureFamily.paths, ''],
     ]) {
       expect(selectCiTestPlan(paths)).toMatchObject({
         standard: {mode: 'full'},
@@ -230,8 +234,8 @@ describe('CI changed-path scope properties', () => {
       });
     }
     for (const paths of [
-      privateEvaluationProductCapturePaths.map(path => path.replaceAll('/', '\\')),
-      privateEvaluationProductCapturePaths.map(path => `./${path}`),
+      productCaptureFamily.paths.map(path => path.replaceAll('/', '\\')),
+      releaseCollectionFamily.paths.map(path => `./${path}`),
     ]) {
       const malformedClassification = classifyCiScopes(paths);
       expect(malformedClassification.invalidPath).toBe(true);
@@ -268,14 +272,14 @@ describe('CI changed-path scope properties', () => {
 
   fcProp(
     it,
-    'keeps the private-evaluation family order/duplicate invariant and escalates monotonically',
-    {paths: FC.shuffledSubarray([...privateEvaluationProductCapturePaths], {minLength: 1})},
+    'keeps private release-evidence family order/duplicate invariant and escalates mixed paths',
+    {paths: FC.shuffledSubarray([...productCaptureFamily.paths], {minLength: 1})},
     ({paths}) => {
       const expected = classifyCiScopes(paths);
       expect(expected.scopes).toMatchObject({build: true, code: true, quality: false, release: false, windows: false});
       expect(classifyCiScopes([...paths].reverse())).toEqual(expected);
       expect(classifyCiScopes([...paths, ...paths])).toEqual(expected);
-      const escalated = classifyCiScopes([...paths, 'src/evaluation/threadnote-5-product-capture-adjacent.ts']);
+      const escalated = classifyCiScopes([...paths, ...releaseCollectionFamily.paths]);
       expect(escalated.scopes).toMatchObject({quality: true, release: true, windows: true});
     },
     {fastCheck: {numRuns: 100}},

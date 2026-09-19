@@ -1,7 +1,10 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {classifyCodeGraphProductionRatchetScope} from '../ci/code-graph-production-ratchet-scope.js';
-import {privateEvaluationProductCapturePaths} from '../ci/private-evaluation-product-capture-scope.js';
+import {privateReleaseEvidenceFamilies} from '../ci/private-release-evidence-family.js';
+
+const productCaptureFamily = privateReleaseEvidenceFamilies[0];
+const releaseCollectionFamily = privateReleaseEvidenceFamilies[1];
 
 const baseManifest = {
   dependencies: {effect: '4.0.0-rc.112'},
@@ -64,17 +67,20 @@ describe('code graph production ratchet diff scope', () => {
     ).toBe('unrelated-evaluation-only');
   });
 
-  it('skips the governed profile for only the exact PR #606 private-evaluation family', () => {
-    const result = classifyCodeGraphProductionRatchetScope({changedPaths: privateEvaluationProductCapturePaths});
-    expect(result).toMatchObject({runBenchmark: false, skipReason: 'private-evaluation-product-capture-only'});
+  it('skips the governed profile for only exact private release-evidence families', () => {
+    for (const family of privateReleaseEvidenceFamilies) {
+      const result = classifyCodeGraphProductionRatchetScope({changedPaths: family.paths});
+      expect(result).toMatchObject({runBenchmark: false, skipReason: 'private-release-evidence-only'});
+    }
     for (const path of [
       'src/evaluation/threadnote-5-product-capture-adjacent.ts',
       'test/unit/evaluation.threadnote-5-product-capture-extra.test.ts',
       'unknown/private-evaluation-payload.bin',
       '',
     ]) {
-      expect(shouldSkipBenchmark([...privateEvaluationProductCapturePaths, path])).toBe(false);
+      expect(shouldSkipBenchmark([...productCaptureFamily.paths, path])).toBe(false);
     }
+    expect(shouldSkipBenchmark([...productCaptureFamily.paths, ...releaseCollectionFamily.paths])).toBe(false);
   });
 
   it('runs for dependency, script, runtime, benchmark harness, code-graph fixture, baseline, ratchet contract, lockfile, and ambiguous changes', () => {
@@ -208,19 +214,13 @@ describe('code graph production ratchet diff scope', () => {
     );
   });
 
-  it('keeps the private-evaluation exemption order/duplicate invariant and escalates monotonically', () => {
+  it('keeps private release-evidence exemptions order/duplicate invariant and fails safe for mixed paths', () => {
     fc.assert(
-      fc.property(fc.shuffledSubarray([...privateEvaluationProductCapturePaths], {minLength: 1}), paths => {
+      fc.property(fc.shuffledSubarray([...releaseCollectionFamily.paths], {minLength: 1}), paths => {
         expect(shouldSkipBenchmark(paths, undefined, undefined)).toBe(true);
         expect(shouldSkipBenchmark([...paths].reverse(), undefined, undefined)).toBe(true);
         expect(shouldSkipBenchmark([...paths, ...paths], undefined, undefined)).toBe(true);
-        expect(
-          shouldSkipBenchmark(
-            [...paths, 'src/evaluation/threadnote-5-product-capture-adjacent.ts'],
-            undefined,
-            undefined,
-          ),
-        ).toBe(false);
+        expect(shouldSkipBenchmark([...paths, ...productCaptureFamily.paths], undefined, undefined)).toBe(false);
       }),
       {numRuns: 100},
     );

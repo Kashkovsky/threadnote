@@ -1,7 +1,10 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {classifyPlatformBenchmarkScope} from '../ci/platform-benchmark-scope.js';
-import {privateEvaluationProductCapturePaths} from '../ci/private-evaluation-product-capture-scope.js';
+import {privateReleaseEvidenceFamilies} from '../ci/private-release-evidence-family.js';
+
+const productCaptureFamily = privateReleaseEvidenceFamilies[0];
+const releaseCollectionFamily = privateReleaseEvidenceFamilies[1];
 
 const beforePackage = JSON.stringify({
   dependencies: {effect: '4.0.0-rc.112'},
@@ -50,19 +53,22 @@ describe('Platform benchmark PR scope', () => {
     expect(result.runCodeGraphPr).toBe(false);
   });
 
-  it('skips both expensive lanes only for the exact PR #606 private-evaluation family', () => {
-    expect(scope(privateEvaluationProductCapturePaths)).toMatchObject({runRecallPr: false, runCodeGraphPr: false});
+  it('skips both expensive lanes only for exact private release-evidence families', () => {
+    for (const family of privateReleaseEvidenceFamilies) {
+      expect(scope(family.paths)).toMatchObject({runRecallPr: false, runCodeGraphPr: false});
+    }
     for (const paths of [
-      [...privateEvaluationProductCapturePaths, 'src/evaluation/threadnote-5-product-capture-future.ts'],
-      [...privateEvaluationProductCapturePaths, 'src/evaluation/threadnote-5-product-capture.ts.bak'],
-      [...privateEvaluationProductCapturePaths, 'unknown/private-evaluation-payload.bin'],
-      [...privateEvaluationProductCapturePaths, ''],
+      [...productCaptureFamily.paths, 'src/evaluation/threadnote-5-product-capture-future.ts'],
+      [...releaseCollectionFamily.paths, 'scripts/threadnote-5-collection-transport-next.ts'],
+      [...productCaptureFamily.paths, ...releaseCollectionFamily.paths],
+      [...productCaptureFamily.paths, 'unknown/private-evaluation-payload.bin'],
+      [...productCaptureFamily.paths, ''],
     ]) {
       expect(scope(paths)).toMatchObject({runRecallPr: true, runCodeGraphPr: true});
     }
     for (const paths of [
-      privateEvaluationProductCapturePaths.map(path => path.replaceAll('/', '\\')),
-      privateEvaluationProductCapturePaths.map(path => `./${path}`),
+      productCaptureFamily.paths.map(path => path.replaceAll('/', '\\')),
+      releaseCollectionFamily.paths.map(path => `./${path}`),
     ]) {
       expect(scope(paths)).toMatchObject({invalidPath: true, runRecallPr: true, runCodeGraphPr: true});
     }
@@ -147,13 +153,13 @@ describe('Platform benchmark PR scope', () => {
     );
   });
 
-  it('keeps the private-evaluation exemption order/duplicate invariant and escalates monotonically', () => {
+  it('keeps private release-evidence exemptions order/duplicate invariant and fails safe for mixed paths', () => {
     fc.assert(
-      fc.property(fc.shuffledSubarray([...privateEvaluationProductCapturePaths], {minLength: 1}), paths => {
+      fc.property(fc.shuffledSubarray([...releaseCollectionFamily.paths], {minLength: 1}), paths => {
         expect(scope(paths)).toMatchObject({runRecallPr: false, runCodeGraphPr: false});
         expect(scope([...paths].reverse())).toMatchObject({runRecallPr: false, runCodeGraphPr: false});
         expect(scope([...paths, ...paths])).toMatchObject({runRecallPr: false, runCodeGraphPr: false});
-        expect(scope([...paths, 'src/evaluation/threadnote-5-product-capture-adjacent.ts'])).toMatchObject({
+        expect(scope([...paths, ...productCaptureFamily.paths])).toMatchObject({
           runRecallPr: true,
           runCodeGraphPr: true,
         });

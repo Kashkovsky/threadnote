@@ -1,4 +1,4 @@
-import {isPurePrivateEvaluationProductCaptureDiff} from './private-evaluation-product-capture-scope.js';
+import {isPurePrivateReleaseEvidenceDiff} from './private-release-evidence-family.js';
 
 export interface CodeGraphProductionRatchetDiff {
   readonly afterPackageJson?: string;
@@ -10,8 +10,7 @@ export interface CodeGraphProductionRatchetScope {
   readonly changedCount: number;
   readonly paths: readonly string[];
   readonly runBenchmark: boolean;
-  readonly skipReason?:
-    'private-evaluation-product-capture-only' | 'release-metadata-only' | 'unrelated-evaluation-only';
+  readonly skipReason?: 'private-release-evidence-only' | 'release-metadata-only' | 'unrelated-evaluation-only';
 }
 
 type JsonObject = Readonly<Record<string, unknown>>;
@@ -132,8 +131,8 @@ export function classifyCodeGraphProductionRatchetScope(
 
   const evaluationOnly = !invalidPath && sortedPaths.length > 0 && sortedPaths.every(isUnrelatedEvaluationPath);
   const skipReason =
-    !invalidPath && isPurePrivateEvaluationProductCaptureDiff(sortedPaths)
-      ? 'private-evaluation-product-capture-only'
+    !invalidPath && isPurePrivateReleaseEvidenceDiff(sortedPaths)
+      ? 'private-release-evidence-only'
       : releaseMetadataOnly
         ? 'release-metadata-only'
         : evaluationOnly
