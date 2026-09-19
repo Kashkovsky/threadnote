@@ -20,6 +20,11 @@ const RELEASE_TOOL_SCRIPTS = [
     path: 'scripts/evaluate-threadnote-5-release-readiness.ts',
     usage: 'Usage: bun run eval:threadnote-5-release-readiness',
   },
+  {
+    name: 'Threadnote 5 independent observer authority',
+    path: 'scripts/assemble-threadnote-5-observer-authority.ts',
+    usage: 'Usage: bun run assemble:threadnote-5-observer-authority',
+  },
 ] as const;
 
 const FOLLOW_UP_RELEASE_TOOL_SCRIPTS = [
@@ -93,5 +98,21 @@ describe('release tooling CLI help contract', () => {
     expect(result.stdout).toContain(
       'Child options: --child --repository <path> --home <path> --profile-file <json> --output <json>',
     );
+  });
+
+  it('enumerates the complete observer-authority mode contract', async () => {
+    const result = await execFilePromise(
+      process.execPath,
+      ['scripts/assemble-threadnote-5-observer-authority.ts', '--help'],
+      {cwd: process.cwd()},
+    );
+    expect(result.stdout).toContain('Preview: --preview');
+    expect(result.stdout).toContain('Assemble: --assemble');
+    expect(result.stdout).toContain('Verify: --verify --bundle <json>');
+    expect(result.stdout).toContain('--manifest-sha256 <64-lowercase-hex>');
+    expect(result.stdout).toContain('--review-artifact-set-sha256 <64-lowercase-hex>');
+    expect(result.stdout).toContain('--binding-sha256 <64-lowercase-hex>');
+    expect(result.stdout).not.toContain('--output');
+    expect(result.stdout).not.toContain('--binding-output');
   });
 });
