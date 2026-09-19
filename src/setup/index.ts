@@ -35,6 +35,26 @@ export interface RunSetupOptions {
   readonly undo?: boolean;
 }
 
+export type SetupScopeResolution = {readonly scope: RunSetupOptions['scope']} | {readonly error: SetupOperationError};
+
+/** @internal Pure scope normalization shared by setup and its contract tests. */
+export function resolveSetupScope(
+  adapter: AgentAdapter,
+  requestedScope: RunSetupOptions['scope'],
+): SetupScopeResolution {
+  if (adapter.kind === 'json') {
+    return {scope: requestedScope ?? adapter.json?.defaultScope ?? 'user'};
+  }
+  if (requestedScope === undefined || (requestedScope === 'user' && adapter.catalog.scopes.includes('user'))) {
+    return {scope: undefined};
+  }
+  return {
+    error: SetupOperationError.make({
+      message: 'Compatibility surfaces support only the user-scope setup lifecycle; omit --scope or pass --scope user.',
+    }),
+  };
+}
+
 export interface SetupOperationOutcome {
   readonly afterHash?: string;
   readonly beforeHash?: string;
@@ -120,15 +140,12 @@ export const runSetupWith = Effect.fn('setup.runWith')(function* <R>(
       message: `${adapter.catalog.displayName} is catalog-only; run threadnote agents list for its manual setup guidance.`,
     });
   }
-  if (options.scope !== undefined && adapter.kind !== 'json') {
-    return yield* SetupOperationError.make({
-      message: '--scope is currently available only for managed JSON surfaces.',
-    });
-  }
+  const scopeResolution = resolveSetupScope(adapter, options.scope);
+  if ('error' in scopeResolution) return yield* scopeResolution.error;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
   const projectRoot = yield* resolveRepoRoot(options.cwd ?? system.currentDirectory());
-  const scope = adapter.kind === 'json' ? (options.scope ?? adapter.json?.defaultScope ?? 'user') : undefined;
+  const scope = scopeResolution.scope;
   if (options.undo === true)
     return yield* runSetupUndo(config, adapter, projectRoot, scope, options.apply === true, dependencies);
   const threadnoteVersion = yield* getThreadnoteVersion();

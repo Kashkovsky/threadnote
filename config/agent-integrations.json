@@ -25,10 +25,10 @@
         }
       },
       "officialDocs": ["https://developers.openai.com/codex/mcp"],
-      "lastVerified": "2026-09-17",
+      "lastVerified": "2026-09-19",
       "caveats": [],
-      "setup": ["Use threadnote mcp-install codex --apply; restart the host after installation."],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "setup": ["Preview threadnote setup codex; add --apply to complete setup, then restart the host."],
+      "verification": "Threadnote 5 setup and MCP lifecycle verified with an exact-HEAD global install on macOS; focused fixtures cover managed files.",
       "projectGuidance": {
         "status": "managed",
         "targetPath": "AGENTS.md"
@@ -59,11 +59,8 @@
       "officialDocs": ["https://code.claude.com/docs/en/mcp", "https://code.claude.com/docs/en/hooks"],
       "lastVerified": "2026-09-17",
       "caveats": [],
-      "setup": [
-        "Use threadnote mcp-install claude --apply; restart the host after installation.",
-        "Install lifecycle hooks separately with threadnote install-hooks claude --apply."
-      ],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "setup": ["Preview threadnote setup claude; add --apply to complete setup, then restart the host."],
+      "verification": "Managed setup is covered by focused integration fixtures; run threadnote doctor after restarting the host.",
       "projectGuidance": {
         "status": "managed",
         "targetPath": "CLAUDE.md"
@@ -94,11 +91,8 @@
       "officialDocs": ["https://cursor.com/docs/context/mcp", "https://cursor.com/docs/agent/hooks"],
       "lastVerified": "2026-09-17",
       "caveats": [],
-      "setup": [
-        "Use threadnote mcp-install cursor --apply; restart the host after installation.",
-        "Install lifecycle hooks separately with threadnote install-hooks cursor --apply."
-      ],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "setup": ["Preview threadnote setup cursor; add --apply to complete setup, then restart the host."],
+      "verification": "Managed setup is covered by focused integration fixtures; run threadnote doctor after restarting the host.",
       "projectGuidance": {
         "status": "managed",
         "targetPath": ".cursor/rules/threadnote.mdc"
@@ -135,8 +129,8 @@
       "caveats": [
         "Compatibility installer uses VS Code MCP and Copilot CLI instruction/skill roots; lifecycle hooks are not installed."
       ],
-      "setup": ["Use threadnote mcp-install copilot --apply; restart the host after installation."],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "setup": ["Preview threadnote setup copilot; add --apply to complete setup, then restart the host."],
+      "verification": "Managed setup is covered by focused integration fixtures; run threadnote doctor after restarting the host.",
       "projectGuidance": {
         "status": "managed",
         "targetPath": ".github/instructions/threadnote.instructions.md"
@@ -167,11 +161,8 @@
       "officialDocs": ["https://github.com/can1357/oh-my-pi"],
       "lastVerified": "2026-09-17",
       "caveats": ["OMP_PROFILE takes precedence over PI_PROFILE; receipts retain the resolved agent root."],
-      "setup": [
-        "Use threadnote mcp-install omp --apply; restart the host after installation.",
-        "Install lifecycle hooks separately with threadnote install-hooks omp --apply."
-      ],
-      "verification": "Existing focused integration fixtures; exact-HEAD global smoke pending.",
+      "setup": ["Preview threadnote setup omp; add --apply to complete setup, then restart the host."],
+      "verification": "Managed setup is covered by focused integration fixtures; run threadnote doctor after restarting the host.",
       "projectGuidance": {
         "status": "managed",
         "targetPath": ".omp/AGENTS.md"
