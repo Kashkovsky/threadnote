@@ -7,8 +7,8 @@ description: Load relevant Threadnote decisions, handoffs, and graph-backed cont
 
 # Threadnote context
 
-For non-trivial repository work, begin with `context_brief` using the task, absolute `callerCwd`, and a mode (`brief`,
-`locate`, `trace`, `impact`, or `explain`). Add canonical `codeRefs` (repository-relative POSIX paths or exact `cgs_` IDs) when
+For non-trivial repository work, call MCP `context_brief` with the task, absolute `callerCwd`, and a mode (`brief`,
+`locate`, `trace`, `impact`, or `explain`). If MCP is unavailable, run `threadnote context brief --cwd <cwd> --task <task>`. Add canonical `codeRefs` (repository-relative POSIX paths or exact `cgs_` IDs) when
 current anchors are known. This is the normal Context Brief lifecycle. For memory-focused retrieval, use
 `recall_context` with project and absolute `callerCwd`, then `read_context` every relevant `threadnote://` pointer before
 relying on it. Recall output is pointers, not evidence.

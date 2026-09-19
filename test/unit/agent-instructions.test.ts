@@ -70,14 +70,16 @@ describe('agent instructions', () => {
       'code graph before broad source search',
       'required handoff; optional five-field Knowledge Delta needs approval',
       '`remember_context(kind=handoff)` is the required private direct write',
-      'For repo work, start with Context Brief',
-      'CLI fallback when unavailable',
+      'For repo work, call MCP `context_brief`',
       'optional proposals are never auto-applied/auto-shared',
       'secrets, credentials, customer data, or raw production logs',
       'Confirm before durable sharing',
+      'MCP `context_brief` (task + absolute `callerCwd`)',
+      '`threadnote context brief --cwd <cwd> --task <task>`',
     ]) {
       expect(normalized).toContain(requiredText);
     }
+    expect(normalized).not.toContain('threadnote context brief --caller-cwd');
   });
 
   it('preserves detailed context, graph, memory, and code-brief contracts in progressive skills', async () => {
@@ -150,6 +152,9 @@ describe('agent instructions', () => {
     }
     expect(context).not.toContain('unread pointers, not evidence');
     expect(normalizedContext).toContain('mode (`brief`, `locate`, `trace`, `impact`, or `explain`)');
+    expect(normalizedContext).toContain('MCP `context_brief`');
+    expect(normalizedContext).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
+    expect(normalizedContext).not.toContain('threadnote context brief --caller-cwd');
     for (const retiredDetail of [
       '`responseFormat`',
       '`offsetBytes`',
@@ -183,5 +188,7 @@ describe('agent instructions', () => {
     }
     expect(instructions).toContain('`approve` (optional `editedText`), `defer`, or `reject`');
     expect(instructions).toContain('Never auto-apply or auto-share proposals');
+    expect(instructions).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
+    expect(instructions).not.toContain('threadnote context brief --caller-cwd');
   });
 });

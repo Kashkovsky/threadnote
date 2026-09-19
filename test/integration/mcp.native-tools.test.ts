@@ -287,12 +287,13 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain('threadnote://');
         expect(instructions).toContain('handoff');
         expect(instructions).toContain(
-          'For non-trivial local repo work, call `context_brief` with task + absolute `callerCwd`',
+          'For non-trivial local repo work, call MCP `context_brief` with task + absolute `callerCwd`',
         );
-        expect(instructions).toContain('`recall_context` + `read_context` is the memory alternative');
+        expect(instructions).toContain('`recall_context` + `read_context`: memory alternative');
         expect(instructions.indexOf('context_brief')).toBeLessThan(instructions.indexOf('recall_context'));
-        expect(instructions).toContain('CLI fallback if unavailable');
-        expect(instructions).toContain('`threadnote://` pointers are unread, not evidence');
+        expect(instructions).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
+        expect(instructions).not.toContain('threadnote context brief --caller-cwd');
+        expect(instructions).toContain('`threadnote://` pointers unread, not evidence');
         expect(instructions).toContain('Use `inspect_code_graph`/`analyze_code_graph`, then exact source');
         expect(instructions).toContain('Close with private `remember_context(kind=handoff)`');
         expect(instructions).toContain('Optional five-field KD: `review_session_context`');

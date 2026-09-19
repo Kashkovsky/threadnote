@@ -188,14 +188,30 @@ describe('agent catalog and adapter contracts', () => {
               expect(initial.root).toBe(fixture.root);
               expect(initial.mcpPath).toBe(path.join(fixture.root, fixture.mcpFile));
               expect(initial.artifacts[0].path).toBe(path.join(fixture.root, fixture.instruction));
+              expect(initial.artifacts[0].content).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
+              expect(initial.artifacts[0].content).not.toContain('threadnote context brief --caller-cwd');
+              expect(
+                initial.artifacts.find(artifact => artifact.name === 'skill threadnote-context')?.content,
+              ).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
               expect(adapter.json!.container).toBe(fixture.container);
               yield* installAgentSurface(config, adapter.catalog.id);
               expect(yield* fs.exists(home)).toBe(false);
+              const staleInstruction = initial.artifacts[0].content.replace(
+                'threadnote context brief --cwd <cwd> --task <task>',
+                'threadnote context brief --caller-cwd <cwd> --task <task>',
+              );
+              expect(staleInstruction).not.toBe(initial.artifacts[0].content);
+              yield* fs.makeDirectory(path.dirname(initial.artifacts[0].path), {recursive: true});
+              yield* fs.writeFileString(initial.artifacts[0].path, staleInstruction);
               yield* fs.makeDirectory(path.dirname(initial.mcpPath), {recursive: true});
               const unrelated = {theme: 'dark', [adapter.json!.container]: {unrelated: {command: 'other'}}};
               yield* fs.writeFileString(initial.mcpPath, JSON.stringify(unrelated));
               yield* installAgentSurface(config, adapter.catalog.id, {apply: true});
               const first = yield* fs.readFileString(initial.mcpPath);
+              expect(yield* fs.readFileString(initial.artifacts[0].path)).toContain(
+                '`threadnote context brief --cwd <cwd> --task <task>`',
+              );
+              expect(yield* fs.readFileString(initial.artifacts[0].path)).not.toContain('--caller-cwd');
               expect((yield* agentAdapterStatus(config, adapter)).state).toBe('current');
               if (adapter.json!.unverifiedPolicyFile !== undefined) {
                 const enablementPath = path.join(initial.root, adapter.json!.unverifiedPolicyFile);

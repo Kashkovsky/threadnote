@@ -5,6 +5,10 @@ import type {RuntimeConfig} from '../types.js';
 import {compileContextBrief} from './index.js';
 import type {ContextBriefMode} from './types.js';
 
+export const CONTEXT_BRIEF_CWD_OPTION = {
+  name: 'cwd',
+} as const;
+
 export interface RunContextBriefOptionsV1 {
   readonly budgetTokens?: number;
   readonly codeRefs?: readonly string[];
