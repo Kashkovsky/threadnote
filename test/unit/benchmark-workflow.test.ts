@@ -84,7 +84,8 @@ describe('platform benchmark workflow', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const paths = workflow.on.pull_request?.paths ?? [];
+    expect(workflow.on.pull_request?.paths).toBeUndefined();
+    const classifier = workflow.jobs['classify-platform-benchmark'];
     const pullRequestJob = workflow.jobs['code-graph-pr-scale'];
     const command = pullRequestJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const recallJob = workflow.jobs['recall-pr-10k'];
@@ -102,34 +103,35 @@ describe('platform benchmark workflow', () => {
       step => step.name === 'Adjudicate fixed hosted-runner replicas',
     );
 
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        '.github/workflows/benchmarks.yml',
-        'scripts/adjudicate-code-graph-windows-replicas.ts',
-        'scripts/benchmark-code-graph.ts',
-        'scripts/benchmark-code-graph-workset.ts',
-        'scripts/code-graph-benchmark-sampler.ts',
-        'scripts/benchmark-recall-vectors.ts',
-        'scripts/recall-vector-performance-budget.ts',
-        'scripts/evaluate-recall.ts',
-        'src/code_graph/**',
-        'src/effect/ai/**',
-        'src/effect/runtime.ts',
-        'src/models/**',
-        'src/recall/**',
-        'src/search/vector-index.ts',
-        'test/evaluation/baselines/code-graph-v1/**',
-        'test/evaluation/baselines/code-graph-workset-v1/**',
-      ]),
+    expect(classifier.if).toBe("github.event_name == 'pull_request'");
+    expect(classifier.outputs).toEqual({
+      run_code_graph_pr: '${{ steps.scope.outputs.run_code_graph_pr }}',
+      run_recall_pr: '${{ steps.scope.outputs.run_recall_pr }}',
+    });
+    expect(classifier.steps?.find(step => step.id === 'scope')?.run).toContain(
+      'test/ci/platform-benchmark-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"',
     );
-    expect(pullRequestJob.if).toBe("github.event_name == 'pull_request'");
+    const classifierCheckout = classifier.steps?.find(step => step.uses === 'actions/checkout@v7');
+    expect(classifierCheckout?.with?.['fetch-depth']).toBe(0);
+    const classifierScope = classifier.steps?.find(step => step.id === 'scope');
+    expect(classifierScope?.env).toEqual({
+      BASE_SHA: '${{ github.event.pull_request.base.sha }}',
+      HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
+    });
+    expect(pullRequestJob.needs).toBe('classify-platform-benchmark');
+    expect(pullRequestJob.if).toBe(
+      "${{ always() && github.event_name == 'pull_request' && (needs.classify-platform-benchmark.result != 'success' || needs.classify-platform-benchmark.outputs.run_code_graph_pr != 'false') }}",
+    );
     expect(pullRequestJob['runs-on']).toBe('ubuntu-latest');
     expect(pullRequestJob['timeout-minutes']).toBe(20);
     expect(pullRequestJob.strategy?.matrix?.scale).toEqual([10_000, 100_000]);
     expect(command).toContain('--scale-symbols ${{ matrix.scale }}');
     expect(command).toContain('--fail-on-budget');
     expect(command).not.toContain('--vectors');
-    expect(recallJob.if).toBe("github.event_name == 'pull_request'");
+    expect(recallJob.needs).toBe('classify-platform-benchmark');
+    expect(recallJob.if).toBe(
+      "${{ always() && github.event_name == 'pull_request' && (needs.classify-platform-benchmark.result != 'success' || needs.classify-platform-benchmark.outputs.run_recall_pr != 'false') }}",
+    );
     expect(recallJob['runs-on']).toBe('ubuntu-latest');
     expect(recallJob['timeout-minutes']).toBeLessThanOrEqual(15);
     expect(recallCommand).toContain('bun run eval:recall');
