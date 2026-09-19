@@ -55,6 +55,13 @@ interface BenchmarkWorkflow {
   };
 }
 
+function expectBroadPullRequestTrigger(workflow: BenchmarkWorkflow): void {
+  expect(Object.prototype.hasOwnProperty.call(workflow.on, 'pull_request')).toBe(true);
+  const pullRequest = workflow.on.pull_request;
+  expect(Object.prototype.hasOwnProperty.call(pullRequest ?? {}, 'paths')).toBe(false);
+  expect(Object.prototype.hasOwnProperty.call(pullRequest ?? {}, 'paths-ignore')).toBe(false);
+}
+
 describe('platform benchmark workflow', () => {
   it('signs the inverse scale capture before independently verifying and retaining release evidence', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
@@ -84,7 +91,7 @@ describe('platform benchmark workflow', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    expect(workflow.on.pull_request?.paths).toBeUndefined();
+    expectBroadPullRequestTrigger(workflow);
     const classifier = workflow.jobs['classify-platform-benchmark'];
     const pullRequestJob = workflow.jobs['code-graph-pr-scale'];
     const command = pullRequestJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
@@ -234,33 +241,11 @@ describe('platform benchmark workflow', () => {
     const ratchetWorkflow = load(readFileSync('.github/workflows/code-graph-production-ratchet.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const paths = ratchetWorkflow.on.pull_request?.paths ?? [];
     const classifier = ratchetWorkflow.jobs.classify;
     const job = ratchetWorkflow.jobs.ratchet;
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        '.github/workflows/code-graph-production-ratchet.yml',
-        'scripts/benchmark-code-graph.ts',
-        'test/ci/code-graph-production-ratchet-gate.ts',
-        'test/ci/code-graph-production-ratchet-scope.ts',
-        'src/code_graph/**',
-        'src/effect/errors.ts',
-        'src/effect/file_durability.ts',
-        'src/effect/time.ts',
-        'src/process/diagnostics.ts',
-        'src/telemetry/session.ts',
-        'src/utils.ts',
-        'src/worker_protocol.ts',
-        'test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json',
-        'test/evaluation/fixtures/code-graph-v1/**',
-        'test/unit/benchmark-workflow.test.ts',
-        'test/unit/code-graph.production-ratchet-scope.property.test.ts',
-      ]),
-    );
-    expect(paths).not.toContain('src/recall/**');
-    expect(paths.join('\n').toLowerCase()).not.toContain('intellij');
+    expectBroadPullRequestTrigger(ratchetWorkflow);
     expect(job['runs-on']).toBe('ubuntu-24.04');
     expect(job['timeout-minutes']).toBe(40);
     expect(job.needs).toBe('classify');

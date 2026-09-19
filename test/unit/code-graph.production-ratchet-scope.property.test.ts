@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {classifyCodeGraphProductionRatchetScope} from '../ci/code-graph-production-ratchet-scope.js';
+import {privateEvaluationProductCapturePaths} from '../ci/private-evaluation-product-capture-scope.js';
 
 const baseManifest = {
   dependencies: {effect: '4.0.0-rc.112'},
@@ -61,6 +62,19 @@ describe('code graph production ratchet diff scope', () => {
         ],
       }).skipReason,
     ).toBe('unrelated-evaluation-only');
+  });
+
+  it('skips the governed profile for only the exact PR #606 private-evaluation family', () => {
+    const result = classifyCodeGraphProductionRatchetScope({changedPaths: privateEvaluationProductCapturePaths});
+    expect(result).toMatchObject({runBenchmark: false, skipReason: 'private-evaluation-product-capture-only'});
+    for (const path of [
+      'src/evaluation/threadnote-5-product-capture-adjacent.ts',
+      'test/unit/evaluation.threadnote-5-product-capture-extra.test.ts',
+      'unknown/private-evaluation-payload.bin',
+      '',
+    ]) {
+      expect(shouldSkipBenchmark([...privateEvaluationProductCapturePaths, path])).toBe(false);
+    }
   });
 
   it('runs for dependency, script, runtime, benchmark harness, code-graph fixture, baseline, ratchet contract, lockfile, and ambiguous changes', () => {
@@ -189,6 +203,24 @@ describe('code graph production ratchet diff scope', () => {
       fc.property(fc.shuffledSubarray(evaluationPaths, {minLength: 1}), relevantPath, (paths, path) => {
         expect(shouldSkipBenchmark(paths, undefined, undefined)).toBe(true);
         expect(shouldSkipBenchmark([...paths, path], undefined, undefined)).toBe(false);
+      }),
+      {numRuns: 100},
+    );
+  });
+
+  it('keeps the private-evaluation exemption order/duplicate invariant and escalates monotonically', () => {
+    fc.assert(
+      fc.property(fc.shuffledSubarray([...privateEvaluationProductCapturePaths], {minLength: 1}), paths => {
+        expect(shouldSkipBenchmark(paths, undefined, undefined)).toBe(true);
+        expect(shouldSkipBenchmark([...paths].reverse(), undefined, undefined)).toBe(true);
+        expect(shouldSkipBenchmark([...paths, ...paths], undefined, undefined)).toBe(true);
+        expect(
+          shouldSkipBenchmark(
+            [...paths, 'src/evaluation/threadnote-5-product-capture-adjacent.ts'],
+            undefined,
+            undefined,
+          ),
+        ).toBe(false);
       }),
       {numRuns: 100},
     );

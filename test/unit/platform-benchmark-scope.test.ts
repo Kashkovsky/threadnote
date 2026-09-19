@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {classifyPlatformBenchmarkScope} from '../ci/platform-benchmark-scope.js';
+import {privateEvaluationProductCapturePaths} from '../ci/private-evaluation-product-capture-scope.js';
 
 const beforePackage = JSON.stringify({
   dependencies: {effect: '4.0.0-rc.112'},
@@ -47,6 +48,24 @@ describe('Platform benchmark PR scope', () => {
     });
     expect(result.runRecallPr).toBe(false);
     expect(result.runCodeGraphPr).toBe(false);
+  });
+
+  it('skips both expensive lanes only for the exact PR #606 private-evaluation family', () => {
+    expect(scope(privateEvaluationProductCapturePaths)).toMatchObject({runRecallPr: false, runCodeGraphPr: false});
+    for (const paths of [
+      [...privateEvaluationProductCapturePaths, 'src/evaluation/threadnote-5-product-capture-future.ts'],
+      [...privateEvaluationProductCapturePaths, 'src/evaluation/threadnote-5-product-capture.ts.bak'],
+      [...privateEvaluationProductCapturePaths, 'unknown/private-evaluation-payload.bin'],
+      [...privateEvaluationProductCapturePaths, ''],
+    ]) {
+      expect(scope(paths)).toMatchObject({runRecallPr: true, runCodeGraphPr: true});
+    }
+    for (const paths of [
+      privateEvaluationProductCapturePaths.map(path => path.replaceAll('/', '\\')),
+      privateEvaluationProductCapturePaths.map(path => `./${path}`),
+    ]) {
+      expect(scope(paths)).toMatchObject({invalidPath: true, runRecallPr: true, runCodeGraphPr: true});
+    }
   });
 
   it('selects independent lanes and treats shared dependencies as both lanes', () => {
@@ -123,6 +142,21 @@ describe('Platform benchmark PR scope', () => {
     fc.assert(
       fc.property(fc.shuffledSubarray(ignored, {minLength: 1}), paths => {
         expect(scope([...paths, 'src/recall/index.ts'])).toMatchObject({runRecallPr: true, runCodeGraphPr: false});
+      }),
+      {numRuns: 100},
+    );
+  });
+
+  it('keeps the private-evaluation exemption order/duplicate invariant and escalates monotonically', () => {
+    fc.assert(
+      fc.property(fc.shuffledSubarray([...privateEvaluationProductCapturePaths], {minLength: 1}), paths => {
+        expect(scope(paths)).toMatchObject({runRecallPr: false, runCodeGraphPr: false});
+        expect(scope([...paths].reverse())).toMatchObject({runRecallPr: false, runCodeGraphPr: false});
+        expect(scope([...paths, ...paths])).toMatchObject({runRecallPr: false, runCodeGraphPr: false});
+        expect(scope([...paths, 'src/evaluation/threadnote-5-product-capture-adjacent.ts'])).toMatchObject({
+          runRecallPr: true,
+          runCodeGraphPr: true,
+        });
       }),
       {numRuns: 100},
     );

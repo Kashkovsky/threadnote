@@ -1,3 +1,5 @@
+import {isPurePrivateEvaluationProductCaptureDiff} from './private-evaluation-product-capture-scope.js';
+
 export interface CodeGraphProductionRatchetDiff {
   readonly afterPackageJson?: string;
   readonly beforePackageJson?: string;
@@ -8,7 +10,8 @@ export interface CodeGraphProductionRatchetScope {
   readonly changedCount: number;
   readonly paths: readonly string[];
   readonly runBenchmark: boolean;
-  readonly skipReason?: 'release-metadata-only' | 'unrelated-evaluation-only';
+  readonly skipReason?:
+    'private-evaluation-product-capture-only' | 'release-metadata-only' | 'unrelated-evaluation-only';
 }
 
 type JsonObject = Readonly<Record<string, unknown>>;
@@ -128,11 +131,14 @@ export function classifyCodeGraphProductionRatchetScope(
     changesOnlyTopLevelVersion(diff.beforePackageJson, diff.afterPackageJson);
 
   const evaluationOnly = !invalidPath && sortedPaths.length > 0 && sortedPaths.every(isUnrelatedEvaluationPath);
-  const skipReason = releaseMetadataOnly
-    ? 'release-metadata-only'
-    : evaluationOnly
-      ? 'unrelated-evaluation-only'
-      : undefined;
+  const skipReason =
+    !invalidPath && isPurePrivateEvaluationProductCaptureDiff(sortedPaths)
+      ? 'private-evaluation-product-capture-only'
+      : releaseMetadataOnly
+        ? 'release-metadata-only'
+        : evaluationOnly
+          ? 'unrelated-evaluation-only'
+          : undefined;
   return {changedCount: sortedPaths.length, paths: sortedPaths, runBenchmark: skipReason === undefined, skipReason};
 }
 
