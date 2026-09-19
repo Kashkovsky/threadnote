@@ -79,6 +79,12 @@ export interface ContextBriefRuntimeCompilerSources<
   readonly projection: NonNullable<ContextBriefCompilerDependencies<never, never, never, ProjectR>['projection']>;
 }
 
+/** Internal compiler controls for reviewed callers; never part of the Context Brief request schema. */
+interface ContextBriefCompilerOptions {
+  readonly codeLinkedMemoryOnly?: boolean;
+  readonly includeProcedureEvidence?: boolean;
+}
+
 /**
  * Measure raw phase outcomes before converting source failures into bounded
  * compiler gaps. This preserves a successful fail-soft brief without teaching
@@ -255,9 +261,10 @@ export const compileContextBriefWith = Effect.fn('contextBrief.compileWith')(fun
  * CLI/MCP-ready local runtime adapter. Graph failure and recall failure remain
  * explicit coverage gaps so either evidence source can still orient the task.
  */
-export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
+const compileContextBriefRuntime = Effect.fn('contextBrief.compileRuntime')(function* (
   config: RuntimeConfig,
   input: ContextBriefRequestV1 | unknown,
+  options: ContextBriefCompilerOptions = {},
 ) {
   const startedAt = yield* Clock.currentTimeMillis;
   const request = planContextBrief(input);
@@ -276,24 +283,34 @@ export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
             validateContextBriefMemoryCitations(config, scope, candidates, fence),
           graphEvidence: graphPlan => retrieveContextBriefGraphEvidence(config, graphPlan),
           codeLinkedMemoryEvidence: codePlan => retrieveContextBriefCodeLinkedMemoryEvidence(config, codePlan),
-          memoryEvidence: memoryPlan => retrieveContextBriefMemoryEvidence(config, memoryPlan),
+          memoryEvidence: memoryPlan =>
+            options.codeLinkedMemoryOnly
+              ? Effect.succeed({
+                  candidates: [],
+                  consideredCandidates: 0,
+                  gaps: [],
+                  trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+                } satisfies ContextBriefMemoryRetrievalV1)
+              : retrieveContextBriefMemoryEvidence(config, memoryPlan),
           procedureEvidence: plan =>
-            loadPublishedProcedureCandidates(config).pipe(
-              Effect.map(repositoryEvidence => {
-                const selected = selectVerifiedProcedureEvidence({
-                  candidates: repositoryEvidence.candidates,
-                  cohort: config.user,
-                  surface: plan.surface ?? config.agentId,
-                  task: plan.task,
-                });
-                return {
-                  gaps: [
-                    ...new Set<VerifiedProcedureCoverageGap>([...repositoryEvidence.gaps, ...selected.gaps]),
-                  ].sort(),
-                  procedures: selected.procedures,
-                };
-              }),
-            ),
+            options.includeProcedureEvidence === false
+              ? Effect.succeed({gaps: [], procedures: []})
+              : loadPublishedProcedureCandidates(config).pipe(
+                  Effect.map(repositoryEvidence => {
+                    const selected = selectVerifiedProcedureEvidence({
+                      candidates: repositoryEvidence.candidates,
+                      cohort: config.user,
+                      surface: plan.surface ?? config.agentId,
+                      task: plan.task,
+                    });
+                    return {
+                      gaps: [
+                        ...new Set<VerifiedProcedureCoverageGap>([...repositoryEvidence.gaps, ...selected.gaps]),
+                      ].sort(),
+                      procedures: selected.procedures,
+                    };
+                  }),
+                ),
           projection: (logical, maximumEstimatedTokens) =>
             Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens)),
         },
@@ -328,6 +345,25 @@ export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
       ),
     ),
   );
+});
+
+/** Compile a normal Context Brief using its stable two-argument public contract. */
+export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
+  config: RuntimeConfig,
+  input: ContextBriefRequestV1 | unknown,
+) {
+  return yield* compileContextBriefRuntime(config, input);
+});
+
+/** Compile the final source-verification brief used only by setup. */
+export const compileSetupSourceVerificationBrief = Effect.fn('contextBrief.compileSetupSourceVerification')(function* (
+  config: RuntimeConfig,
+  input: ContextBriefRequestV1 | unknown,
+) {
+  return yield* compileContextBriefRuntime(config, input, {
+    codeLinkedMemoryOnly: true,
+    includeProcedureEvidence: false,
+  });
 });
 
 export function contextBriefValueEventForExit(

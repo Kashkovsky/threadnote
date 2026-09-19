@@ -11,11 +11,14 @@ import {
 import {runCodeGraphIndex} from '../code_graph/commands.js';
 import {worktreeBuildRequestState} from '../code_graph/inventory.js';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
-import {compileContextBrief} from '../context_brief/index.js';
+import {compileSetupSourceVerificationBrief} from '../context_brief/index.js';
+import {retrieveContextBriefGraphEvidence} from '../context_brief/graph_evidence.js';
+import {planContextBrief} from '../context_brief/planner.js';
 import {hasCurrentCursorHooks, hasManagedCursorHooks} from '../cursor_hooks.js';
 import {CLAUDE_SETTINGS_PATH, USER_MANIFEST_NAME} from '../constants.js';
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+  type ContextBriefGraphEvidenceV1,
   type ContextBriefRequestV1,
   type ProjectedContextBriefV1,
 } from '../context_brief/types.js';
@@ -28,7 +31,7 @@ import {hasCurrentOmpHooks, hasManagedOmpHooks} from '../omp_hooks.js';
 import {refreshRecallDerivedIndexesFromSelection} from '../recall/mcp_refresh.js';
 import {runInitManifest, runSeed} from '../seeding.js';
 import type {DoctorCheck, RuntimeConfig} from '../types.js';
-import {expandPath, readFileIfExists} from '../utils.js';
+import {expandPath, readFileIfExists, resolveRepoName} from '../utils.js';
 import {
   SETUP_MAX_DURATION_MILLISECONDS,
   SetupOperationError,
@@ -417,16 +420,38 @@ const verifyDoctor = Effect.fn('setup.verifyDoctor')(function* (config: RuntimeC
   return {ownership: 'preexisting', status: 'verified'} satisfies SetupOperationOutcome;
 });
 
-const verifyContextBrief = Effect.fn('setup.verifyContextBrief')(function* (
-  config: RuntimeConfig,
-  projectRoot: string,
-  task: string,
-) {
+export interface SetupSourceVerificationDependencies<Requirements = never> {
+  readonly compileFinal: (
+    request: ContextBriefRequestV1,
+  ) => Effect.Effect<ProjectedContextBriefV1, unknown, Requirements>;
+  readonly graphLocator: (
+    request: ContextBriefRequestV1,
+  ) => Effect.Effect<ContextBriefGraphEvidenceV1, unknown, Requirements>;
+  readonly resolveProject: (projectRoot: string) => Effect.Effect<string | undefined, unknown, Requirements>;
+  readonly sourceHash: (projectRoot: string) => Effect.Effect<string, unknown, Requirements>;
+}
+
+export const verifySetupSourceVerificationWith = Effect.fn('setup.verifySourceVerificationWith')(function* <
+  Requirements = never,
+>(dependencies: SetupSourceVerificationDependencies<Requirements>, projectRoot: string, task: string) {
   const startedAt = yield* Clock.currentTimeMillis;
-  const sourceHashBefore = yield* setupRepositorySourceHash(projectRoot);
-  const projected = yield* compileContextBrief(config, setupContextBriefRequest(projectRoot, task));
+  const sourceHashBefore = yield* dependencies.sourceHash(projectRoot);
+  const project = yield* dependencies.resolveProject(projectRoot);
+  if (project === undefined) {
+    return yield* SetupOperationError.make({
+      message: 'Final Context Brief did not contain stable, fresh, complete source evidence for the setup repository.',
+    });
+  }
+  const locator = yield* dependencies.graphLocator(setupContextBriefRequest(projectRoot, task, project));
+  const anchor = setupContextBriefAnchor(locator);
+  if (anchor === undefined) {
+    return yield* SetupOperationError.make({
+      message: 'Final Context Brief did not contain stable, fresh, complete source evidence for the setup repository.',
+    });
+  }
+  const projected = yield* dependencies.compileFinal(setupContextBriefRequest(projectRoot, task, project, anchor));
   const completedAt = yield* Clock.currentTimeMillis;
-  const sourceHashAfter = yield* setupRepositorySourceHash(projectRoot);
+  const sourceHashAfter = yield* dependencies.sourceHash(projectRoot);
   const brief = projected.structuredContent;
   if (!setupBriefIsSourceVerified(brief) || sourceHashBefore !== sourceHashAfter) {
     return yield* SetupOperationError.make({
@@ -452,13 +477,40 @@ const verifyContextBrief = Effect.fn('setup.verifyContextBrief')(function* (
   } satisfies SetupOperationOutcome;
 });
 
-export function setupContextBriefRequest(projectRoot: string, task: string): ContextBriefRequestV1 {
+const verifyContextBrief = Effect.fn('setup.verifyContextBrief')(function* (
+  config: RuntimeConfig,
+  projectRoot: string,
+  task: string,
+) {
+  return yield* verifySetupSourceVerificationWith(
+    {
+      compileFinal: request => compileSetupSourceVerificationBrief(config, request),
+      graphLocator: request => retrieveContextBriefGraphEvidence(config, planContextBrief(request).graph),
+      resolveProject: resolveRepoName,
+      sourceHash: setupRepositorySourceHash,
+    },
+    projectRoot,
+    task,
+  );
+});
+
+export function setupContextBriefRequest(
+  projectRoot: string,
+  task: string,
+  project?: string,
+  codeRef?: string,
+): ContextBriefRequestV1 {
   return {
     budgetTokens: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
-    mode: 'brief',
-    scope: {callerCwd: projectRoot, kind: 'repository'},
+    ...(codeRef === undefined ? {} : {codeRefs: [codeRef]}),
+    mode: codeRef === undefined ? 'brief' : 'locate',
+    scope: {callerCwd: projectRoot, kind: 'repository', ...(project === undefined ? {} : {project})},
     task,
   };
+}
+
+export function setupContextBriefAnchor(graph: Pick<ContextBriefGraphEvidenceV1, 'cards'>): string | undefined {
+  return graph.cards[0]?.ref;
 }
 
 function operationOutcome(
@@ -507,11 +559,11 @@ export function setupBriefIsSourceVerified(brief: ProjectedContextBriefV1['struc
     brief.scope.requestedRepositories === 1 &&
     brief.scope.readyRepositories === 1 &&
     brief.coverage.graph.complete &&
-    brief.graph.cards.length +
-      brief.graph.contracts.length +
-      brief.coverage.omissions.graphCards +
-      brief.coverage.omissions.graphContracts >
-      0
+    !brief.coverage.gaps.includes('graph-evidence-partial') &&
+    !brief.coverage.gaps.includes('graph-query-warning') &&
+    brief.coverage.omissions.graphCards === 0 &&
+    brief.coverage.omissions.graphContracts === 0 &&
+    brief.graph.cards.length + brief.graph.contracts.length > 0
   );
 }
 
