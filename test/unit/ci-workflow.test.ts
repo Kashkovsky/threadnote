@@ -159,12 +159,12 @@ describe('dependency-aware CI workflow', () => {
     const classifier = changes.steps?.find(step => step.id === 'scopes');
 
     expect(Object.keys(changes.outputs ?? {})).toEqual([
-      ...ciScopeKeys.slice(0, 3),
+      ...ciScopeKeys.slice(0, 4),
       'long_test_groups',
       'long_test_mode',
       'postgres_test_mode',
       'postgres_test_paths',
-      ...ciScopeKeys.slice(3, -1),
+      ...ciScopeKeys.slice(4, -1),
       'standard_test_mode',
       'standard_test_paths',
       'windows',
@@ -212,7 +212,9 @@ describe('dependency-aware CI workflow', () => {
       "needs.changes.outputs.site_check == 'true' && needs.changes.outputs.code != 'true'",
     );
     expect(stepForRun(quality, 'bun run site:build').if).toBe("needs.changes.outputs.site_build == 'true'");
-    expect(stepForRun(quality, 'bun run build').if).toBe("needs.changes.outputs.release == 'true'");
+    expect(stepForRun(quality, 'bun run build').if).toBe(
+      "needs.changes.outputs.build == 'true' || needs.changes.outputs.release == 'true'",
+    );
     expect(stepForRun(quality, 'bun run check:self-contained').if).toBe("needs.changes.outputs.release == 'true'");
 
     expect(standard).toMatchObject({

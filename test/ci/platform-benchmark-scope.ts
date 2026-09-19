@@ -1,3 +1,5 @@
+import {isPurePrivateEvaluationProductCaptureDiff} from './private-evaluation-product-capture-scope.js';
+
 export interface PlatformBenchmarkDiff {
   readonly afterPackageJson?: string;
   readonly beforePackageJson?: string;
@@ -99,7 +101,8 @@ const PACKAGE_RELEASE_METADATA_KEYS = new Set([
 ]);
 
 function normalizeGitPath(path: string): string | undefined {
-  const normalized = path.replaceAll('\\', '/').replace(/^\.\/+/, '');
+  if (path.includes('\\') || path.startsWith('./')) return undefined;
+  const normalized = path;
   if (
     normalized.length === 0 ||
     normalized.startsWith('/') ||
@@ -248,6 +251,15 @@ export function classifyPlatformBenchmarkScope(diff: PlatformBenchmarkDiff): Pla
   const sortedPaths = [...paths].sort();
   if (invalidPath || sortedPaths.length === 0) {
     return {changedCount: sortedPaths.length, invalidPath, paths: sortedPaths, runCodeGraphPr: true, runRecallPr: true};
+  }
+  if (isPurePrivateEvaluationProductCaptureDiff(sortedPaths)) {
+    return {
+      changedCount: sortedPaths.length,
+      invalidPath,
+      paths: sortedPaths,
+      runCodeGraphPr: false,
+      runRecallPr: false,
+    };
   }
 
   let runCodeGraphPr = false;

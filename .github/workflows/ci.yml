@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       actions: ${{ steps.scopes.outputs.actions }}
+      build: ${{ steps.scopes.outputs.build }}
       code: ${{ steps.scopes.outputs.code }}
       guidance: ${{ steps.scopes.outputs.guidance }}
       long_test_groups: ${{ steps.scopes.outputs.long_test_groups }}
@@ -100,7 +101,7 @@ jobs:
           THREADNOTE_SITE_BASE: /
 
       - run: bun run build
-        if: needs.changes.outputs.release == 'true'
+        if: needs.changes.outputs.build == 'true' || needs.changes.outputs.release == 'true'
 
       - run: bun run check:self-contained
         if: needs.changes.outputs.release == 'true'

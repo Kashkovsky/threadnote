@@ -8,6 +8,10 @@ import {
   selectCiTestPlanForClassification,
   type CiScopeKey,
 } from '../ci/ci-scopes.js';
+import {
+  privateEvaluationProductCaptureFocusedTestPath,
+  privateEvaluationProductCapturePaths,
+} from '../ci/private-evaluation-product-capture-scope.js';
 
 const pathSegment = FC.stringMatching(/^[a-z][a-z0-9_-]{0,20}$/u);
 const websitePath = FC.array(pathSegment, {maxLength: 5, minLength: 1}).map(parts => `website/${parts.join('/')}.tsx`);
@@ -171,6 +175,7 @@ describe('CI changed-path scope properties', () => {
         paths: ['test/unit/utils.test.ts'],
         scopes: {
           actions: true,
+          build: true,
           code: true,
           guidance: true,
           quality: true,
@@ -195,6 +200,50 @@ describe('CI changed-path scope properties', () => {
     });
   });
 
+  it('selects the exact PR #606 private-evaluation family without unrelated CI lanes', () => {
+    const classification = classifyCiScopes(privateEvaluationProductCapturePaths);
+    expect(classification.scopes).toEqual({
+      actions: false,
+      build: true,
+      code: true,
+      guidance: false,
+      quality: false,
+      release: false,
+      site_build: false,
+      site_check: false,
+      windows: false,
+    });
+    expect(selectCiTestPlanForClassification(classification)).toEqual({
+      standard: {mode: 'selected', paths: [privateEvaluationProductCaptureFocusedTestPath]},
+      long: {mode: 'none', groups: []},
+      postgres: {mode: 'none', paths: []},
+    });
+    for (const paths of [
+      [...privateEvaluationProductCapturePaths, 'src/evaluation/threadnote-5-product-capture-adjacent.ts'],
+      [...privateEvaluationProductCapturePaths, 'unknown/private-evaluation-payload.bin'],
+      [...privateEvaluationProductCapturePaths, ''],
+    ]) {
+      expect(selectCiTestPlan(paths)).toMatchObject({
+        standard: {mode: 'full'},
+        long: {mode: 'full', groups: fixedRequiredLongGroupNames},
+        postgres: {mode: 'full'},
+      });
+    }
+    for (const paths of [
+      privateEvaluationProductCapturePaths.map(path => path.replaceAll('/', '\\')),
+      privateEvaluationProductCapturePaths.map(path => `./${path}`),
+    ]) {
+      const malformedClassification = classifyCiScopes(paths);
+      expect(malformedClassification.invalidPath).toBe(true);
+      expect(Object.values(malformedClassification.scopes).every(Boolean)).toBe(true);
+      expect(selectCiTestPlan(paths)).toMatchObject({
+        standard: {mode: 'full'},
+        long: {mode: 'full', groups: fixedRequiredLongGroupNames},
+        postgres: {mode: 'full'},
+      });
+    }
+  });
+
   fcProp(
     it,
     'keeps the independent ordinary-test model deterministic and selects exact containing long groups',
@@ -215,6 +264,21 @@ describe('CI changed-path scope properties', () => {
       );
     },
     {fastCheck: {numRuns: 200}},
+  );
+
+  fcProp(
+    it,
+    'keeps the private-evaluation family order/duplicate invariant and escalates monotonically',
+    {paths: FC.shuffledSubarray([...privateEvaluationProductCapturePaths], {minLength: 1})},
+    ({paths}) => {
+      const expected = classifyCiScopes(paths);
+      expect(expected.scopes).toMatchObject({build: true, code: true, quality: false, release: false, windows: false});
+      expect(classifyCiScopes([...paths].reverse())).toEqual(expected);
+      expect(classifyCiScopes([...paths, ...paths])).toEqual(expected);
+      const escalated = classifyCiScopes([...paths, 'src/evaluation/threadnote-5-product-capture-adjacent.ts']);
+      expect(escalated.scopes).toMatchObject({quality: true, release: true, windows: true});
+    },
+    {fastCheck: {numRuns: 100}},
   );
 
   fcProp(

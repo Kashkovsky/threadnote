@@ -3,9 +3,14 @@ import {
   ciRequiredLongRunningTestGroupNames,
   type CiLongRunningTestGroupName,
 } from './vitest-plan.js';
+import {
+  isPurePrivateEvaluationProductCaptureDiff,
+  privateEvaluationProductCaptureFocusedTestPath,
+} from './private-evaluation-product-capture-scope.js';
 
 export const ciScopeKeys = [
   'actions',
+  'build',
   'code',
   'guidance',
   'quality',
@@ -35,6 +40,7 @@ export interface CiTestPlan {
 
 const noScopes = (): Record<CiScopeKey, boolean> => ({
   actions: false,
+  build: false,
   code: false,
   guidance: false,
   quality: false,
@@ -46,6 +52,7 @@ const noScopes = (): Record<CiScopeKey, boolean> => ({
 
 const allScopes = (): Record<CiScopeKey, boolean> => ({
   actions: true,
+  build: true,
   code: true,
   guidance: true,
   quality: true,
@@ -66,7 +73,8 @@ function mergeScopes(target: Record<CiScopeKey, boolean>, source: CiScopes): voi
 }
 
 function normalizeGitPath(path: string): string | undefined {
-  const normalized = path.replaceAll('\\', '/').replace(/^\.\/+/, '');
+  if (path.includes('\\') || path.startsWith('./')) return undefined;
+  const normalized = path;
   if (
     normalized.length === 0 ||
     normalized.startsWith('/') ||
@@ -271,6 +279,10 @@ export function classifyCiScopes(paths: Iterable<string>): CiScopeClassification
   if (invalidPath || sortedPaths.length === 0)
     return {changedCount: sortedPaths.length, invalidPath, paths: sortedPaths, scopes: allScopes()};
 
+  if (isPurePrivateEvaluationProductCaptureDiff(sortedPaths)) {
+    return {changedCount: sortedPaths.length, invalidPath, paths: sortedPaths, scopes: selectedScopes('build', 'code')};
+  }
+
   for (const path of sortedPaths) mergeScopes(scopes, scopesForPath(path));
   return {changedCount: sortedPaths.length, invalidPath, paths: sortedPaths, scopes};
 }
@@ -297,6 +309,14 @@ export function selectCiTestPlanForClassification(classification: CiScopeClassif
     postgres: {mode: 'none', paths: []},
   };
   if (!classification.scopes.code) return none;
+
+  if (!classification.invalidPath && isPurePrivateEvaluationProductCaptureDiff(classification.paths)) {
+    return {
+      standard: {mode: 'selected', paths: [privateEvaluationProductCaptureFocusedTestPath]},
+      long: {mode: 'none', groups: []},
+      postgres: {mode: 'none', paths: []},
+    };
+  }
 
   const isSelective =
     !classification.invalidPath &&
