@@ -1,7 +1,8 @@
 # Private Threadnote 5 collection seam
 
 Verified candidate-process capture currently runs on a macOS collection workstation because it depends on the
-platform's suspended-spawn identity check. Descriptor-relative private file handling remains portable and accepts only
+platform's suspended-spawn identity check. Descriptor-relative private file handling remains portable across supported
+macOS/Linux (POSIX) hosts and accepts only
 a canonical interpreter protected by root-owned, non-writable path components.
 
 `scripts/collect-threadnote-5-release-readiness.ts` adds a process runner in front of the existing capture validator.
