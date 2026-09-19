@@ -4429,8 +4429,18 @@ describe('Threadnote MCP toolsets', () => {
   it('returns read-only structured context health from the full toolset', async () => {
     await withMcpClient(
       async (client, fixture) => {
+        const tools = await client.listTools();
+        for (const name of ['context_health', 'context_health_repair_preview', 'context_health_repair_apply']) {
+          const schema = tools.tools.find(tool => tool.name === name)?.inputSchema;
+          expect(schema).toMatchObject({
+            properties: {
+              findingCategory: {enum: expect.arrayContaining(['validity-expired', 'citation-changed'])},
+              kind: {enum: ['durable', 'handoff', 'incident', 'preference', 'smoke']},
+            },
+          });
+        }
         const result = await client.callTool({
-          arguments: {callerCwd: fixture.root, project: 'threadnote'},
+          arguments: {callerCwd: fixture.root, kind: 'durable', project: 'threadnote'},
           name: 'context_health',
         });
 
@@ -4444,8 +4454,23 @@ describe('Threadnote MCP toolsets', () => {
         expect(result.content).toEqual(
           expect.arrayContaining([
             expect.objectContaining({text: expect.stringContaining('Context health for threadnote')}),
+            expect.objectContaining({text: expect.stringContaining('Active selector: kind=durable.')}),
           ]),
         );
+        for (const arguments_ of [
+          {callerCwd: fixture.root, project: 'threadnote', topic: ''},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\nvalue'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\u0085value'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\u009bvalue'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\u2028value'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\u2029value'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: '🙂'.repeat(65)},
+          {callerCwd: fixture.root, kind: 'unknown', project: 'threadnote'},
+          {callerCwd: fixture.root, findingCategory: 'unknown', project: 'threadnote'},
+        ]) {
+          const invalid = await client.callTool({arguments: arguments_, name: 'context_health'});
+          expect(invalid.isError).toBe(true);
+        }
       },
       {toolset: 'full'},
     );
@@ -4516,7 +4541,7 @@ describe('Threadnote MCP toolsets', () => {
     await withMcpClient(
       async (client, fixture) => {
         const result = await client.callTool({
-          arguments: {callerCwd: fixture.root, project: 'threadnote'},
+          arguments: {callerCwd: fixture.root, kind: 'durable', project: 'threadnote'},
           name: 'context_health_repair_preview',
         });
 
@@ -4534,7 +4559,82 @@ describe('Threadnote MCP toolsets', () => {
           proposals: [],
           version: 1,
         });
+        expect(result.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({text: expect.stringContaining('Active selector: kind=durable.')}),
+          ]),
+        );
         await expect(readFile(join(fixture.home, 'threadnote', 'context-health-repairs'), 'utf8')).rejects.toThrow();
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('applies an MCP repair only with the exact normalized preview selector', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        await writeCanonicalMemory(
+          fixture.home,
+          'mcp-selector.md',
+          canonicalMemoryContent('mcp-selector', 'Synthetic expired MCP selector fixture.').replace(
+            'timestamp: 2026-08-01T00:00:00.000Z',
+            'timestamp: 2026-08-01T00:00:00.000Z\nvalid_to: 2026-08-02T00:00:00.000Z',
+          ),
+        );
+        const selector = {
+          findingCategory: 'validity-expired',
+          kind: 'durable',
+          topic: '  mcp-selector  ',
+        } as const;
+        const preview = await client.callTool({
+          arguments: {callerCwd: fixture.root, project: 'threadnote', ...selector},
+          name: 'context_health_repair_preview',
+        });
+        expect(preview.isError).not.toBe(true);
+        const proposal = (
+          preview.structuredContent as {
+            readonly proposals?: readonly {readonly proposalId: string; readonly revision: string}[];
+          }
+        ).proposals?.[0];
+        expect(proposal).toBeDefined();
+        if (proposal === undefined) throw new Error('expected MCP selector repair proposal');
+
+        const missingSelector = await client.callTool({
+          arguments: {
+            approved: true,
+            callerCwd: fixture.root,
+            project: 'threadnote',
+            proposalId: proposal.proposalId,
+            revision: proposal.revision,
+          },
+          name: 'context_health_repair_apply',
+        });
+        expect(missingSelector.isError).toBe(true);
+        const applied = await client.callTool({
+          arguments: {
+            approved: true,
+            callerCwd: fixture.root,
+            project: 'threadnote',
+            proposalId: proposal.proposalId,
+            revision: proposal.revision,
+            ...selector,
+          },
+          name: 'context_health_repair_apply',
+        });
+        expect(applied.isError).not.toBe(true);
+        expect(applied.structuredContent).toMatchObject({status: 'applied', version: 1});
+        const repeated = await client.callTool({
+          arguments: {
+            approved: true,
+            callerCwd: fixture.root,
+            project: 'threadnote',
+            proposalId: proposal.proposalId,
+            revision: proposal.revision,
+            ...selector,
+          },
+          name: 'context_health_repair_apply',
+        });
+        expect(repeated.structuredContent).toMatchObject({status: 'already-applied', version: 1});
       },
       {toolset: 'full'},
     );

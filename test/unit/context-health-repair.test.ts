@@ -166,6 +166,43 @@ describe('context health repair proposals', () => {
     ).toMatchObject({conflict: {code: 'precondition-failed'}, status: 'conflict'});
   });
 
+  it('keeps selector-scoped relation proposals bound to inactive targets outside the selected subjects', () => {
+    const inactiveUri = 'threadnote://user/me/memories/durable/archived/threadnote/outside.md';
+    const source = record('selected-source', 'Selected subject.', {
+      relations: [{type: 'references', uri: inactiveUri}],
+      topic: 'selected-topic',
+    });
+    const inactive = record('outside', 'Inactive target.', {status: 'archived', topic: 'outside-topic'}, inactiveUri);
+    const report = healthReport([finding('relation-target-inactive', 'repair-relation', source.uri, inactiveUri)]);
+    const selector = {findingCategory: 'relation-target-inactive' as const, topic: 'selected-topic'};
+    const proposal = previewContextHealthRepairPlanV1(report, [source, inactive], {selector}).proposals[0];
+    expect(proposal).toMatchObject({
+      mutation: {kind: 'remove-relations', targetPrecondition: {state: 'inactive'}},
+      selector,
+    });
+    if (proposal === undefined) throw new Error('expected selector-scoped relation proposal');
+
+    const changedTarget = record('outside', 'Changed inactive target.', inactive.metadata, inactiveUri);
+    expect(
+      applyContextHealthRepairProposalV1({
+        expectedRevision: proposal.revision,
+        proposal,
+        records: [source, changedTarget],
+      }),
+    ).toMatchObject({conflict: {code: 'precondition-failed'}, status: 'conflict'});
+
+    const duplicate = record('selected-duplicate', 'Duplicate body.', {topic: 'selected-topic'});
+    const survivor = record('outside-survivor', 'Duplicate body.', {topic: 'outside-topic'});
+    const duplicateProposal = previewContextHealthRepairPlanV1(
+      healthReport([finding('exact-duplicate', 'deduplicate-memory', duplicate.uri, survivor.uri)]),
+      [duplicate, survivor],
+      {selector: {findingCategory: 'exact-duplicate', topic: 'selected-topic'}},
+    ).proposals[0];
+    expect(duplicateProposal?.preconditions.map(precondition => precondition.uri)).toEqual(
+      [duplicate.uri, survivor.uri].sort(),
+    );
+  });
+
   it('keeps stable identity aliases review-only because their liveness is not one URI CAS', () => {
     const alias = 'threadnote://memory/tn_missing';
     const source = record('alias-source', 'Alias target.', {

@@ -1,12 +1,17 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {buildContextHealthReport, type ContextHealthFindingV1} from '../../src/memory/context_health.js';
+import {buildContextHealthReport} from '../../src/memory/context_health.js';
 import {renderContextHealth} from '../../src/memory/context_health_commands.js';
 import {
   analyzeContextHealthSemantics,
   MAXIMUM_CONTEXT_HEALTH_SEMANTIC_RECORDS,
 } from '../../src/memory/context_health_semantic.js';
 import {previewContextHealthRepairPlanV1} from '../../src/memory/context_health_repair.js';
+import {
+  normalizeContextHealthSelector,
+  projectContextHealthRecords,
+  type ContextHealthSelectorV1,
+} from '../../src/memory/context_health_selector.js';
 import type {MemoryMetadata, MemoryRecord} from '../../src/memory/document.js';
 
 const now = new Date('2026-09-18T08:00:00.000Z');
@@ -76,53 +81,145 @@ describe('context health semantic contradictions', () => {
     expect(partial.semanticCompleteness.unknownReasons).toContainEqual({count: 3, reason: 'record-limit'});
   });
 
-  it('groups large text reports with total counts, owning memories, and actionable next steps', () => {
-    const base = buildContextHealthReport({now, project: 'threadnote', records: []});
-    const owners = ['threadnote://memory/tn_owner_a', 'threadnote://memory/tn_owner_b'];
-    const findings: ContextHealthFindingV1[] = Array.from({length: 100}, (_, index) => {
-      const owner = owners[index % owners.length];
-      const citationId = `tncc_${index.toString(16).padStart(40, '0')}`;
-      return {
-        category: 'citation-changed',
-        confidence: 'high',
-        id: `finding-${index}`,
-        repair: {
-          kind: 'repair-citation',
-          subjectUri: owner,
-          summary: `Review and recapture citation ${citationId}.`,
-          targetUri: `${owner}#${citationId}`,
-        },
-        repairability: 'reviewable',
-        severity: 'high',
-        summary: `citation ${citationId} no longer matches current source`,
-        uris: [owner],
-      };
-    });
+  it('keeps the large bounded-report contract while selectors can isolate a maintenance scope', () => {
+    const {records} = largeHealthFixture();
+    const report = buildContextHealthReport({now, project: 'threadnote', records});
 
-    const rendered = renderContextHealth({
-      ...base,
-      findings,
-      omittedFindings: 1_403,
-      recordsScanned: 1_912,
-      semanticCompleteness: {
-        ...base.semanticCompleteness,
-        analyzedRecords: 14,
-        eligibleRecords: 297,
-        state: 'partial',
-        unknownReasons: [{count: 283, reason: 'record-limit'}],
-        unknownRecords: 283,
-      },
+    expect(report).toMatchObject({
+      findings: expect.any(Array),
+      nextCursor: expect.stringMatching(/^hcx1_[0-9a-z]+_[0-9a-f]{40}$/u),
+      omittedFindings: 1_981,
+      recordsScanned: 2_128,
       status: 'unknown',
+      version: 1,
     });
+    expect(report.findings).toHaveLength(100);
+    expect(report.semanticCompleteness).toMatchObject({
+      analyzedRecords: 16,
+      claimsAnalyzed: 256,
+      eligibleRecords: 302,
+      unknownRecords: 286,
+      unknownReasons: expect.arrayContaining([
+        {count: 112, reason: 'claim-budget'},
+        {count: 174, reason: 'record-limit'},
+      ]),
+    });
+    expect(JSON.parse(JSON.stringify(report))).toEqual(report);
+    expect(projectContextHealthRecords(records, {kind: 'durable'})).toHaveLength(302);
+    expect(projectContextHealthRecords(records, {kind: 'handoff'})).toHaveLength(1_826);
+    expect(projectContextHealthRecords(records, {topic: 'durable-10'})).toHaveLength(1);
+
+    const exactSelector = normalizeContextHealthSelector({
+      findingCategory: 'validity-expired',
+      kind: 'handoff',
+      topic: 'handoff-overflow',
+    });
+    const exact = selectedReport(records, exactSelector);
+    expect(exact).toMatchObject({omittedFindings: 1_679, recordsScanned: 1_779, remainingFindings: 1_679});
+    expect(exact.findings).toHaveLength(100);
+    expect(exact.findings.every(finding => finding.category === 'validity-expired')).toBe(true);
+    const second = selectedReport(records, {...exactSelector, after: exact.nextCursor});
+    expect(second.findings).toHaveLength(100);
+    expect(new Set(second.findings.map(finding => finding.id))).not.toEqual(
+      new Set(exact.findings.map(finding => finding.id)),
+    );
+    expect(second.findings.some(finding => exact.findings.some(first => first.id === finding.id))).toBe(false);
+    expect(second.omittedFindings).toBe(1_679);
+    expect(second.remainingFindings).toBe(1_579);
+    expect(second.findings.length + second.omittedFindings).toBe(1_779);
+
+    const reversed = selectedReport([...records].reverse(), exactSelector);
+    expect(reversed.nextCursor).toBe(exact.nextCursor);
+    expect(reversed.findings).toEqual(exact.findings);
+    expect(() => selectedReport(records, {...exactSelector, after: `hcx1_2s_${'0'.repeat(40)}`})).toThrow(
+      'invalid or stale',
+    );
+    const changed = records.map((item, index) =>
+      index === 400 ? {...item, content: `${item.content}\nchanged`} : item,
+    );
+    expect(() => selectedReport(changed, {...exactSelector, after: exact.nextCursor})).toThrow('invalid or stale');
+
+    const seen = new Set(exact.findings.map(finding => finding.id));
+    let page = second;
+    for (;;) {
+      for (const finding of page.findings) {
+        expect(seen.has(finding.id)).toBe(false);
+        seen.add(finding.id);
+      }
+      expect(page.findings.length + page.omittedFindings).toBe(1_779);
+      if (page.nextCursor === undefined) break;
+      page = selectedReport(records, {...exactSelector, after: page.nextCursor});
+    }
+    expect(seen.size).toBe(1_779);
+    expect(page.remainingFindings).toBe(0);
+
+    const categoryOnly = selectedReport(records, {findingCategory: 'validity-expired'});
+    expect(exact.findings.length + exact.omittedFindings).toBeLessThanOrEqual(
+      categoryOnly.findings.length + categoryOnly.omittedFindings,
+    );
+    const rendered = renderContextHealth(exact, exactSelector);
+    expect(rendered).toContain('Continue this exact scope without duplicates:');
+    expect(rendered).toContain(`--after ${exact.nextCursor}`);
+    expect(rendered).toContain('--finding-category validity-expired --kind handoff --topic handoff-overflow');
+  });
+
+  it('groups large text reports with total counts, owning memories, and actionable next steps', () => {
+    const report = buildContextHealthReport({now, project: 'threadnote', records: largeHealthFixture().records});
+    const rendered = renderContextHealth(report);
 
     expect(rendered).toContain(
-      'Context health for threadnote: status=unknown; 1912 active records; 1503 total findings (100 shown, 1403 omitted).',
+      'Context health for threadnote: status=unknown; 2128 active records; 2081 total findings (100 shown, 1981 omitted).',
     );
-    expect(rendered).toContain('100 high citation-changed findings across 2 owning memories.');
-    expect(rendered).toContain(`owner: ${owners[0]}`);
+    expect(rendered).toContain('100 critical validity-expired findings across 100 owning memories.');
     expect(rendered).toContain('Preview 100 reviewable findings with owner metadata:');
     expect(rendered).toContain('threadnote context repair preview --project threadnote --json');
+    expect(rendered).toContain(`threadnote context health --project threadnote --after ${report.nextCursor}`);
     expect(rendered.split('\n').length).toBeLessThan(20);
+  });
+
+  it('admits project-global evidence only when the exact selected URI owns it or category alone selects it', () => {
+    const selected = record('selected', 'Synthetic selected record.', {
+      topic: 'selected',
+      validTo: '2026-09-16T00:00:00.000Z',
+    });
+    const unrelatedUri = 'threadnote://user/test/memories/durable/projects/threadnote/unrelated.md';
+    const evidence = {
+      candidateEvidence: [
+        {
+          candidateId: 'candidate-unrelated',
+          comparison: 'contradiction' as const,
+          project: 'threadnote',
+          targetUri: unrelatedUri,
+        },
+      ],
+      guidanceEvidence: [{sourceUris: [unrelatedUri], state: 'stale-sources' as const}],
+    };
+    const selectedOnly = buildContextHealthReport({
+      ...evidence,
+      includeFindingUris: [selected.uri],
+      now,
+      project: 'threadnote',
+      records: [selected],
+    });
+    expect(selectedOnly.findings.map(finding => finding.category)).toEqual(['validity-expired']);
+
+    const categoryOnly = buildContextHealthReport({
+      ...evidence,
+      includeFindingCategories: ['candidate-contradiction'],
+      now,
+      project: 'threadnote',
+      records: [selected],
+    });
+    expect(categoryOnly.findings).toEqual([expect.objectContaining({category: 'candidate-contradiction'})]);
+    const strictIntersection = buildContextHealthReport({
+      ...evidence,
+      includeFindingCategories: ['candidate-contradiction'],
+      includeFindingUris: [selected.uri],
+      now,
+      project: 'threadnote',
+      records: [selected],
+    });
+    expect(strictIntersection.findings).toEqual([]);
   });
 
   it('preserves project, lifecycle, and durable-kind isolation', () => {
@@ -214,6 +311,35 @@ describe('context health semantic contradictions', () => {
       {numRuns: 75},
     );
   });
+
+  it('keeps record-selected reports deterministic and non-mutating', () => {
+    fc.assert(
+      fc.property(fc.uniqueArray(fc.stringMatching(/^[a-z]{3,12}$/u), {minLength: 1, maxLength: 24}), subjects => {
+        const records = subjects.map((subject, index) =>
+          record(subject, 'Synthetic maintenance record.', {
+            kind: index % 2 === 0 ? 'durable' : 'handoff',
+            topic: index % 3 === 0 ? 'selected' : 'other',
+            validTo: '2026-09-16T00:00:00.000Z',
+          }),
+        );
+        const original = structuredClone(records);
+        const selector = {kind: 'durable' as const, topic: 'selected'};
+        const first = buildContextHealthReport({
+          now,
+          project: 'threadnote',
+          records: projectContextHealthRecords(records, selector),
+        });
+        const second = buildContextHealthReport({
+          now,
+          project: 'threadnote',
+          records: projectContextHealthRecords([...records].reverse(), selector),
+        });
+        expect(second).toEqual(first);
+        expect(records).toEqual(original);
+      }),
+      {numRuns: 50},
+    );
+  });
 });
 
 function record(name: string, body: string, metadata: Partial<MemoryMetadata> = {}): MemoryRecord {
@@ -232,4 +358,44 @@ function record(name: string, body: string, metadata: Partial<MemoryMetadata> = 
     },
     uri: `threadnote://user/test/memories/durable/projects/${metadata.project ?? 'threadnote'}/${name}.md`,
   };
+}
+
+function largeHealthFixture(): {readonly records: readonly MemoryRecord[]} {
+  const durable = Array.from({length: 302}, (_, recordIndex) =>
+    record(
+      `durable-${recordIndex.toString().padStart(4, '0')}`,
+      Array.from(
+        {length: 16},
+        (_, claimIndex) => `Synthetic policy ${recordIndex} claim ${claimIndex} retains bounded evidence.`,
+      ).join('\n'),
+      {topic: `durable-${recordIndex}`, validTo: '2026-09-16T00:00:00.000Z'},
+    ),
+  );
+  const findingHandoffs = Array.from({length: 1_779}, (_, recordIndex) =>
+    record(`handoff-${recordIndex.toString().padStart(4, '0')}`, 'Synthetic handoff maintenance note.', {
+      kind: 'handoff',
+      topic: 'handoff-overflow',
+      validTo: '2026-09-16T00:00:00.000Z',
+    }),
+  );
+  const cleanHandoffs = Array.from({length: 47}, (_, recordIndex) =>
+    record(`clean-${recordIndex.toString().padStart(4, '0')}`, `Synthetic clean non-durable note ${recordIndex}.`, {
+      kind: 'handoff',
+      topic: 'clean-handoff',
+    }),
+  );
+  return {records: [...durable, ...findingHandoffs, ...cleanHandoffs]};
+}
+
+function selectedReport(records: readonly MemoryRecord[], selector: ContextHealthSelectorV1 | undefined) {
+  const selected = projectContextHealthRecords(records, selector);
+  const hasRecordSelector = selector?.kind !== undefined || selector?.topic !== undefined;
+  return buildContextHealthReport({
+    after: selector?.after,
+    ...(selector?.findingCategory === undefined ? {} : {includeFindingCategories: [selector.findingCategory]}),
+    ...(hasRecordSelector ? {includeFindingUris: selected.map(item => item.uri)} : {}),
+    now,
+    project: 'threadnote',
+    records: selected,
+  });
 }

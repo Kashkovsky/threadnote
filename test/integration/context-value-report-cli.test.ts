@@ -19,13 +19,21 @@ describe('context health and value report CLI', () => {
   it('shows handler-bearing parent subcommands as optional without relaxing grouping commands', async () => {
     const home = await makeHome();
 
-    const [healthHelp, reportHelp, contextHelp] = await Promise.all([
+    const [healthHelp, repairPreviewHelp, repairApplyHelp, reportHelp, contextHelp] = await Promise.all([
       runCli(['context', 'health', '--help'], home),
+      runCli(['context', 'repair', 'preview', '--help'], home),
+      runCli(['context', 'repair', 'apply', '--help'], home),
       runCli(['value', 'report', '--help'], home),
       runCli(['context', '--help'], home),
     ]);
 
     expect(healthHelp.stdout).toContain('threadnote context health [<subcommand>] [flags]');
+    expect(healthHelp.stdout).toContain('--finding-category');
+    expect(healthHelp.stdout).toContain('--kind');
+    expect(repairPreviewHelp.stdout).toContain('--finding-category');
+    expect(repairPreviewHelp.stdout).toContain('--topic');
+    expect(repairApplyHelp.stdout).toContain('--after');
+    expect(repairApplyHelp.stdout).toContain('--finding-category');
     expect(reportHelp.stdout).toContain('threadnote value report [<subcommand>] [flags]');
     expect(contextHelp.stdout).toContain('threadnote context <subcommand> [flags]');
   });
@@ -107,6 +115,220 @@ describe('context health and value report CLI', () => {
     expect(await readFile(projectAPath, 'utf8')).toBe(before);
   });
 
+  it('narrows health and repair preview with the same read-only selector without corrupting the project snapshot', async () => {
+    const home = await makeHome();
+    await storedMemory(home, 'project-a', 'durable-expired.md', {
+      topic: 'durable-maintenance',
+      validTo: '2026-09-16T00:00:00.000Z',
+    });
+    await storedMemoryAt(home, 'handoffs/active/project-a/handoff-expired.md', 'project-a', 'handoff', {
+      topic: 'handoff-maintenance',
+      validTo: '2026-09-16T00:00:00.000Z',
+    });
+
+    await runCli(['context', 'health', '--project', 'project-a', '--json'], home);
+    const eventPath = join(home, 'value', 'value-events-v1.jsonl');
+    const beforeSelector = await readFile(eventPath, 'utf8');
+    const selected = JSON.parse(
+      (await runCli(['context', 'health', '--project', 'project-a', '--kind', 'durable', '--json'], home)).stdout,
+    );
+    const preview = JSON.parse(
+      (await runCli(['context', 'repair', 'preview', '--project', 'project-a', '--kind', 'durable', '--json'], home))
+        .stdout,
+    );
+
+    expect(selected).toMatchObject({
+      findings: [expect.objectContaining({category: 'validity-expired'})],
+      recordsScanned: 1,
+    });
+    expect(preview.proposals).toHaveLength(1);
+    expect(preview.proposals[0].mutation.subjectUri).toContain('durable-expired.md');
+    expect(await readFile(eventPath, 'utf8')).toBe(beforeSelector);
+    const human = await runCli(['context', 'health', '--project', 'project-a', '--topic', 'handoff-maintenance'], home);
+    expect(human.stdout).toContain('Active selector: topic=handoff-maintenance.');
+    const intersection = JSON.parse(
+      (
+        await runCli(
+          [
+            'context',
+            'health',
+            '--project',
+            'project-a',
+            '--kind',
+            'durable',
+            '--finding-category',
+            'validity-expired',
+            '--json',
+          ],
+          home,
+        )
+      ).stdout,
+    );
+    expect(intersection).toMatchObject({
+      findings: [expect.objectContaining({category: 'validity-expired'})],
+      recordsScanned: 1,
+    });
+  });
+
+  it('continues an exact scope and applies only the selector-and-cursor-bound proposal', async () => {
+    const home = await makeHome();
+    const paths = await Promise.all(
+      Array.from({length: 125}, (_, index) =>
+        storedMemory(home, 'project-a', `overflow-${index.toString().padStart(3, '0')}.md`, {
+          topic: 'overflow-topic',
+          validTo: '2026-09-16T00:00:00.000Z',
+        }),
+      ),
+    );
+    const bytesBeforePreview = await Promise.all(paths.map(path => readFile(path, 'utf8')));
+    const selector = [
+      '--finding-category',
+      'validity-expired',
+      '--kind',
+      'durable',
+      '--topic',
+      'overflow-topic',
+    ] as const;
+    const first = JSON.parse(
+      (await runCli(['context', 'repair', 'preview', '--project', 'project-a', ...selector, '--json'], home)).stdout,
+    );
+    expect(first).toMatchObject({
+      nextCursor: expect.stringMatching(/^hcx1_[0-9a-z]+_[0-9a-f]{40}$/u),
+      proposals: expect.arrayContaining([expect.objectContaining({selector: expect.any(Object)})]),
+      sourceOmittedFindings: 25,
+    });
+    expect(first.proposals).toHaveLength(100);
+    const second = JSON.parse(
+      (
+        await runCli(
+          [
+            'context',
+            'repair',
+            'preview',
+            '--project',
+            'project-a',
+            ...selector,
+            '--after',
+            first.nextCursor,
+            '--json',
+          ],
+          home,
+        )
+      ).stdout,
+    );
+    expect(second.proposals).toHaveLength(25);
+    expect(second.nextCursor).toBeUndefined();
+    expect(second.sourceOmittedFindings).toBe(100);
+    expect(second.remainingFindings).toBeUndefined();
+    const selected = second.proposals.at(-1);
+    expect(selected).toBeDefined();
+    const selectedPath = paths.find(path => memoryUriForPath(home, path) === selected.mutation.subjectUri);
+    expect(selectedPath).toBeDefined();
+    if (selectedPath === undefined) throw new Error('expected selected proposal path');
+    expect(await readFile(selectedPath, 'utf8')).toBe(bytesBeforePreview[paths.indexOf(selectedPath)]);
+
+    const applyBase = [
+      'context',
+      'repair',
+      'apply',
+      '--project',
+      'project-a',
+      '--proposal-id',
+      selected.proposalId,
+      '--revision',
+      selected.revision,
+      '--approved',
+      '--json',
+    ] as const;
+    await expect(runCli(applyBase, home)).rejects.toThrow('no longer present');
+    await expect(runCli([...applyBase, ...selector], home)).rejects.toThrow('no longer present');
+    await expect(
+      runCli(
+        [
+          ...applyBase,
+          '--finding-category',
+          'validity-expired',
+          '--kind',
+          'durable',
+          '--topic',
+          'wrong-topic',
+          '--after',
+          first.nextCursor,
+        ],
+        home,
+      ),
+    ).rejects.toThrow('invalid or stale');
+    const applied = JSON.parse((await runCli([...applyBase, ...selector, '--after', first.nextCursor], home)).stdout);
+    expect(applied).toMatchObject({status: 'applied', version: 1});
+    const repeated = JSON.parse((await runCli([...applyBase, ...selector, '--after', first.nextCursor], home)).stdout);
+    expect(repeated).toMatchObject({status: 'already-applied', version: 1});
+
+    const current = JSON.parse(
+      (await runCli(['context', 'repair', 'preview', '--project', 'project-a', ...selector, '--json'], home)).stdout,
+    );
+    const stale = current.proposals[0];
+    const stalePath = paths.find(path => memoryUriForPath(home, path) === stale.mutation.subjectUri);
+    expect(stalePath).toBeDefined();
+    if (stalePath === undefined) throw new Error('expected stale proposal path');
+    await storedMemory(
+      home,
+      'project-a',
+      stalePath.slice(stalePath.lastIndexOf('/') + 1),
+      {topic: 'overflow-topic', validTo: '2026-09-16T00:00:00.000Z'},
+      'Changed after preview.',
+    );
+    const conflict = JSON.parse(
+      (
+        await runCli(
+          [
+            'context',
+            'repair',
+            'apply',
+            '--project',
+            'project-a',
+            ...selector,
+            '--proposal-id',
+            stale.proposalId,
+            '--revision',
+            stale.revision,
+            '--approved',
+            '--json',
+          ],
+          home,
+        )
+      ).stdout,
+    );
+    expect(conflict).toMatchObject({status: 'conflict', version: 1});
+  });
+
+  it('rejects unsafe selector text at the CLI boundary while accepting whitespace-normalized exact topics', async () => {
+    const home = await makeHome();
+    await storedMemory(home, 'project-a', 'selected.md', {
+      topic: 'release / v2: βeta',
+      validTo: '2026-09-16T00:00:00.000Z',
+    });
+    const accepted = JSON.parse(
+      (
+        await runCli(
+          ['context', 'health', '--project', 'project-a', '--topic', '  release / v2: βeta  ', '--json'],
+          home,
+        )
+      ).stdout,
+    );
+    expect(accepted.recordsScanned).toBe(1);
+    await expect(
+      runCli(['context', 'health', '--project', 'project-a', '--topic', 'unsafe\nvalue', '--json'], home),
+    ).rejects.toThrow('contains control characters');
+    for (const character of ['\u0085', '\u009b', '\u2028', '\u2029']) {
+      await expect(
+        runCli(['context', 'health', '--project', 'project-a', '--topic', `unsafe${character}value`, '--json'], home),
+      ).rejects.toThrow('contains control characters');
+    }
+    await expect(
+      runCli(['context', 'health', '--project', 'project-a', '--topic', '🙂'.repeat(65), '--json'], home),
+    ).rejects.toThrow('exceeds 256 UTF-8 bytes');
+  });
+
   it('includes preference and smoke records in maintenance health', async () => {
     const home = await makeHome();
     await storedMemoryAt(home, 'preferences/preference.md', 'project-a', 'preference', {
@@ -165,6 +387,7 @@ describe('context health and value report CLI', () => {
   it('surfaces pending candidate contradictions through the production health command', async () => {
     const home = await makeHome();
     const target = await storedMemory(home, 'project-a', 'target.md', {memoryId: 'tn_target'});
+    await storedMemory(home, 'project-a', 'selected.md', {topic: 'selected-topic'});
     const closeout: SessionCloseoutInput = {
       decisions: ['Replace contradictory guidance after review.'],
       evidence: ['test/integration/context-value-report-cli.test.ts'],
@@ -196,6 +419,29 @@ describe('context health and value report CLI', () => {
     expect(JSON.parse(result.stdout).findings).toEqual(
       expect.arrayContaining([expect.objectContaining({category: 'candidate-contradiction'})]),
     );
+    const selected = JSON.parse(
+      (await runCli(['context', 'health', '--project', 'project-a', '--topic', 'selected-topic', '--json'], home))
+        .stdout,
+    );
+    expect(selected.findings).toEqual([]);
+    const preview = JSON.parse(
+      (
+        await runCli(
+          ['context', 'repair', 'preview', '--project', 'project-a', '--topic', 'selected-topic', '--json'],
+          home,
+        )
+      ).stdout,
+    );
+    expect(preview.proposals).toEqual([]);
+    const categoryOnly = JSON.parse(
+      (
+        await runCli(
+          ['context', 'health', '--project', 'project-a', '--finding-category', 'candidate-contradiction', '--json'],
+          home,
+        )
+      ).stdout,
+    );
+    expect(categoryOnly.findings).toEqual([expect.objectContaining({category: 'candidate-contradiction'})]);
   });
 
   it('requires a report-bound reviewer direction before proposing semantic supersession', async () => {

@@ -173,11 +173,22 @@ describe('buildContextHealthReport', () => {
             validTo: '2026-09-16T00:00:00.000Z',
           }),
         );
-        const report = buildContextHealthReport({
-          includeFindingUris: [affected.uri],
+        const duplicateCorpus = [...unrelated, duplicate, affected];
+        const broad = buildContextHealthReport({
+          duplicateCorpus,
           now,
           project: 'threadnote',
-          records: [...unrelated, duplicate, affected],
+          records: [duplicate, affected],
+        });
+        const duplicateFinding = broad.findings.find(finding => finding.category === 'exact-duplicate');
+        const selected = [duplicate, affected].find(item => item.uri === duplicateFinding?.repair.subjectUri);
+        if (selected === undefined) throw new Error('expected exact duplicate subject');
+        const report = buildContextHealthReport({
+          duplicateCorpus,
+          includeFindingUris: [selected.uri],
+          now,
+          project: 'threadnote',
+          records: [selected],
         });
 
         expect(report.findings).toEqual([expect.objectContaining({category: 'exact-duplicate'})]);
@@ -187,7 +198,41 @@ describe('buildContextHealthReport', () => {
     );
   });
 
-  it('can retain selected project-level conflict categories beside URI-scoped findings', () => {
+  it('uses the full duplicate corpus while admitting only a selected duplicate subject', () => {
+    const first = record('threadnote://user/me/memories/durable/projects/threadnote/first.md', 'same body');
+    const second = record('threadnote://user/me/memories/durable/projects/threadnote/second.md', 'same body');
+    const broad = buildContextHealthReport({now, project: 'threadnote', records: [first, second]});
+    const duplicate = broad.findings.find(finding => finding.category === 'exact-duplicate');
+    expect(duplicate?.repair.subjectUri).toBeDefined();
+    expect(duplicate?.repair.targetUri).toBeDefined();
+    const subject = [first, second].find(item => item.uri === duplicate?.repair.subjectUri);
+    const survivor = [first, second].find(item => item.uri === duplicate?.repair.targetUri);
+    if (subject === undefined || survivor === undefined) throw new Error('expected duplicate subject and survivor');
+
+    const selectedSubject = buildContextHealthReport({
+      duplicateCorpus: [first, second],
+      includeFindingUris: [subject.uri],
+      now,
+      project: 'threadnote',
+      records: [subject],
+    });
+    expect(selectedSubject.findings).toEqual([
+      expect.objectContaining({
+        category: 'exact-duplicate',
+        repair: expect.objectContaining({subjectUri: subject.uri, targetUri: survivor.uri}),
+      }),
+    ]);
+    const selectedSurvivor = buildContextHealthReport({
+      duplicateCorpus: [first, second],
+      includeFindingUris: [survivor.uri],
+      now,
+      project: 'threadnote',
+      records: [survivor],
+    });
+    expect(selectedSurvivor.findings).toEqual([]);
+  });
+
+  it('intersects selected project-level categories with URI-scoped findings', () => {
     const affected = record('threadnote://memory/affected', 'affected', {reviewAfter: '2026-09-16'});
     const unrelated = record('threadnote://memory/unrelated', 'unrelated', {
       relations: [{type: 'depends_on', uri: 'threadnote://memory/conflicted'}],
@@ -204,7 +249,7 @@ describe('buildContextHealthReport', () => {
       ],
     });
 
-    expect(report.findings.map(finding => finding.category)).toEqual(['relation-target-conflicted', 'review-overdue']);
+    expect(report.findings).toEqual([]);
   });
 });
 

@@ -16,6 +16,7 @@ import type {
 import {isMemoryId, memoryIdFromIdentityAlias} from './identity_alias.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import {KNOWLEDGE_DELTA_V1_MAX_ITEMS, type KnowledgeDeltaItemV1, type KnowledgeDeltaV1} from './knowledge_delta.js';
+import type {ContextHealthSelectorV1} from './context_health_selector.js';
 
 export const CONTEXT_HEALTH_REPAIR_VERSION = 1 as const;
 export const DEFAULT_CONTEXT_HEALTH_REPAIR_PROPOSAL_LIMIT = 100 as const;
@@ -82,12 +83,15 @@ export interface ContextHealthRepairProposalV1 {
   readonly proposalId: string;
   /** Exact revision of the proposal, including every record-content precondition. */
   readonly revision: string;
+  /** Exact normalized discovery selector; omitted for an unfiltered preview. */
+  readonly selector?: ContextHealthSelectorV1;
   readonly summary: string;
   readonly version: typeof CONTEXT_HEALTH_REPAIR_VERSION;
 }
 
 export interface ContextHealthRepairPlanV1 {
   readonly knowledgeDelta: KnowledgeDeltaV1;
+  readonly nextCursor?: string;
   readonly omittedProposals: number;
   readonly project: string;
   readonly proposals: readonly ContextHealthRepairProposalV1[];
@@ -157,6 +161,7 @@ export function previewContextHealthRepairPlanV1(
   options: {
     readonly absentTargetUris?: readonly string[];
     readonly limit?: number;
+    readonly selector?: ContextHealthSelectorV1;
     readonly semanticDirection?: ContextHealthSemanticDirectionV1;
   } = {},
 ): ContextHealthRepairPlanV1 {
@@ -166,12 +171,15 @@ export function previewContextHealthRepairPlanV1(
   const semanticDirection = validateSemanticDirection(report, reportRevision, options.semanticDirection);
   const proposals = [...report.findings]
     .sort((left, right) => compareText(left.id, right.id))
-    .map(finding => proposalForFinding(report.project, finding, recordsByUri, absentTargetUris, semanticDirection))
+    .map(finding =>
+      proposalForFinding(report.project, finding, recordsByUri, absentTargetUris, semanticDirection, options.selector),
+    )
     .sort((left, right) => compareText(left.proposalId, right.proposalId));
   const limit = proposalLimit(options.limit);
   const selected = proposals.slice(0, limit);
   return {
     knowledgeDelta: projectContextHealthRepairKnowledgeDeltaV1(reportRevision, selected, recordsByUri),
+    ...(report.nextCursor === undefined ? {} : {nextCursor: report.nextCursor}),
     omittedProposals: Math.max(0, proposals.length - limit),
     project: report.project,
     proposals: selected,
@@ -319,9 +327,11 @@ export function contextHealthReportRevisionV1(report: ContextHealthReportV1): st
           uris: [...finding.uris].sort(compareText),
         })),
       limit: report.limit,
+      nextCursor: report.nextCursor ?? null,
       omittedFindings: report.omittedFindings,
       project: report.project,
       recordsScanned: report.recordsScanned,
+      remainingFindings: report.remainingFindings ?? null,
       semanticCompleteness: {
         ...report.semanticCompleteness,
         unknownReasons: [...report.semanticCompleteness.unknownReasons].sort((left, right) =>
@@ -395,6 +405,7 @@ function proposalForFinding(
   recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
   absentTargetUris: ReadonlySet<string>,
   semanticDirection: ContextHealthSemanticDirectionV1 | undefined,
+  selector: ContextHealthSelectorV1 | undefined,
 ): ContextHealthRepairProposalV1 {
   const mutation = mutationForFinding(project, finding, recordsByUri, absentTargetUris, semanticDirection);
   const preconditions = mutationPreconditions(project, mutation, recordsByUri);
@@ -405,6 +416,7 @@ function proposalForFinding(
     preconditions,
     project,
     proposalId: '',
+    ...(selector === undefined ? {} : {selector}),
     summary: boundedSummary(finding.repair.summary),
     version: CONTEXT_HEALTH_REPAIR_VERSION,
   } satisfies Omit<ContextHealthRepairProposalV1, 'revision'>;
@@ -682,6 +694,7 @@ function contextHealthRepairProposalIdV1(
               }
             : {kind: mutation.kind, subjectUri: mutation.subjectUri, targetUri: mutation.targetUri},
       project: proposal.project,
+      selector: proposal.selector ?? null,
       version: proposal.version,
     }),
   ).slice(0, 40)}`;
@@ -703,6 +716,7 @@ function proposalRevisionPayload(
       })),
     project: proposal.project,
     proposalId: proposal.proposalId,
+    selector: proposal.selector ?? null,
     summary: proposal.summary,
     version: proposal.version,
   };

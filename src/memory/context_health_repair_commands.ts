@@ -1,5 +1,6 @@
 import {Crypto, DateTime, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {shellQuote} from '../effect/command.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
@@ -28,6 +29,15 @@ import {
 import {readMaintenanceMemoryRecords} from './maintenance_records.js';
 import {MemoryOperationError} from './migrations.js';
 import {
+  contextHealthSelectorCliFlags,
+  contextHealthSelectorDescription,
+  contextHealthSelectorFindingUris,
+  contextHealthSelectorsEqual,
+  normalizeContextHealthSelector,
+  projectContextHealthRecords,
+  type ContextHealthSelectorV1,
+} from './context_health_selector.js';
+import {
   assertMemoryDocumentSchemaWritable,
   canonicalMemoryDocumentContent,
   formatMemoryDocument,
@@ -47,20 +57,28 @@ const REPAIR_LOCK_OPTIONS = {
 type RepairArchiveKind = Extract<MemoryRecord['metadata']['kind'], 'durable' | 'handoff' | 'incident'>;
 
 export interface RunContextHealthRepairPreviewOptionsV1 {
+  readonly after?: string;
   readonly contradictionId?: string;
   readonly currentUri?: string;
+  readonly findingCategory?: string;
   readonly json?: boolean;
+  readonly kind?: string;
   readonly project: string;
   readonly reportRevision?: string;
   readonly staleUri?: string;
+  readonly topic?: string;
 }
 
 export interface RunContextHealthRepairApplyOptionsV1 {
+  readonly after?: string;
   readonly approved?: boolean;
+  readonly findingCategory?: string;
   readonly json?: boolean;
+  readonly kind?: string;
   readonly project: string;
   readonly proposalId: string;
   readonly revision: string;
+  readonly topic?: string;
 }
 
 export type ContextHealthRepairApplyCommandResultV1 =
@@ -110,7 +128,17 @@ export const previewContextHealthRepairs = Effect.fn('memory.contextHealthRepair
   const activeRecords = records.filter(
     record => record.metadata.status === 'active' && record.metadata.project === project,
   );
-  const report = yield* collectContextHealth(config, project, activeRecords, cwd);
+  const selector = normalizeContextHealthSelector(directionInput);
+  const selectedRecords = projectContextHealthRecords(activeRecords, selector);
+  const report = yield* collectContextHealth(config, project, selectedRecords, cwd, {
+    after: selector?.after,
+    duplicateCorpus: activeRecords,
+    ...(selector?.findingCategory === undefined ? {} : {includeFindingCategories: [selector.findingCategory]}),
+    ...(contextHealthSelectorFindingUris(selector, selectedRecords) === undefined
+      ? {}
+      : {includeFindingUris: contextHealthSelectorFindingUris(selector, selectedRecords)}),
+    relationCorpus: records,
+  });
   const absentTargetUris = yield* storageAbsentUris(
     config,
     report.findings.flatMap(finding =>
@@ -125,6 +153,7 @@ export const previewContextHealthRepairs = Effect.fn('memory.contextHealthRepair
   const semanticDirection = semanticDirectionFromInput(directionInput);
   return previewContextHealthRepairPlanV1(report, records, {
     absentTargetUris,
+    ...(selector === undefined ? {} : {selector}),
     ...(semanticDirection === undefined ? {} : {semanticDirection}),
   });
 });
@@ -134,8 +163,9 @@ export const runContextHealthRepairPreview = Effect.fn('memory.contextHealthRepa
   options: RunContextHealthRepairPreviewOptionsV1,
 ) {
   const cwd = (yield* SystemInfo).currentDirectory();
+  const selector = normalizeContextHealthSelector(options);
   const plan = yield* previewContextHealthRepairs(config, options.project, cwd, options);
-  yield* writeFinalCliOutput(options.json ? JSON.stringify(plan) : renderContextHealthRepairPlan(plan));
+  yield* writeFinalCliOutput(options.json ? JSON.stringify(plan) : renderContextHealthRepairPlan(plan, selector));
 });
 
 function semanticDirectionFromInput(
@@ -165,11 +195,15 @@ function semanticDirectionFromInput(
 export const applyContextHealthRepair = Effect.fn('memory.contextHealthRepair.apply')(function* (
   config: RuntimeConfig,
   input: {
+    readonly after?: string;
     readonly approved?: boolean;
     readonly cwd: string;
+    readonly findingCategory?: string;
+    readonly kind?: string;
     readonly project: string;
     readonly proposalId: string;
     readonly revision: string;
+    readonly topic?: string;
   },
 ) {
   const project = input.project.trim();
@@ -185,6 +219,7 @@ export const applyContextHealthRepair = Effect.fn('memory.contextHealthRepair.ap
   if (input.approved !== true) {
     return yield* repairError('Applying a context-health repair requires --approved after explicit review.');
   }
+  const selector = normalizeContextHealthSelector(input);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const journalPath = repairJournalPath(path, config.agentContextHome, proposalId, revision);
@@ -192,7 +227,7 @@ export const applyContextHealthRepair = Effect.fn('memory.contextHealthRepair.ap
     fs,
     `${journalPath}.lock`,
     REPAIR_LOCK_OPTIONS,
-    applyLocked(config, {cwd: input.cwd, journalPath, project, proposalId, revision}),
+    applyLocked(config, {cwd: input.cwd, journalPath, project, proposalId, revision, selector}),
   );
 });
 
@@ -213,6 +248,7 @@ function applyLocked(
     readonly project: string;
     readonly proposalId: string;
     readonly revision: string;
+    readonly selector?: ContextHealthSelectorV1;
   },
 ) {
   return Effect.gen(function* () {
@@ -223,9 +259,12 @@ function applyLocked(
       if (
         proposal.project !== input.project ||
         proposal.proposalId !== input.proposalId ||
-        proposal.revision !== input.revision
+        proposal.revision !== input.revision ||
+        !contextHealthSelectorsEqual(proposal.selector, input.selector)
       ) {
-        return yield* repairError('The stored repair journal belongs to another project or proposal revision.');
+        return yield* repairError(
+          'The stored repair journal belongs to another project, selector, or proposal revision.',
+        );
       }
       if (journal.state === 'applied' && journal.receipt) {
         const verified = applyContextHealthRepairProposalV1({
@@ -237,7 +276,7 @@ function applyLocked(
         return publicApplyResult(verified, proposal);
       }
     } else {
-      const plan = yield* previewContextHealthRepairs(config, input.project, input.cwd);
+      const plan = yield* previewContextHealthRepairs(config, input.project, input.cwd, input.selector);
       const matched = plan.proposals.find(item => item.proposalId === input.proposalId);
       if (!matched) {
         return yield* repairError(
@@ -543,9 +582,13 @@ function publicApplyResult(
   return {proposalId, receipt: result.receipt, revision, status: result.status, version: 1};
 }
 
-export function renderContextHealthRepairPlan(plan: ContextHealthRepairPlanV1): string {
+export function renderContextHealthRepairPlan(
+  plan: ContextHealthRepairPlanV1,
+  selector?: ContextHealthSelectorV1,
+): string {
   const lines = [
     `Context repair preview for ${plan.project}: ${plan.proposals.length} proposal${plan.proposals.length === 1 ? '' : 's'}.`,
+    ...(selector === undefined ? [] : [`Active selector: ${contextHealthSelectorDescription(selector)}.`]),
     ...plan.proposals.map(proposal => {
       const suggested =
         proposal.mutation.kind === 'review-only' && proposal.mutation.suggestedMutation?.kind === 'supersede-memory'
@@ -556,6 +599,12 @@ export function renderContextHealthRepairPlan(plan: ContextHealthRepairPlanV1): 
     `Knowledge Delta: ${plan.knowledgeDelta.reviewId} revision ${plan.knowledgeDelta.revision}; ${plan.knowledgeDelta.items.length} item(s).`,
   ];
   if (plan.omittedProposals > 0) lines.push(`- ${plan.omittedProposals} additional proposal(s) omitted.`);
+  if (plan.nextCursor !== undefined) {
+    const nextSelector = {...selector, after: plan.nextCursor};
+    lines.push(
+      `- Continue this exact scope without duplicates: threadnote context repair preview --project ${shellQuote(plan.project)}${contextHealthSelectorCliFlags(nextSelector, shellQuote)}`,
+    );
+  }
   return lines.join('\n');
 }
 
