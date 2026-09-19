@@ -1,5 +1,6 @@
 import {Schema, type Effect} from 'effect';
 import {Command, Flag} from 'effect/unstable/cli';
+import {withDefaultActionSubcommand} from './cli_help.js';
 import {
   argument,
   boolean,
@@ -142,6 +143,7 @@ export function makeContextHealthCommand<E, R>(
   ).pipe(
     Command.withDescription('Inspect active project memories and report read-only hygiene findings'),
     Command.withSubcommands([aggregate, schedule]),
+    withDefaultActionSubcommand,
   );
 }
 
@@ -288,6 +290,7 @@ export function makeValueCommand<E, R>(
   ).pipe(
     Command.withDescription('Summarize bounded local value inputs without exporting telemetry'),
     Command.withSubcommands([exportCommand, retentionCommand, deleteCommand]),
+    withDefaultActionSubcommand,
   );
   return Command.make('value').pipe(
     Command.withDescription('Inspect local, count-only value signals'),
