@@ -223,6 +223,7 @@ export function threadnoteUpdateCommandMode(options: UpdateOptions): ThreadnoteU
     options.allowUntrustedSource ||
     options.beta ||
     options.check ||
+    (options.dryRun && !policyMode) ||
     options.force ||
     options.postUpdate === false ||
     options.repair === false ||
@@ -231,9 +232,9 @@ export function threadnoteUpdateCommandMode(options: UpdateOptions): ThreadnoteU
     options.yes,
   );
   // `--json` predates an explicit status subcommand as a convenient status
-  // shorthand. When paired with `--check`, however, it modifies that release
-  // check's output instead of selecting a second command mode.
-  const statusMode = options.status === true || (options.json === true && options.check !== true);
+  // shorthand. Any explicit release option takes precedence, so JSON modifies
+  // that release flow instead of selecting a second command mode.
+  const statusMode = options.status === true || (options.json === true && !releaseMode);
   const selectedModeCount = Number(policyMode) + Number(statusMode) + Number(releaseMode);
   if (selectedModeCount > 1) return 'invalid';
   if (policyMode) return 'policy';
