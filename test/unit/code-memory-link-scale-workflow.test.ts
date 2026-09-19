@@ -36,13 +36,7 @@ describe('code-memory-link inverse-selector scale workflow', () => {
     const command = benchmark?.run ?? '';
 
     expect(workflow.on.workflow_dispatch?.inputs).toHaveProperty('include_code_memory_link_scale');
-    expect(workflow.on.pull_request?.paths).toEqual(
-      expect.arrayContaining([
-        'scripts/benchmark-code-memory-link-scale.ts',
-        'scripts/benchmark-code-memory-link-scale-target.ts',
-        'test/evaluation/baselines/code-memory-link-scale-v1/**',
-      ]),
-    );
+    expect(workflow.on.pull_request?.paths).toBeUndefined();
     expect(job.if).toContain("github.event_name == 'schedule'");
     expect(job.if).toContain('inputs.include_code_memory_link_scale');
     expect(job.if).not.toContain("github.event_name == 'pull_request'");
