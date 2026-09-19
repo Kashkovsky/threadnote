@@ -1,67 +1,8 @@
 name: Platform benchmarks
 
 on:
+  # Keep the PR trigger broad: the classifier applies the audited fail-safe scope.
   pull_request:
-    paths:
-      - '.github/workflows/benchmarks.yml'
-      - '.github/workflows/production-large-evidence.yml'
-      - 'bun.lock'
-      - 'package.json'
-      - 'scripts/benchmark-code-graph.ts'
-      - 'scripts/adjudicate-code-graph-windows-replicas.ts'
-      - 'scripts/benchmark-code-graph-embedding-contexts.ts'
-      - 'scripts/benchmark-code-graph-workset.ts'
-      - 'scripts/benchmark-code-graph-heavy-tail.ts'
-      - 'scripts/benchmark-context-brief-citations.ts'
-      - 'scripts/benchmark-context-brief-citations-target.ts'
-      - 'scripts/benchmark-code-memory-link-scale.ts'
-      - 'scripts/benchmark-code-memory-link-scale-target.ts'
-      - 'scripts/code-memory-link-scale-provenance.ts'
-      - 'scripts/verify-code-memory-link-scale-provenance.ts'
-      - 'scripts/benchmark-memory-connections-scale.ts'
-      - 'scripts/benchmark-memory-connections-scale-target.ts'
-      - 'scripts/evaluate-memory-connections-retrieval.ts'
-      - 'scripts/generate-code-graph-heavy-tail-ratchet.ts'
-      - 'scripts/generate-code-graph-production-ratchet.ts'
-      - 'scripts/code-graph-benchmark-sampler.ts'
-      - 'scripts/benchmark-recall-vectors.ts'
-      - 'scripts/recall-vector-performance-budget.ts'
-      - 'scripts/code-graph-fixture.ts'
-      - 'scripts/code-graph-heavy-tail-fixture.ts'
-      - 'test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json'
-      - 'scripts/evaluate-code-graph-workset.ts'
-      - 'scripts/evaluate-recall.ts'
-      - 'scripts/support/code-graph-workset-fixture.ts'
-      - 'scripts/support/code-graph-workset-harness.ts'
-      - 'src/code_graph/**'
-      - 'src/crypto/**'
-      - 'src/effect/ai/**'
-      - 'src/effect/command.ts'
-      - 'src/effect/digest.ts'
-      - 'src/effect/file_lock.ts'
-      - 'src/effect/runtime.ts'
-      - 'src/effect/system.ts'
-      - 'src/evaluation/**'
-      - 'src/models/**'
-      - 'src/recall/**'
-      - 'src/search/chunker.ts'
-      - 'src/search/vector-index.ts'
-      - 'src/search/vector-search.ts'
-      - 'src/storage/layout.ts'
-      - 'test/evaluation/baselines/code-graph-v1/**'
-      - 'test/evaluation/baselines/code-graph-workset-v1/**'
-      - 'test/evaluation/baselines/context-brief-citations-v1/**'
-      - 'test/evaluation/baselines/code-memory-link-scale-v1/**'
-      - 'test/evaluation/baselines/memory-connections-scale-v1/**'
-      - 'test/evaluation/fixtures/memory-connections-retrieval-bench-v1/**'
-      - 'test/evaluation/candidates/threadnote-4.0.0/**'
-      - 'test/evaluation/fixtures/code-graph-v1/**'
-      - 'test/evaluation/fixtures/code-graph-workset-v1/**'
-      - 'test/evaluation/fixtures/recall-v1/**'
-      - 'test/unit/code-graph.workset-fixture.test.ts'
-      - 'test/unit/code-graph.workset-harness.test.ts'
-      - 'test/unit/evaluation.agent-response.test.ts'
-      - 'test/unit/evaluation.code-graph-workset.test.ts'
   workflow_dispatch:
     inputs:
       include_100k:
@@ -110,9 +51,34 @@ env:
   CODE_GRAPH_EMBEDDING_MODEL_SHA256: f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804
 
 jobs:
+  classify-platform-benchmark:
+    name: Classify Platform benchmark PR lanes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      run_code_graph_pr: ${{ steps.scope.outputs.run_code_graph_pr }}
+      run_recall_pr: ${{ steps.scope.outputs.run_recall_pr }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - id: scope
+        name: Classify the Platform benchmark diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bun test/ci/platform-benchmark-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"
+
   recall-pr-10k:
     name: Recall production 10k · Linux
-    if: github.event_name == 'pull_request'
+    needs: classify-platform-benchmark
+    if: ${{ always() && github.event_name == 'pull_request' && (needs.classify-platform-benchmark.result != 'success' || needs.classify-platform-benchmark.outputs.run_recall_pr != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -149,7 +115,8 @@ jobs:
 
   code-graph-pr-scale:
     name: Code graph PR lexical ${{ matrix.scale }} · Linux
-    if: github.event_name == 'pull_request'
+    needs: classify-platform-benchmark
+    if: ${{ always() && github.event_name == 'pull_request' && (needs.classify-platform-benchmark.result != 'success' || needs.classify-platform-benchmark.outputs.run_code_graph_pr != 'false') }}
     strategy:
       fail-fast: false
       matrix:
