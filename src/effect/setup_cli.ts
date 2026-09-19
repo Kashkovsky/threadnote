@@ -17,7 +17,6 @@ export function makeSetupCommand(
       cwd: optionalString('cwd', 'Repository path; defaults to the current working directory'),
       scope: optionalChoice('scope', ['user', 'project', 'local'], 'Managed JSON surface installation scope'),
       surface: Argument.String('surface').pipe(Argument.withDescription('Agent surface from `threadnote agents list`')),
-      task: optionalString('task', 'Task used to verify the final source-backed Context Brief'),
       undo: boolean('undo', 'Preview receipt-owned rollback; combine with --apply to execute it'),
     },
     ({surface, ...options}) =>
