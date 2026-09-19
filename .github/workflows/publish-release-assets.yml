@@ -11,6 +11,10 @@ on:
         description: Exact tag-event Git object whose verified source produced the platform artifacts
         required: true
         type: string
+    secrets:
+      release_coordinator_token:
+        description: Read-only repository-administration token used to verify the beta publication freeze
+        required: false
 
 permissions:
   contents: read
@@ -44,6 +48,7 @@ jobs:
       - name: Create release only after every artifact is ready
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_COORDINATOR_TOKEN: ${{ startsWith(inputs.release_tag, 'v5.0.0-beta.') && secrets.release_coordinator_token || '' }}
           RELEASE_SHA: ${{ inputs.release_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         shell: bash
@@ -63,6 +68,10 @@ jobs:
           fi
           verify_beta_release_freeze() {
             local freeze_ruleset_id freeze_ruleset repository_is_fork
+            if [[ -z "$RELEASE_COORDINATOR_TOKEN" ]]; then
+              echo "::error::The beta publisher requires a release coordinator token with read access to repository rulesets."
+              exit 1
+            fi
             repository_is_fork="$(gh api "/repos/${GITHUB_REPOSITORY}" --jq '.fork')" || {
               echo "::error::Could not establish repository fork status for the beta publication freeze; refusing publication."
               exit 1
@@ -72,7 +81,7 @@ jobs:
               exit 1
             fi
             freeze_ruleset_id="$(
-              gh api "/repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" \
+              GH_TOKEN="$RELEASE_COORDINATOR_TOKEN" gh api "/repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" \
                 --jq '.[] | select(.name == "Threadnote 5.0 beta publication freeze" and .target == "branch" and .enforcement == "active") | .id' |
                 head -n 1
             )" || {
@@ -83,7 +92,7 @@ jobs:
               echo "::error::The required active no-bypass beta publication freeze ruleset is missing."
               exit 1
             fi
-            freeze_ruleset="$(gh api "/repos/${GITHUB_REPOSITORY}/rulesets/${freeze_ruleset_id}")" || {
+            freeze_ruleset="$(GH_TOKEN="$RELEASE_COORDINATOR_TOKEN" gh api "/repos/${GITHUB_REPOSITORY}/rulesets/${freeze_ruleset_id}")" || {
               echo "::error::Could not read the required beta publication freeze ruleset; refusing publication."
               exit 1
             }
@@ -135,6 +144,7 @@ jobs:
           fi
           # This is the final practical gate. The release branch is frozen while beta publication runs.
           verify_release_source
+          unset RELEASE_COORDINATOR_TOKEN
           gh release create "$RELEASE_TAG" artifacts/* "${release_flags[@]}" --notes "$release_notes"
 
       - name: Verify release immutability
