@@ -53,6 +53,7 @@
     "eval:threadnote-5-release-readiness": "bun scripts/evaluate-threadnote-5-release-readiness.ts",
     "capture:threadnote-5-release-readiness": "bun scripts/capture-threadnote-5-release-readiness.ts",
     "capture:threadnote-5-baseline-ledger": "bun scripts/capture-threadnote-5-baseline-ledger.ts",
+    "assemble:threadnote-5-observer-authority": "bun scripts/assemble-threadnote-5-observer-authority.ts",
     "verify:threadnote-5-release-readiness-receipts": "bun scripts/verify-threadnote-5-release-readiness-receipts.ts",
     "eval:recall:baseline": "bun scripts/capture-recall-baseline.ts",
     "eval:recall:baseline:v2": "bun scripts/capture-recall-v2-baseline.ts",

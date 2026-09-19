@@ -12,12 +12,46 @@ kind, and artifact. Every observation must bind the exact
 `5.0.0-local.g<commit>` runtime before and after the scenario; a capture manifest hash is reviewed
 outside the evidence file.
 
+Assemble the independently reviewed observations into one bundle. The command emits only to its
+already-open stdout descriptor; it never opens, replaces, renames, or cleans an output path. Retain
+that stream in a supervisor-owned immutable store. For a local run, a fresh private directory keeps
+the shell-owned file boundary inaccessible to other users while the command runs:
+
+```sh
+AUTHORITY_PRIVATE_DIR="$(mktemp -d)"
+chmod 700 "$AUTHORITY_PRIVATE_DIR"
+
+bun run assemble:threadnote-5-observer-authority -- \
+  --assemble \
+  --candidate candidate-runtime.json \
+  --retained-records private-source-records.json \
+  --reviews private-observer-reviews.json \
+  > "$AUTHORITY_PRIVATE_DIR/reviewed-authority-bundle.json"
+chmod 400 "$AUTHORITY_PRIVATE_DIR/reviewed-authority-bundle.json"
+
+bun run assemble:threadnote-5-observer-authority -- \
+  --verify \
+  --candidate candidate-runtime.json \
+  --retained-records private-source-records.json \
+  --reviews private-observer-reviews.json \
+  --bundle "$AUTHORITY_PRIVATE_DIR/reviewed-authority-bundle.json" \
+  --manifest-sha256 <independently-reviewed-manifest-sha256> \
+  --review-artifact-set-sha256 <independently-reviewed-review-set-sha256> \
+  --binding-sha256 <independently-reviewed-binding-sha256> \
+  > "$AUTHORITY_PRIVATE_DIR/reviewed-authority.json"
+chmod 400 "$AUTHORITY_PRIVATE_DIR/reviewed-authority.json"
+```
+
+The verify step replays the retained records and private reviews, checks the single bundle against all
+three independently supplied hashes, and emits the raw authority manifest expected by the capture
+and evaluation commands below. A partial or altered bundle is not a valid authority artifact.
+
 ```sh
 bun run capture:threadnote-5-release-readiness -- \
   --candidate candidate-runtime.json \
   --runtime-boundaries scenario-runtime-boundaries.json \
   --retained-subsystem-receipts private-source-records.json \
-  --authority-manifest reviewed-authority.json \
+  --authority-manifest "$AUTHORITY_PRIVATE_DIR/reviewed-authority.json" \
   --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
   --evidence-output candidate-evidence.json \
   --canonical-receipts-output retained-receipts.json
@@ -25,7 +59,7 @@ bun run capture:threadnote-5-release-readiness -- \
 bun run verify:threadnote-5-release-readiness-receipts -- \
   --evidence candidate-evidence.json \
   --retained-subsystem-receipts retained-receipts.json \
-  --authority-manifest reviewed-authority.json \
+  --authority-manifest "$AUTHORITY_PRIVATE_DIR/reviewed-authority.json" \
   --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
   --output receipt-verification.json
 
@@ -33,7 +67,7 @@ bun run eval:threadnote-5-release-readiness -- \
   --candidate-commit <40-hex-commit> \
   --candidate-executable-sha256 <64-hex-sha256> \
   --capture-manifest-sha256 <independently-reviewed-64-hex-sha256> \
-  --authority-manifest reviewed-authority.json \
+  --authority-manifest "$AUTHORITY_PRIVATE_DIR/reviewed-authority.json" \
   --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
   --retained-subsystem-receipts retained-receipts.json \
   --evidence candidate-evidence.json
@@ -100,7 +134,7 @@ bun run eval:threadnote-5-release-readiness -- \
   --candidate-commit <5.0-commit> \
   --candidate-executable-sha256 <5.0-executable-sha256> \
   --capture-manifest-sha256 <reviewed-manifest-sha256> \
-  --authority-manifest reviewed-authority.json \
+  --authority-manifest "$AUTHORITY_PRIVATE_DIR/reviewed-authority.json" \
   --authority-manifest-sha256 <independently-reviewed-64-hex-sha256> \
   --baseline-version 4.7.8 \
   --baseline-commit 80ca4acdb7347a4d00b0381f3757a5ac984d9fbf \
