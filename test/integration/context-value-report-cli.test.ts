@@ -16,6 +16,20 @@ afterEach(async () => {
 });
 
 describe('context health and value report CLI', () => {
+  it('shows handler-bearing parent subcommands as optional without relaxing grouping commands', async () => {
+    const home = await makeHome();
+
+    const [healthHelp, reportHelp, contextHelp] = await Promise.all([
+      runCli(['context', 'health', '--help'], home),
+      runCli(['value', 'report', '--help'], home),
+      runCli(['context', '--help'], home),
+    ]);
+
+    expect(healthHelp.stdout).toContain('threadnote context health [<subcommand>] [flags]');
+    expect(reportHelp.stdout).toContain('threadnote value report [<subcommand>] [flags]');
+    expect(contextHelp.stdout).toContain('threadnote context <subcommand> [flags]');
+  });
+
   it('returns a bounded empty health report as JSON without creating local state', async () => {
     const home = await makeHome();
 

@@ -3,6 +3,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {Crypto, Effect, Layer} from 'effect';
 import {succeedUndefined} from './optional.js';
 import {CommandExecutor} from './command.js';
+import {threadnoteCliFormatterLayer} from './cli_help.js';
 import {CliOutput} from './cli_output.js';
 import {HttpService} from './http.js';
 import {ResourceStore} from './resource-store.js';
@@ -97,6 +98,7 @@ const codeGraphWatcherLayer = CodeGraphWatcher.layer.pipe(Layer.provideMerge(cod
 
 const ApplicationServicesLayer = Layer.mergeAll(
   cliOutputLayer,
+  threadnoteCliFormatterLayer,
   codeGraphQueryLayer,
   codeGraphAnalysisLayer,
   codeGraphWatcherLayer,
