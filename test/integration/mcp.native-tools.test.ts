@@ -88,8 +88,18 @@ const CORE_TOOL_NAMES = [
   'review_session_context',
   'apply_memory_candidates',
   'obsidian_publish',
+  'context_health',
+  'context_health_aggregate',
+  'context_health_schedule',
+  'context_health_repair_preview',
+  'context_health_repair_apply',
+  'context_metadata_preview',
+  'context_metadata_apply',
+  'recall_feedback',
   'threadnote_guide',
   'share_propose',
+  'procedure_publish_preview',
+  'procedure_publish_apply',
   'share_publish',
 ];
 
@@ -101,14 +111,6 @@ const ADVANCED_TOOL_NAMES = [
   'archive',
   'archive_context',
   'compact_context',
-  'context_health',
-  'context_health_aggregate',
-  'context_health_schedule',
-  'context_health_repair_preview',
-  'context_health_repair_apply',
-  'context_metadata_preview',
-  'context_metadata_apply',
-  'recall_feedback',
   'forget',
   'add_resource',
   'grep',
@@ -121,6 +123,17 @@ const ADVANCED_TOOL_NAMES = [
   'share_bundle',
   'list_shared_skills',
   'install_shared_skill',
+];
+
+const LIFECYCLE_TOOL_NAMES = [
+  'context_health',
+  'context_health_aggregate',
+  'context_health_schedule',
+  'context_health_repair_preview',
+  'context_health_repair_apply',
+  'context_metadata_preview',
+  'context_metadata_apply',
+  'recall_feedback',
   'procedure_publish_preview',
   'procedure_publish_apply',
 ];
@@ -321,9 +334,15 @@ describe('Threadnote MCP toolsets', () => {
       async client => {
         const tools = await client.listTools();
         expect(tools.tools.map(tool => tool.name)).toEqual(CORE_TOOL_NAMES);
+        for (const lifecycleTool of LIFECYCLE_TOOL_NAMES) {
+          expect(tools.tools.map(tool => tool.name)).toContain(lifecycleTool);
+        }
+        for (const fullOnlyTool of ['archive', 'compact_context', 'forget', 'share_conflicts', 'share_skill']) {
+          expect(tools.tools.map(tool => tool.name)).not.toContain(fullOnlyTool);
+        }
         const serializedToolsBytes = Buffer.byteLength(JSON.stringify(tools.tools));
         // Bound metadata growth without penalizing future concise descriptions.
-        expect(serializedToolsBytes).toBeLessThanOrEqual(17_650);
+        expect(serializedToolsBytes).toBeLessThanOrEqual(27_500);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );
@@ -4323,7 +4342,7 @@ describe('Threadnote MCP toolsets', () => {
         const tools = await client.listTools();
         const names = tools.tools.map(tool => tool.name);
         expect(names).toHaveLength(CORE_TOOL_NAMES.length + ADVANCED_TOOL_NAMES.length);
-        expect(names).toEqual(expect.arrayContaining([...CORE_TOOL_NAMES, ...ADVANCED_TOOL_NAMES]));
+        expect([...names].sort()).toEqual([...CORE_TOOL_NAMES, ...ADVANCED_TOOL_NAMES].sort());
         expect(tools.tools.find(tool => tool.name === 'finalize_code_refs')?.inputSchema).toMatchObject({
           properties: {
             uri: {type: 'string'},

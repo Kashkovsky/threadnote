@@ -380,6 +380,13 @@ function registerTools(
       },
     );
 
+  if (capabilities.lifecycle) {
+    registerContextHealthTool(server, config);
+    registerContextHealthRepairTools(server, config);
+    registerMaintenanceMetadataTools(server, config);
+    registerRecallFeedbackTool(server, config);
+  }
+
   if (capabilities.maintenance) {
     registerArchiveTool(
       server,
@@ -389,10 +396,6 @@ function registerTools(
     );
     registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
     registerCompactTool(server, config);
-    registerContextHealthTool(server, config);
-    registerContextHealthRepairTools(server, config);
-    registerMaintenanceMetadataTools(server, config);
-    registerRecallFeedbackTool(server, config);
   }
 
   server.registerTool(
@@ -409,7 +412,7 @@ function registerTools(
 
   if (capabilities.memoryPublish) {
     registerKnowledgeDeltaGitProposalTool(server, config);
-    if (toolset === 'full') registerProcedurePublicationTools(server, config);
+    if (capabilities.lifecycle) registerProcedurePublicationTools(server, config);
   }
 
   if (capabilities.memoryPublish)

@@ -22,6 +22,7 @@ const PERSONAL_STDIO_TOOLSETS = ['core', 'full'] as const satisfies readonly Mcp
 
 const PERSONAL_STDIO_CAPABILITIES = {
   graphLocal: true,
+  lifecycle: true,
   memoryPublish: true,
   memoryRead: true,
   memoryWrite: true,
@@ -71,6 +72,7 @@ describe('shared-first local personal floor', () => {
         contextBrief: false,
         graphLocal: true,
         graphWorkset: false,
+        lifecycle: false,
         maintenance: false,
         memoryPublish: false,
         memoryRead: false,

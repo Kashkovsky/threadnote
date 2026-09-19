@@ -155,18 +155,19 @@ describe('MCP toolsets', () => {
   });
 
   it('gives Personal Cursor Cloud shared writes without graph, review, publishing, maintenance, or worksets', () => {
-    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal'))).toEqual({
-      contextBrief: false,
-      graphLocal: false,
-      graphWorkset: false,
-      maintenance: false,
-      memoryPublish: false,
-      memoryRead: true,
-      memoryReview: false,
-      memoryWrite: true,
-    });
-    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-git-beta')).graphLocal).toBe(false);
-    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud')).graphLocal).toBe(false);
+    for (const toolset of ['cursor-cloud-personal', 'cursor-cloud', 'cursor-cloud-git-beta'] as const) {
+      expect(mcpToolCapabilities(parseMcpToolset(toolset)), toolset).toEqual({
+        contextBrief: false,
+        graphLocal: false,
+        graphWorkset: false,
+        lifecycle: false,
+        maintenance: false,
+        memoryPublish: false,
+        memoryRead: true,
+        memoryReview: false,
+        memoryWrite: true,
+      });
+    }
   });
 
   it('keeps the Cursor Cloud local toolset graph-only', () => {
@@ -174,12 +175,18 @@ describe('MCP toolsets', () => {
       contextBrief: false,
       graphLocal: true,
       graphWorkset: false,
+      lifecycle: false,
       maintenance: false,
       memoryPublish: false,
       memoryRead: false,
       memoryReview: false,
       memoryWrite: false,
     });
+  });
+
+  it('gives local personal toolsets the lifecycle surface while retaining maintenance for full', () => {
+    expect(mcpToolCapabilities(parseMcpToolset('core'))).toMatchObject({lifecycle: true, maintenance: false});
+    expect(mcpToolCapabilities(parseMcpToolset('full'))).toMatchObject({lifecycle: true, maintenance: true});
   });
 
   effectIt.effect('launches the Windows MCP cmd adapter through ComSpec', () =>
