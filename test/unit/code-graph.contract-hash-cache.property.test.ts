@@ -36,10 +36,10 @@ describe('code graph pure contract digest caches', () => {
       'caacde722edfe4f0f411f12dfc71b5a592c2c6a4e9218cc0415301af80c17a22',
     );
     expect(codeGraphInventoryReuseContract(BUILTIN_LANGUAGE_PACK_REGISTRY, false)).toBe(
-      '0dfda8c81dfdb76e49efe5ba28377987206430886a1ccb8252b3516c2b7b4919',
+      '1feefb92a50bab0c7fde218feca02ef1dfceeb1e08abd1fd1807b2322b83fc5a',
     );
     expect(codeGraphInventoryReuseContract(BUILTIN_LANGUAGE_PACK_REGISTRY, true)).toBe(
-      'f09ceb40f50c5e59db7ca46679b4e7b2b141be2d3959aac67427294108cc076e',
+      '379387b0b5a21ed60b9a729bb00a672285976df4480f6b48a17da70f586b9e1d',
     );
   });
 

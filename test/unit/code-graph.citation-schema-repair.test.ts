@@ -1281,7 +1281,31 @@ function downgradeToReleasedRevision6(databasePath: string): void {
         DROP TABLE IF EXISTS snapshot_build_owner_instances;
         DROP TABLE IF EXISTS snapshot_component_edge_aggregate_receipts;
         DROP TABLE IF EXISTS snapshot_component_edge_aggregates;
+        DROP TABLE IF EXISTS scope_applicability;
+        DROP TABLE IF EXISTS snapshot_scope_receipts;
+        DROP INDEX IF EXISTS snapshots_scope_recent_ready;
+        DROP INDEX IF EXISTS snapshots_scope_commit_ready;
+        DROP INDEX IF EXISTS snapshots_scope_reusable;
+        DROP INDEX IF EXISTS snapshots_scope_reusable_content;
+        DROP INDEX IF EXISTS snapshots_scope_reusable_commit;
+        CREATE TEMP TABLE legacy_active_snapshots AS
+          SELECT worktree_id, snapshot_id, activated_at FROM active_snapshots
+          WHERE scope_id = 'full-repository';
+        DROP TABLE active_snapshots;
+        CREATE TABLE active_snapshots (
+          worktree_id TEXT PRIMARY KEY NOT NULL,
+          snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+          activated_at TEXT NOT NULL
+        );
+        INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
+          SELECT worktree_id, snapshot_id, activated_at FROM legacy_active_snapshots;
+        DROP TABLE temp.legacy_active_snapshots;
         DROP TABLE IF EXISTS removed_views;
+        ALTER TABLE snapshots DROP COLUMN scope_id;
+        CREATE INDEX IF NOT EXISTS active_snapshots_snapshot_worktree ON active_snapshots(snapshot_id, worktree_id);
+        CREATE INDEX IF NOT EXISTS snapshots_base_state_id ON snapshots(base_snapshot_id, state, id);
+        CREATE INDEX IF NOT EXISTS snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at);
+        CREATE INDEX IF NOT EXISTS snapshot_leases_expiry ON snapshot_leases(expires_at);
         DROP INDEX IF EXISTS snapshot_files_raw_content_hash;
         ALTER TABLE snapshot_files DROP COLUMN raw_content_hash;
         DELETE FROM schema_metadata

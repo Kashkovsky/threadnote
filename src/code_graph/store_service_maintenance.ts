@@ -244,7 +244,7 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
                   databasePath,
                   Effect.gen(function* () {
                     const sql = yield* SqlClient.SqlClient;
-                    yield* ensureLeaseSchemaInitialized(databasePath, sql);
+                    yield* ensureLeaseSchemaInitialized(databasePath, sql, false);
                     const retired = yield* releaseSnapshotLease(token);
                     return retired ? yield* pruneRetiredSnapshotRowsPage() : {deleted: 0, remaining: false};
                   }),
@@ -268,7 +268,7 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
                   databasePath,
                   Effect.gen(function* () {
                     const sql = yield* SqlClient.SqlClient;
-                    yield* ensureLeaseSchemaInitialized(databasePath, sql);
+                    yield* ensureLeaseSchemaInitialized(databasePath, sql, false);
                     yield* renewSnapshotLease(token, durationMilliseconds);
                     return yield* pruneRetiredSnapshotRowsPage();
                   }),

@@ -1,7 +1,7 @@
 import type {Effect, Option} from 'effect';
 import type {ResolvedCodeGraphIndexScope} from './index_scope.js';
 import type {CodeGraphScopeApplicabilityEvidence} from './scope_applicability.js';
-import type {StoredCodeGraphScopeApplicability} from './store_scope_applicability.js';
+import type {StoredCodeGraphScopeApplicability} from './scope_applicability_store_types.js';
 import type * as SqlClient from 'effect/unstable/sql/SqlClient';
 import type {CodeGraphBlobReuseFile} from './blob_reuse.js';
 import type {CodeGraphCacheFactInput} from './fact_budget.js';

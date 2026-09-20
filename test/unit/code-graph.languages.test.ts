@@ -1,7 +1,8 @@
 import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
-import * as BunServices from '@effect/platform-bun/BunServices';
-import {Effect, Option} from 'effect';
+import * as BunFileSystem from '@effect/platform-bun/BunFileSystem';
+import * as BunPath from '@effect/platform-bun/BunPath';
+import {Effect, Layer, Option} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {createRepositoryFactResolver, extractFileFacts} from '../../src/code_graph/extractor.js';
 import {
@@ -923,7 +924,7 @@ describe('polyglot code graph language packs', () => {
           .pipe(
             provideTestLayer(TreeSitterRuntime.layer),
             provideTestLayer(SystemInfo.layer),
-            provideTestLayer(BunServices.layer),
+            provideTestLayer(Layer.merge(BunFileSystem.layer, BunPath.layer)),
           ),
       ).toEqual({
         diagnostics: [],
@@ -979,7 +980,7 @@ describe('polyglot code graph language packs', () => {
         effect.pipe(
           provideTestLayer(TreeSitterRuntime.layer),
           provideTestLayer(SystemInfo.layer),
-          provideTestLayer(BunServices.layer),
+          provideTestLayer(Layer.merge(BunFileSystem.layer, BunPath.layer)),
         );
       const raw = yield* provideRuntime(BUILTIN_LANGUAGE_PACK_REGISTRY.extractRawFile(file));
       const derived = BUILTIN_LANGUAGE_PACK_REGISTRY.postprocessFile(file, raw);
@@ -993,7 +994,7 @@ function runExtraction(file: CodeGraphInventoryFile) {
   return BUILTIN_LANGUAGE_PACK_REGISTRY.extractFile(file).pipe(
     provideTestLayer(TreeSitterRuntime.layer),
     provideTestLayer(SystemInfo.layer),
-    provideTestLayer(BunServices.layer),
+    provideTestLayer(Layer.merge(BunFileSystem.layer, BunPath.layer)),
   );
 }
 function inventoryFile(path: string, content: string, language?: string): CodeGraphInventoryFile {

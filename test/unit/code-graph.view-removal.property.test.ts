@@ -182,9 +182,9 @@ function legacyPromote(databasePath: string, worktreeId: string, snapshotId: str
   try {
     database
       .query(
-        `INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(worktree_id) DO UPDATE SET
+        `INSERT INTO active_snapshots (worktree_id, scope_id, snapshot_id, activated_at)
+         VALUES (?, 'full-repository', ?, ?)
+         ON CONFLICT(worktree_id, scope_id) DO UPDATE SET
            snapshot_id = excluded.snapshot_id,
            activated_at = excluded.activated_at`,
       )

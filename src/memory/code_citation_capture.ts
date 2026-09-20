@@ -158,6 +158,10 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
     catch: cause => captureError('code references', cause),
   });
   if (refs.length === 0) return [] as readonly MemoryCodeCitationV1[];
+  // The bundled example manifest is instructional fallback metadata, not a
+  // configured graph catalog. Preserve the historical full-repository route
+  // when callers supply the memory project name against that fallback.
+  const project = config.manifestSource === 'bundled-example' ? undefined : input.project;
   const path = yield* Path.Path;
   if (!path.isAbsolute(input.callerCwd)) {
     return yield* MemoryCodeCitationCaptureError.of('Code citation callerCwd must be absolute.');
@@ -167,7 +171,7 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   if (input.expectedCallerIdentity || input.expectedProjectScope) {
     const callerBefore = yield* query
       .status(config.agentContextHome, input.callerCwd, {
-        project: input.project,
+        project,
         manifestPath: config.manifestPath,
         observeWorktree: true,
         requestMaintenance: false,
@@ -186,11 +190,11 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
     config,
     qualifiedRefs,
     input.callerCwd,
-    input.project,
+    project,
   ).pipe(Effect.mapError(error => captureError('qualified code references', error)));
   const qualifiedByRef = new Map(qualifiedTargets.map(target => [target.ref, target]));
   const targets = yield* Effect.forEach(refs, (ref, index) =>
-    resolveCaptureTarget(input.callerCwd, ref, index, qualifiedByRef, input.project),
+    resolveCaptureTarget(input.callerCwd, ref, index, qualifiedByRef, project),
   );
   const groups = new Map<string, CaptureTarget[]>();
   for (const target of targets) {
@@ -216,7 +220,7 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   if (input.expectedCallerIdentity || input.expectedProjectScope) {
     const callerAfter = yield* query
       .status(config.agentContextHome, input.callerCwd, {
-        project: input.project,
+        project,
         manifestPath: config.manifestPath,
         observeWorktree: true,
         requestMaintenance: false,

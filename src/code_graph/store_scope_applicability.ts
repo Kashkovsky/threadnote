@@ -2,11 +2,10 @@ import {Effect, Predicate} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY, type ResolvedCodeGraphIndexScope} from './index_scope.js';
 import {type CodeGraphScopeApplicabilityEvidence} from './scope_applicability.js';
+import type {StoredCodeGraphScopeApplicability} from './scope_applicability_store_types.js';
 import {CodeGraphStoreError} from './types.js';
 import {tableExists} from './store_session.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
-
-export type StoredCodeGraphScopeApplicability = CodeGraphScopeApplicabilityEvidence & {readonly snapshotId: string};
 
 function decodeEvidence(value: string): unknown {
   try {

@@ -947,11 +947,50 @@ describe('Manager logical repository and workspace catalogs', () => {
       yield* Effect.sync(() => {
         const legacy = new Database(databasePath);
         try {
+          legacy.run('PRAGMA foreign_keys = OFF');
           legacy.transaction(() => {
             legacy.run('DROP TRIGGER removed_views_cleanup_revoke_delete');
             legacy.run('DROP TRIGGER removed_views_cleanup_revoke_insert');
             legacy.run('DROP TRIGGER removed_views_cleanup_revoke_update');
             legacy.run('DROP TABLE removed_view_cleanup');
+            legacy.run('DROP TABLE snapshot_build_owner_instances');
+            legacy.run('DROP TABLE snapshot_component_edge_aggregate_receipts');
+            legacy.run('DROP TABLE snapshot_component_edge_aggregates');
+            legacy.run('DROP TABLE scope_applicability');
+            legacy.run('DROP TABLE snapshot_scope_receipts');
+            legacy.run('DROP INDEX snapshots_scope_recent_ready');
+            legacy.run('DROP INDEX snapshots_scope_commit_ready');
+            legacy.run('DROP INDEX snapshots_scope_reusable');
+            legacy.run('DROP INDEX snapshots_scope_reusable_content');
+            legacy.run('DROP INDEX snapshots_scope_reusable_commit');
+            legacy.run(
+              `CREATE TEMP TABLE legacy_active_snapshots AS
+               SELECT worktree_id, snapshot_id, activated_at FROM active_snapshots
+               WHERE scope_id = 'full-repository'`,
+            );
+            legacy.run('DROP TABLE active_snapshots');
+            legacy.run(`CREATE TABLE active_snapshots (
+              worktree_id TEXT PRIMARY KEY NOT NULL,
+              snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+              activated_at TEXT NOT NULL
+            )`);
+            legacy.run(
+              `INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
+               SELECT worktree_id, snapshot_id, activated_at FROM legacy_active_snapshots`,
+            );
+            legacy.run('DROP TABLE legacy_active_snapshots');
+            legacy.run('DROP TABLE removed_views');
+            legacy.run('ALTER TABLE snapshots DROP COLUMN scope_id');
+            legacy.run(
+              'CREATE INDEX IF NOT EXISTS active_snapshots_snapshot_worktree ON active_snapshots(snapshot_id, worktree_id)',
+            );
+            legacy.run('CREATE INDEX IF NOT EXISTS snapshots_base_state_id ON snapshots(base_snapshot_id, state, id)');
+            legacy.run(
+              'CREATE INDEX IF NOT EXISTS snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)',
+            );
+            legacy.run('CREATE INDEX IF NOT EXISTS snapshot_leases_expiry ON snapshot_leases(expires_at)');
+            legacy.run('DROP INDEX snapshot_files_raw_content_hash');
+            legacy.run('ALTER TABLE snapshot_files DROP COLUMN raw_content_hash');
             legacy.run(
               `DELETE FROM schema_metadata
                WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,
@@ -960,6 +999,7 @@ describe('Manager logical repository and workspace catalogs', () => {
             legacy.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
           })();
         } finally {
+          legacy.run('PRAGMA foreign_keys = ON');
           legacy.close();
         }
       });
