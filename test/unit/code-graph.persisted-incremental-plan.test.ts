@@ -8,8 +8,8 @@ import {
   persistedIncrementalFileDeletionsStatement,
   persistedIncrementalReexportMismatchStatement,
   persistedIncrementalSymbolDeletionsStatement,
-} from '../../src/code_graph/store_incremental_plan.js';
-import {type CodeGraphSqlQueryStatement} from '../../src/code_graph/store_visualization_sql.js';
+} from '../../src/code_graph/store/incremental_plan.js';
+import {type CodeGraphSqlQueryStatement} from '../../src/code_graph/store/visualization_sql.js';
 
 describe('persisted incremental SQLite plans', () => {
   it('point-probes persisted files, symbols, and re-exports for surface admission', () =>

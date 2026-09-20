@@ -22,7 +22,7 @@ import {
   observeCodeGraphAdmissionEnvironment,
   recordCodeGraphSnapshotAdmission,
 } from '../../src/code_graph/admission_freshness.js';
-import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance/coordinator.js';
 import {
   CodeGraphQueryService,
   exactNodeQuery,

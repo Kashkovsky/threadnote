@@ -8,7 +8,7 @@ import type {
   ManagerWorksetCatalog,
   ManagerWorksetProjectSummary,
 } from './worksets.js';
-import type {CodeGraphProjectScopePreview} from '../code_graph/scope_preview.js';
+import type {CodeGraphProjectScopePreview} from '../code_graph/scope/preview.js';
 
 interface ProjectDraft {
   readonly graphEnabled: boolean;

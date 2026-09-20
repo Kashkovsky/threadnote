@@ -3,15 +3,15 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {describe, expect} from 'vitest';
-import {initializeSchema} from '../../src/code_graph/store_schema_initialization.js';
+import {initializeSchema} from '../../src/code_graph/store/schema_initialization.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {CODE_GRAPH_SCHEMA_INITIALIZATION_CURRENT_CONTRACT_REVISION} from '../../src/code_graph/store/schema_revision.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../../src/code_graph/store_build_core.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../../src/code_graph/store/build_core.js';
 import {
   CODE_GRAPH_SCOPE_QUERY_INDEX_DEFINITIONS,
   inspectCodeGraphQueryIndexes,
-} from '../../src/code_graph/store_query_indexes.js';
-import {selectRecentReadySnapshotsForRepository} from '../../src/code_graph/store_queries.js';
+} from '../../src/code_graph/store/query_indexes.js';
+import {selectRecentReadySnapshotsForRepository} from '../../src/code_graph/store/queries.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const repositoryId = 'a'.repeat(64);

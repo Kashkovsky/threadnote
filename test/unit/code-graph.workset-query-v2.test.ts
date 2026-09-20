@@ -15,12 +15,12 @@ import {
   CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS,
   runCodeGraphWorksetQueryV2Core,
   type CodeGraphWorksetQueryV2InputV1,
-} from '../../src/code_graph/workset_query_v2.js';
+} from '../../src/code_graph/workset/query_v2.js';
 import {
   normalizeCodeGraphWorksetRouterQuery,
   rankCodeGraphWorksetRouterCandidates,
   type CodeGraphWorksetRouterResultV1,
-} from '../../src/code_graph/workset_router.js';
+} from '../../src/code_graph/workset/router.js';
 import type {CodeGraphQueryNode, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import type {
   CodeGraphWorksetCatalogPublishedGenerationV1,

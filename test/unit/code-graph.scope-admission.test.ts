@@ -9,7 +9,7 @@ import {
   recordCodeGraphSnapshotAdmission,
   type CodeGraphScopeAdmissionEvidence,
 } from '../../src/code_graph/admission_freshness.js';
-import {codeGraphInventoryReuseContract} from '../../src/code_graph/inventory_reuse.js';
+import {codeGraphInventoryReuseContract} from '../../src/code_graph/inventory/reuse.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import type {CodeGraphSnapshot} from '../../src/code_graph/types.js';

@@ -1,5 +1,5 @@
 import {Schema} from 'effect';
-import type {CodeGraphScanningMetrics, CodeGraphSourceSizeBucket} from './progress_telemetry.js';
+import type {CodeGraphScanningMetrics, CodeGraphSourceSizeBucket} from './progress/telemetry.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 
 export {
@@ -286,9 +286,9 @@ export interface CodeGraphMaterializationMetrics {
   /** Exact UTF-8 bytes decoded from raw parser-fact cache rows for attribution. */
   readonly rawFactReplayBytesCompleted?: number;
   /** Closed, path-free evidence for the declaration-publication gate. */
-  readonly resolutionLookupKeyForm?: import('./resolution_surface.js').CodeGraphResolutionLookupKeyForm;
+  readonly resolutionLookupKeyForm?: import('./resolution/surface.js').CodeGraphResolutionLookupKeyForm;
   /** Closed, path-free evidence for the declaration-publication gate. */
-  readonly resolutionPublicationGate?: import('./resolution_surface.js').CodeGraphResolutionPublicationGate;
+  readonly resolutionPublicationGate?: import('./resolution/surface.js').CodeGraphResolutionPublicationGate;
   readonly rows?: CodeGraphMaterializationRows;
   readonly sourceBytesCompleted: number;
   readonly sourceBytesTotal: number;
@@ -521,7 +521,7 @@ export interface CodeGraphIndexSummary {
   readonly diagnostics: readonly string[];
   readonly durationMs: number;
   readonly identity: RepositoryIdentity;
-  readonly incrementalWork?: import('./incremental_work.js').CodeGraphIncrementalWork;
+  readonly incrementalWork?: import('./incremental/work.js').CodeGraphIncrementalWork;
   readonly materialization?: {
     /** Prior logical-delta files copied from persisted rows without fact decoding. */
     readonly carriedFiles?: number;
@@ -533,8 +533,8 @@ export interface CodeGraphIndexSummary {
     /** Files freshly decoded/attributed for this build; `stagedFiles` remains the physical delta size. */
     readonly freshStagedFiles?: number;
     readonly resolutionClosure?: 'changed' | 'full' | 'project';
-    readonly resolutionLookupKeyForm?: import('./resolution_surface.js').CodeGraphResolutionLookupKeyForm;
-    readonly resolutionPublicationGate?: import('./resolution_surface.js').CodeGraphResolutionPublicationGate;
+    readonly resolutionLookupKeyForm?: import('./resolution/surface.js').CodeGraphResolutionLookupKeyForm;
+    readonly resolutionPublicationGate?: import('./resolution/surface.js').CodeGraphResolutionPublicationGate;
     readonly stagedFiles: number;
     readonly totalFiles: number;
   };

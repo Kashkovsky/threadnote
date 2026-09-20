@@ -14,8 +14,8 @@ import {
   cleanupCodeGraphRemovedViewBuildStatusUnit,
   codeGraphRemovedViewBuildStatusInventory,
   type CodeGraphRemovedViewBuildCleanupOptions,
-} from '../../src/code_graph/removed_view_build_cleanup.js';
-import {codeGraphScopeViewKey} from '../../src/code_graph/scope_identity.js';
+} from '../../src/code_graph/removed_view/build_cleanup.js';
+import {codeGraphScopeViewKey} from '../../src/code_graph/scope/identity.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
 const REPOSITORY_ID = 'b'.repeat(64);

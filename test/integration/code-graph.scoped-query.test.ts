@@ -12,7 +12,7 @@ import {
   readPublishedCodeGraphWorksetCatalogGeneration,
   registerCodeGraphQualifiedRef,
 } from '../../src/code_graph/workset_catalog/store.js';
-import {queryCodeGraphWorksetV2, resolveCodeGraphQualifiedRefTarget} from '../../src/code_graph/workset_query_v2.js';
+import {queryCodeGraphWorksetV2, resolveCodeGraphQualifiedRefTarget} from '../../src/code_graph/workset/query_v2.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('scoped graph retrieval', () => {

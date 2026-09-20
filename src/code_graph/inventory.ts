@@ -7,7 +7,7 @@ import {
   inspectContainedStableRegularFile,
   materializeContainedStableRegularFile,
   type StableContainedRegularFileMetadata,
-} from './inventory_contained_file.js';
+} from './inventory/contained_file.js';
 import {
   acceptsBinaryContent,
   appearsBinary,
@@ -16,15 +16,15 @@ import {
   repositoryContentOmissionReason,
   retainResolutionContext,
   shouldOmitRepositoryContent,
-} from './inventory_content.js';
-import {CodeGraphInventoryError} from './inventory_error.js';
-import {parseNameStatus, parsePorcelainV1Status} from './inventory_porcelain.js';
-import {worktreeStatusWithPrivateCache} from './git_status_cache.js';
+} from './inventory/content.js';
+import {CodeGraphInventoryError} from './inventory/error.js';
+import {parseNameStatus, parsePorcelainV1Status} from './inventory/porcelain.js';
+import {worktreeStatusWithPrivateCache} from './git/status_cache.js';
 import {
   codeGraphAttributionContextFilesForReceipt,
   codeGraphInventoryReuseContract,
   readCodeGraphInventoryReuseEnvironment,
-} from './inventory_reuse.js';
+} from './inventory/reuse.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT, isOpaqueCorpusMediaPath} from './languages/corpus/policy.js';
 import type {ProjectManifest} from '../types.js';
@@ -34,7 +34,7 @@ import {
   CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
   CODE_GRAPH_INVENTORY_EXCLUSION_REASONS,
   type CodeGraphInventoryExclusionReason,
-} from './inventory_policy.js';
+} from './inventory/policy.js';
 import {compareCodeUnits} from './ordering.js';
 import {workspaceHasUninventoriedMonikerEvidence} from './workspace.js';
 import {resolveCodeGraphWorkspaceCatalog, type ResolvedCodeGraphIndexScope} from './index_scope.js';
@@ -42,7 +42,7 @@ import {
   codeGraphScopeAdmitsPath,
   codeGraphScopedBaseReusable,
   scopedCodeGraphWorkspace,
-} from './scope_applicability.js';
+} from './scope/applicability.js';
 import {
   compileThreadnoteIgnore,
   emptyThreadnoteIgnoreAdmissionPath,
@@ -56,19 +56,19 @@ import {
   codeGraphExtractionPlanMetrics,
   codeGraphSourceSizeBucket,
   CODE_GRAPH_SCANNING_STARTED_PROGRESS,
-} from './progress_telemetry.js';
+} from './progress/telemetry.js';
 import {type CodeGraphInventoryFile, type RepositoryIdentity} from './types.js';
-import type {CodeGraphInventoryPolicyExclusionSummary, CodeGraphReusableCleanBase} from './store_models.js';
-import {CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION} from './store_models.js';
+import type {CodeGraphInventoryPolicyExclusionSummary, CodeGraphReusableCleanBase} from './store/models.js';
+import {CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION} from './store/models.js';
 import type {
   CodeGraphInventory,
   CodeGraphInventoryOptions,
   CodeGraphOverlayObservation,
   CodeGraphObservedOverlayFile,
   CodeGraphBuildRequestObservation,
-} from './inventory_models.js';
-import {codeGraphInventoryScopeMetadata, observeCodeGraphIndexScope} from './inventory_scope.js';
-export {codeGraphInventoryScopeEvidence, observeCodeGraphIndexScope} from './inventory_scope.js';
+} from './inventory/models.js';
+import {codeGraphInventoryScopeMetadata, observeCodeGraphIndexScope} from './inventory/scope.js';
+export {codeGraphInventoryScopeEvidence, observeCodeGraphIndexScope} from './inventory/scope.js';
 export type {
   CodeGraphInventory,
   CodeGraphInventoryOptions,
@@ -76,12 +76,12 @@ export type {
   CodeGraphObservedOverlayFile,
   CodeGraphBuildRequestObservation,
   CodeGraphContentBatchContext,
-} from './inventory_models.js';
+} from './inventory/models.js';
 
-export {codeGraphInventoryExclusionReason} from './inventory_policy.js';
-export {parseNameStatus} from './inventory_porcelain.js';
-export {readContainedStableRegularFile, type ContainedReadInterlock} from './inventory_contained_file.js';
-export {shouldOmitRepositoryContent} from './inventory_content.js';
+export {codeGraphInventoryExclusionReason} from './inventory/policy.js';
+export {parseNameStatus} from './inventory/porcelain.js';
+export {readContainedStableRegularFile, type ContainedReadInterlock} from './inventory/contained_file.js';
+export {shouldOmitRepositoryContent} from './inventory/content.js';
 export {
   compileThreadnoteIgnore,
   isIgnoredByThreadnote,
@@ -93,7 +93,7 @@ export {
 export type {
   CodeGraphInventoryPolicyExclusionReasonSummary,
   CodeGraphInventoryPolicyExclusionSummary,
-} from './store_models.js';
+} from './store/models.js';
 
 export interface GitTreeEntry {
   readonly blobId: string;

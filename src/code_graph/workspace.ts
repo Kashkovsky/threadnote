@@ -12,8 +12,8 @@ import type {
 import {compareCodeUnits} from './ordering.js';
 import {canonicalCodeGraphMonikers, codeGraphPackageMoniker} from './cross_repository/monikers.js';
 import type {CodeGraphExternalDependencyV1, CodeGraphMonikerV1} from './cross_repository/types.js';
-import {discoverNodeWorkspaceCandidates} from './workspace_node.js';
-import {boundedCodeGraphWorkspaceDiagnostics, resolveCodeGraphWorkspaceDiagnostics} from './workspace_diagnostics.js';
+import {discoverNodeWorkspaceCandidates} from './workspace/node.js';
+import {boundedCodeGraphWorkspaceDiagnostics, resolveCodeGraphWorkspaceDiagnostics} from './workspace/diagnostics.js';
 import {
   basename,
   dirname,
@@ -25,9 +25,9 @@ import {
   unique,
   uniqueStrings,
   workspaceIdentity,
-} from './workspace_primitives.js';
+} from './workspace/primitives.js';
 
-export {discoverBazelWorkspace} from './workspace_bazel.js';
+export {discoverBazelWorkspace} from './workspace/bazel.js';
 
 export function workspaceHasUninventoriedMonikerEvidence(
   workspace: CodeGraphWorkspace,

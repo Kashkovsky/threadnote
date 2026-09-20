@@ -1,7 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe, expect} from 'vitest';
-import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../../src/code_graph/citation_source.js';
+import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../../src/code_graph/citation/source.js';
 import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CommandExecutor} from '../../src/effect/command.js';

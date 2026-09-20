@@ -4,7 +4,7 @@ import {Effect, FileSystem, Layer, Path} from 'effect';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
 import {collectActivationImportPreview} from '../../src/activation/imports.js';
-import {readBoundedContainedStableRegularFile} from '../../src/code_graph/inventory_contained_file.js';
+import {readBoundedContainedStableRegularFile} from '../../src/code_graph/inventory/contained_file.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';

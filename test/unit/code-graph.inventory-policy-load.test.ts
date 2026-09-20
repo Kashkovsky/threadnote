@@ -6,7 +6,7 @@ import {
   productionRepositoryFileCount,
 } from '../../scripts/code-graph-fixture.js';
 import {codeGraphInventoryExclusionReason} from '../../src/code_graph/inventory.js';
-import {CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES} from '../../src/code_graph/inventory_policy.js';
+import {CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES} from '../../src/code_graph/inventory/policy.js';
 
 interface PolicyMetadataEntry {
   readonly path: string;

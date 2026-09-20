@@ -3,7 +3,7 @@ import {describe, expect, it} from 'vitest';
 import {
   classifyCodeGraphStoreFailure,
   codeGraphStoreSchemaAdditiveRequired,
-} from '../../src/code_graph/store_failure.js';
+} from '../../src/code_graph/store/failure.js';
 import {
   CodeGraphStoreBusyError,
   CodeGraphStoreCorruptionError,

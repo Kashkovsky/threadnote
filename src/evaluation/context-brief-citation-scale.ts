@@ -1,6 +1,6 @@
 import {Clock, Context, DateTime, Effect, FileSystem, Scope} from 'effect';
 import {CodeGraphStore} from '../code_graph/store.js';
-import type {CodeGraphStoreShape} from '../code_graph/store_shape.js';
+import type {CodeGraphStoreShape} from '../code_graph/store/shape.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   compileContextBriefWith,

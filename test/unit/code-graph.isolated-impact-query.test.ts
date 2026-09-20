@@ -13,7 +13,7 @@ import {
   impactQueryWorkerInvocation,
   inspectCodeGraphImpactIsolated,
   IsolatedCodeGraphImpactQueryTimedOut,
-} from '../../src/code_graph/isolated_impact_query.js';
+} from '../../src/code_graph/isolated/impact_query.js';
 import type {CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import {CommandExecutor, type CommandOptions} from '../../src/effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';

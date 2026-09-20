@@ -3,7 +3,7 @@ import {codeGraphCheckpointAbiInputV1} from '../checkpoint/compatibility.js';
 import {codeGraphCheckpointAbiDigestV1} from '../checkpoint/pack.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {codeGraphCommittedContentHash} from '../content_identity.js';
-import type {CodeGraphStoreShape} from '../store_shape.js';
+import type {CodeGraphStoreShape} from '../store/shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot} from '../types.js';
 import {graphShareParseActionKey} from './action.js';
 import {readVerifiedCasBlobBounded} from './cas.js';

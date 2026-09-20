@@ -5,15 +5,15 @@ import {expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path, Result} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {provideTestLayer} from '../helpers/effect-layer.js';
-import {CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES} from '../../src/code_graph/materialization_spool_apply_surfaces.js';
+import {CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES} from '../../src/code_graph/materialization/spool_apply_surfaces.js';
 import {
   finalizeCodeGraphMaterializationSpoolReceipts,
   writeCodeGraphMaterializationSpoolSurfacePage,
-} from '../../src/code_graph/store_materialization_spool_apply.js';
+} from '../../src/code_graph/store/materialization_spool_apply.js';
 import {
   attachPersistentMaterializationSpool,
   materializationSpoolReadOnlyUri,
-} from '../../src/code_graph/store_materialization_spool_lifecycle.js';
+} from '../../src/code_graph/store/materialization_spool_lifecycle.js';
 
 const layer = Layer.mergeAll(
   BunFileSystem.layer,

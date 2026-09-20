@@ -5,10 +5,10 @@ import {
   selectCodeGraphBuildStatuses,
   type ObservedCodeGraphBuildStatus,
 } from './build_status.js';
-import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
+import {runCodeGraphLifecycleOpportunity} from './lifecycle/opportunity.js';
 import {observeManagerGraphCatalogStatus} from './manager_catalog_revision.js';
-import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
-import {observeCodeGraphMaintenanceStatus, type CodeGraphMaintenanceStatus} from './maintenance_gate.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
+import {observeCodeGraphMaintenanceStatus, type CodeGraphMaintenanceStatus} from './maintenance/gate.js';
 import {compareCodeUnits} from './ordering.js';
 import {codeGraphCompactionRequiredFreeBytes, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
 

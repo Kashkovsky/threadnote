@@ -340,7 +340,7 @@ async function codeGraphAutomaticCompactionWorkerProgram() {
 
 async function codeGraphImpactQueryWorkerProgram() {
   const [worker, runtime, processDiagnostics, processLease] = await Promise.all([
-    import('./code_graph/isolated_impact_query.js'),
+    import('./code_graph/isolated/impact_query.js'),
     import('./effect/runtime.js'),
     import('./process/diagnostics.js'),
     import('./process/standalone_lease.js'),
@@ -363,7 +363,7 @@ async function codeGraphImpactQueryWorkerProgram() {
 
 async function gitWorktreeRegistrationWorkerProgram() {
   const [worker, system] = await Promise.all([
-    import('./code_graph/git_worktree_registration_worker.js'),
+    import('./code_graph/git/worktree_registration_worker.js'),
     import('./effect/system.js'),
   ]);
   return worker.gitWorktreeRegistrationWorkerProgram.pipe(

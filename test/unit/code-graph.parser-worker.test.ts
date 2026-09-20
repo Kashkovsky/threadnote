@@ -6,7 +6,7 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
 import {Effect, FileSystem, Fiber, Layer} from 'effect';
-import {cachedCodeGraphFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
+import {cachedCodeGraphFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact/budget.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {

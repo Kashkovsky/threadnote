@@ -14,7 +14,7 @@ import {
   createCodeGraphLanguagePackRegistry,
 } from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance/coordinator.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {RepositoryIdentityExpectation} from '../../src/code_graph/types.js';

@@ -5,7 +5,7 @@ import {
   emptyCodeGraphRefreshDemand,
   enqueueCodeGraphRefreshDemand,
   registerCodeGraphRefreshDemand,
-} from '../../src/code_graph/refresh_demand_scheduler.js';
+} from '../../src/code_graph/refresh/demand_scheduler.js';
 
 const checkout = 'a'.repeat(64);
 const worktree = 'b'.repeat(64);

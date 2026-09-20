@@ -1,5 +1,5 @@
 import {Context, Effect, FileSystem, Option, Path} from 'effect';
-import type {CodeGraphIndexOptions, CodeGraphIndexerShape} from '../code_graph/indexer_types.js';
+import type {CodeGraphIndexOptions, CodeGraphIndexerShape} from '../code_graph/indexer/types.js';
 import type {CodeGraphIndexSummary, RepositoryIdentity} from '../code_graph/types.js';
 import {getRuntimeConfig} from '../runtime.js';
 import {healAnchorsAfterGraphIndex} from './deferred_code_anchor_recovery.js';

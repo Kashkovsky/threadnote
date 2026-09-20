@@ -13,21 +13,21 @@ import {
   codeGraphQueryAnonymousTelemetrySnapshotSelection,
   codeGraphQueryAnonymousTelemetrySnapshotSurface,
   makeCodeGraphQueryAnonymousTelemetryReporter,
-} from '../../code_graph/query_anonymous_telemetry.js';
+} from '../../code_graph/query/anonymous_telemetry.js';
 import {repositoryChangesSince} from '../../code_graph/repository.js';
 import {
   impactQueryTransportSelector,
   inspectCodeGraphImpactIsolated,
   IsolatedCodeGraphImpactQueryTimedOut,
-} from '../../code_graph/isolated_impact_query.js';
+} from '../../code_graph/isolated/impact_query.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../code_graph/types.js';
-import type {CodeGraphStatusObservation} from '../../code_graph/query_contract.js';
-import type {CodeGraphWorksetQueryResult} from '../../code_graph/workset_query.js';
+import type {CodeGraphStatusObservation} from '../../code_graph/query/contract.js';
+import type {CodeGraphWorksetQueryResult} from '../../code_graph/workset/query.js';
 import {
   continueCodeGraphWorksetQueryV2,
   queryCodeGraphWorksetV2,
   resolveCodeGraphQualifiedRefTarget,
-} from '../../code_graph/workset_query_v2.js';
+} from '../../code_graph/workset/query_v2.js';
 import {
   findCodeGraphWorksetPath,
   inspectCodeGraphWorksetTopology,
@@ -59,11 +59,11 @@ import {
   codeGraphAnalysisLimitsForView,
   renderCodeGraphAnalysis,
   type CodeGraphAnalysisView,
-} from '../../code_graph/analysis_render.js';
+} from '../../code_graph/analysis/render.js';
 import {sanitizeCodeGraphPresentationText} from '../../code_graph/presentation_text.js';
 import {AgentResponseBudgetTooSmallError} from '../../evaluation/agent-response.js';
 import {codeGraphMcpResponse, compactCodeGraphMcpResult, formatCodeGraphMcpResponse} from '../code_graph_projection.js';
-import {discloseCodeGraphAnalysisProjectCoverage} from '../../code_graph/query_scope.js';
+import {discloseCodeGraphAnalysisProjectCoverage} from '../../code_graph/query/scope.js';
 import {argumentError, mcpErrorResult, requiredText, type RuntimeConfig} from './common.js';
 import {
   anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure,

@@ -20,10 +20,10 @@ import {
   readPublishedCodeGraphWorksetCatalogGeneration,
   retireCodeGraphWorksetPublication,
 } from '../code_graph/workset_catalog/store.js';
-import {continueCodeGraphWorksetQueryV2, queryCodeGraphWorksetV2} from '../code_graph/workset_query_v2.js';
-import {CODE_GRAPH_WORKSET_ROUTER_LIMITS} from '../code_graph/workset_router.js';
+import {continueCodeGraphWorksetQueryV2, queryCodeGraphWorksetV2} from '../code_graph/workset/query_v2.js';
+import {CODE_GRAPH_WORKSET_ROUTER_LIMITS} from '../code_graph/workset/router.js';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {queueCodeGraphScopeRetirements, reconcileCodeGraphScopeRetirements} from '../code_graph/scope_retirement.js';
+import {queueCodeGraphScopeRetirements, reconcileCodeGraphScopeRetirements} from '../code_graph/scope/retirement.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import type {ApplicationServices} from '../effect/runtime.js';
 import {parseSeedManifest, readSeedManifest} from '../manifest.js';

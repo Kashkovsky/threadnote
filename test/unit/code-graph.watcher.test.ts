@@ -23,7 +23,7 @@ import {
   enqueueCodeGraphRefreshDemand,
   failCodeGraphRefreshDemand,
   registerCodeGraphRefreshDemand,
-} from '../../src/code_graph/refresh_demand_scheduler.js';
+} from '../../src/code_graph/refresh/demand_scheduler.js';
 import {
   CodeGraphRuntimeReconnectRequiredError,
   CodeGraphStoreBusyError,

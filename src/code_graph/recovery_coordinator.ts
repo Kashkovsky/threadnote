@@ -1,6 +1,6 @@
 import {Cause, Clock, Effect, Exit, Option, SynchronizedRef} from 'effect';
 import type {CodeGraphRoutineMaintenanceResult} from './store.js';
-import {classifyCodeGraphStoreFailure} from './store_failure.js';
+import {classifyCodeGraphStoreFailure} from './store/failure.js';
 import type {CodeGraphStoreFailureCode} from './types.js';
 
 export type CodeGraphAutomaticRecoveryAction = 'none' | 'routine-maintenance';

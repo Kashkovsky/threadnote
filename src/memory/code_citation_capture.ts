@@ -2,17 +2,17 @@ import {Effect, FileSystem, Path, Schema} from 'effect';
 import {
   CODE_GRAPH_SOURCE_SPAN_CANONICALIZATION_V1,
   createCodeGraphSourceSpanCanonicalizer,
-} from '../code_graph/citation_primitives.js';
-import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_graph/citation_source.js';
-import {decodeUtf8} from '../code_graph/inventory_content.js';
+} from '../code_graph/citation/primitives.js';
+import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_graph/citation/source.js';
+import {decodeUtf8} from '../code_graph/inventory/content.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../code_graph/query.js';
-import {codeGraphScopeAdmitsPath} from '../code_graph/scope_applicability.js';
+import {codeGraphScopeAdmitsPath} from '../code_graph/scope/applicability.js';
 import {CodeGraphStore} from '../code_graph/store.js';
 import {type CodeGraphStatus, type CodeGraphSymbol, isCodeGraphStoreError} from '../code_graph/types.js';
 import {
   resolveCodeGraphQualifiedRefTargets,
   type ResolvedCodeGraphQualifiedRefTargetV1,
-} from '../code_graph/workset_query_v2.js';
+} from '../code_graph/workset/query_v2.js';
 import {sha256Hex} from '../effect/digest.js';
 import {SystemInfo} from '../effect/system.js';
 import {

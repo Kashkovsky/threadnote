@@ -11,12 +11,12 @@ import {codeGraphLayout, codeGraphSnapshotBuildLockPath} from '../../src/code_gr
 import {
   COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS,
   completedPersistentBuildDrainPageStatement,
-} from '../../src/code_graph/store_activation_core.js';
+} from '../../src/code_graph/store/activation_core.js';
 import {
   CodeGraphMaintenanceCoordinator,
   makeCodeGraphMaintenanceCoordinator,
   type CodeGraphRoutineMaintenanceTick,
-} from '../../src/code_graph/maintenance_coordinator.js';
+} from '../../src/code_graph/maintenance/coordinator.js';
 import {
   CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
   codeGraphRoutineFileBlobCleanupPageStatement,
@@ -24,7 +24,7 @@ import {
   CodeGraphStore,
   type CodeGraphRoutineMaintenanceResult,
 } from '../../src/code_graph/store.js';
-import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
+import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance/gate.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';

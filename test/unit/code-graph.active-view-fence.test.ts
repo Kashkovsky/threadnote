@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {nextCodeGraphActiveViewActivationTimestamp} from '../../src/code_graph/store_active_views.js';
+import {nextCodeGraphActiveViewActivationTimestamp} from '../../src/code_graph/store/active_views.js';
 
 const canonicalTimestamp = fc
   .date({

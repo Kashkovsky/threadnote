@@ -6,7 +6,7 @@ import {
   codeGraphSourceSizeBucket,
   retainCodeGraphSlowFileTelemetry,
   type CodeGraphSlowFileTelemetry,
-} from '../../src/code_graph/progress_telemetry.js';
+} from '../../src/code_graph/progress/telemetry.js';
 
 describe('code graph progress telemetry properties', () => {
   it('keeps source-size bucket boundaries exact', () => {

@@ -2,7 +2,7 @@ import {TestError} from './test-error.js';
 import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, FileSystem, Layer} from 'effect';
-import {runCodeGraphOrdinaryVectorMaintenanceUnit} from '../../src/code_graph/vector_maintenance.js';
+import {runCodeGraphOrdinaryVectorMaintenanceUnit} from '../../src/code_graph/vector/maintenance.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const [threadnoteHome, checkoutId, markerPath] = process.argv.slice(2);

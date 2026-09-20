@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import type {CodeGraphQueryResult} from '../../src/code_graph/types.js';
-import {UNAVAILABLE_IMPACT_BASE_WARNING} from '../../src/code_graph/query_impact_base.js';
+import {UNAVAILABLE_IMPACT_BASE_WARNING} from '../../src/code_graph/query/impact_base.js';
 import {
   MAXIMUM_CONTEXT_CHECK_CAPTURE_ADVISORIES,
   citedDocumentCitationUris,

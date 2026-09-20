@@ -15,7 +15,7 @@ import {
   inventoryRepositoryFromReusableCleanBase,
   worktreeBuildRequestObservation,
 } from '../../src/code_graph/inventory.js';
-import {inventoryRepositoryFromReusableCleanBaseSlice} from '../../src/code_graph/inventory_sparse.js';
+import {inventoryRepositoryFromReusableCleanBaseSlice} from '../../src/code_graph/inventory/sparse.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {
   BUILTIN_LANGUAGE_PACK_REGISTRY,
@@ -32,7 +32,7 @@ import {
 } from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, type CodeGraphIndexSummary} from '../../src/code_graph/types.js';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../../src/code_graph/index_scope.js';
-import {CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES} from '../../src/code_graph/inventory_policy.js';
+import {CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES} from '../../src/code_graph/inventory/policy.js';
 import {
   validateContextBriefFileCitation,
   validateContextBriefMemoryCitations,

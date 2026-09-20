@@ -1,7 +1,7 @@
 import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Clock, Effect, FileSystem, Layer, Path} from 'effect';
-import {withCodeGraphDiskReservation} from '../../src/code_graph/disk_reservation.js';
+import {withCodeGraphDiskReservation} from '../../src/code_graph/disk/reservation.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const [

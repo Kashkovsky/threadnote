@@ -5,7 +5,7 @@ import {
   codeGraphExtractorSetIdentityFromPackProvenance,
   createCodeGraphContentIdentityAccumulator,
 } from '../graph_identity.js';
-import type {CodeGraphLanguagePackProvenance} from '../store_models.js';
+import type {CodeGraphLanguagePackProvenance} from '../store/models.js';
 import type {
   CodeGraphCheckpointHeaderV1,
   CodeGraphCheckpointPackProvenanceRecordV1,

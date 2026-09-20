@@ -26,7 +26,7 @@ import {
 import {codeGraphRepositoriesRoot, codeGraphRepositoryRoot} from '../../src/code_graph/layout.js';
 import {managerGraphStorageStatusCheckoutIds, managerGraphStorageSummary} from '../../src/code_graph/manager_status.js';
 import {compactCodeGraphStorage, type CodeGraphActiveStorage} from '../../src/code_graph/storage.js';
-import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES} from '../../src/code_graph/store_session.js';
+import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES} from '../../src/code_graph/store/session.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';

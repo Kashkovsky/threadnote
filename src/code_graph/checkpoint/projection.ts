@@ -4,18 +4,18 @@ import {sha256HexSync} from '../../crypto/sha256.js';
 import {runBinaryCommandEffect} from '../../effect/command.js';
 import {SystemInfo} from '../../effect/system.js';
 import {codeGraphCommittedContentHash} from '../content_identity.js';
-import {decodeStoredCodeGraphFact} from '../fact_storage.js';
-import {decodeCodeGraphInventoryReuseReceipt} from '../inventory_reuse.js';
-import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../inventory_policy.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store_build_core.js';
+import {decodeStoredCodeGraphFact} from '../fact/storage.js';
+import {decodeCodeGraphInventoryReuseReceipt} from '../inventory/reuse.js';
+import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../inventory/policy.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store/build_core.js';
 import {
   CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   type CodeGraphInventoryReuseReceipt,
-} from '../store_models.js';
+} from '../store/models.js';
 import {CodeGraphStore} from '../store.js';
-import {edgeFromRow, snapshotFromRow, symbolFromRow} from '../store_rows.js';
-import {type EdgeRow, type SnapshotRow, type SymbolRow} from '../store_internal_models.js';
+import {edgeFromRow, snapshotFromRow, symbolFromRow} from '../store/rows.js';
+import {type EdgeRow, type SnapshotRow, type SymbolRow} from '../store/internal_models.js';
 import {observeCleanRepositoryWorktree, revalidateRepositoryIdentityFence} from '../repository.js';
 import {
   CODE_GRAPH_EXTRACTOR_GENERATION,

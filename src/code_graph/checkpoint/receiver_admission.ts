@@ -2,7 +2,7 @@ import {Effect, FileSystem, Path, Schema} from 'effect';
 import {CommandExecutor, type CommandOptions} from '../../effect/command.js';
 import {SystemInfo} from '../../effect/system.js';
 import {inventoryRepository} from '../inventory.js';
-import {readCodeGraphInventoryReuseEnvironment} from '../inventory_reuse.js';
+import {readCodeGraphInventoryReuseEnvironment} from '../inventory/reuse.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../languages/registry.js';
 import {isOpaqueCorpusMediaPath} from '../languages/corpus/policy.js';
 import type {CodeGraphInventoryFile, RepositoryIdentity} from '../types.js';

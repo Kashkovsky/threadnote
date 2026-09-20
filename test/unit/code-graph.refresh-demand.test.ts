@@ -9,8 +9,8 @@ import {
   failCodeGraphRefreshDemand,
   recoverCodeGraphRefreshDemand,
   registerCodeGraphRefreshDemand,
-} from '../../src/code_graph/refresh_demand_scheduler.js';
-import {codeGraphRefreshDemandContinuity} from '../../src/code_graph/refresh_demand.js';
+} from '../../src/code_graph/refresh/demand_scheduler.js';
+import {codeGraphRefreshDemandContinuity} from '../../src/code_graph/refresh/demand.js';
 
 const checkout = 'a'.repeat(64);
 const worktree = 'b'.repeat(64);

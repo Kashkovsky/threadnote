@@ -8,7 +8,7 @@ import {
   codeGraphQualifiedRefHandle,
   codeGraphWorksetContinuationHandle,
   type QualifiedCodeGraphRefV1,
-} from '../workset_evidence.js';
+} from '../workset/evidence.js';
 import {codeGraphWorksetCatalogLayout} from './layout.js';
 import {normalizeWorksetScopeReceipt, worksetScopeReceiptsMatch, type WorksetScopeRow} from './scope_receipt.js';
 import {

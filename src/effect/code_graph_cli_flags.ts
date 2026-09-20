@@ -7,7 +7,7 @@ import {
   CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT,
   CODE_GRAPH_STATUS_MINIMUM_BUILD_LIMIT,
   CODE_GRAPH_STATUS_MINIMUM_LANGUAGE_PACK_LIMIT,
-} from '../code_graph/status_projection.js';
+} from '../code_graph/status/projection.js';
 import {
   boolean,
   defaultChoice,

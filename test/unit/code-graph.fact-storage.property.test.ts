@@ -5,9 +5,9 @@ import {
   CODE_GRAPH_STORED_FACT_CODEC,
   decodeStoredCodeGraphFact,
   encodeStoredCodeGraphFact,
-} from '../../src/code_graph/fact_storage.js';
-import {budgetCachedCodeGraphFacts, serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
-import {parseCodeGraphFileFacts} from '../../src/code_graph/fact_validation.js';
+} from '../../src/code_graph/fact/storage.js';
+import {budgetCachedCodeGraphFacts, serializeBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js';
+import {parseCodeGraphFileFacts} from '../../src/code_graph/fact/validation.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import type {CodeGraphFileFacts} from '../../src/code_graph/types.js';
 

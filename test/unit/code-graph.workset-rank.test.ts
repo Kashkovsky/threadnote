@@ -1,11 +1,11 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {rankCodeGraphWorksetEvidenceCards} from '../../src/code_graph/workset_rank.js';
+import {rankCodeGraphWorksetEvidenceCards} from '../../src/code_graph/workset/rank.js';
 import {
   normalizeCodeGraphWorksetRouterQuery,
   rankCodeGraphWorksetRouterCandidates,
-} from '../../src/code_graph/workset_router.js';
+} from '../../src/code_graph/workset/router.js';
 import type {CodeGraphQueryNode, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import type {CodeGraphWorksetCatalogRoutingSymbolRecordV1} from '../../src/code_graph/workset_catalog/types.js';
 

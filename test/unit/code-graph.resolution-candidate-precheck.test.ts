@@ -1,8 +1,8 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import {describe, expect} from 'vitest';
-import {assessResolutionCandidateIncrementalClosure} from '../../src/code_graph/indexer_resolution_candidate_closure.js';
-import {PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FILES} from '../../src/code_graph/store_resolution_candidate_closure.js';
+import {assessResolutionCandidateIncrementalClosure} from '../../src/code_graph/indexer/resolution_candidate_closure.js';
+import {PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FILES} from '../../src/code_graph/store/resolution_candidate_closure.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
 describe('resolution-candidate precheck', () => {

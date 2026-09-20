@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {createCachedCodeGraphContractHash} from '../../src/code_graph/cached_contract_hash.js';
-import {codeGraphInventoryReuseContract} from '../../src/code_graph/inventory_reuse.js';
+import {codeGraphInventoryReuseContract} from '../../src/code_graph/inventory/reuse.js';
 import {
   BUILTIN_LANGUAGE_PACK_REGISTRY,
   packCacheIdentity,

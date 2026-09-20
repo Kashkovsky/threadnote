@@ -9,15 +9,15 @@ import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {CodeGraphEmbeddingIndex, selectGraphEmbeddingSymbols} from '../../src/code_graph/embedding.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {codeGraphVectorViewId} from '../../src/code_graph/vector_identity.js';
-import {cleanupCodeGraphVectorPointers} from '../../src/code_graph/vector_maintenance.js';
+import {codeGraphVectorViewId} from '../../src/code_graph/vector/identity.js';
+import {cleanupCodeGraphVectorPointers} from '../../src/code_graph/vector/maintenance.js';
 import type {CodeGraphSnapshot, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {
   CODE_GRAPH_VECTOR_GENERATIONS_TABLE_SQL,
   CODE_GRAPH_VECTOR_POINTERS_TABLE_SQL,
   CODE_GRAPH_VECTOR_REUSE_INDEX_SQL,
   CODE_GRAPH_VECTORS_TABLE_SQL,
-} from '../../src/code_graph/vector_retirement.js';
+} from '../../src/code_graph/vector/retirement.js';
 import {LocalModelRuntime, type LocalModelRuntimeShape} from '../../src/effect/ai/local-model-runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';

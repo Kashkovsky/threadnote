@@ -2,20 +2,20 @@ import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, PlatformError
 import {sha256HexSync} from '../crypto/sha256.js';
 import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
-import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
-import {parseCodeGraphBuildStatus} from './build_status_codec.js';
-import {sameProcessOwner} from './build_status_coordination.js';
+import type {CodeGraphBuildOwnerIdentity} from './build/owner.js';
+import {parseCodeGraphBuildStatus} from './build_status/codec.js';
+import {sameProcessOwner} from './build_status/coordination.js';
 import {
   annotateBuildCoordinationByWorktree,
   annotateCheckoutBuildCoordination,
-} from './build_status_coordination_reader.js';
-import {codeGraphProgressTimings} from './build_status_timings.js';
+} from './build_status/coordination_reader.js';
+import {codeGraphProgressTimings} from './build_status/timings.js';
 import {
   accountCodeGraphBuildScheduling,
   observeCodeGraphBuildAdmission,
   observeCodeGraphBuildResource,
   type CodeGraphBuildScheduling,
-} from './build_status_scheduling.js';
+} from './build_status/scheduling.js';
 import type {CodeGraphBuilderAdmissionQueue} from './builder_admission_scheduler.js';
 import {
   CODE_GRAPH_BUILD_HASH_ID as HASH_ID,
@@ -24,18 +24,18 @@ import {
   codeGraphFailedBuildStatusRemovable,
   isBuildStatusRecord as isRecord,
   isBuildStatusText as isText,
-} from './build_status_validation.js';
-import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle_classification.js';
+} from './build_status/validation.js';
+import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle/classification.js';
 import {codeGraphRepositoriesRoot, type CodeGraphLayout} from './layout.js';
-import {codeGraphScopeViewKey} from './scope_identity.js';
+import {codeGraphScopeViewKey} from './scope/identity.js';
 import {
   codeGraphEtaMeasurement,
   estimateCodeGraphEta,
   makeCodeGraphEtaTracker,
   observeCodeGraphEta,
   type CodeGraphEtaTracker,
-} from './progress_eta.js';
-export {calibratedCodeGraphEtaConfidence} from './progress_eta.js';
+} from './progress/eta.js';
+export {calibratedCodeGraphEtaConfidence} from './progress/eta.js';
 import {
   CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS,
   CODE_GRAPH_TOP_SLOW_FILE_LIMIT,
@@ -45,7 +45,7 @@ import {
   type CodeGraphScanningMetrics,
   type CodeGraphSlowFileTelemetry,
   type CodeGraphSourceSizeBucket,
-} from './progress_telemetry.js';
+} from './progress/telemetry.js';
 import type {
   CodeGraphActivationActivity,
   CodeGraphIndexSummary,
@@ -59,8 +59,8 @@ import type {
   RepositoryIdentity,
 } from './types.js';
 
-export {parseCodeGraphBuildStatus} from './build_status_codec.js';
-export {CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION} from './build_status_validation.js';
+export {parseCodeGraphBuildStatus} from './build_status/codec.js';
+export {CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION} from './build_status/validation.js';
 export const CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS = 2_000;
 export const CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS = 250;
 export const CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS = 15_000;
@@ -235,7 +235,7 @@ export interface CodeGraphBuildReporter {
   readonly ownerIdentity: CodeGraphBuildOwnerIdentity;
   readonly progress: (progress: CodeGraphProgress) => Effect.Effect<void, never>;
   readonly resource: (
-    resource: import('./build_resources.js').CodeGraphBuildResource | undefined,
+    resource: import('./build/resources.js').CodeGraphBuildResource | undefined,
   ) => Effect.Effect<void, never>;
   readonly markWorktreeLockHeld: (held: boolean) => Effect.Effect<void, never>;
 }

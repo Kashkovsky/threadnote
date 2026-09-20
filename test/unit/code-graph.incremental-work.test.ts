@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact/budget.js';
 import {
   CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES,
@@ -13,9 +13,9 @@ import {
   codeGraphIncrementalWorkFitsBudget,
   measureCodeGraphIncrementalWork,
   planCodeGraphIncrementalFoldForwardPaths,
-} from '../../src/code_graph/incremental_work.js';
-import {overlayFallbackDescription} from '../../src/code_graph/indexer_incremental.js';
-import {PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES} from '../../src/code_graph/indexer_materialization.js';
+} from '../../src/code_graph/incremental/work.js';
+import {overlayFallbackDescription} from '../../src/code_graph/indexer/incremental.js';
+import {PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES} from '../../src/code_graph/indexer/materialization.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
 describe('incremental rewrite work', () => {

@@ -8,7 +8,7 @@ import type {CodeGraphInventoryFile} from './types.js';
 import {
   codeGraphWorkspaceProjectsForDiagnostic,
   createCodeGraphWorkspaceDiagnosticIndex,
-} from './workspace_diagnostics.js';
+} from './workspace/diagnostics.js';
 
 export interface CodeGraphWorkspaceCatalog {
   readonly fingerprint: string;

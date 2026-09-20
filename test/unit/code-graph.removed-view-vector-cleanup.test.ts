@@ -9,14 +9,14 @@ import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {codeGraphDiskReservationRoot, codeGraphVectorWriteLockPath} from '../../src/code_graph/layout.js';
-import {codeGraphVectorViewId} from '../../src/code_graph/vector_identity.js';
+import {codeGraphVectorViewId} from '../../src/code_graph/vector/identity.js';
 import {
   type CodeGraphRemovedViewVectorUnitEntry,
   type CodeGraphRemovedViewVectorUnitInput,
   type CodeGraphRemovedViewVectorUnitPreparation,
   type CodeGraphRemovedViewVectorUnitResult,
   withPreparedCodeGraphRemovedViewVectorUnit,
-} from '../../src/code_graph/vector_maintenance.js';
+} from '../../src/code_graph/vector/maintenance.js';
 
 const RemovedViewVectorTestLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
 const CHECKOUT_ID = 'a'.repeat(64);

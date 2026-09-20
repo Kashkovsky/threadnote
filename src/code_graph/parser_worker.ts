@@ -21,7 +21,7 @@ import {
   cachedCodeGraphFactBytes,
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
   serializeBoundedCodeGraphFact,
-} from './fact_budget.js';
+} from './fact/budget.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 import {TreeSitterRuntime, type TreeSitterRuntimeShape} from './tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from './types.js';

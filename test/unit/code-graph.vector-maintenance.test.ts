@@ -9,9 +9,9 @@ import * as FC from 'fast-check';
 import {
   cleanupCodeGraphVectorPointers,
   prepareCodeGraphVectorRetirement,
-} from '../../src/code_graph/vector_maintenance.js';
+} from '../../src/code_graph/vector/maintenance.js';
 import {makeCachedProcessStartIdentityResolver, SystemInfo} from '../../src/effect/system.js';
-import {codeGraphVectorViewId} from '../../src/code_graph/vector_identity.js';
+import {codeGraphVectorViewId} from '../../src/code_graph/vector/identity.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
 const WORKTREE_ID = '1'.repeat(64);

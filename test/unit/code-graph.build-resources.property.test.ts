@@ -5,7 +5,7 @@ import {
   CODE_GRAPH_PREPARED_SPOOL_COUNT_LIMIT,
   EMPTY_CODE_GRAPH_BUILD_RESOURCE_STATE,
   transitionCodeGraphBuildResourceState,
-} from '../../src/code_graph/build_resources.js';
+} from '../../src/code_graph/build/resources.js';
 import {
   preparedSpoolBudgetCanAdmit,
   selectCodeGraphPreparedSpoolBudgetTicket,

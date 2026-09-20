@@ -13,11 +13,11 @@ import {
   CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM,
   CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM,
   currentCodeGraphSchemaInitializationReceipt,
-} from '../../src/code_graph/store_schema_receipt.js';
-import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store_schema_metadata.js';
-import {REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY} from '../../src/code_graph/store_removed_view_schema_contracts.js';
+} from '../../src/code_graph/store/schema_receipt.js';
+import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store/schema_metadata.js';
+import {REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY} from '../../src/code_graph/store/removed_view_schema_contracts.js';
 import {CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION} from '../../src/code_graph/store/schema_revision.js';
-import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES, configureConnection} from '../../src/code_graph/store_session.js';
+import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES, configureConnection} from '../../src/code_graph/store/session.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';

@@ -2,7 +2,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import type {ObservedCodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
-import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query_status_helpers.js';
+import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query/status_helpers.js';
 import {
   CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT,
   CODE_GRAPH_STATUS_BUILD_SUMMARY_MAXIMUM_BYTES,
@@ -14,7 +14,7 @@ import {
   projectCodeGraphStatusActivityV5,
   projectCodeGraphStatusBuildSummaryV5,
   projectCodeGraphStatusLanguagePacksV4,
-} from '../../src/code_graph/status_projection.js';
+} from '../../src/code_graph/status/projection.js';
 
 describe('code graph status JSON projection', () => {
   it('bounds the observed 74-worktree shape and pins an otherwise omitted current build', () => {

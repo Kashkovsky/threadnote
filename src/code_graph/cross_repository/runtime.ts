@@ -17,7 +17,7 @@ import type {
   CodeGraphWorksetCatalogPublishedMemberV1,
 } from '../workset_catalog/types.js';
 import {codeGraphWorksetCatalogGenerationMatches, codeGraphWorksetManifestDigest} from '../workset_catalog/workset.js';
-import {codeGraphQualifiedRefHandle} from '../workset_evidence.js';
+import {codeGraphQualifiedRefHandle} from '../workset/evidence.js';
 import {
   readCodeGraphWorksetCatalogBridgeGenerationPage,
   readCodeGraphWorksetCatalogBridgePage,

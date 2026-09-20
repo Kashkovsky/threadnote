@@ -5,10 +5,10 @@ import {
   codeGraphAttributionContextFilesForReceipt,
   decodeCodeGraphInventoryReuseReceipt,
   encodeCodeGraphInventoryReuseReceipt,
-} from '../../src/code_graph/inventory_reuse.js';
+} from '../../src/code_graph/inventory/reuse.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
-import {CODE_GRAPH_INVENTORY_EXCLUSION_REASONS} from '../../src/code_graph/inventory_policy.js';
-import {CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION} from '../../src/code_graph/store_models.js';
+import {CODE_GRAPH_INVENTORY_EXCLUSION_REASONS} from '../../src/code_graph/inventory/policy.js';
+import {CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION} from '../../src/code_graph/store/models.js';
 import {mergeCodeGraphWorkspaces} from '../../src/code_graph/workspace.js';
 
 const emptyWorkspace = mergeCodeGraphWorkspaces([]);

@@ -6,7 +6,7 @@ import {
   observeCodeGraphWorktreeReconciliationAuthority,
   type CodeGraphWorktreeReconciliationAuthorityObservation,
   type CodeGraphWorktreeReconciliationAuthorityTarget,
-} from './git_worktree_registration.js';
+} from './git/worktree_registration.js';
 import {
   readCodeGraphWorktreeReconciliationEvidenceCandidate,
   sameCodeGraphWorktreeReconciliationEvidenceCandidate,
@@ -16,8 +16,8 @@ import {
   codeGraphMaintenanceIntentActive,
   CodeGraphMaintenanceActiveError,
   withCodeGraphTargetWorktreeLock,
-} from './maintenance_gate.js';
-import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle_classification.js';
+} from './maintenance/gate.js';
+import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle/classification.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import {
   CodeGraphStore,
@@ -27,7 +27,7 @@ import {
 } from './store.js';
 import {CodeGraphStoreBusyError, type RepositoryIdentity} from './types.js';
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
-import {reconcileCodeGraphScopeRetirements} from './scope_retirement.js';
+import {reconcileCodeGraphScopeRetirements} from './scope/retirement.js';
 
 export {type CodeGraphWorktreeReconciliationCandidate} from './store.js';
 

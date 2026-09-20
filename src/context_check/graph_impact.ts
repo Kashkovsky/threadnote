@@ -1,5 +1,5 @@
 import type {CodeGraphQueryResult} from '../code_graph/types.js';
-import {UNAVAILABLE_IMPACT_BASE_WARNING} from '../code_graph/query_impact_base.js';
+import {UNAVAILABLE_IMPACT_BASE_WARNING} from '../code_graph/query/impact_base.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {MemoryRecord} from '../memory/document.js';
 

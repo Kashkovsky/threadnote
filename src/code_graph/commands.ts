@@ -17,10 +17,10 @@ import {
   formatCodeGraphPurgeProgressLine,
   formatCodeGraphRepairProgressLine,
   makeCodeGraphHumanProgressReporter,
-} from './cli_progress.js';
+} from './cli/progress.js';
 import {makeCodeGraphJsonProgressReporter} from './json_progress.js';
 import {codeGraphLayout, codeGraphWorktreeLockPath} from './layout.js';
-import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
 import {
   repairCodeGraphIndexes,
   inspectObsoleteCodeGraphStores,
@@ -41,8 +41,8 @@ import type {
   CodeGraphStatus,
   RepositoryIdentityExpectation,
 } from './types.js';
-export {runCodeGraphWatch} from './commands_watch.js';
-import {resolveCodeGraphScopeRoute} from './scope_routing.js';
+export {runCodeGraphWatch} from './commands/watch.js';
+import {resolveCodeGraphScopeRoute} from './scope/routing.js';
 import {
   findCodeGraphWorksetPath,
   inspectCodeGraphWorksetTopology,
@@ -54,14 +54,14 @@ import {
   continueCodeGraphWorksetQueryV2,
   queryCodeGraphWorksetV2,
   resolveCodeGraphQualifiedRefTarget,
-} from './workset_query_v2.js';
+} from './workset/query_v2.js';
 import {
   inspectCodeGraphWorksetStatus,
   prepareCodeGraphWorkset,
   type CodeGraphWorksetPrepareResultV1,
   type CodeGraphWorksetStatusResultV1,
 } from './workset_catalog/workset.js';
-import {makeCodeGraphWorksetJsonProgressReporter} from './workset_progress.js';
+import {makeCodeGraphWorksetJsonProgressReporter} from './workset/progress.js';
 import {CODE_GRAPH_MANAGER_WORKSET_ORCHESTRATOR_ENV} from './workset_catalog/isolated_prepare.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {
@@ -69,36 +69,36 @@ import {
   renderCodeGraphAnalysis,
   renderCodeGraphReport,
   type CodeGraphAnalysisView,
-} from './analysis_render.js';
+} from './analysis/render.js';
 import {
   renderCodeGraphCliAnalysisState,
   resolveCodeGraphAnalysisSnapshot,
   type CodeGraphCliAnalysisState,
-} from './analysis_cli.js';
+} from './analysis/cli.js';
 import {
   CODE_GRAPH_CLI_READ_RETRY_MILLISECONDS,
   CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS,
   codeGraphCliReadPlan,
   type CodeGraphCliFreshnessPolicy,
   type CodeGraphCliReadPlan,
-} from './cli_freshness.js';
+} from './cli/freshness.js';
 import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} from './export.js';
-import {materializationStorageShortfalls} from './indexer_materialization.js';
+import {materializationStorageShortfalls} from './indexer/materialization.js';
 import {readCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
 import {
   resolveCodeGraphStatusOptions,
   serializeCodeGraphStatusV5,
   type CodeGraphStatusObservedLock,
-} from './status_projection.js';
+} from './status/projection.js';
 import {
   codeGraphEtaBasisLabel as etaBasisLabel,
   formatCodeGraphStatusDuration as formatStatusDuration,
   renderCodeGraphBuildCounters as renderBuildCounters,
   renderCodeGraphReadySnapshotStatus as renderReadySnapshotStatus,
-} from './status_render.js';
+} from './status/render.js';
 import {inspectAllCodeGraphsLocal, renderCodeGraphDiagnostics} from './diagnostics.js';
-export {runCodeGraphInventory} from './commands_inventory.js';
+export {runCodeGraphInventory} from './commands/inventory.js';
 import {
   codeGraphViewRemovalTargetFailure,
   removeCodeGraphView,
@@ -110,7 +110,7 @@ import {
   purgeCodeGraphSnapshot,
   renderCodeGraphSnapshotPurgeResult,
   serializeCodeGraphSnapshotPurgeResult,
-} from './snapshot_purge.js';
+} from './snapshot/purge.js';
 
 interface CwdOption {
   readonly cwd?: string;

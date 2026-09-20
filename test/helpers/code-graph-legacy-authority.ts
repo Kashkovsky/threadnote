@@ -1,12 +1,12 @@
-import {CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL} from '../../src/code_graph/store_schema_core.js';
-import {CODE_GRAPH_SCOPE_QUERY_INDEX_DEFINITIONS} from '../../src/code_graph/store_query_indexes.js';
+import {CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL} from '../../src/code_graph/store/schema_core.js';
+import {CODE_GRAPH_SCOPE_QUERY_INDEX_DEFINITIONS} from '../../src/code_graph/store/query_indexes.js';
 import {
   REMOVED_VIEWS_TABLE_SQL,
   REMOVED_VIEW_CLEANUP_COLUMNS,
   REMOVED_VIEW_CLEANUP_DUE_INDEX_SQL,
   REMOVED_VIEW_CLEANUP_TABLE_SQL,
   REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS,
-} from '../../src/code_graph/store_removed_view_schema_contracts.js';
+} from '../../src/code_graph/store/removed_view_schema_contracts.js';
 
 /** Exact released r17 authority fixture; only call on canonical full-scope test rows. */
 export const legacyCodeGraphAuthorityStatements = [

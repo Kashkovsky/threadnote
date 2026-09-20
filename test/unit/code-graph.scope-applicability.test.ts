@@ -1,7 +1,7 @@
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'fast-check';
 import {fcProp} from '../helpers/fast-check-property.js';
-import {assessCodeGraphScopeApplicability, codeGraphScopeAdmitsPath} from '../../src/code_graph/scope_applicability.js';
+import {assessCodeGraphScopeApplicability, codeGraphScopeAdmitsPath} from '../../src/code_graph/scope/applicability.js';
 
 const scope = {admittedPrefixes: ['apps/a', 'shared/core'], controlPaths: ['package.json']};
 const evidence = {

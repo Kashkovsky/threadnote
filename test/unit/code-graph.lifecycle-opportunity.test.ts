@@ -7,11 +7,11 @@ import {
   makeCodeGraphLifecycleOpportunityRunner,
   runCodeGraphLifecycleOpportunity,
   type CodeGraphLifecycleOpportunityTarget,
-} from '../../src/code_graph/lifecycle_opportunity.js';
+} from '../../src/code_graph/lifecycle/opportunity.js';
 import type {
   CodeGraphMaintenanceCoordinatorShape,
   CodeGraphRoutineMaintenanceTick,
-} from '../../src/code_graph/maintenance_coordinator.js';
+} from '../../src/code_graph/maintenance/coordinator.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 describe('code graph lifecycle opportunities', () => {

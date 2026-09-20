@@ -1,6 +1,6 @@
 import {Effect, FileSystem, Path, Schema} from 'effect';
 import {getAgentAdapter} from '../agent_integration/adapters.js';
-import {readBoundedContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
+import {readBoundedContainedStableRegularFile} from '../code_graph/inventory/contained_file.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {collectGuidanceImportSourcesAtRoot} from '../guidance/index.js';
 import {credentialScrubberBlocker} from '../share/scrubber.js';

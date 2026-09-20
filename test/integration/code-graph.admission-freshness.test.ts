@@ -2,7 +2,7 @@ import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
-import {runIsolatedCodeGraphIndexSnapshot} from '../../src/code_graph/isolated_index.js';
+import {runIsolatedCodeGraphIndexSnapshot} from '../../src/code_graph/isolated/index.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {runCommandEffect} from '../../src/effect/command.js';

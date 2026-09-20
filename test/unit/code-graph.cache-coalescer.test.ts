@@ -11,10 +11,10 @@ import {codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
 import {
   EMPTY_CODE_GRAPH_BUILD_RESOURCE_STATE,
   makeCodeGraphBuildResourceCoordinator,
-} from '../../src/code_graph/build_resources.js';
-import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+} from '../../src/code_graph/build/resources.js';
+import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js';
 import {cacheContentBatch, type CodeGraphCacheExtractedRow} from '../../src/code_graph/indexer.js';
-import type {CodeGraphIndexResourceGate} from '../../src/code_graph/indexer_types.js';
+import type {CodeGraphIndexResourceGate} from '../../src/code_graph/indexer/types.js';
 import type {CodeGraphContentBatchContext} from '../../src/code_graph/inventory.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
 import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';

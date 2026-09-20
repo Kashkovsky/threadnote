@@ -16,7 +16,7 @@ import {
   codeGraphWorkspaceProjectsForDiagnostic,
   createCodeGraphWorkspaceDiagnosticIndex,
   resolveCodeGraphWorkspaceDiagnostics,
-} from '../../src/code_graph/workspace_diagnostics.js';
+} from '../../src/code_graph/workspace/diagnostics.js';
 
 const project = (id: string, root: string, dependencies: readonly string[] = []) =>
   ({

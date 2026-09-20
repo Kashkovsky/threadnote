@@ -7,18 +7,18 @@ import {describe, expect} from 'vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../../src/code_graph/index_scope.js';
-import {initializeSchema} from '../../src/code_graph/store_schema_initialization.js';
-import {selectActiveViewFence} from '../../src/code_graph/store_active_views.js';
+import {initializeSchema} from '../../src/code_graph/store/schema_initialization.js';
+import {selectActiveViewFence} from '../../src/code_graph/store/active_views.js';
 import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
-import {removeActiveView} from '../../src/code_graph/store_view_cleanup.js';
-import {recordScopeApplicability, selectScopeApplicability} from '../../src/code_graph/store_scope_applicability.js';
+import {removeActiveView} from '../../src/code_graph/store/view_cleanup.js';
+import {recordScopeApplicability, selectScopeApplicability} from '../../src/code_graph/store/scope_applicability.js';
 import {
   claimRemovedViewCleanupCandidates,
   claimWorktreeReconciliationCandidates,
-} from '../../src/code_graph/store_reconciliation.js';
-import {migrateCodeGraphScopeAuthority} from '../../src/code_graph/store_scope_schema.js';
-import {promoteSnapshot} from '../../src/code_graph/store_resolution.js';
-import {prepareSnapshotPromotionCapacity} from '../../src/code_graph/store_build_preparation.js';
+} from '../../src/code_graph/store/reconciliation.js';
+import {migrateCodeGraphScopeAuthority} from '../../src/code_graph/store/scope_schema.js';
+import {promoteSnapshot} from '../../src/code_graph/store/resolution.js';
+import {prepareSnapshotPromotionCapacity} from '../../src/code_graph/store/build_preparation.js';
 import {type RepositoryIdentity} from '../../src/code_graph/types.js';
 
 const worktreeId = 'a'.repeat(64);

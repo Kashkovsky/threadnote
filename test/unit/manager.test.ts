@@ -34,7 +34,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
 import {withSharedRepositoryLock} from '../../src/effect/share_lock.js';
 import * as automaticCompaction from '../../src/code_graph/automatic_compaction.js';
-import * as isolatedIndex from '../../src/code_graph/isolated_index.js';
+import * as isolatedIndex from '../../src/code_graph/isolated/index.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {
@@ -45,7 +45,7 @@ import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   withCodeGraphMaintenanceIntent,
   withCodeGraphTargetWorktreeLock,
-} from '../../src/code_graph/maintenance_gate.js';
+} from '../../src/code_graph/maintenance/gate.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {
@@ -102,7 +102,7 @@ vi.mock('../../src/code_graph/automatic_compaction.js', async importOriginal => 
 });
 
 vi.mock('../../src/code_graph/isolated_index.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/code_graph/isolated_index.js')>();
+  const actual = await importOriginal<typeof import('../../src/code_graph/isolated/index.js')>();
   return {...actual, runIsolatedCodeGraphIndexSnapshot: vi.fn(actual.runIsolatedCodeGraphIndexSnapshot)};
 });
 

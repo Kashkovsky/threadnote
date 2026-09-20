@@ -13,7 +13,7 @@ import type {
   CodeGraphQueryTelemetryPhase,
   CodeGraphQueryTelemetryStage,
   CodeGraphStatusOptions,
-} from '../src/code_graph/query_contract.js';
+} from '../src/code_graph/query/contract.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
@@ -27,12 +27,12 @@ import {sha256Hex} from '../src/effect/digest.js';
 import {withExclusiveFileLock} from '../src/effect/file_lock.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {runtimeHostHardwareInfo, SystemInfo} from '../src/effect/system.js';
-import {diagnoseCodeGraphDatabaseReadOnly} from '../src/code_graph/store_health.js';
+import {diagnoseCodeGraphDatabaseReadOnly} from '../src/code_graph/store/health.js';
 import {
   awaitCodeGraphWorktreeBuilds,
   withCodeGraphMaintenanceIntent,
   withCodeGraphMaintenanceRegistration,
-} from '../src/code_graph/maintenance_gate.js';
+} from '../src/code_graph/maintenance/gate.js';
 import {codeGraphRepositoryLockPath} from '../src/code_graph/layout.js';
 import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
 import {

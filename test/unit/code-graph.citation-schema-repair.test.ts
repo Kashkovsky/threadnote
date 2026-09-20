@@ -9,14 +9,14 @@ import {
   CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX,
   CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX,
   CODE_GRAPH_SNAPSHOT_FILE_RAW_CONTENT_REFERENCE_INDEX,
-} from '../../src/code_graph/store_file_alias_schema.js';
+} from '../../src/code_graph/store/file_alias_schema.js';
 import {
   CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION,
   CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM,
   CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM,
   nextCodeGraphSqliteSchemaVersion,
-} from '../../src/code_graph/store_schema_receipt.js';
-import {PERSISTENT_EXTENSION_TABLES} from '../../src/code_graph/store_schema_contracts.js';
+} from '../../src/code_graph/store/schema_receipt.js';
+import {PERSISTENT_EXTENSION_TABLES} from '../../src/code_graph/store/schema_contracts.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,

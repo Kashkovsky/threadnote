@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
-import {discloseCodeGraphProjectCoverage, outsideCodeGraphProjectPaths} from '../../src/code_graph/query_scope.js';
+import {discloseCodeGraphProjectCoverage, outsideCodeGraphProjectPaths} from '../../src/code_graph/query/scope.js';
 import type {ResolvedCodeGraphIndexScope} from '../../src/code_graph/index_scope.js';
 import type {CodeGraphProjectCoverage, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import {compactCodeGraphMcpResult} from '../../src/mcp/code_graph_projection.js';

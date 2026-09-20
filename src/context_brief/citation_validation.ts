@@ -7,14 +7,14 @@ import {
   type CodeGraphEffectiveSnapshotCitationEvidence,
   type CodeGraphEffectiveSymbolLocatorMatches,
   type CodeGraphSymbolSemanticLocatorV1,
-} from '../code_graph/citation_primitives.js';
-import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_graph/citation_source.js';
+} from '../code_graph/citation/primitives.js';
+import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_graph/citation/source.js';
 import {worktreeOverlayState} from '../code_graph/inventory.js';
-import {decodeUtf8} from '../code_graph/inventory_content.js';
+import {decodeUtf8} from '../code_graph/inventory/content.js';
 import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js';
 import {codeGraphLayout} from '../code_graph/layout.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
-import {codeGraphSnapshotRuntimeCurrent} from '../code_graph/query_snapshot_runtime.js';
+import {codeGraphSnapshotRuntimeCurrent} from '../code_graph/query/snapshot_runtime.js';
 import {
   observeCleanRepositoryWorktree,
   resolvePublishedRepositoryReadFence,

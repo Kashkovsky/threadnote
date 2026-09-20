@@ -6,8 +6,8 @@ import {Clock, Effect} from 'effect';
 import * as FC from 'fast-check';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {describe, expect, vi} from 'vitest';
-import {releaseSnapshotLease} from '../../src/code_graph/store_leases.js';
-import {initializeSchema} from '../../src/code_graph/store_schema_initialization.js';
+import {releaseSnapshotLease} from '../../src/code_graph/store/leases.js';
+import {initializeSchema} from '../../src/code_graph/store/schema_initialization.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

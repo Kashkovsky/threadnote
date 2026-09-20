@@ -6,7 +6,7 @@ import {
   type CodeGraphRemovedViewCleanupVectorPreparation,
   type CodeGraphRemovedViewCleanupWorkerDependencies,
   type CodeGraphRemovedViewCleanupWorkerInput,
-} from '../../src/code_graph/removed_view_cleanup.js';
+} from '../../src/code_graph/removed_view/cleanup.js';
 import type {
   CodeGraphRemovedViewCleanupAuthorizationResult,
   CodeGraphRemovedViewCleanupEntry,

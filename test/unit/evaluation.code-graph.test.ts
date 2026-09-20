@@ -20,7 +20,7 @@ import {inventoryRepository} from '../../src/code_graph/inventory.js';
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
-} from '../../src/code_graph/inventory_policy.js';
+} from '../../src/code_graph/inventory/policy.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import {

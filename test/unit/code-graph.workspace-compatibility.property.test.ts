@@ -1,7 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
 import type {CodeGraphWorkspace, CodeGraphWorkspaceProject} from '../../src/code_graph/languages/types.js';
-import {assessCodeGraphWorkspaceCompatibility} from '../../src/code_graph/workspace_compatibility.js';
+import {assessCodeGraphWorkspaceCompatibility} from '../../src/code_graph/workspace/compatibility.js';
 
 describe('code graph workspace compatibility properties', () => {
   it('ignores repository fingerprint churn when every project surface stays identical', () => {

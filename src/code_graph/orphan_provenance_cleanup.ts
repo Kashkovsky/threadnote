@@ -5,7 +5,7 @@ import {
   observeCodeGraphWorktreeReconciliationAuthority,
   type CodeGraphWorktreeReconciliationAuthorityObservation,
   type CodeGraphWorktreeReconciliationAuthorityTarget,
-} from './git_worktree_registration.js';
+} from './git/worktree_registration.js';
 import {
   cleanupMissingCodeGraphLocalProvenance,
   inspectCodeGraphLocalProvenanceInventory,
@@ -20,7 +20,7 @@ import {
   codeGraphMaintenanceIntentActive,
   CodeGraphMaintenanceActiveError,
   withCodeGraphTargetWorktreeLock,
-} from './maintenance_gate.js';
+} from './maintenance/gate.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import {
   CodeGraphStore,

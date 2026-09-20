@@ -2,7 +2,7 @@ import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, Exit} from 'effect';
 import * as FC from 'fast-check';
-import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';

@@ -35,12 +35,12 @@ import {
   validCodeGraphWorktreeAuthorityWorkerRequest,
   type CodeGraphGitWorktreeRegistryRequest,
   type CodeGraphWorktreeReconciliationAuthorityRequest,
-} from '../../src/code_graph/git_worktree_registration.js';
+} from '../../src/code_graph/git/worktree_registration.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {runtimeDirectoryNamePage, SystemInfo} from '../../src/effect/system.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
-import {codeGraphGitdirBacklinkMatchesCanonicalWorktree} from '../../src/code_graph/git_worktree_backlink.js';
+import {codeGraphGitdirBacklinkMatchesCanonicalWorktree} from '../../src/code_graph/git/worktree_backlink.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const roots: string[] = [];

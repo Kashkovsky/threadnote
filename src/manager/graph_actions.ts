@@ -1,5 +1,5 @@
 import {Console, Effect, Path, Schema} from 'effect';
-import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated_index.js';
+import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated/index.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from '../code_graph/local_provenance.js';
 import {captureConsole} from '../effect/console.js';
 import type {RuntimeConfig} from '../types.js';

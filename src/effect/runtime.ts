@@ -17,7 +17,7 @@ import {CodeGraphIndexer} from '../code_graph/indexer.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphEmbeddingIndex} from '../code_graph/embedding.js';
 import {CodeGraphWatcher} from '../code_graph/watcher.js';
-import {CodeGraphMaintenanceCoordinator} from '../code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../code_graph/maintenance/coordinator.js';
 import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js';
 import {TreeSitterRuntime} from '../code_graph/tree_sitter/runtime.js';
 import {CodeGraphAnalysis} from '../code_graph/analysis.js';

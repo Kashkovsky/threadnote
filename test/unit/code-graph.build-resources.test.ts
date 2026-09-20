@@ -4,7 +4,7 @@ import {describe, expect} from 'vitest';
 import {
   EMPTY_CODE_GRAPH_BUILD_RESOURCE_STATE,
   makeCodeGraphBuildResourceCoordinator,
-} from '../../src/code_graph/build_resources.js';
+} from '../../src/code_graph/build/resources.js';
 
 describe('code graph build resource coordinator', () => {
   effectIt.effect('returns preparation and prepared-spool resources on interruption', () =>

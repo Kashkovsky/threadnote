@@ -28,7 +28,7 @@ import {
   type GraphSharePendingSignedCandidate,
   type GraphShareSignedCandidateV2,
 } from '../../src/code_graph/sharing/signed_candidate.js';
-import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
+import type {CodeGraphStoreShape} from '../../src/code_graph/store/shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot} from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

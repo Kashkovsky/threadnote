@@ -4,10 +4,10 @@ import {succeedUndefined} from '../../src/effect/optional.js';
 import {Effect} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {isolatedBuilderRequestMatches} from '../../src/code_graph/isolated_builder.js';
-import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer_build.js';
-import {WorktreeChangedDuringIndex} from '../../src/code_graph/indexer_shared.js';
-import {recoverIsolatedCodeGraphIndexSnapshot} from '../../src/code_graph/isolated_index.js';
+import {isolatedBuilderRequestMatches} from '../../src/code_graph/isolated/builder.js';
+import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer/build.js';
+import {WorktreeChangedDuringIndex} from '../../src/code_graph/indexer/shared.js';
+import {recoverIsolatedCodeGraphIndexSnapshot} from '../../src/code_graph/isolated/index.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
 import type {ObservedCodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {

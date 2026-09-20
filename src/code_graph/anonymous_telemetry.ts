@@ -8,7 +8,7 @@ import {anonymousTelemetryDiagnosticFromError, type AnonymousTelemetryDiagnostic
 import {
   codeGraphBuildAnonymousTelemetryFields,
   type CodeGraphBuildAnonymousTelemetryInput,
-} from './build_anonymous_telemetry.js';
+} from './build/anonymous_telemetry.js';
 import type {CodeGraphInventory} from './inventory.js';
 import type {CodeGraphIndexSummary, CodeGraphProgress} from './types.js';
 

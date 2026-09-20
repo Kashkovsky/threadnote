@@ -1,5 +1,5 @@
 import {Effect} from 'effect';
-import {inspectCodeGraphImpactIsolated} from '../code_graph/isolated_impact_query.js';
+import {inspectCodeGraphImpactIsolated} from '../code_graph/isolated/impact_query.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {CommandExecutor} from '../effect/command.js';

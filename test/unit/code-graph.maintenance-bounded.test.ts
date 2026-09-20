@@ -33,7 +33,7 @@ import {runEffect} from '../helpers/effect-runtime.js';
 import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance/coordinator.js';
 import {inspectCodeGraphViewDatabaseTarget} from '../../src/code_graph/view_removal.js';
 
 const LIVE_LEASE_EXPIRY_MILLISECONDS = Number.MAX_SAFE_INTEGER;

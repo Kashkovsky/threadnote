@@ -12,7 +12,7 @@ import {withAnonymousTelemetry} from './effect/telemetry.js';
 import {
   CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE,
   CodeGraphRefreshDemandSuperseded,
-} from './code_graph/refresh_demand.js';
+} from './code_graph/refresh/demand.js';
 
 export const cliEffect = (arguments_: readonly string[]) => {
   const failureExitCode = inspectCliInvocation(arguments_).failureExitCode ?? 1;

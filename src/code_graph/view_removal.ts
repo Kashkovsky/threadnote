@@ -4,7 +4,7 @@ import {
   captureCodeGraphLocalProvenanceCleanupEvidence,
   cleanupMissingCodeGraphLocalProvenance,
 } from './local_provenance.js';
-import {withCodeGraphTargetWorktreeLock} from './maintenance_gate.js';
+import {withCodeGraphTargetWorktreeLock} from './maintenance/gate.js';
 import {
   CodeGraphStore,
   type CodeGraphViewObservationResult,
@@ -13,7 +13,7 @@ import {
 import {
   type CodeGraphVectorCleanupWarningCode,
   type CodeGraphVectorPointerCleanupResult,
-} from './vector_maintenance.js';
+} from './vector/maintenance.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
 
 class CodeGraphViewRemovalError extends Schema.TaggedError<CodeGraphViewRemovalError>()('CodeGraphViewRemovalError', {

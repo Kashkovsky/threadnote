@@ -1,4 +1,4 @@
-import type {CodeGraphLanguagePackProvenance} from '../store_models.js';
+import type {CodeGraphLanguagePackProvenance} from '../store/models.js';
 
 export type CodeGraphLanguagePackDelta =
   | {

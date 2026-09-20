@@ -2,7 +2,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
-import {readCodeGraphInventoryReuseEnvironment} from '../../src/code_graph/inventory_reuse.js';
+import {readCodeGraphInventoryReuseEnvironment} from '../../src/code_graph/inventory/reuse.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';

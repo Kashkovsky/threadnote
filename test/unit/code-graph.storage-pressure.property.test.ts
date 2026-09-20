@@ -5,7 +5,7 @@ import {
   classifyCodeGraphStoragePressure,
   codeGraphStorageAccounting,
   type CodeGraphStoragePressure,
-} from '../../src/code_graph/storage_pressure.js';
+} from '../../src/code_graph/storage/pressure.js';
 
 const severity: Readonly<Record<Exclude<CodeGraphStoragePressure, 'unknown'>, number>> = {
   normal: 0,

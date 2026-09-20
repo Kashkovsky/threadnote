@@ -1,6 +1,6 @@
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {compareCodeUnits} from '../ordering.js';
-import {codeGraphQualifiedRefHandle} from '../workset_evidence.js';
+import {codeGraphQualifiedRefHandle} from '../workset/evidence.js';
 import {canonicalCodeGraphMonikers} from './monikers.js';
 import type {CodeGraphMonikerV1, CodeGraphSourceEvidenceV1} from './types.js';
 

@@ -14,7 +14,7 @@ import {
   type CodeGraphSqliteWriterTuning,
 } from '../src/code_graph/store.js';
 import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
-import {codeGraphAnalysisLimitsForView} from '../src/code_graph/analysis_render.js';
+import {codeGraphAnalysisLimitsForView} from '../src/code_graph/analysis/render.js';
 import {codeGraphLayout} from '../src/code_graph/layout.js';
 import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
 import {

@@ -111,7 +111,7 @@ import {
   requireStringArray,
 } from './request_inputs.js';
 import {runCodeGraphPurge, runCodeGraphRepair} from '../code_graph/commands.js';
-import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated_index.js';
+import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated/index.js';
 import {
   compactCodeGraphStorageIsolated,
   runCodeGraphAutomaticCompactionScheduler,
@@ -125,13 +125,13 @@ import {
 } from '../code_graph/local_provenance.js';
 import {repositoryIdentityMatchesExpectation} from '../code_graph/repository.js';
 import {CodeGraphStoreBusyError, type RepositoryIdentityExpectation} from '../code_graph/types.js';
-import {codeGraphMaintenanceIntentActive} from '../code_graph/maintenance_gate.js';
+import {codeGraphMaintenanceIntentActive} from '../code_graph/maintenance/gate.js';
 import {codeGraphLayout} from '../code_graph/layout.js';
-import {CodeGraphMaintenanceCoordinator} from '../code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../code_graph/maintenance/coordinator.js';
 import {
   observeCodeGraphLifecycleOpportunityTargets,
   runCodeGraphLifecycleOpportunity,
-} from '../code_graph/lifecycle_opportunity.js';
+} from '../code_graph/lifecycle/opportunity.js';
 import {removeCodeGraphView, renderCodeGraphViewRemovalResult} from '../code_graph/view_removal.js';
 import {
   managerGraphAnalysis,

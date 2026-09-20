@@ -1,7 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Option} from 'effect';
 import {describe, expect} from 'vitest';
-import {assessIncrementalOverlay} from '../../src/code_graph/indexer_incremental.js';
+import {assessIncrementalOverlay} from '../../src/code_graph/indexer/incremental.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 import {

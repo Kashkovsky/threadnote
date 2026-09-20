@@ -30,18 +30,18 @@ import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, CodeGraphIndexer} from '../../src/
 import {
   CodeGraphDiskCapacityObservationError,
   CodeGraphDiskCapacityPressureError,
-} from '../../src/code_graph/disk_capacity.js';
-import {ensureBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+} from '../../src/code_graph/disk/capacity.js';
+import {ensureBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js';
 import {
   decodeStoredCodeGraphFact,
   encodeStoredCodeGraphFact,
   storedCodeGraphFactRawBytesSql,
-} from '../../src/code_graph/fact_storage.js';
+} from '../../src/code_graph/fact/storage.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES,
-} from '../../src/code_graph/incremental_work.js';
+} from '../../src/code_graph/incremental/work.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {readPersistedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {

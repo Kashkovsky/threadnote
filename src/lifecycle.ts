@@ -78,7 +78,7 @@ import {
   type CodeGraphRepairCompletion,
   repairCodeGraphIndexes,
 } from './code_graph/maintenance.js';
-import {formatCodeGraphDoctorProgressLine, formatCodeGraphRepairProgressLine} from './code_graph/cli_progress.js';
+import {formatCodeGraphDoctorProgressLine, formatCodeGraphRepairProgressLine} from './code_graph/cli/progress.js';
 import {
   isThreadnoteStorageLayoutReceipt,
   threadnoteStorageLayout,

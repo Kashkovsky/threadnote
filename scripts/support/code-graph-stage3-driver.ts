@@ -7,7 +7,7 @@ import {
   codeGraphRefreshDemandPath,
   codeGraphWorktreeSpawnLockPath,
 } from '../../src/code_graph/layout.js';
-import {validCodeGraphRefreshDemand} from '../../src/code_graph/refresh_demand_scheduler.js';
+import {validCodeGraphRefreshDemand} from '../../src/code_graph/refresh/demand_scheduler.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {StandaloneBrokerLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';

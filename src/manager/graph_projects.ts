@@ -1,5 +1,5 @@
 import {Console, Effect, FileSystem, Option, Path, Schema} from 'effect';
-import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated_index.js';
+import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated/index.js';
 import {resolveAndRecordCodeGraphLocalAssociation} from '../code_graph/local_provenance.js';
 import type {RepositoryIdentityExpectation} from '../code_graph/types.js';
 import {managerGraphCatalog} from '../code_graph/visualization.js';

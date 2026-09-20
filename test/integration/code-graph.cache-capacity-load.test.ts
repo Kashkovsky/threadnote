@@ -10,8 +10,8 @@ import {
   CodeGraphDiskCapacityPressureError,
   saturatingCapacityAdd,
   type CodeGraphDirectPersistentCapacityBoundary,
-} from '../../src/code_graph/disk_capacity.js';
-import {withCodeGraphDiskReservation} from '../../src/code_graph/disk_reservation.js';
+} from '../../src/code_graph/disk/capacity.js';
+import {withCodeGraphDiskReservation} from '../../src/code_graph/disk/reservation.js';
 import {
   CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES,
   CodeGraphStore,

@@ -20,7 +20,7 @@ import {
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from './indexer.js';
 import {observeCodeGraphAdmissionEnvironment} from './admission_freshness.js';
 import {inventoryRepository, worktreeBuildRequestState} from './inventory.js';
-import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult, type CodeGraphStoreShape} from './store.js';
 import {CommandExecutor, runCommandEffect, type CommandOptions} from '../effect/command.js';
 import {readExclusiveFileLockOwner} from '../effect/file_lock.js';
@@ -39,7 +39,7 @@ import {
   readCodeGraphBuildStatuses,
   type ObservedCodeGraphBuildStatus,
 } from './build_status.js';
-import {isCodeGraphIsolatedBuilderHost, runIsolatedCodeGraphIndex} from './isolated_builder.js';
+import {isCodeGraphIsolatedBuilderHost, runIsolatedCodeGraphIndex} from './isolated/builder.js';
 import {codeGraphLayout, codeGraphWorktreeSpawnLockPath} from './layout.js';
 import {
   completeCodeGraphBackgroundDemand,
@@ -51,16 +51,16 @@ import {
   registerCodeGraphBackgroundDemand,
   observeCodeGraphBackgroundDemand,
   CodeGraphRefreshDemandSuperseded,
-} from './refresh_demand.js';
-import type {CodeGraphRefreshDemandRegistration, CodeGraphRefreshDemandState} from './refresh_demand_scheduler.js';
-import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
-import {classifyCodeGraphStoreFailure} from './store_failure.js';
+} from './refresh/demand.js';
+import type {CodeGraphRefreshDemandRegistration, CodeGraphRefreshDemandState} from './refresh/demand_scheduler.js';
+import {runCodeGraphLifecycleOpportunity} from './lifecycle/opportunity.js';
+import {classifyCodeGraphStoreFailure} from './store/failure.js';
 import {
   codeGraphEtaMeasurement,
   makeCodeGraphEtaTracker,
   observeCodeGraphEta,
   type CodeGraphEtaTracker,
-} from './progress_eta.js';
+} from './progress/eta.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import {
   makeCodeGraphAutomaticRecoveryCoordinator,
@@ -70,7 +70,7 @@ import {
 import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} from './anonymous_telemetry.js';
 import {anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure} from '../telemetry/diagnostic.js';
 import type {CodeGraphBuilderAdmissionClass} from './builder_admission.js';
-import {codeGraphBuildRequestKey} from './indexer_build.js';
+import {codeGraphBuildRequestKey} from './indexer/build.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {
   compileThreadnoteIgnore,

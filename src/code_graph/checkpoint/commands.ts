@@ -7,11 +7,11 @@ import {SystemInfo} from '../../effect/system.js';
 import type {RuntimeConfig} from '../../types.js';
 import {codeGraphCommittedContentHash} from '../content_identity.js';
 import {CodeGraphIndexer, codeGraphDirectPersistentCapacityProtector} from '../indexer.js';
-import {withCodeGraphProcessLock} from '../indexer_build.js';
-import type {DirectPersistentCapacityProtection} from '../indexer_types.js';
+import {withCodeGraphProcessLock} from '../indexer/build.js';
+import type {DirectPersistentCapacityProtection} from '../indexer/types.js';
 import {CodeGraphLanguagePackRegistry, type CodeGraphLanguagePackRegistryShape} from '../languages/registry.js';
 import {codeGraphLayout} from '../layout.js';
-import {CodeGraphMaintenanceCoordinator} from '../maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../maintenance/coordinator.js';
 import {
   observeCleanRepositoryWorktree,
   resolveRepositoryIdentity,

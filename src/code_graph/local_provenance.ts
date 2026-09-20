@@ -8,8 +8,8 @@ import {
   parseCodeGraphGitWorktreeRegistration,
   sameCodeGraphGitWorktreeRegistration,
   type CodeGraphGitWorktreeRegistration,
-} from './git_worktree_registration.js';
-import {classifyCodeGraphLifecycle} from './lifecycle_classification.js';
+} from './git/worktree_registration.js';
+import {classifyCodeGraphLifecycle} from './lifecycle/classification.js';
 import {normalizeRepositoryBranchName, resolveRepositoryIdentityDetail} from './repository.js';
 import {codeGraphLocalProvenanceLockPath} from './layout.js';
 import type {RepositoryIdentity} from './types.js';

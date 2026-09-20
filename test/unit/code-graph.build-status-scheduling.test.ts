@@ -16,12 +16,12 @@ import {
   CODE_GRAPH_BUILD_WAIT_REASONS,
   observeCodeGraphBuildAdmission,
   parseCodeGraphBuildScheduling,
-} from '../../src/code_graph/build_status_scheduling.js';
+} from '../../src/code_graph/build_status/scheduling.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {
   CODE_GRAPH_STATUS_BUILD_SUMMARY_MAXIMUM_BYTES,
   projectCodeGraphStatusBuildSummaryV5,
-} from '../../src/code_graph/status_projection.js';
+} from '../../src/code_graph/status/projection.js';
 import {CODE_GRAPH_EXTRACTOR_SET_VERSION, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

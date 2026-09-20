@@ -7,7 +7,7 @@ import type {
   CodeGraphWorksetCatalogCandidatePageV1,
   CodeGraphWorksetCatalogCandidateRequestV1,
   CodeGraphWorksetCatalogCandidateSourceV1,
-} from '../workset_router.js';
+} from '../workset/router.js';
 import {codeGraphWorksetCatalogLayout} from './layout.js';
 import {normalizeCodeGraphWorksetRoutingExactKey} from './routing_normalization.js';
 import {configureCodeGraphWorksetCatalogReadConnection} from './schema.js';

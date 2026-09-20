@@ -155,7 +155,7 @@ import {makeGraphSharingCommands} from '../code_graph/sharing/cli.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS,
   CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS,
-} from '../code_graph/workset_evidence.js';
+} from '../code_graph/workset/evidence.js';
 import {runProcessDiagnostics} from '../process/diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
 import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';

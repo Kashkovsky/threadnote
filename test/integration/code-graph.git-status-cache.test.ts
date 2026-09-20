@@ -6,7 +6,7 @@ import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
 import {CommandExecutor, CommandFailed, type CommandOptions} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {worktreeStatusWithPrivateCache} from '../../src/code_graph/git_status_cache.js';
+import {worktreeStatusWithPrivateCache} from '../../src/code_graph/git/status_cache.js';
 import type {RepositoryIdentity} from '../../src/code_graph/types.js';
 
 const HASH = 'a'.repeat(64);

@@ -15,16 +15,16 @@ import {
 } from '../cross_repository/store.js';
 import type {CodeGraphMonikerV1} from '../cross_repository/types.js';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../indexer.js';
-import {runIsolatedCodeGraphIndexSnapshot} from '../isolated_index.js';
+import {runIsolatedCodeGraphIndexSnapshot} from '../isolated/index.js';
 import {
   RepositoryMaintenanceInterrupted,
   RepositoryRegistrationLost,
   WorktreeChangedDuringIndex,
-} from '../indexer_shared.js';
+} from '../indexer/shared.js';
 import {CodeGraphQueryService} from '../query.js';
 import {CodeGraphLanguagePackRegistry} from '../languages/registry.js';
 import {CodeGraphStore} from '../store.js';
-import {makeCodeGraphWorksetTelemetryReporter} from '../workset_telemetry.js';
+import {makeCodeGraphWorksetTelemetryReporter} from '../workset/telemetry.js';
 import {
   CodeGraphRepositoryError,
   isCodeGraphStoreError,

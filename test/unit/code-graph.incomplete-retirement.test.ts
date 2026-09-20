@@ -6,7 +6,7 @@ import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {codeGraphMaterializationSpoolPath} from '../../src/code_graph/materialization_spool.js';
+import {codeGraphMaterializationSpoolPath} from '../../src/code_graph/materialization/spool.js';
 import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';

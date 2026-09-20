@@ -4,8 +4,8 @@ import {codeGraphDatabasePaths} from './maintenance.js';
 import {readCodeGraphLocalAssociation} from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
 import {CodeGraphStore} from './store.js';
-import {type CodeGraphActiveViewIdentity} from './store_models.js';
-import type {CodeGraphLifecycleOpportunityTarget} from './lifecycle_opportunity.js';
+import {type CodeGraphActiveViewIdentity} from './store/models.js';
+import type {CodeGraphLifecycleOpportunityTarget} from './lifecycle/opportunity.js';
 import {CODE_GRAPH_MANAGER_CATALOG_REVISION_VERSION} from './store/schema_revision.js';
 
 export const MANAGER_CATALOG_REVISION_VISIBLE_VIEW_LIMIT = 32;

@@ -10,14 +10,14 @@ import {
   codeGraphWorktreeBuildActive,
   withCodeGraphDatabaseWriteLock,
   withCodeGraphReportedMaintenanceIntent,
-} from './maintenance_gate.js';
+} from './maintenance/gate.js';
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
-import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES} from './store_session.js';
+import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES} from './store/session.js';
 import {
   CODE_GRAPH_STORAGE_SEMANTIC_OBJECT_LIMIT,
   readCodeGraphStorageSemanticAttribution,
   type CodeGraphStorageSemanticAttribution,
-} from './storage_attribution.js';
+} from './storage/attribution.js';
 
 class CodeGraphStorageOperationError extends Schema.TaggedError<CodeGraphStorageOperationError>()(
   'CodeGraphStorageOperationError',

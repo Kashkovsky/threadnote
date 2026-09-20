@@ -75,7 +75,7 @@ vi.mock('../../src/code_graph/cross_repository/store.js', () => ({
 }));
 
 vi.mock('../../src/code_graph/isolated_index.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../src/code_graph/isolated_index.js')>()),
+  ...(await importOriginal<typeof import('../../src/code_graph/isolated/index.js')>()),
   runIsolatedCodeGraphIndexSnapshot: mocks.isolatedIndex,
 }));
 

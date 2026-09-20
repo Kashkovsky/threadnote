@@ -9,7 +9,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {TestError} from '../helpers/test-error.js';
 import {observeCodeGraphAdmissionEnvironment} from '../../src/code_graph/admission_freshness.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
-import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer_build.js';
+import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer/build.js';
 import {worktreeBuildRequestState} from '../../src/code_graph/inventory.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {
@@ -17,7 +17,7 @@ import {
   CodeGraphRefreshDemandSuperseded,
   recoverCodeGraphBackgroundDemand,
   registerCodeGraphBackgroundDemand,
-} from '../../src/code_graph/refresh_demand.js';
+} from '../../src/code_graph/refresh/demand.js';
 import {
   codeGraphRefreshDemandLockPath,
   codeGraphRefreshDemandPath,

@@ -12,7 +12,7 @@ import {normalizeVector, searchExactVectors, type VectorSearchResult} from '../s
 import {codeGraphVectorWriteLockPath, type CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
-import {codeGraphVectorViewId} from './vector_identity.js';
+import {codeGraphVectorViewId} from './vector/identity.js';
 import type {CodeGraphProgress, CodeGraphSnapshot, CodeGraphSymbol} from './types.js';
 import type {CodeGraphSymbolCursor} from './store.js';
 import {
@@ -25,7 +25,7 @@ import {
   makeCodeGraphVectorRetirementCapacityProtector,
   prepareCodeGraphVectorRetirement,
   requireCodeGraphVectorRetirementSchema,
-} from './vector_retirement.js';
+} from './vector/retirement.js';
 
 class CodeGraphEmbeddingError extends Schema.TaggedError<CodeGraphEmbeddingError>()('CodeGraphEmbeddingError', {
   cause: Schema.optionalKey(Schema.Defect()),

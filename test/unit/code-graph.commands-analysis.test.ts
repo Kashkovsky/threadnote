@@ -2,8 +2,8 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect, Fiber, Layer, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
-import {resolveCodeGraphAnalysisSnapshot} from '../../src/code_graph/analysis_cli.js';
-import type {CodeGraphCliFreshnessPolicy} from '../../src/code_graph/cli_freshness.js';
+import {resolveCodeGraphAnalysisSnapshot} from '../../src/code_graph/analysis/cli.js';
+import type {CodeGraphCliFreshnessPolicy} from '../../src/code_graph/cli/freshness.js';
 import {
   CodeGraphQueryService,
   type CodeGraphSharedReadyAttachInterlock,

@@ -10,7 +10,7 @@ import {
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
-} from '../../src/code_graph/inventory_policy.js';
+} from '../../src/code_graph/inventory/policy.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from '../../src/code_graph/languages/corpus/policy.js';
 
 describe('native code graph inventory policy', () => {

@@ -2,9 +2,9 @@ import type * as THREE from 'three';
 import type {CodeGraphAutomaticCompactionStatus} from '../code_graph/automatic_compaction.js';
 import type {CodeGraphLocalDiagnosticsReport} from '../code_graph/diagnostics.js';
 import type {CodeGraphLocalAssociation} from '../code_graph/local_provenance.js';
-import type {CodeGraphMaintenanceStatus} from '../code_graph/maintenance_gate.js';
+import type {CodeGraphMaintenanceStatus} from '../code_graph/maintenance/gate.js';
 import type {ManagerGraphStorageSummary} from '../code_graph/manager_status.js';
-import {codeGraphFailedBuildStatusCurrent} from '../code_graph/build_status_validation.js';
+import {codeGraphFailedBuildStatusCurrent} from '../code_graph/build_status/validation.js';
 import {compareCodeUnits} from '../code_graph/ordering.js';
 import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,

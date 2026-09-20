@@ -4,7 +4,7 @@ import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import * as FC from 'fast-check';
 import {codeGraphMaintenanceIntentPath} from '../../src/code_graph/layout.js';
-import {codeGraphMaintenanceIntentActive} from '../../src/code_graph/maintenance_gate.js';
+import {codeGraphMaintenanceIntentActive} from '../../src/code_graph/maintenance/gate.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 

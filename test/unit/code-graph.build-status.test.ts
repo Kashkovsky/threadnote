@@ -16,12 +16,12 @@ import {
   selectCodeGraphBuildStatuses,
 } from '../../src/code_graph/build_status.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {writerSessionOptions} from '../../src/code_graph/indexer_build.js';
+import {writerSessionOptions} from '../../src/code_graph/indexer/build.js';
 import {runCodeGraphStatus} from '../../src/code_graph/commands.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
-import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query_status_helpers.js';
+import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query/status_helpers.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';

@@ -1,5 +1,5 @@
 import {canonicalJson} from '../checkpoint/canonical_json.js';
-import {parseCodeGraphFileFacts} from '../fact_validation.js';
+import {parseCodeGraphFileFacts} from '../fact/validation.js';
 import type {CodeGraphFileFacts} from '../types.js';
 import {GRAPH_SHARE_ACTION_KEY, type GraphShareActionKey} from './action.js';
 import {SHA256_DIGEST, SHA256_HEX, sha256Digest, type Sha256Digest} from './digest.js';

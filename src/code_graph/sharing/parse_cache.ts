@@ -1,9 +1,9 @@
 import {Clock, Effect, FileSystem, Path, Random, Schema} from 'effect';
 import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
-import type {BoundedCodeGraphFact} from '../fact_budget.js';
-import type {CodeGraphStoreShape} from '../store_shape.js';
-import type {CodeGraphDirectPersistentCapacityProtector} from '../store_models.js';
+import type {BoundedCodeGraphFact} from '../fact/budget.js';
+import type {CodeGraphStoreShape} from '../store/shape.js';
+import type {CodeGraphDirectPersistentCapacityProtector} from '../store/models.js';
 import type {CodeGraphInventoryFile, RepositoryIdentity} from '../types.js';
 import {graphShareLanguageAndRole, graphShareParseActionKey} from './action.js';
 import {decodeJsonBytes} from './atomic.js';

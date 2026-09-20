@@ -6,7 +6,7 @@ import {
   makeCodeGraphEtaTracker,
   observeCodeGraphEta,
   type CodeGraphEtaMeasurement,
-} from '../../src/code_graph/progress_eta.js';
+} from '../../src/code_graph/progress/eta.js';
 
 describe('code graph progress ETA properties', () => {
   fcProp(

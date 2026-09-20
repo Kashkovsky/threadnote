@@ -16,7 +16,7 @@ import {
 } from './automatic_compaction_receipt.js';
 import {codeGraphAutomaticCompactionSchedulerLockPath, codeGraphRepositoriesRoot} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
-import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES} from './store_session.js';
+import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES} from './store/session.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
 import {
   codeGraphCompactionRequiredFreeBytes,

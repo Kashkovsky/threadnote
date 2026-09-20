@@ -7,7 +7,7 @@ import {
   allocateCodeGraphWorksetBudget,
   renderCodeGraphWorksetResult,
   type CodeGraphWorksetQueryResult,
-} from '../../src/code_graph/workset_query.js';
+} from '../../src/code_graph/workset/query.js';
 import type {CodeGraphQueryResult} from '../../src/code_graph/types.js';
 
 describe('bounded code graph workset queries', () => {

@@ -13,7 +13,7 @@ import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
+import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance/gate.js';
 import {readSeedManifest} from '../../src/manifest.js';
 import {validateManagerProjectRoots} from '../../src/manager/project_roots.js';
 import type {RuntimeConfig} from '../../src/types.js';

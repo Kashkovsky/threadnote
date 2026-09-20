@@ -2,9 +2,9 @@ import {Clock, Context, Effect, Option, Path, Result, Schema, Semaphore} from 'e
 import {codeGraphDatabasePaths} from './maintenance.js';
 import {CodeGraphEmbeddingIndex} from './embedding.js';
 import {codeGraphLayout} from './layout.js';
-import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
-import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
-import {observeCodeGraphMaintenanceStatus, type CodeGraphMaintenanceStatus} from './maintenance_gate.js';
+import {runCodeGraphLifecycleOpportunity} from './lifecycle/opportunity.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
+import {observeCodeGraphMaintenanceStatus, type CodeGraphMaintenanceStatus} from './maintenance/gate.js';
 import {compareCodeUnits} from './ordering.js';
 import {managerGraphCatalogRevision, type ManagerGraphCatalogRevisionDatabase} from './manager_catalog_revision.js';
 import {traversalQuery} from './query.js';
@@ -26,7 +26,7 @@ import type {
 } from './types.js';
 import {CodeGraphStoreBusyError} from './types.js';
 import {analyzeCodeGraph} from './analysis.js';
-import {codeGraphAnalysisLimitsForView} from './analysis_render.js';
+import {codeGraphAnalysisLimitsForView} from './analysis/render.js';
 import {
   readAllCodeGraphBuildStatuses,
   selectCodeGraphBuildStatuses,

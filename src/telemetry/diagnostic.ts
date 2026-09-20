@@ -6,7 +6,7 @@ import {
   type CodeGraphStoreRecovery,
   isCodeGraphStoreError,
 } from '../code_graph/types.js';
-import {CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS} from '../code_graph/disk_capacity.js';
+import {CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS} from '../code_graph/disk/capacity.js';
 
 const SAFE_TELEMETRY_ERROR_TYPES = new Set([
   'AggregateError',

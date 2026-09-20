@@ -5,8 +5,8 @@ import {
   codeGraphCacheWritePages,
   prepareMaterializedShardCacheBatchChunks,
   sameMaterializedShardWriteIds,
-} from '../../src/code_graph/store_cache.js';
-import type {CodeGraphMaterializedShardCacheBatch} from '../../src/code_graph/store_models.js';
+} from '../../src/code_graph/store/cache.js';
+import type {CodeGraphMaterializedShardCacheBatch} from '../../src/code_graph/store/models.js';
 
 const shardId = fc.stringMatching(/^cgfs_[a-f0-9]{1,40}$/u);
 

@@ -2,7 +2,7 @@ import {Effect, FileSystem, Path, PlatformError, Result, Schema} from 'effect';
 import {
   inspectContainedStableRegularFile,
   readBoundedContainedStableRegularFile,
-} from '../code_graph/inventory_contained_file.js';
+} from '../code_graph/inventory/contained_file.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {uriSegment} from '../manifest.js';

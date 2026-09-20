@@ -17,7 +17,7 @@ import {
   saturatingCapacityMultiply,
   sqliteWalCapacityBytes,
   type CodeGraphDiskCapacityInput,
-} from '../../src/code_graph/disk_capacity.js';
+} from '../../src/code_graph/disk/capacity.js';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CodeGraphStoreNoSpaceError,

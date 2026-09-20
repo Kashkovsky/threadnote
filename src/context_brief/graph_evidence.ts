@@ -7,8 +7,8 @@ import {
   type CodeGraphQueryResult,
   type CodeGraphStatus,
 } from '../code_graph/types.js';
-import {queryCodeGraphWorksetV2, type QueryCodeGraphWorksetV2OptionsV1} from '../code_graph/workset_query_v2.js';
-import type {CodeGraphWorksetEvidenceProjectionV2} from '../code_graph/workset_evidence.js';
+import {queryCodeGraphWorksetV2, type QueryCodeGraphWorksetV2OptionsV1} from '../code_graph/workset/query_v2.js';
+import type {CodeGraphWorksetEvidenceProjectionV2} from '../code_graph/workset/evidence.js';
 import type {RuntimeConfig} from '../types.js';
 import type {
   ContextBriefGraphCardV1,

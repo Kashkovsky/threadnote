@@ -3,7 +3,7 @@ import {
   saturatingCapacityAdd,
   type CodeGraphDirectPersistentCapacityBoundary,
   type CodeGraphDirectPersistentCapacityOperation,
-} from './disk_capacity.js';
+} from './disk/capacity.js';
 import {compareCodeUnits} from './ordering.js';
 
 export const CODE_GRAPH_CACHE_TRANSACTION_LIMITS = {

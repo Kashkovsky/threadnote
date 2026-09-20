@@ -1,7 +1,7 @@
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {describe, expect, it} from 'vitest';
-import {CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS} from '../../src/code_graph/build_status_validation.js';
+import {CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS} from '../../src/code_graph/build_status/validation.js';
 import {
   cacheGraphNodeDetail,
   createGraphQueryRequestGate,

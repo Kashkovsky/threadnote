@@ -27,7 +27,7 @@ import {
 import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
-import type {CodeGraphStatusObservation} from '../../src/code_graph/query_contract.js';
+import type {CodeGraphStatusObservation} from '../../src/code_graph/query/contract.js';
 import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
 import {formatCodeGraphMcpResponse} from '../../src/mcp/code_graph_projection.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';

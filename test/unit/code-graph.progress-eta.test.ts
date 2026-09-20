@@ -7,7 +7,7 @@ import {
   observeCodeGraphEta,
   type CodeGraphEtaMeasurement,
   type CodeGraphEtaTracker,
-} from '../../src/code_graph/progress_eta.js';
+} from '../../src/code_graph/progress/eta.js';
 
 describe('code graph progress ETA', () => {
   it('uses cumulative phase throughput and promotes only calibrated stable estimates', () => {

@@ -16,7 +16,7 @@ import {
   type CodeGraphMaintenanceLane,
   type CodeGraphRoutineMaintenanceRun,
   type CodeGraphRoutineMaintenanceTick,
-} from '../../src/code_graph/maintenance_coordinator.js';
+} from '../../src/code_graph/maintenance/coordinator.js';
 import type {CodeGraphRoutineMaintenanceResult} from '../../src/code_graph/store.js';
 import {CodeGraphStoreError, type RepositoryIdentity} from '../../src/code_graph/types.js';
 

@@ -6,7 +6,7 @@ import type {
   CodeGraphWorkspaceDependency,
   CodeGraphWorkspaceProject,
 } from '../languages/types.js';
-import {parseCodeGraphFileFacts} from '../fact_validation.js';
+import {parseCodeGraphFileFacts} from '../fact/validation.js';
 import {
   CODE_GRAPH_CHECKPOINT_FORMAT_VERSION,
   CODE_GRAPH_CHECKPOINT_RECORD_SCHEMA_VERSION,

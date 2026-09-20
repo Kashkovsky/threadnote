@@ -8,7 +8,7 @@ import {
   codeGraphCheckpointGitPathBatches,
   parseGitTreeEntries,
 } from '../../src/code_graph/checkpoint/projection.js';
-import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../../src/code_graph/inventory_policy.js';
+import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../../src/code_graph/inventory/policy.js';
 
 const safePathSegment = FC.string({
   maxLength: 64,

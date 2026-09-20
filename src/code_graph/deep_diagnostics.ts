@@ -2,8 +2,8 @@ import {Effect, Schema, Stdio, Stream} from 'effect';
 import {CommandExecutor, type CommandExecutionError} from '../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT} from '../worker_protocol.js';
-import {type CodeGraphDatabaseHealth} from './store_models.js';
-import {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
+import {type CodeGraphDatabaseHealth} from './store/models.js';
+import {diagnoseCodeGraphDatabaseReadOnly} from './store/health.js';
 
 class CodeGraphDeepDiagnosticsError extends Schema.TaggedError<CodeGraphDeepDiagnosticsError>()(
   'CodeGraphDeepDiagnosticsError',

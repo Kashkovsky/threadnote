@@ -7,10 +7,10 @@ import {
   codeGraphWorktreeBuildActive,
   withCodeGraphMaintenanceIntent,
   withCodeGraphTargetWorktreeLock,
-} from '../../src/code_graph/maintenance_gate.js';
+} from '../../src/code_graph/maintenance/gate.js';
 import {codeGraphLayout, codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
 import {compactCodeGraphStorage} from '../../src/code_graph/storage.js';
-import {purgeCodeGraphSnapshot} from '../../src/code_graph/snapshot_purge.js';
+import {purgeCodeGraphSnapshot} from '../../src/code_graph/snapshot/purge.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {CommandExecutor} from '../../src/effect/command.js';

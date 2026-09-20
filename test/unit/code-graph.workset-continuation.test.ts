@@ -10,7 +10,7 @@ import {
   codeGraphEvidenceCardId,
   type CodeGraphEvidenceCardV1,
   type CodeGraphWorksetQueryResultV2,
-} from '../../src/code_graph/workset_evidence.js';
+} from '../../src/code_graph/workset/evidence.js';
 import {codeGraphWorksetCatalogDatabasePath} from '../../src/code_graph/workset_catalog/layout.js';
 import {createCodeGraphWorksetRoutingProjection} from '../../src/code_graph/workset_catalog/projection.js';
 import {

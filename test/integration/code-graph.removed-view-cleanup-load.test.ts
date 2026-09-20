@@ -16,7 +16,7 @@ import {
   type CodeGraphPersistentSchemaMigrationPhase,
 } from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, CodeGraphStoreError} from '../../src/code_graph/types.js';
-import {inspectPersistentExtensionTables} from '../../src/code_graph/store_schema_inspection.js';
+import {inspectPersistentExtensionTables} from '../../src/code_graph/store/schema_inspection.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);

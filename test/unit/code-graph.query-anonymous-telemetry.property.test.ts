@@ -13,7 +13,7 @@ import {
   makeCodeGraphQueryAnonymousTelemetryReporter,
   type CodeGraphQueryAnonymousTelemetryProjection,
   type CodeGraphQueryAnonymousTelemetrySnapshotSurface,
-} from '../../src/code_graph/query_anonymous_telemetry.js';
+} from '../../src/code_graph/query/anonymous_telemetry.js';
 import type {CodeGraphStatus} from '../../src/code_graph/types.js';
 import {anonymousTelemetryTestLayer, withAnonymousTelemetry} from '../../src/effect/telemetry.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';

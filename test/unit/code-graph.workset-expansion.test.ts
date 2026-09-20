@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {selectCodeGraphWorksetAdaptiveExpansionBatch} from '../../src/code_graph/workset_expansion.js';
-import type {CodeGraphWorksetRouterRepositoryCandidateV1} from '../../src/code_graph/workset_router.js';
+import {selectCodeGraphWorksetAdaptiveExpansionBatch} from '../../src/code_graph/workset/expansion.js';
+import type {CodeGraphWorksetRouterRepositoryCandidateV1} from '../../src/code_graph/workset/router.js';
 
 describe('code graph workset adaptive expansion', () => {
   it('uses the 4/4/16 schedule without changing global repository order', () => {

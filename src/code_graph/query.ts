@@ -6,13 +6,13 @@ import {
   CodeGraphIndexer,
   type DirectPersistentCapacityProtection,
 } from './indexer.js';
-import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
 import {currentCodeGraphBuildStatus} from './build_status.js';
 import {worktreeOverlayState} from './inventory.js';
-import type {CodeGraphCliPurgeProgress} from './cli_progress.js';
+import type {CodeGraphCliPurgeProgress} from './cli/progress.js';
 import {CodeGraphLanguagePackRegistry, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {codeGraphLayout, type CodeGraphLayout} from './layout.js';
-import {CODE_GRAPH_GATE_LOCK_OPTIONS, withCodeGraphTargetWorktreeLock} from './maintenance_gate.js';
+import {CODE_GRAPH_GATE_LOCK_OPTIONS, withCodeGraphTargetWorktreeLock} from './maintenance/gate.js';
 import {purgeCodeGraphRepositoryRoot} from './maintenance.js';
 import {
   recordVerifiedCodeGraphLocalAssociation,
@@ -36,8 +36,8 @@ import {
   type CodeGraphStatusObservation,
   type CodeGraphStatusOptions,
   type CodeGraphTraversalTimeBudgets,
-} from './query_contract.js';
-import {codeGraphSnapshotRuntimeCurrent} from './query_snapshot_runtime.js';
+} from './query/contract.js';
+import {codeGraphSnapshotRuntimeCurrent} from './query/snapshot_runtime.js';
 import {
   codeGraphProjectCoverage,
   codeGraphQueryScopeCurrent,
@@ -46,25 +46,25 @@ import {
   observeCodeGraphQueryScope,
   outsideCodeGraphProjectPaths,
   type CodeGraphQueryScope,
-} from './query_scope.js';
-import {codeGraphScopeAdmitsPath} from './scope_applicability.js';
-import {isCodeGraphCapacityPause} from './disk_capacity.js';
-import {pathQuery, QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS} from './query_path.js';
-export {pathQuery, QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS} from './query_path.js';
+} from './query/scope.js';
+import {codeGraphScopeAdmitsPath} from './scope/applicability.js';
+import {isCodeGraphCapacityPause} from './disk/capacity.js';
+import {pathQuery, QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS} from './query/path.js';
+export {pathQuery, QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS} from './query/path.js';
 import {adoptCodeGraphSnapshotAdmission, codeGraphSnapshotAdmissionCurrentForIdentity} from './admission_freshness.js';
 import {
   exactCodeGraphImpactSelectorMatches,
   isStableCodeGraphNodeId,
   parseCodeGraphEndpointSelector,
-} from './query_selector.js';
+} from './query/selector.js';
 import {
   codeGraphLanguagePackStatuses,
   repositoryIdentityObservation,
   postPromotionObservation,
   resolvePublishedRepositoryIdentityObservation,
-} from './query_status_helpers.js';
-export {observationFromCodeGraphStatus, shouldAttachSharedReadySnapshot} from './query_contract.js';
-export {codeGraphSnapshotMatchesCurrentLanguagePacks} from './query_snapshot_runtime.js';
+} from './query/status_helpers.js';
+export {observationFromCodeGraphStatus, shouldAttachSharedReadySnapshot} from './query/contract.js';
+export {codeGraphSnapshotMatchesCurrentLanguagePacks} from './query/snapshot_runtime.js';
 export type {
   CodeGraphQueryInterlock,
   CodeGraphQueryTelemetryObserver,
@@ -75,10 +75,10 @@ export type {
   CodeGraphStatusObservation,
   CodeGraphStatusOptions,
   CodeGraphTraversalTimeBudgets,
-} from './query_contract.js';
+} from './query/contract.js';
 import {codeGraphSymbolSearchScoreMultiplier, CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
-import {addUnavailableImpactBaseWarning} from './query_impact_base.js';
+import {addUnavailableImpactBaseWarning} from './query/impact_base.js';
 import {loadSharedGraphQuerySource} from './sharing/provenance.js';
 import {
   CODE_GRAPH_RESULT_VERSION,
@@ -1869,7 +1869,7 @@ export const neighborQuery = Effect.fn('codeGraph.neighborQuery')(function* (
   return {edges: [...edges.values()], nodes: [...nodes.values()], warnings};
 });
 
-export {renderCodeGraphResult, type CodeGraphRenderTarget} from './query_render.js';
+export {renderCodeGraphResult, type CodeGraphRenderTarget} from './query/render.js';
 
 /**
  * Shared-ready attachment has not changed the target view when either of

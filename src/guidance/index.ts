@@ -1,6 +1,6 @@
 import {DateTime, Effect, FileSystem, Path, Schema} from 'effect';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
-import {readBoundedContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
+import {readBoundedContainedStableRegularFile} from '../code_graph/inventory/contained_file.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {
   atomicAgentWrite,

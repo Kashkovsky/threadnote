@@ -4,7 +4,7 @@ import {Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
-import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
+import type {CodeGraphStoreShape} from '../../src/code_graph/store/shape.js';
 import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
@@ -20,7 +20,7 @@ import {codeGraphWorksetManifestDigest} from '../../src/code_graph/workset_catal
 import type {
   CodeGraphEffectiveSnapshotCitationEvidence,
   CodeGraphEffectiveSnapshotCitationEvidenceRequest,
-} from '../../src/code_graph/citation_primitives.js';
+} from '../../src/code_graph/citation/primitives.js';
 import {
   CodeGraphStoreBusyError,
   type CodeGraphInventoryFile,

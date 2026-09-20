@@ -1,7 +1,7 @@
 import type {Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
-import {codeGraphScopeViewKey} from './scope_identity.js';
+import {codeGraphScopeViewKey} from './scope/identity.js';
 
 export interface CodeGraphLayout {
   readonly scopeId?: string;

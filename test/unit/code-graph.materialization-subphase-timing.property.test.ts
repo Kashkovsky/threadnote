@@ -3,7 +3,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import * as FC from 'fast-check';
 import {expect} from 'vitest';
-import {MaterializationSubphaseTiming} from '../../src/code_graph/materialization_subphase_timing.js';
+import {MaterializationSubphaseTiming} from '../../src/code_graph/materialization/subphase_timing.js';
 
 fcEffectProp(
   effectIt,

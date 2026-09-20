@@ -14,7 +14,7 @@ import {
   type CodeGraphEvidenceCardV1,
   type CodeGraphWorksetQueryResultV2,
   type RepositoryEvidenceReceiptV1,
-} from '../../src/code_graph/workset_evidence.js';
+} from '../../src/code_graph/workset/evidence.js';
 
 describe('code graph workset evidence', () => {
   it('strictly parses repository-qualified cards and exact relationship provenance', () => {

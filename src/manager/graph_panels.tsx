@@ -1,11 +1,11 @@
 import React, {useEffect, useState} from 'react';
 import type {CodeGraphAutomaticCompactionStatus} from '../code_graph/automatic_compaction.js';
 import type {CodeGraphLocalDiagnosticsReport} from '../code_graph/diagnostics.js';
-import type {CodeGraphMaintenanceStatus} from '../code_graph/maintenance_gate.js';
+import type {CodeGraphMaintenanceStatus} from '../code_graph/maintenance/gate.js';
 import {
   CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS,
   CODE_GRAPH_TOP_SLOW_FILE_LIMIT,
-} from '../code_graph/progress_telemetry.js';
+} from '../code_graph/progress/telemetry.js';
 import {
   compactNumber,
   graphAdministrationInventorySummary,

@@ -23,7 +23,7 @@ import {CODE_GRAPH_EXTRACTOR_GENERATION, CodeGraphStoreBusyError} from '../../sr
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {withCodeGraphTargetWorktreeLock} from '../../src/code_graph/maintenance_gate.js';
+import {withCodeGraphTargetWorktreeLock} from '../../src/code_graph/maintenance/gate.js';
 import {
   anonymousTelemetryDiagnosticFromError,
   readAnonymousTelemetryDiagnostic,

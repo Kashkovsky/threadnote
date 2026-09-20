@@ -5,19 +5,19 @@ import {
   codeGraphContentIdentity,
   createCodeGraphContentIdentityAccumulator,
 } from '../../src/code_graph/graph_identity.js';
-import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer_build.js';
+import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer/build.js';
 import {
   graphContentIdentity,
   snapshotIdentity,
   sparseOverlayGraphContentIdentity,
   sparseOverlaySnapshotIdentity,
-} from '../../src/code_graph/indexer_materialization.js';
+} from '../../src/code_graph/indexer/materialization.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {
   codeGraphScopeIdentityCompatible,
   codeGraphScopeViewKey,
   type CodeGraphScopeIdentity,
-} from '../../src/code_graph/scope_identity.js';
+} from '../../src/code_graph/scope/identity.js';
 
 const identity = {
   checkoutId: 'c'.repeat(64),

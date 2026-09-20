@@ -1,8 +1,8 @@
 import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Crypto, Effect, FileSystem, Layer, Path} from 'effect';
-import {codeGraphPersistentCapacityDemand} from '../../src/code_graph/disk_capacity.js';
-import {withCodeGraphDiskReservation} from '../../src/code_graph/disk_reservation.js';
+import {codeGraphPersistentCapacityDemand} from '../../src/code_graph/disk/capacity.js';
+import {withCodeGraphDiskReservation} from '../../src/code_graph/disk/reservation.js';
 import {CodeGraphStore, type CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store.js';
 import {
   CodeGraphStoreError,

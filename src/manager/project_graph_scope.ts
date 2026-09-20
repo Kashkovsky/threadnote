@@ -1,6 +1,6 @@
 import {Effect, Schema} from 'effect';
 import {isMap, isScalar, isSeq, parseDocument, type YAMLMap} from 'yaml';
-import {previewCodeGraphProjectScope, type CodeGraphProjectScopePreview} from '../code_graph/scope_preview.js';
+import {previewCodeGraphProjectScope, type CodeGraphProjectScopePreview} from '../code_graph/scope/preview.js';
 import {readSeedManifest} from '../manifest.js';
 import type {ProjectManifest, RuntimeConfig} from '../types.js';
 import {expandPath} from '../utils.js';

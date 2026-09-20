@@ -3,7 +3,7 @@ import * as yaml from 'js-yaml';
 import {
   inspectContainedStableRegularFile,
   materializeContainedStableRegularFile,
-} from './code_graph/inventory_contained_file.js';
+} from './code_graph/inventory/contained_file.js';
 import {DEFAULT_SEED_PATTERNS, SEED_STATE_FILE, USER_MANIFEST_NAME} from './constants.js';
 import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
 import {applicationError} from './effect/errors.js';

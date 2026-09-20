@@ -19,8 +19,8 @@ import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schem
 import {codeGraphLanguagePack as structuredSchemaLanguagePack} from '../../src/code_graph/languages/schemas/pack.js';
 import {packCacheIdentity} from '../../src/code_graph/languages/registry.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import type {CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store_models.js';
-import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
+import type {CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store/models.js';
+import type {CodeGraphStoreShape} from '../../src/code_graph/store/shape.js';
 import type {
   CodeGraphFileFacts,
   CodeGraphInventoryFile,

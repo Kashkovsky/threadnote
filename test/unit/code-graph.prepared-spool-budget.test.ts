@@ -3,7 +3,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
-import {CODE_GRAPH_PREPARED_SPOOL_BYTES_LIMIT} from '../../src/code_graph/build_resources.js';
+import {CODE_GRAPH_PREPARED_SPOOL_BYTES_LIMIT} from '../../src/code_graph/build/resources.js';
 import {codeGraphPreparedSpoolBudgetRoot} from '../../src/code_graph/layout.js';
 import {withCodeGraphPreparedSpoolBudget} from '../../src/code_graph/prepared_spool_budget.js';
 import {SystemInfo} from '../../src/effect/system.js';

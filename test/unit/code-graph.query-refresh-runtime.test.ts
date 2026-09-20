@@ -17,7 +17,7 @@ import {
 } from '../../src/code_graph/indexer.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance/coordinator.js';
 import {CodeGraphQueryService, type CodeGraphInspectOptions} from '../../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';

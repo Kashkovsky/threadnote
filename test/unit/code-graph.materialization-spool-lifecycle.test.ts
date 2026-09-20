@@ -11,7 +11,7 @@ import type {
 } from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
-import {materializationStorageFiles} from '../../src/code_graph/indexer_materialization.js';
+import {materializationStorageFiles} from '../../src/code_graph/indexer/materialization.js';
 import {codeGraphSqliteGet} from '../../src/code_graph/sqlite_statement.js';
 
 effectIt.effect('materializes a full build through the sorted sidecar and removes it after finalization', () =>

@@ -67,7 +67,7 @@ import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
-import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance/coordinator.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 
 const sharingLayer = CodeGraphMaintenanceCoordinator.layer.pipe(

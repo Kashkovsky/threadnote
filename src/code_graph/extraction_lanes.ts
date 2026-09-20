@@ -1,5 +1,5 @@
 import {compareCodeUnits} from './ordering.js';
-import {codeGraphExtractionWorkUnits, codeGraphSourceSizeBucket} from './progress_telemetry.js';
+import {codeGraphExtractionWorkUnits, codeGraphSourceSizeBucket} from './progress/telemetry.js';
 
 const REQUEST_COST_SCALE = 1_024;
 const FACT_COST_SCALE = 4;

@@ -7,7 +7,7 @@ import {
   codeGraphSnapshotAdmissionCurrent,
   recordCodeGraphSnapshotAdmission,
 } from '../../src/code_graph/admission_freshness.js';
-import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer_build.js';
+import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer/build.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import type {CodeGraphSnapshot} from '../../src/code_graph/types.js';

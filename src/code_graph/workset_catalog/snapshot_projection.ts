@@ -1,10 +1,10 @@
 import {Cause, Effect, Option, Predicate, Ref, Result, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store_build_core.js';
-import {classifyCodeGraphStoreFailure} from '../store_failure.js';
-import {effectiveSnapshotParameters, effectiveSymbolsCte} from '../store_query_core.js';
-import type {CodeGraphStoreShape} from '../store_shape.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store/build_core.js';
+import {classifyCodeGraphStoreFailure} from '../store/failure.js';
+import {effectiveSnapshotParameters, effectiveSymbolsCte} from '../store/query_core.js';
+import type {CodeGraphStoreShape} from '../store/shape.js';
 import type {CodeGraphSnapshot} from '../types.js';
 import {readSnapshotWorksetScopeReceipt, worksetScopeReceiptsMatch} from './scope_receipt.js';
 import {

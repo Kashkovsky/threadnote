@@ -12,7 +12,7 @@ import {
   routeCodeGraphWorksetCatalogCandidates,
   type CodeGraphWorksetCatalogCandidatePageV1,
   type CodeGraphWorksetCatalogCandidateSourceV1,
-} from '../../src/code_graph/workset_router.js';
+} from '../../src/code_graph/workset/router.js';
 import type {
   CodeGraphWorksetCatalogPublishedGenerationV1,
   CodeGraphWorksetCatalogRoutingSymbolRecordV1,

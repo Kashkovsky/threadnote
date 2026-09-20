@@ -1,6 +1,6 @@
 import {Console, Effect, FileSystem, Path, Schema} from 'effect';
 import {canonicalJson} from '../code_graph/checkpoint/canonical_json.js';
-import {readBoundedContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
+import {readBoundedContainedStableRegularFile} from '../code_graph/inventory/contained_file.js';
 import {compileContextBrief} from '../context_brief/index.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {shellQuote} from '../effect/command.js';

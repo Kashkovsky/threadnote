@@ -8,7 +8,7 @@ import {
   formatCodeGraphIndexProgressLine,
   formatCodeGraphPurgeProgressLine,
   formatCodeGraphRepairProgressLine,
-} from '../../src/code_graph/cli_progress.js';
+} from '../../src/code_graph/cli/progress.js';
 import type {CodeGraphProgress} from '../../src/code_graph/types.js';
 import {graphMaintenanceRemainingMilliseconds} from '../../src/manager/graph_model.js';
 

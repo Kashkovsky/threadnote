@@ -37,7 +37,7 @@ import {CodeGraphStoreError} from '../../src/code_graph/types.js';
 import {
   COMPONENT_SCOPE_TEMP_TABLE,
   componentEdgeAggregateMaterializationStatement,
-} from '../../src/code_graph/store_component_aggregates.js';
+} from '../../src/code_graph/store/component_aggregates.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,

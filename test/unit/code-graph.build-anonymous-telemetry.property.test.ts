@@ -9,7 +9,7 @@ import {
   codeGraphPowerOfTwoBucket,
   type CodeGraphBuildAnonymousTelemetryInput,
   type CodeGraphBuildEfficiencyClass,
-} from '../../src/code_graph/build_anonymous_telemetry.js';
+} from '../../src/code_graph/build/anonymous_telemetry.js';
 
 describe('code graph terminal anonymous telemetry', () => {
   it('classifies the ineffective two-file rematerialization incident as critical', () => {

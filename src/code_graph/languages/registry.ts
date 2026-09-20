@@ -1,6 +1,6 @@
 import {Context, Effect, Layer, Option} from 'effect';
 import {createCachedCodeGraphContractHash} from '../cached_contract_hash.js';
-import {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact_budget.js';
+import {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact/budget.js';
 import {BUILTIN_CODE_GRAPH_LANGUAGE_PACKS} from './catalog.generated.js';
 import {
   CodeGraphLanguagePackError,
@@ -12,7 +12,7 @@ import {
   type CodeGraphWorkspaceProject,
 } from './types.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
-import type {CodeGraphLanguagePackProvenance} from '../store_models.js';
+import type {CodeGraphLanguagePackProvenance} from '../store/models.js';
 import {TREE_SITTER_RUNTIME_CACHE_IDENTITY, type TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import {mergeCodeGraphWorkspaces, projectForPath} from '../workspace.js';
 import {
@@ -22,7 +22,7 @@ import {
   CODE_GRAPH_RATIONALE_INPUT_VERSION,
 } from '../rationale.js';
 
-export {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact_budget.js';
+export {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact/budget.js';
 
 const cacheIdentityHash = createCachedCodeGraphContractHash();
 const derivationIdentityHash = createCachedCodeGraphContractHash();

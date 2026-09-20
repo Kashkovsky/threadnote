@@ -8,12 +8,12 @@ import {
   type CodeGraphLifecycleCandidate,
   type CodeGraphLifecycleProtection,
   type CodeGraphLifecycleState,
-} from '../../src/code_graph/lifecycle_classification.js';
+} from '../../src/code_graph/lifecycle/classification.js';
 import {
   codeGraphLifecycleOpportunityUnits,
   selectCodeGraphLifecycleOpportunityTarget,
   selectCodeGraphLifecycleOpportunityUnit,
-} from '../../src/code_graph/lifecycle_opportunity.js';
+} from '../../src/code_graph/lifecycle/opportunity.js';
 
 const reclaimableState = fc.constantFrom<CodeGraphLifecycleState>(
   'missing-view',

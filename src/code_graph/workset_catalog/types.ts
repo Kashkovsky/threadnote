@@ -1,5 +1,5 @@
 import {Schema} from 'effect';
-import type {CodeGraphEvidenceCardV1, CodeGraphWorksetQueryResultV2} from '../workset_evidence.js';
+import type {CodeGraphEvidenceCardV1, CodeGraphWorksetQueryResultV2} from '../workset/evidence.js';
 
 export const CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION = 2 as const;
 

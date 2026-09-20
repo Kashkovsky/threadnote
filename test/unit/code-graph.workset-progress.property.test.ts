@@ -8,8 +8,8 @@ import {
 import {
   CODE_GRAPH_WORKSET_JSON_PROGRESS_INTERVAL_MILLISECONDS,
   codeGraphWorksetJsonProgressDecision,
-} from '../../src/code_graph/workset_progress.js';
-import {codeGraphWorksetTelemetryFields} from '../../src/code_graph/workset_telemetry.js';
+} from '../../src/code_graph/workset/progress.js';
+import {codeGraphWorksetTelemetryFields} from '../../src/code_graph/workset/telemetry.js';
 
 describe('code graph workset progress properties', () => {
   it('partitions every member receipt exactly and marks only all-ready coverage complete', () => {

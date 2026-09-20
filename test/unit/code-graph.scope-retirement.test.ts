@@ -9,12 +9,12 @@ import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {withCodeGraphTargetWorktreeLock} from '../../src/code_graph/maintenance_gate.js';
+import {withCodeGraphTargetWorktreeLock} from '../../src/code_graph/maintenance/gate.js';
 import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {
   queueCodeGraphScopeRetirements,
   reconcileCodeGraphScopeRetirements,
-} from '../../src/code_graph/scope_retirement.js';
+} from '../../src/code_graph/scope/retirement.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';

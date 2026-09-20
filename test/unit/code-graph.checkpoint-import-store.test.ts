@@ -18,7 +18,7 @@ import {
 import {
   checkpointStoredFactMatches,
   validateCodeGraphCheckpointImportReceiptInput,
-} from '../../src/code_graph/store_checkpoint_import.js';
+} from '../../src/code_graph/store/checkpoint_import.js';
 import {codeGraphCheckpointFileFactCacheIdentity} from '../../src/code_graph/checkpoint/file_fact_identity.js';
 import type {CodeGraphFileFacts, CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -41,7 +41,7 @@ import {
   emptyCodeGraphCheckpointCounts,
   type CodeGraphCheckpointHeaderV1,
 } from '../../src/code_graph/checkpoint/schema.js';
-import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../../src/code_graph/inventory_policy.js';
+import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../../src/code_graph/inventory/policy.js';
 import {CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION} from '../../src/code_graph/store/schema_revision.js';
 import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 

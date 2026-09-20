@@ -5,11 +5,11 @@ import {
   type CodeGraphEffectiveSnapshotCitationEvidence,
   type CodeGraphEffectiveSnapshotCitationEvidenceRequest,
   type CodeGraphSymbolSemanticLocatorV1,
-} from '../code_graph/citation_primitives.js';
+} from '../code_graph/citation/primitives.js';
 import {codeGraphCommittedFileContentHash} from '../code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphStore} from '../code_graph/store.js';
-import type {CodeGraphStoreShape} from '../code_graph/store_shape.js';
+import type {CodeGraphStoreShape} from '../code_graph/store/shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot, CodeGraphStatus, CodeGraphSymbol} from '../code_graph/types.js';
 import {
   compileContextBriefWith,

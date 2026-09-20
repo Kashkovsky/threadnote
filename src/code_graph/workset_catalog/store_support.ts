@@ -8,8 +8,8 @@ import {
   codeGraphQualifiedRefHandle,
   codeGraphWorksetContinuationHandle,
   type CodeGraphWorksetQueryResultV2,
-} from '../workset_evidence.js';
-import {useDatabaseDirect} from '../store_session.js';
+} from '../workset/evidence.js';
+import {useDatabaseDirect} from '../store/session.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION,
   codeGraphWorksetCatalogLayout,

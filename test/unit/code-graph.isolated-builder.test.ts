@@ -20,7 +20,7 @@ import {
   shouldAwaitExistingBuilder,
   statusBelongsToChild,
   type CodeGraphIsolatedBuilderSpawnPlan,
-} from '../../src/code_graph/isolated_builder.js';
+} from '../../src/code_graph/isolated/builder.js';
 import type {ObservedCodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {CodeGraphRuntimeReconnectRequiredError, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
@@ -34,7 +34,7 @@ import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {
   CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE,
   CodeGraphRefreshDemandSuperseded,
-} from '../../src/code_graph/refresh_demand.js';
+} from '../../src/code_graph/refresh/demand.js';
 
 function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
   return {

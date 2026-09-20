@@ -12,7 +12,7 @@ import {
   removePreparedCodeGraphWorksetFixture,
 } from '../../scripts/support/code-graph-workset-fixture.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
+import type {CodeGraphStoreShape} from '../../src/code_graph/store/shape.js';
 import {validateContextBriefMemoryCitations} from '../../src/context_brief/citation_validation.js';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';

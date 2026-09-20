@@ -1,9 +1,9 @@
 import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
-import {codeGraphInventoryReuseContract, readCodeGraphInventoryReuseEnvironment} from './inventory_reuse.js';
+import {codeGraphInventoryReuseContract, readCodeGraphInventoryReuseEnvironment} from './inventory/reuse.js';
 import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphLayout} from './layout.js';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
-import {codeGraphScopeIdentityCompatible, codeGraphScopeViewKey} from './scope_identity.js';
+import {codeGraphScopeIdentityCompatible, codeGraphScopeViewKey} from './scope/identity.js';
 import type {CodeGraphSnapshot, RepositoryIdentity} from './types.js';
 
 const hash = Schema.String.pipe(Schema.check(Schema.isPattern(/^[0-9a-f]{64}$/u)));

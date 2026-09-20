@@ -14,7 +14,7 @@ import {
   createCodeGraphLanguagePackRegistry,
 } from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {codeGraphSnapshotRuntimeCurrent} from '../../src/code_graph/query_snapshot_runtime.js';
+import {codeGraphSnapshotRuntimeCurrent} from '../../src/code_graph/query/snapshot_runtime.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
