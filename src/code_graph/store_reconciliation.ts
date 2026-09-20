@@ -20,6 +20,7 @@ import {
 import {
   removedViewAuthorityTableState,
   removedViewCleanupRecordedRevision,
+  removedViewCleanupSchemaState,
 } from './store_removed_view_schema_inspection.js';
 import {normalizeSchemaDefinition} from './store_schema_normalization.js';
 import {
@@ -501,8 +502,30 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
   ) {
     const extensionRevision = yield* removedViewCleanupRecordedRevision(sql);
     if (extensionRevision.state === 'invalid') return false;
+    if (requireRemovedViewAuthority && (yield* removedViewAuthorityTableState(sql)) !== 'compatible') return false;
+    if (requireCleanup && (yield* removedViewCleanupSchemaState(sql)) !== 'compatible') return false;
     const scoped = yield* codeGraphScopeAuthorityInstalled(sql);
-    if (scoped && !(yield* codeGraphScopeAuthoritySchemaCompatible(sql))) return false;
+    // Narrow callers (lease release/renewal) intentionally do not observe
+    // removed-view cleanup authority until they need to retire a snapshot.
+    // Do not turn an unrelated cleanup defect into a failure to release an
+    // ordinary reader lease; the later full-authority observation remains
+    // mandatory before retirement is admitted.
+    const scopedAuthorityNames = [
+      ...(requireRemovedViewAuthority ? ['removed_views'] : []),
+      ...(requireCleanup
+        ? [
+            'removed_view_cleanup',
+            'removed_view_cleanup_due',
+            ...SCOPED_REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.map(trigger => trigger.name),
+          ]
+        : []),
+    ];
+    if (
+      scoped &&
+      scopedAuthorityNames.length > 0 &&
+      !(yield* codeGraphScopeAuthoritySchemaCompatible(sql, scopedAuthorityNames))
+    )
+      return false;
     const cleanupTriggerDefinitions = scoped
       ? SCOPED_REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS
       : REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS;
@@ -658,6 +681,13 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
         if ((yield* codeGraphReconciliationIndexState(sql, index)) !== 'ready') return false;
       }
     }
+    const triggerTables = [
+      'schema_metadata',
+      'active_snapshots',
+      ...(requireCleanup ? ['removed_views'] : []),
+      'snapshots',
+      'snapshot_leases',
+    ];
     const triggers = yield* sql.unsafe<{
       readonly bounded_sql: unknown;
       readonly name: unknown;
@@ -671,11 +701,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
                length(CAST(sql AS BLOB)) AS sql_bytes
         FROM sqlite_master
         WHERE type = 'trigger'
-          AND (tbl_name = 'schema_metadata' COLLATE NOCASE
-            OR tbl_name = 'active_snapshots' COLLATE NOCASE
-            OR tbl_name = 'removed_views' COLLATE NOCASE
-            OR tbl_name = 'snapshots' COLLATE NOCASE
-            OR tbl_name = 'snapshot_leases' COLLATE NOCASE)
+          AND tbl_name IN (${triggerTables.map(table => `'${table}' COLLATE NOCASE`).join(', ')})
         ORDER BY name
         LIMIT 5`);
     const verifiedTriggers: ReconciliationTrigger[] = [];
@@ -686,9 +712,9 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
     const activeTrigger = verifiedTriggers.filter(
       trigger => trigger.name === 'active_snapshots_require_current_extractor',
     );
-    const cleanupTriggers = verifiedTriggers.filter(trigger =>
-      cleanupTriggerDefinitions.some(expected => expected.name === trigger.name),
-    );
+    const cleanupTriggers = requireCleanup
+      ? verifiedTriggers.filter(trigger => cleanupTriggerDefinitions.some(expected => expected.name === trigger.name))
+      : [];
     const expectedTriggerCount = 1 + cleanupTriggers.length;
     if (
       verifiedTriggers.length !== expectedTriggerCount ||
@@ -700,7 +726,6 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
             ? CODE_GRAPH_SCOPED_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL
             : CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL,
         ) ||
-      (cleanupTriggers.length !== 0 && cleanupTriggers.length !== cleanupTriggerDefinitions.length) ||
       (requireCleanup && cleanupTriggers.length !== cleanupTriggerDefinitions.length) ||
       cleanupTriggers.some(trigger => {
         const expected = cleanupTriggerDefinitions.find(candidate => candidate.name === trigger.name);

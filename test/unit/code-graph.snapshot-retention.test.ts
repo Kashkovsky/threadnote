@@ -414,15 +414,14 @@ describe('code graph ready snapshot retention', () => {
     await runEffect(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
-        // Lease acquisition is the first writer in this process. It repairs
-        // only the safe read/lease surface and preserves retirement candidates
-        // until the background migration restores full authority.
-        const currentLease = yield* store.acquireSnapshotLease(databasePath, current.id, 60_000);
-        expect(readSnapshotState(databasePath, superseded.id)).toBe('ready');
+        // A pre-scoped database must restore scoped authority before lease
+        // maintenance can safely inspect its active view. Initialization does
+        // not retire the displaced snapshot; the following ordinary acquire
+        // performs that bounded maintenance once authority is current.
         yield* store.initialize(databasePath);
-        const migratedLease = yield* store.acquireSnapshotLease(databasePath, current.id, 60_000);
+        expect(readSnapshotState(databasePath, superseded.id)).toBe('ready');
+        const currentLease = yield* store.acquireSnapshotLease(databasePath, current.id, 60_000);
         yield* waitForSnapshotRemoval(databasePath, superseded.id);
-        yield* store.releaseSnapshotLease(databasePath, migratedLease);
         yield* store.releaseSnapshotLease(databasePath, currentLease);
       }),
     );
@@ -459,6 +458,7 @@ describe('code graph ready snapshot retention', () => {
     await runEffect(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
         yield* store.releaseSnapshotLease(databasePath, token);
       }),
     );
@@ -492,6 +492,7 @@ describe('code graph ready snapshot retention', () => {
     await runEffect(
       Effect.gen(function* () {
         const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
         yield* store.renewSnapshotLease(databasePath, token, 10 * 60_000);
       }),
     );
@@ -866,6 +867,37 @@ function dropLeaseRetirementColumn(databasePath: string): void {
     database.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
     database.run('DROP TABLE IF EXISTS removed_view_cleanup');
     database.run('DROP TABLE IF EXISTS snapshot_build_owner_instances');
+    database.run('DROP TABLE IF EXISTS scope_applicability');
+    database.run('DROP TABLE IF EXISTS snapshot_scope_receipts');
+    database.run('DROP INDEX IF EXISTS snapshots_scope_recent_ready');
+    database.run('DROP INDEX IF EXISTS snapshots_scope_commit_ready');
+    database.run('DROP INDEX IF EXISTS snapshots_scope_reusable');
+    database.run('DROP INDEX IF EXISTS snapshots_scope_reusable_content');
+    database.run('DROP INDEX IF EXISTS snapshots_scope_reusable_commit');
+    database.run(
+      `CREATE TEMP TABLE legacy_active_snapshots AS
+       SELECT worktree_id, snapshot_id, activated_at FROM active_snapshots
+       WHERE scope_id = 'full-repository'`,
+    );
+    database.run('DROP TABLE active_snapshots');
+    database.run(`CREATE TABLE active_snapshots (
+      worktree_id TEXT PRIMARY KEY NOT NULL,
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      activated_at TEXT NOT NULL
+    )`);
+    database.run(`INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
+      SELECT worktree_id, snapshot_id, activated_at FROM legacy_active_snapshots`);
+    database.run('DROP TABLE legacy_active_snapshots');
+    database.run('DROP TABLE IF EXISTS removed_views');
+    database.run('ALTER TABLE snapshots DROP COLUMN scope_id');
+    database.run(
+      'CREATE INDEX IF NOT EXISTS active_snapshots_snapshot_worktree ON active_snapshots(snapshot_id, worktree_id)',
+    );
+    database.run('CREATE INDEX IF NOT EXISTS snapshots_base_state_id ON snapshots(base_snapshot_id, state, id)');
+    database.run(
+      'CREATE INDEX IF NOT EXISTS snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)',
+    );
+    database.run('CREATE INDEX IF NOT EXISTS snapshot_leases_expiry ON snapshot_leases(expires_at)');
     database.run(
       `DELETE FROM schema_metadata
        WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,

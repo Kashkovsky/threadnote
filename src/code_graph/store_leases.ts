@@ -303,7 +303,7 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
   const duration = Math.max(1_000, Math.min(60 * 60_000, Math.floor(durationMilliseconds)));
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false, false))) {
         return yield* CodeGraphStoreError.of('Code graph snapshot lease authority schema is invalid.');
       }
       const ready = yield* sql<{readonly id: string}>`
@@ -574,7 +574,7 @@ const releaseSnapshotLease = Effect.fn('codeGraph.releaseSnapshotLease')(functio
   yield* configureConnection(sql);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false, false))) {
         return yield* CodeGraphStoreError.of('Code graph snapshot lease authority schema is invalid.');
       }
       const now = yield* Clock.currentTimeMillis;
@@ -641,7 +641,7 @@ const renewSnapshotLease = Effect.fn('codeGraph.renewSnapshotLease')(function* (
   const duration = Math.max(1_000, Math.min(60 * 60_000, Math.floor(durationMilliseconds)));
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false, false))) {
         return yield* CodeGraphStoreError.of('Code graph snapshot lease authority schema is invalid.');
       }
       const active = yield* sql<{readonly present: number}>`

@@ -948,15 +948,6 @@ describe('Manager logical repository and workspace catalogs', () => {
         const legacy = new Database(databasePath);
         try {
           legacy.transaction(() => {
-            legacy.run('DROP TRIGGER removed_views_cleanup_revoke_delete');
-            legacy.run('DROP TRIGGER removed_views_cleanup_revoke_insert');
-            legacy.run('DROP TRIGGER removed_views_cleanup_revoke_update');
-            legacy.run('DROP TABLE removed_view_cleanup');
-            legacy.run(
-              `DELETE FROM schema_metadata
-               WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,
-            );
-            legacy.run("UPDATE schema_metadata SET value = '6' WHERE key = 'persistent_extension_schema_revision'");
             legacy.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
           })();
         } finally {
