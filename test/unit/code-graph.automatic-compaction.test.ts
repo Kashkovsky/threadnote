@@ -774,6 +774,18 @@ describe('automatic code graph compaction', () => {
       arguments: ['/workspace/src/standalone.ts', '--threadnote-code-graph-compaction-worker'],
       executable: '/opt/bun/bin/bun',
     });
+    expect(
+      codeGraphAutomaticCompactionWorkerInvocation({
+        executablePath: '/opt/bun/bin/bun',
+        processArguments: ['/opt/bun/bin/bun'],
+      }),
+    ).toEqual({
+      arguments: [
+        Bun.fileURLToPath(new URL('../../src/standalone.ts', import.meta.url)),
+        '--threadnote-code-graph-compaction-worker',
+      ],
+      executable: '/opt/bun/bin/bun',
+    });
   });
 
   effectIt.effect('publishes running status before a long compaction and interrupts it with Manager scope', () =>

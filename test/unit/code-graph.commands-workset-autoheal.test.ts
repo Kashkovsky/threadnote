@@ -18,7 +18,7 @@ vi.mock('../../src/code_graph/workset_catalog/workset.js', async importOriginal 
   prepareCodeGraphWorkset: mocks.prepareWorkset,
 }));
 
-vi.mock('../../src/memory/deferred_code_anchor_recovery.js', async importOriginal => ({
+vi.mock('../../src/memory/deferred/code_anchor_recovery.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../../src/memory/deferred/code_anchor_recovery.js')>()),
   healAnchorsAfterWorksetPrepare: mocks.healWorkset,
 }));

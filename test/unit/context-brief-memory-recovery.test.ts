@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
   withCodeAnchorFinalizationAnonymousTelemetry: vi.fn(),
 }));
 
-vi.mock('../../src/memory/code_citation_capture.js', async importOriginal => {
+vi.mock('../../src/memory/code/citation_capture.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/memory/code/citation_capture.js')>();
   return {...actual, captureMemoryCodeCitations: mocks.captureMemoryCodeCitations};
 });
@@ -42,7 +42,7 @@ vi.mock('../../src/code_graph/repository.js', () => ({
   resolveRepositoryIdentity: mocks.resolveRepositoryIdentity,
 }));
 
-vi.mock('../../src/memory/deferred_code_anchor.js', () => ({
+vi.mock('../../src/memory/deferred/code_anchor.js', () => ({
   finalizeDeferredCodeAnchorsForRoute: mocks.finalizeDeferredCodeAnchorsForRoute,
 }));
 

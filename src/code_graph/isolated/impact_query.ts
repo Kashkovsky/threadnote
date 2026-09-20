@@ -376,7 +376,7 @@ export function impactQueryWorkerInvocation(system: SystemInfoShape): {
   const standaloneScript =
     currentScript && /(?:^|[/\\])(?:standalone\.(?:js|ts)|threadnote\.cjs)$/iu.test(currentScript)
       ? currentScript
-      : Bun.fileURLToPath(new URL('../standalone.ts', import.meta.url));
+      : Bun.fileURLToPath(new URL('../../standalone.ts', import.meta.url));
   return {
     arguments: [standaloneScript, CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT],
     executable: system.executablePath,

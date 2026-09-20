@@ -92,7 +92,7 @@ function insertExactSymbolRankingFixture(databasePath: string, distractorCount: 
         'variable',
         exactSymbol,
         exactSymbol,
-        'src/code_graph/isolated_index.ts',
+        'src/code_graph/isolated/index.ts',
         spanJson,
       );
       const insertTerm = database.query(

@@ -117,16 +117,16 @@ describe('code graph schema revision entity', () => {
   it('keeps semantic revision checks behind the revision entity', async () => {
     const governedFiles = [
       'maintenance.ts',
-      'store_diagnostics.ts',
-      'store_file_alias_schema.ts',
-      'store_health.ts',
-      'store_leases.ts',
-      'store_maintenance_core.ts',
-      'store_reconciliation.ts',
-      'store_reconciliation_preparation.ts',
-      'store_schema_core.ts',
-      'store_schema_migration.ts',
-      'store_schema_receipt.ts',
+      'store/diagnostics.ts',
+      'store/file_alias_schema.ts',
+      'store/health.ts',
+      'store/leases.ts',
+      'store/maintenance_core.ts',
+      'store/reconciliation.ts',
+      'store/reconciliation/preparation.ts',
+      'store/schema/core.ts',
+      'store/schema/migration.ts',
+      'store/schema/receipt.ts',
     ];
     const subject = String.raw`(?:recordedRevision|persistentExtensionSchemaRevision|revision\.value|receipt\.contract_revision|receipt\.persistent_extension_revision)`;
     const numericRevision = String.raw`(?:[2-9]|1[0-7])`;

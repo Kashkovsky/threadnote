@@ -86,7 +86,7 @@ const CHECKPOINT_BYTES = new TextEncoder().encode('not-a-checkpoint');
 describe('graph share import and inspect source', () => {
   it('does not start shared graph import from recall', async () => {
     const [indexer, recall, memory] = await Promise.all([
-      readFile(join(repoRoot, 'src/code_graph/indexer_service.ts'), 'utf8'),
+      readFile(join(repoRoot, 'src/code_graph/indexer/service.ts'), 'utf8'),
       readFile(join(repoRoot, 'src/mcp/server/recall.ts'), 'utf8'),
       readFile(join(repoRoot, 'src/mcp/server/memory.ts'), 'utf8'),
     ]);

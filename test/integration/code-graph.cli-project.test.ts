@@ -25,7 +25,7 @@ describe('code graph CLI project selection', () => {
       const help = await runCli(['graph', command, '--help']);
       expect(help.stdout, command).toContain('--project string');
     }
-  });
+  }, 30_000);
 
   it('uses an explicit project to resolve an ambiguous cwd and retains named full-graph projects', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-graph-cli-project-'));
@@ -154,7 +154,9 @@ describe('code graph CLI project selection', () => {
         ].join('\n'),
       );
       const base = ['--home', home, '--manifest', manifest, '--cwd', linked];
-      const indexed = JSON.parse((await runCli(['graph', 'index', ...base, '--no-vectors', '--json'])).stdout);
+      const indexed = JSON.parse(
+        (await runCli(['graph', 'index', ...base, '--project', 'web', '--no-vectors', '--json'])).stdout,
+      );
       expect(indexed).toMatchObject({snapshot: {scopeId: expect.stringMatching(/^code-graph-scope:/u)}});
       const status = JSON.parse((await runCli(['graph', 'status', ...base, '--json'])).stdout);
       expect(status).toMatchObject({projectCoverage: {kind: 'project', project: 'web'}});

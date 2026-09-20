@@ -5,13 +5,14 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
-import {DateTime, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {DateTime, Deferred, Effect, Fiber, FileSystem, Option, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {
   assertIsolatedBuilderPlan,
   awaitOwnedIsolatedBuilderResult,
   codeGraphIsolatedBuilderSpawnPlan,
   codeGraphProgressFromBuildStatus,
+  developmentStandaloneScript,
   isCodeGraphIsolatedBuilderHost,
   isolatedBuilderFailureMessage,
   isolatedBuilderRequestMatches,
@@ -119,6 +120,19 @@ describe('isolated code-graph builder host detection', () => {
 });
 
 describe('isolated code-graph builder spawn plan', () => {
+  it('resolves the development fallback to the repository standalone entrypoint', () => {
+    expect(
+      Option.getOrThrow(
+        developmentStandaloneScript(
+          systemInfoStub({
+            executablePath: '/usr/local/bin/bun',
+            processArguments: ['/usr/local/bin/bun'],
+          }),
+        ),
+      ),
+    ).toBe(Bun.fileURLToPath(new URL('../../src/standalone.ts', import.meta.url)));
+  });
+
   it('reuses completed results only for exact request-key equality', () => {
     const status = {request: {key: 'request-a'}} as ObservedCodeGraphBuildStatus;
     expect(isolatedBuilderRequestMatches(status, 'request-a')).toBe(true);

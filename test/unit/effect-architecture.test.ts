@@ -65,7 +65,7 @@ describe('Effect architecture boundaries', () => {
     const allowed = new Set([
       'src/effect/archive.ts',
       'src/effect/ai/isolated-local-model-runtime.ts',
-      'src/effect/cli_output.ts',
+      'src/effect/cli/output.ts',
       'src/effect/console.ts',
       'src/effect/errors.ts',
       'src/effect/mcp_broker_process.ts',
@@ -237,12 +237,15 @@ describe('Effect architecture boundaries', () => {
   });
 
   it('keeps Manager Context browser paging outside the server runtime graph', async () => {
-    const contextView = await readFile(join(sourceRoot, 'manager', 'context_view.tsx'), 'utf8');
-    const paging = await readFile(join(sourceRoot, 'manager', 'context_paging.ts'), 'utf8');
-    const browserRuntimeSource = contextView.replace(/import\s+type\s+[^;]+\s+from\s+['"]\.\/context\.js['"];\n?/u, '');
+    const contextView = await readFile(join(sourceRoot, 'manager', 'context', 'view.tsx'), 'utf8');
+    const paging = await readFile(join(sourceRoot, 'manager', 'context', 'paging.ts'), 'utf8');
+    const browserRuntimeSource = contextView.replace(
+      /import\s+type\s+[^;]+\s+from\s+['"]\.\.\/context\.js['"];\n?/u,
+      '',
+    );
 
-    expect(importedModuleSpecifiers('context_view.tsx', browserRuntimeSource)).not.toContain('./context.js');
-    expect(importedModuleSpecifiers('context_paging.ts', paging)).toEqual([]);
+    expect(importedModuleSpecifiers('context/view.tsx', browserRuntimeSource)).not.toContain('../context.js');
+    expect(importedModuleSpecifiers('context/paging.ts', paging)).toEqual([]);
   });
 
   it('heals deferred code anchors after in-process graph publication', async () => {
