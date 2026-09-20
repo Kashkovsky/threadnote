@@ -12,7 +12,11 @@ import {
 import type {CodeGraphWorkspaceProject} from '../../src/code_graph/languages/types.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {discoverBazelWorkspace, discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
-import {resolveCodeGraphWorkspaceDiagnostics} from '../../src/code_graph/workspace_diagnostics.js';
+import {
+  codeGraphWorkspaceProjectsForDiagnostic,
+  createCodeGraphWorkspaceDiagnosticIndex,
+  resolveCodeGraphWorkspaceDiagnostics,
+} from '../../src/code_graph/workspace_diagnostics.js';
 
 const project = (id: string, root: string, dependencies: readonly string[] = []) =>
   ({
@@ -52,6 +56,27 @@ const workspaceFile = (path: string, content: string, language: string): CodeGra
   size: Buffer.byteLength(content),
   source: 'commit',
 });
+
+function naiveDiagnosticProjects(
+  projects: readonly CodeGraphWorkspaceProject[],
+  diagnostic: string,
+): readonly CodeGraphWorkspaceProject[] {
+  const evidencePath = diagnostic.slice(0, diagnostic.indexOf(':'));
+  const specificityById = new Map(
+    projects.map(project => {
+      const specificity = Math.max(
+        -1,
+        ...[project.root, ...project.sourceRoots]
+          .filter(prefix => prefix === '' || evidencePath === prefix || evidencePath.startsWith(`${prefix}/`))
+          .map(prefix => (prefix === '' ? 0 : prefix.split('/').length)),
+      );
+      return [project.id, specificity] as const;
+    }),
+  );
+  const maximum = Math.max(-1, ...specificityById.values());
+  if (maximum < 0) return [];
+  return projects.filter(project => specificityById.get(project.id) === maximum);
+}
 
 describe('code graph index scope', () => {
   it('retains every component at a configured root and only follows forward dependencies', () => {
@@ -264,6 +289,68 @@ describe('code graph index scope', () => {
       expect(unrelated).toEqual(complete);
     },
     {fastCheck: {numRuns: 100}},
+  );
+
+  fcProp(
+    it,
+    'matches a naive longest-prefix model and ignores duplicate diagnostics',
+    {
+      evidenceSelections: FC.array(FC.integer({min: 0, max: 15}), {minLength: 1, maxLength: 8}),
+      projectRootSelections: FC.array(FC.integer({min: 0, max: 15}), {minLength: 1, maxLength: 6}),
+      sourceRootSelections: FC.array(FC.array(FC.integer({min: 0, max: 15}), {minLength: 0, maxLength: 3}), {
+        minLength: 1,
+        maxLength: 6,
+      }),
+      segments: FC.uniqueArray(FC.stringMatching(/^[a-z]{1,6}$/), {minLength: 2, maxLength: 4}),
+    },
+    ({evidenceSelections, projectRootSelections, segments, sourceRootSelections}) => {
+      const paths = segments.map((_segment, index) => segments.slice(0, index + 1).join('/'));
+      const projects = projectRootSelections.map(
+        (selection, index) =>
+          ({
+            ...project(`project-${index}`, paths[selection % paths.length]),
+            sourceRoots: sourceRootSelections[index % sourceRootSelections.length].map(
+              sourceSelection => paths[sourceSelection % paths.length],
+            ),
+          }) satisfies CodeGraphWorkspaceProject,
+      );
+      const diagnostics = evidenceSelections.map(
+        (selection, index) => `${paths[selection % paths.length]}/evidence-${index}: diagnostic`,
+      );
+      const orderedDiagnostics = [...diagnostics].sort();
+      const index = createCodeGraphWorkspaceDiagnosticIndex(projects);
+      const resolution = resolveCodeGraphWorkspaceDiagnostics(projects, diagnostics);
+      const expectedMatches = diagnostics.map(diagnostic =>
+        naiveDiagnosticProjects(projects, diagnostic).map(project => project.id),
+      );
+
+      expect(
+        diagnostics.map(diagnostic =>
+          codeGraphWorkspaceProjectsForDiagnostic(index, diagnostic).map(project => project.id),
+        ),
+      ).toEqual(expectedMatches);
+      expect(
+        [...resolution.projectsByDiagnostic.entries()].map(([diagnostic, matches]) => [
+          diagnostic,
+          matches.map(project => project.id),
+        ]),
+      ).toEqual(
+        orderedDiagnostics.map(diagnostic => [
+          diagnostic,
+          naiveDiagnosticProjects(projects, diagnostic).map(project => project.id),
+        ]),
+      );
+      expect(resolution.projects.map(project => [project.id, project.diagnostics])).toEqual(
+        projects.map(project => [
+          project.id,
+          orderedDiagnostics.filter(diagnostic =>
+            naiveDiagnosticProjects(projects, diagnostic).some(match => match.id === project.id),
+          ),
+        ]),
+      );
+      expect(resolveCodeGraphWorkspaceDiagnostics(projects, [...diagnostics, ...diagnostics])).toEqual(resolution);
+    },
+    {fastCheck: {numRuns: 80}},
   );
 
   fcProp(
