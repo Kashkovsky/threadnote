@@ -5,6 +5,27 @@ export const CODE_GRAPH_WORKSPACE_DIAGNOSTIC_LIMIT = 100;
 export const CODE_GRAPH_WORKSPACE_DIAGNOSTIC_OVERFLOW =
   'Workspace discovery omitted unattributed diagnostics after its deterministic bound.';
 
+export function codeGraphWorkspaceDiagnosticBlocksCompleteness(diagnostic: string): boolean {
+  return !diagnostic.includes('cannot form a package moniker');
+}
+
+export function collapseCodeGraphWorkspaceDiagnosticClasses(
+  diagnostics: readonly string[],
+  limit = CODE_GRAPH_WORKSPACE_DIAGNOSTIC_LIMIT,
+): readonly string[] {
+  const groups = new Map<string, string[]>();
+  for (const diagnostic of uniqueStrings(diagnostics)) {
+    const separator = diagnostic.indexOf(': ');
+    const diagnosticClass = separator < 0 ? diagnostic : diagnostic.slice(separator + 2);
+    const group = groups.get(diagnosticClass);
+    if (group === undefined) groups.set(diagnosticClass, [diagnostic]);
+    else group.push(diagnostic);
+  }
+  return [...groups.values()]
+    .map(group => (group.length === 1 ? group[0] : `${group[0]} (${group.length} occurrences)`))
+    .slice(0, limit);
+}
+
 export interface CodeGraphWorkspaceDiagnosticIndex {
   readonly projectsByPrefix: ReadonlyMap<string, readonly CodeGraphWorkspaceProject[]>;
 }
@@ -74,7 +95,8 @@ export function resolveCodeGraphWorkspaceDiagnostics(
 export function boundedCodeGraphWorkspaceDiagnostics(
   resolution: CodeGraphWorkspaceDiagnosticResolution,
 ): readonly string[] {
-  const retained = resolution.diagnostics.slice(0, CODE_GRAPH_WORKSPACE_DIAGNOSTIC_LIMIT);
+  const collapsed = collapseCodeGraphWorkspaceDiagnosticClasses(resolution.diagnostics);
+  const retained = collapsed.slice(0, CODE_GRAPH_WORKSPACE_DIAGNOSTIC_LIMIT);
   const omittedUnattributed = resolution.diagnostics
     .slice(CODE_GRAPH_WORKSPACE_DIAGNOSTIC_LIMIT)
     .some(diagnostic => resolution.projectsByDiagnostic.get(diagnostic)?.length === 0);

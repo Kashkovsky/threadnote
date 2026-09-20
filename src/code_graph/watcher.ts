@@ -91,7 +91,7 @@ export interface CodeGraphWatchOptions {
   /** @internal A single-use durable registration bound to its observed target. */
   readonly refreshDemandPrepared?: CodeGraphPreparedRefreshDemand;
   /** Optional configured graph view. Omission preserves the full-repository watch contract. */
-  readonly project?: Pick<ProjectManifest, 'graph' | 'uri'>;
+  readonly project?: Pick<ProjectManifest, 'graph' | 'uri'> & {readonly name?: string};
   readonly threadnoteHome: string;
 }
 

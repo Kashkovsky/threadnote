@@ -6,6 +6,8 @@ import type {CodeGraphLanguagePackError, CodeGraphWorkspace, CodeGraphWorkspaceP
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphInventoryFile} from './types.js';
 import {
+  codeGraphWorkspaceDiagnosticBlocksCompleteness,
+  collapseCodeGraphWorkspaceDiagnosticClasses,
   codeGraphWorkspaceProjectsForDiagnostic,
   createCodeGraphWorkspaceDiagnosticIndex,
 } from './workspace/diagnostics.js';
@@ -165,7 +167,8 @@ function resolvedScope(input: {
 }): ResolvedCodeGraphIndexScope {
   const diagnostics = uniqueStrings(input.diagnostics);
   const completeness =
-    diagnostics.length === 0 && input.includedProjects.every(project => project.provenance === 'declared')
+    diagnostics.every(diagnostic => !codeGraphWorkspaceDiagnosticBlocksCompleteness(diagnostic)) &&
+    input.includedProjects.every(project => project.provenance === 'declared')
       ? 'complete'
       : 'partial';
   const controlPaths = uniqueStrings(input.controlPaths ?? input.catalog.resolutionContextPaths);
@@ -215,7 +218,7 @@ function scopeDiagnostics(
   const selectedIds = new Set(projects.map(project => project.id));
   const diagnosticIndex =
     selected === undefined ? undefined : createCodeGraphWorkspaceDiagnosticIndex(workspace.projects);
-  return uniqueStrings([
+  return collapseCodeGraphWorkspaceDiagnosticClasses([
     ...workspace.diagnostics.filter(diagnostic => {
       if (selected === undefined) return true;
       const attributed = codeGraphWorkspaceProjectsForDiagnostic(diagnosticIndex!, diagnostic);
@@ -259,7 +262,7 @@ function diagnosticAppliesToScope(
 function workspaceCatalogFingerprint(files: readonly CodeGraphInventoryFile[]): string {
   return sha256HexSync(
     [
-      'code-graph-workspace-catalog-v1',
+      'code-graph-workspace-catalog-v2',
       ...files.map(file => [file.path, file.mode, file.blobId, file.contentHash].join('\0')),
     ].join('\n'),
   );

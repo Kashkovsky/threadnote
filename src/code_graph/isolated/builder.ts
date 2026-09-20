@@ -72,7 +72,7 @@ export interface CodeGraphIsolatedBuilderOptions {
   readonly noVectors?: boolean;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
   /** Carries the configured view through the pre-spawn status/lock routing. */
-  readonly project?: Pick<ProjectManifest, 'graph' | 'uri'>;
+  readonly project?: Pick<ProjectManifest, 'graph' | 'uri'> & {readonly name?: string};
   /** @internal Deterministic shared-sidecar seam for cross-host spawn tests. */
   readonly readStatus?: Effect.Effect<ObservedCodeGraphBuildStatus | undefined, unknown>;
   /** Privacy-safe build request identity used for exact completed-result reuse. */
@@ -91,6 +91,7 @@ export interface CodeGraphIsolatedBuilderOptions {
       readonly cwd: string;
       readonly full?: boolean;
       readonly noVectors?: boolean;
+      readonly project?: string;
       readonly refreshDemandToken?: string;
       readonly threadnoteHome: string;
     },
@@ -134,6 +135,7 @@ export function codeGraphIsolatedBuilderSpawnPlan(
     readonly cwd: string;
     readonly full?: boolean;
     readonly noVectors?: boolean;
+    readonly project?: string;
     readonly refreshDemandToken?: string;
     readonly threadnoteHome: string;
   },
@@ -148,6 +150,7 @@ export function codeGraphIsolatedBuilderSpawnPlan(
       'index',
       ...(options.full === true ? ['--full'] : []),
       ...(options.noVectors === false ? [] : ['--no-vectors']),
+      ...(options.project === undefined ? [] : ['--project', options.project]),
       '--cwd',
       options.cwd,
     ],
@@ -314,8 +317,6 @@ export const runIsolatedCodeGraphIndex: (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const identity = yield* options.resolveIdentity?.(options.cwd) ?? resolveRepositoryIdentity(options.cwd);
-  // The child command receives the caller cwd, so command routing can select
-  // the same configured view without serializing manifest details into IPC.
   const layout = codeGraphLayout(
     path,
     options.threadnoteHome,
@@ -329,6 +330,7 @@ export const runIsolatedCodeGraphIndex: (
     cwd: options.cwd,
     full: options.full,
     noVectors: options.noVectors,
+    project: options.project?.name,
     refreshDemandToken: options.refreshDemandToken,
     threadnoteHome: options.threadnoteHome,
   });

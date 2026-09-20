@@ -43,6 +43,18 @@ const BAZEL_DEPENDENCY_ATTRIBUTES = new Set([
  */
 export function discoverBazelWorkspace(files: readonly CodeGraphInventoryFile[]): CodeGraphWorkspace {
   const diagnostics: string[] = [];
+  const nodePackageRoots = new Set(
+    files.filter(file => basename(file.path).toLowerCase() === 'package.json').map(file => dirname(file.path)),
+  );
+  const typeScriptConfigsByRoot = new Map<string, string>();
+  for (const file of [...files].sort((left, right) => compareCodeUnits(left.path, right.path))) {
+    if (!/^tsconfig(?:\.[^/]+)?\.jsonc?$/iu.test(basename(file.path))) continue;
+    const root = dirname(file.path);
+    const existing = typeScriptConfigsByRoot.get(root);
+    if (existing === undefined || basename(file.path).toLowerCase() === 'tsconfig.json') {
+      typeScriptConfigsByRoot.set(root, file.path);
+    }
+  }
   const workspaceMarkers = files
     .filter(file => BAZEL_WORKSPACE_MARKERS.has(basename(file.path).toLowerCase()))
     .sort((left, right) => compareCodeUnits(left.path, right.path));
@@ -92,12 +104,17 @@ export function discoverBazelWorkspace(files: readonly CodeGraphInventoryFile[])
   for (const candidate of candidates) {
     projectIdByPackage.set(
       bazelPackageIdentity(candidate.workspaceRoot, candidate.packagePath),
-      bazelProjectIdentity(candidate.root),
+      bazelProjectIdentity(candidate.root, nodePackageRoots, typeScriptConfigsByRoot),
     );
   }
   const diagnosticResolution = resolveCodeGraphWorkspaceDiagnostics(
     candidates.map(candidate => {
-      const id = bazelProjectIdentity(candidate.root);
+      const id = bazelProjectIdentity(candidate.root, nodePackageRoots, typeScriptConfigsByRoot);
+      const overlappingDomain = nodePackageRoots.has(candidate.root)
+        ? 'typescript'
+        : typeScriptConfigsByRoot.has(candidate.root)
+          ? 'typescript-config'
+          : 'bazel';
       const dependencies = new Map<string, CodeGraphWorkspaceDependency>();
       for (const dependency of candidate.dependencyLabels) {
         const parsed = bazelLabelPackage(dependency.label);
@@ -124,7 +141,7 @@ export function discoverBazelWorkspace(files: readonly CodeGraphInventoryFile[])
         languages: ['bazel', 'starlark'],
         name: candidate.name,
         provenance: 'declared',
-        resolutionDomain: 'bazel',
+        resolutionDomain: overlappingDomain,
         root: candidate.root,
         sourceRoots: [candidate.root],
         workspaceId: workspaceIdentity('bazel', candidate.workspaceRoot),
@@ -215,6 +232,15 @@ function bazelPackageIdentity(workspaceRoot: string, packagePath: string): strin
   return `${workspaceRoot}\0${packagePath}`;
 }
 
-function bazelProjectIdentity(root: string): string {
-  return `cgp_${sha256HexSync(`project-v1\nbazel\n${root}`).slice(0, 32)}`;
+function bazelProjectIdentity(
+  root: string,
+  nodePackageRoots: ReadonlySet<string>,
+  typeScriptConfigsByRoot: ReadonlyMap<string, string>,
+): string {
+  const identity = nodePackageRoots.has(root)
+    ? `typescript\n${root}`
+    : typeScriptConfigsByRoot.has(root)
+      ? `tsconfig:${typeScriptConfigsByRoot.get(root)!}`
+      : `bazel\n${root}`;
+  return `cgp_${sha256HexSync(`project-v1\n${identity}`).slice(0, 32)}`;
 }

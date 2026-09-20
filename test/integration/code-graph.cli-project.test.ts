@@ -111,6 +111,63 @@ describe('code graph CLI project selection', () => {
       await rm(root, {force: true, recursive: true});
     }
   }, 60_000);
+
+  it('selects a configured project by checkout identity from a linked worktree', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'threadnote-graph-cli-linked-project-'));
+    const root = join(fixture, 'repository');
+    const linked = join(fixture, 'linked');
+    const home = join(fixture, '.threadnote-home');
+    const manifest = join(home, 'seed-manifest.yaml');
+    try {
+      await mkdir(join(root, 'apps', 'web'), {recursive: true});
+      await writeFile(join(root, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+      await writeFile(join(root, 'apps', 'web', 'package.json'), JSON.stringify({name: '@fixture/web'}));
+      await writeFile(join(root, 'apps', 'web', 'index.ts'), 'export const web = true;\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+      await execFilePromise('git', ['-C', root, 'worktree', 'add', '--detach', linked, 'HEAD']);
+      await mkdir(home, {recursive: true});
+      await writeFile(
+        manifest,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: web',
+          `    path: ${root}`,
+          '    seed: []',
+          '    uri: threadnote://resources/repos/web',
+          '    graph:',
+          '      closure: dependencies',
+          '      roots: [apps/web]',
+          '',
+        ].join('\n'),
+      );
+      const base = ['--home', home, '--manifest', manifest, '--cwd', linked];
+      const indexed = JSON.parse((await runCli(['graph', 'index', ...base, '--no-vectors', '--json'])).stdout);
+      expect(indexed).toMatchObject({snapshot: {scopeId: expect.stringMatching(/^code-graph-scope:/u)}});
+      const status = JSON.parse((await runCli(['graph', 'status', ...base, '--json'])).stdout);
+      expect(status).toMatchObject({projectCoverage: {kind: 'project', project: 'web'}});
+      const automaticQuery = JSON.parse((await runCli(['graph', 'query', ...base, '--query', 'web', '--json'])).stdout);
+      expect(automaticQuery).toMatchObject({projectCoverage: {kind: 'project', project: 'web'}});
+      const explicitStatus = JSON.parse(
+        (await runCli(['graph', 'status', ...base, '--project', 'web', '--json'])).stdout,
+      );
+      expect(explicitStatus).toMatchObject({projectCoverage: {kind: 'project', project: 'web'}});
+    } finally {
+      await rm(fixture, {force: true, recursive: true});
+    }
+  }, 60_000);
 });
 
 function asProcessError(cause: unknown): NodeJS.ErrnoException & {stderr?: string} {

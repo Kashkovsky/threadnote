@@ -9,6 +9,7 @@ import type {
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {
   createWorkspaceAttributor,
+  discoverBazelWorkspace,
   discoverManifestWorkspace,
   mergeCodeGraphWorkspaces,
   workspaceHasUninventoriedMonikerEvidence,
@@ -276,6 +277,121 @@ describe('code graph workspace properties', () => {
     );
   });
 
+  it('uses JSONC path aliases for local dependencies without treating workspace-only names as registry packages', () => {
+    const workspace = discoverManifestWorkspace([
+      workspaceFile('package.json', JSON.stringify({name: '@acme/browser', private: true}), 'npm-manifest'),
+      workspaceFile(
+        'tsconfig.json',
+        `{
+          "compilerOptions": {
+            "baseUrl": ".",
+            "paths": {"@acme/*": ["./modules/*"],},
+            "skipLibCheck": true,
+            /* block comment after a trailing comma */
+          },
+        }`,
+        'typescript-config',
+      ),
+      workspaceFile(
+        'modules/shared/accounts/package.json',
+        JSON.stringify({name: '@acme/shared/accounts'}),
+        'npm-manifest',
+      ),
+      workspaceFile('modules/shared/accounts/index.ts', 'export const account = true', 'typescript'),
+    ]);
+    const root = workspace.projects.find(project => project.root === '')!;
+    const accounts = workspace.projects.find(project => project.root === 'modules/shared/accounts')!;
+
+    expect(workspace.projects.filter(project => project.root === '')).toHaveLength(1);
+    expect(root.dependencies).toContain(accounts.id);
+    expect(root.dependencyDetails).toContainEqual(
+      expect.objectContaining({evidence: 'tsconfig.json', provenance: 'declared', targetId: accounts.id}),
+    );
+    expect(accounts.monikers).toEqual([]);
+    expect(workspace.diagnostics).not.toContainEqual(expect.stringContaining('invalid TypeScript config'));
+    expect(workspace.diagnostics).not.toContainEqual(expect.stringContaining('cannot form a package moniker'));
+  });
+
+  it('collapses overlapping Node, TypeScript, and Bazel package components at one root', () => {
+    const contexts = [
+      workspaceFile('package.json', JSON.stringify({name: '@acme/app', private: true}), 'npm-manifest'),
+      workspaceFile('tsconfig.json', JSON.stringify({include: ['src/**/*.ts']}), 'typescript-config'),
+      workspaceFile('BUILD', 'ts_project(name = "app", deps = ["//packages/core:core"])', 'bazel-build'),
+      workspaceFile('packages/core/package.json', JSON.stringify({name: '@acme/core'}), 'npm-manifest'),
+      workspaceFile('packages/core/tsconfig.json', JSON.stringify({include: ['src/**/*.ts']}), 'typescript-config'),
+      workspaceFile('packages/core/BUILD', 'ts_project(name = "core")', 'bazel-build'),
+    ];
+    const workspace = mergeCodeGraphWorkspaces([discoverManifestWorkspace(contexts), discoverBazelWorkspace(contexts)]);
+    const app = workspace.projects.find(project => project.root === '')!;
+    const core = workspace.projects.find(project => project.root === 'packages/core')!;
+
+    expect(workspace.projects.filter(project => project.root === '')).toHaveLength(1);
+    expect(workspace.projects.filter(project => project.root === 'packages/core')).toHaveLength(1);
+    expect(app).toMatchObject({buildSystem: 'node', name: '@acme/app', resolutionDomain: 'typescript'});
+    expect(app.languages).toEqual(expect.arrayContaining(['bazel', 'starlark', 'typescript']));
+    expect(app.dependencies).toContain(core.id);
+
+    const [attributed] = createWorkspaceAttributor(workspace)([
+      {
+        diagnostics: [],
+        edges: [],
+        path: 'BUILD',
+        references: [
+          {
+            edgeId: 'bazel-dependency',
+            evidencePath: 'BUILD',
+            evidenceSpan: {column: 1, endColumn: 1, endLine: 1, line: 1},
+            lookupTiers: [['bazel:label://packages/core:core']],
+            provenance: 'declared',
+            relation: 'depends_on',
+            resolutionDomain: 'bazel',
+            sourceName: '//:app',
+            targetName: '//packages/core:core',
+          },
+        ],
+        symbols: [workspaceSymbol('bazel-app', 'BUILD', '//:app', 'bazel', 'bazel-build')],
+      },
+    ]);
+    expect(attributed.symbols[0]).toMatchObject({packageName: '@acme/app', resolutionScopeId: app.id});
+    expect(attributed.symbols[0].lookupKeys).toEqual([`bazel:${app.id}:path:BUILD:name://:app`]);
+    expect(attributed.references?.[0].lookupTiers).toEqual([
+      [`bazel:${app.id}:label://packages/core:core`],
+      [`bazel:${core.id}:label://packages/core:core`],
+    ]);
+  });
+
+  fcProp(
+    it,
+    'keeps wildcard TypeScript path dependencies stable as unrelated package catalogs grow',
+    {unrelatedPackageCount: FC.integer({max: 120, min: 0})},
+    ({unrelatedPackageCount}) => {
+      const workspace = discoverManifestWorkspace([
+        workspaceFile('package.json', JSON.stringify({name: '@acme/app', private: true}), 'npm-manifest'),
+        workspaceFile(
+          'tsconfig.json',
+          JSON.stringify({compilerOptions: {paths: {'@acme/*': ['./packages/*']}}}),
+          'typescript-config',
+        ),
+        workspaceFile('packages/core/package.json', JSON.stringify({name: '@acme/core'}), 'npm-manifest'),
+        ...Array.from({length: unrelatedPackageCount}, (_, index) =>
+          workspaceFile(
+            `packages/unrelated-${index}/package.json`,
+            JSON.stringify({name: `@unrelated/package-${index}`}),
+            'npm-manifest',
+          ),
+        ),
+      ]);
+      const app = workspace.projects.find(project => project.root === '')!;
+      const core = workspace.projects.find(project => project.root === 'packages/core')!;
+
+      expect(app.dependencies).toContain(core.id);
+      expect(app.dependencyDetails).toContainEqual(
+        expect.objectContaining({evidence: 'tsconfig.json', targetId: core.id}),
+      );
+    },
+    {fastCheck: {numRuns: 40}},
+  );
+
   it('uses a pnpm workspace without a root package and never lets a later positive override an exclusion', () => {
     const workspace = discoverManifestWorkspace([
       workspaceFile(
@@ -396,12 +512,8 @@ describe('code graph workspace properties', () => {
       const coreBuild = nxTarget('core:build');
       const webBuild = nxTarget('web:build');
       const webTest = nxTarget('web:test');
-      const coreConfig = workspace.projects.find(
-        project => project.buildSystem === 'typescript' && project.root === 'apps/core',
-      )!;
-      const webConfig = workspace.projects.find(
-        project => project.buildSystem === 'typescript' && project.root === 'apps/web',
-      )!;
+      const corePackage = workspace.projects.find(project => project.name === '@acme/core')!;
+      const webPackage = workspace.projects.find(project => project.name === '@acme/web')!;
 
       expect(permuted).toEqual(workspace);
       expect(core.sourceRoots).toEqual(['apps/core/src']);
@@ -409,7 +521,13 @@ describe('code graph workspace properties', () => {
       expect(web.dependencies).toContain(core.id);
       expect(webBuild.dependencies).toEqual(expect.arrayContaining([web.id, coreBuild.id]));
       expect(webTest.dependencies).toEqual(expect.arrayContaining([web.id, webBuild.id]));
-      expect(webConfig.dependencies).toContain(coreConfig.id);
+      expect(webPackage.dependencies).toContain(corePackage.id);
+      expect(
+        workspace.projects.filter(project => project.root === 'apps/core' && project.kind !== 'target'),
+      ).toHaveLength(2);
+      expect(
+        workspace.projects.filter(project => project.root === 'apps/web' && project.kind !== 'target'),
+      ).toHaveLength(2);
       expect(workspace.projects.filter(project => project.buildSystem === 'pnpm').map(project => project.name)).toEqual(
         ['root', '@acme/core', '@acme/web'],
       );

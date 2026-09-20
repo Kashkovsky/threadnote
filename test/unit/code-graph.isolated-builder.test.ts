@@ -206,6 +206,26 @@ describe('isolated code-graph builder spawn plan', () => {
     expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
   });
 
+  it('forwards the selected project to isolated graph-index children', () => {
+    const plan = codeGraphIsolatedBuilderSpawnPlan(systemInfoStub({}), {
+      cwd: '/repo/worktree',
+      project: 'payments',
+      threadnoteHome: '/home/.threadnote',
+    });
+    expect(plan.arguments).toEqual([
+      '--home',
+      '/home/.threadnote',
+      'graph',
+      'index',
+      '--no-vectors',
+      '--project',
+      'payments',
+      '--cwd',
+      '/repo/worktree',
+    ]);
+    expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
+  });
+
   it('preserves bounded admission metadata while mirroring queued child progress', () => {
     const queue = {admissionClass: 'background' as const, enqueuedAt: '2026-09-17T12:00:00.000Z', position: 3, size: 4};
     expect(
@@ -638,11 +658,20 @@ describe('isolated builder cross-host spawn admission', () => {
                 cwd: identity.repoRoot,
                 readStatus: succeedUndefined,
                 resolveIdentity: () => Effect.succeed(identity),
-                spawn: () => ({
-                  exited: Promise.resolve(CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE),
-                  kill: () => undefined,
-                  processId: 77,
-                }),
+                project: {
+                  graph: {closure: 'dependencies', roots: ['apps/payments']},
+                  name: 'payments',
+                  uri: 'threadnote://resources/repos/payments',
+                },
+                spawn: plan => {
+                  expect(plan.arguments).toContain('--project');
+                  expect(plan.arguments[plan.arguments.indexOf('--project') + 1]).toBe('payments');
+                  return {
+                    exited: Promise.resolve(CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE),
+                    kill: () => undefined,
+                    processId: 77,
+                  };
+                },
                 threadnoteHome: home,
               }),
             );

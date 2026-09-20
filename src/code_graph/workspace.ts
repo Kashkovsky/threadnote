@@ -45,7 +45,7 @@ interface WorkspaceProjectPathIndex {
 
 const workspaceProjectPathIndexes = new WeakMap<readonly CodeGraphWorkspaceProject[], WorkspaceProjectPathIndex>();
 
-export const CODE_GRAPH_WORKSPACE_MODEL_VERSION = 'code-graph-workspace-set-v2' as const;
+export const CODE_GRAPH_WORKSPACE_MODEL_VERSION = 'code-graph-workspace-set-v3' as const;
 
 export const manifestWorkspaceDetector: CodeGraphWorkspaceDetector = {
   contextFiles: [],
@@ -129,7 +129,7 @@ export function mergeCodeGraphWorkspaces(workspaces: readonly CodeGraphWorkspace
         kind: preferred.kind,
         languages: uniqueStrings([...existing.languages, ...project.languages]),
         monikers: canonicalCodeGraphMonikers([...(existing.monikers ?? []), ...(project.monikers ?? [])]),
-        name: preferredProjectName(existing.name, project.name),
+        name: preferred.name,
         provenance: existing.provenance === 'declared' || project.provenance === 'declared' ? 'declared' : 'inferred',
         resolutionDomain: preferred.resolutionDomain,
         root: preferred.root,
@@ -217,6 +217,7 @@ function compareWorkspaceProjectPrecedence(left: CodeGraphWorkspaceProject, righ
   return (
     Number(right.provenance === 'declared') - Number(left.provenance === 'declared') ||
     Number(left.buildSystem === 'inferred') - Number(right.buildSystem === 'inferred') ||
+    workspaceProjectBuildSystemRank(left.buildSystem) - workspaceProjectBuildSystemRank(right.buildSystem) ||
     componentKindRank(left.kind) - componentKindRank(right.kind) ||
     compareCodeUnits(left.kind, right.kind) ||
     compareCodeUnits(left.buildSystem, right.buildSystem) ||
@@ -225,6 +226,21 @@ function compareWorkspaceProjectPrecedence(left: CodeGraphWorkspaceProject, righ
     compareCodeUnits(left.root, right.root) ||
     compareCodeUnits(left.name, right.name)
   );
+}
+
+function workspaceProjectBuildSystemRank(buildSystem: CodeGraphWorkspaceProject['buildSystem']): number {
+  switch (buildSystem) {
+    case 'node':
+    case 'pnpm':
+    case 'nx':
+      return 0;
+    case 'typescript':
+      return 1;
+    case 'bazel':
+      return 2;
+    default:
+      return 3;
+  }
 }
 
 function mergedWorkspaceFingerprint(
@@ -575,6 +591,7 @@ function mergeProjectCandidates(candidates: readonly ProjectCandidate[]): readon
       aliases: unique([...existing.aliases, ...candidate.aliases]).sort(),
       buildSystem: preferred.buildSystem,
       dependencyAliases: unique([...existing.dependencyAliases, ...candidate.dependencyAliases]).sort(),
+      dependencyEvidence: mergeDependencyEvidence(existing.dependencyEvidence, candidate.dependencyEvidence),
       diagnostics: unique([...existing.diagnostics, ...candidate.diagnostics]).sort(),
       evidence: preferred.evidence ?? existing.evidence ?? candidate.evidence,
       externalDependencies: normalizeExternalDependencies([
@@ -586,9 +603,12 @@ function mergeProjectCandidates(candidates: readonly ProjectCandidate[]): readon
         : {}),
       kind: preferred.kind,
       languages: unique([...existing.languages, ...candidate.languages]).sort(),
-      name: preferredProjectName(existing.name, candidate.name),
+      name: preferred.name,
       ...(preferred.packageNameSpan === undefined ? {} : {packageNameSpan: preferred.packageNameSpan}),
       ...(preferred.packageNameDeclared === undefined ? {} : {packageNameDeclared: preferred.packageNameDeclared}),
+      ...(preferred.packageNameRegistryValid === undefined
+        ? {}
+        : {packageNameRegistryValid: preferred.packageNameRegistryValid}),
       ...(preferred.packageVersion === undefined ? {} : {packageVersion: preferred.packageVersion}),
       provenance: existing.provenance === 'declared' || candidate.provenance === 'declared' ? 'declared' : 'inferred',
       resolutionDomain: preferred.resolutionDomain,
@@ -603,6 +623,20 @@ function mergeProjectCandidates(candidates: readonly ProjectCandidate[]): readon
       compareCodeUnits(left.resolutionDomain, right.resolutionDomain) ||
       compareCodeUnits(left.name, right.name),
   );
+}
+
+function mergeDependencyEvidence(
+  left: ReadonlyMap<string, string> | undefined,
+  right: ReadonlyMap<string, string> | undefined,
+): ReadonlyMap<string, string> {
+  const merged = new Map<string, string>();
+  for (const [alias, evidence] of [...(left ?? []), ...(right ?? [])].sort(([leftAlias], [rightAlias]) =>
+    compareCodeUnits(leftAlias, rightAlias),
+  )) {
+    const existing = merged.get(alias);
+    if (existing === undefined || compareCodeUnits(evidence, existing) < 0) merged.set(alias, evidence);
+  }
+  return merged;
 }
 
 function preferredProjectCandidate(left: ProjectCandidate, right: ProjectCandidate): ProjectCandidate {
@@ -662,12 +696,21 @@ function materializeProjects(
   }
   return candidates.map(candidate => {
     const id = projectIds.get(candidate)!;
-    const dependencies = new Set<string>();
+    const dependencies = new Map<string, string | undefined>();
     for (const alias of uniqueStrings(candidate.dependencyAliases)) {
       const targets = aliases.get(alias);
       if (targets?.size === 1) {
         const target = [...targets][0];
-        if (target !== id) dependencies.add(target);
+        if (target !== id) {
+          const evidence = candidate.dependencyEvidence?.get(alias) ?? candidate.evidence;
+          const existing = dependencies.get(target);
+          if (
+            !dependencies.has(target) ||
+            (evidence !== undefined && (existing === undefined || evidence < existing))
+          ) {
+            dependencies.set(target, evidence);
+          }
+        }
       } else if (targets && targets.size > 1) {
         const qualifier = [...targets].every(target => candidatesById.get(target)?.provenance === 'declared')
           ? 'declared '
@@ -709,7 +752,11 @@ function materializeProjects(
         diagnostics.push(`${dependency.evidence.path}: npm dependency cannot form a package moniker`);
       }
     }
-    if ((candidate.buildSystem === 'node' || candidate.buildSystem === 'pnpm') && candidate.packageNameDeclared) {
+    if (
+      (candidate.buildSystem === 'node' || candidate.buildSystem === 'pnpm') &&
+      candidate.packageNameDeclared &&
+      candidate.packageNameRegistryValid
+    ) {
       try {
         monikers.push(
           codeGraphPackageMoniker({
@@ -729,10 +776,10 @@ function materializeProjects(
     }
     return {
       buildSystem: candidate.buildSystem,
-      dependencies: [...dependencies].sort(),
-      dependencyDetails: [...dependencies]
-        .sort()
-        .map(targetId => ({evidence: candidate.evidence, provenance: candidate.provenance, targetId})),
+      dependencies: [...dependencies.keys()].sort(),
+      dependencyDetails: [...dependencies.entries()]
+        .sort(([left], [right]) => compareCodeUnits(left, right))
+        .map(([targetId, evidence]) => ({evidence, provenance: candidate.provenance, targetId})),
       externalDependencies,
       diagnostics: candidate.diagnostics,
       id,
@@ -758,10 +805,13 @@ function attributeSymbol(symbol: CodeGraphSymbol, project: CodeGraphWorkspacePro
   ) {
     return {...symbol, packageName: project.name};
   }
-  if (symbol.resolutionDomain !== project.resolutionDomain) return symbol;
+  const resolutionDomain = symbol.resolutionDomain;
+  if (resolutionDomain === undefined || !projectSupportsResolutionDomain(project, resolutionDomain)) {
+    return symbol;
+  }
   return {
     ...symbol,
-    lookupKeys: (symbol.lookupKeys ?? []).map(key => scopedLookupKey(key, project)),
+    lookupKeys: (symbol.lookupKeys ?? []).map(key => scopedLookupKey(key, project, resolutionDomain)),
     packageName: project.name,
     resolutionScopeId: project.id,
   };
@@ -772,28 +822,36 @@ function attributeReference(
   project: CodeGraphWorkspaceProject,
   projectsById: ReadonlyMap<string, CodeGraphWorkspaceProject>,
 ): CodeGraphReference {
-  if (reference.resolutionDomain !== project.resolutionDomain) return reference;
+  if (!projectSupportsResolutionDomain(project, reference.resolutionDomain)) return reference;
   const lookupTiers: Array<readonly string[]> = [];
   for (const tier of reference.lookupTiers) {
-    lookupTiers.push(tier.map(key => scopedLookupKey(key, project)));
+    lookupTiers.push(tier.map(key => scopedLookupKey(key, project, reference.resolutionDomain)));
     const dependencyKeys = project.dependencies.flatMap(dependencyId => {
       const dependency = projectsById.get(dependencyId);
-      return dependency?.resolutionDomain === project.resolutionDomain
-        ? tier.map(key => scopedLookupKey(key, dependency))
+      return dependency && projectSupportsResolutionDomain(dependency, reference.resolutionDomain)
+        ? tier.map(key => scopedLookupKey(key, dependency, reference.resolutionDomain))
         : [];
     });
     if (dependencyKeys.length > 0) lookupTiers.push(unique(dependencyKeys));
   }
   return {
     ...reference,
-    aliasLookupKeys: reference.aliasLookupKeys?.map(key => scopedLookupKey(key, project)),
+    aliasLookupKeys: reference.aliasLookupKeys?.map(key => scopedLookupKey(key, project, reference.resolutionDomain)),
     lookupTiers,
   };
 }
 
-function scopedLookupKey(key: string, project: CodeGraphWorkspaceProject): string {
-  const prefix = `${project.resolutionDomain}:`;
+function scopedLookupKey(key: string, project: CodeGraphWorkspaceProject, resolutionDomain: string): string {
+  const prefix = `${resolutionDomain}:`;
   return key.startsWith(prefix) ? `${prefix}${project.id}:${key.slice(prefix.length)}` : key;
+}
+
+function projectSupportsResolutionDomain(project: CodeGraphWorkspaceProject, resolutionDomain: string): boolean {
+  return (
+    project.resolutionDomain === resolutionDomain ||
+    (resolutionDomain === 'bazel' &&
+      project.languages.some(language => language === 'bazel' || language === 'starlark'))
+  );
 }
 
 function createWorkspaceFileIndex(files: readonly CodeGraphInventoryFile[]): WorkspaceFileIndex {
@@ -841,20 +899,26 @@ function nearestPrefixProject(
   let prefix = filePath;
   for (;;) {
     const candidates = projectsByPrefix.get(prefix) ?? [];
-    const project =
-      resolutionDomain === undefined
-        ? candidates[0]
-        : candidates.find(candidate => candidate.resolutionDomain === resolutionDomain);
+    const project = matchingResolutionProject(candidates, resolutionDomain);
     if (project) return project;
     const separator = prefix.lastIndexOf('/');
     if (separator < 0) {
       const roots = projectsByPrefix.get('') ?? [];
-      return resolutionDomain === undefined
-        ? roots[0]
-        : roots.find(candidate => candidate.resolutionDomain === resolutionDomain);
+      return matchingResolutionProject(roots, resolutionDomain);
     }
     prefix = prefix.slice(0, separator);
   }
+}
+
+function matchingResolutionProject(
+  candidates: readonly CodeGraphWorkspaceProject[],
+  resolutionDomain: string | undefined,
+): CodeGraphWorkspaceProject | undefined {
+  if (resolutionDomain === undefined) return candidates[0];
+  return (
+    candidates.find(candidate => candidate.resolutionDomain === resolutionDomain) ??
+    candidates.find(candidate => projectSupportsResolutionDomain(candidate, resolutionDomain))
+  );
 }
 
 function hasIndexedPathWithin(sortedPaths: readonly string[], root: string): boolean {
@@ -994,15 +1058,4 @@ function uniqueBy<T>(values: readonly T[], key: (value: T) => string): T[] {
   const output = new Map<string, T>();
   for (const value of values) output.set(key(value), value);
   return [...output.values()];
-}
-
-function preferredProjectName(left: string, right: string): string {
-  if (left === right) return left;
-  return left.length === right.length
-    ? compareCodeUnits(left, right) <= 0
-      ? left
-      : right
-    : left.length < right.length
-      ? left
-      : right;
 }

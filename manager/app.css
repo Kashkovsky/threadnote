@@ -3410,9 +3410,35 @@ dd {
   display: grid;
   gap: 14px;
   max-height: min(760px, calc(100dvh - 40px));
-  overflow: hidden;
+  overflow-y: auto;
   padding: 18px;
   width: min(620px, 100%);
+}
+
+.project-scope-preview {
+  border-top: 1px solid var(--line-soft);
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+.project-scope-preview header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.project-scope-preview h3,
+.project-scope-preview p {
+  margin: 0;
+}
+
+.project-scope-preview-diagnostics {
+  color: var(--muted);
+  margin: 0;
+  padding-left: 20px;
 }
 
 .project-editor > label > .worksets-muted {

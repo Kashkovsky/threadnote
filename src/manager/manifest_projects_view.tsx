@@ -41,8 +41,13 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
   const [notice, setNotice] = useState('');
   const [detailError, setDetailError] = useState('');
   const [scopePreview, setScopePreview] = useState<CodeGraphProjectScopePreview>();
+  const [scopePreviewError, setScopePreviewError] = useState('');
+  const [scopePreviewLoading, setScopePreviewLoading] = useState(false);
   const detailRequestRef = useRef<AbortController | undefined>(undefined);
   const detailSequenceRef = useRef(0);
+  const scopePreviewBusyRef = useRef(false);
+  const scopePreviewRequestRef = useRef<AbortController | undefined>(undefined);
+  const scopePreviewSequenceRef = useRef(0);
 
   useEffect(() => {
     const projects = props.catalog?.projects ?? [];
@@ -54,8 +59,17 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
   }, [props.catalog?.projects]);
 
   useEffect(() => {
+    scopePreviewSequenceRef.current += 1;
+    scopePreviewRequestRef.current?.abort();
+    if (scopePreviewBusyRef.current) {
+      scopePreviewBusyRef.current = false;
+      setBusy(false);
+    }
     setSelectedProject(undefined);
     setDetailError('');
+    setScopePreview(undefined);
+    setScopePreviewError('');
+    setScopePreviewLoading(false);
     if (selectedName) void loadProject(selectedName);
   }, [selectedName, props.catalog?.revision]);
 
@@ -63,6 +77,9 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
     () => () => {
       detailSequenceRef.current += 1;
       detailRequestRef.current?.abort();
+      scopePreviewBusyRef.current = false;
+      scopePreviewSequenceRef.current += 1;
+      scopePreviewRequestRef.current?.abort();
     },
     [],
   );
@@ -171,17 +188,35 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
 
   async function previewScope(): Promise<void> {
     if (!selectedProject) return;
+    scopePreviewRequestRef.current?.abort();
+    const controller = new AbortController();
+    scopePreviewRequestRef.current = controller;
+    const sequence = scopePreviewSequenceRef.current + 1;
+    scopePreviewSequenceRef.current = sequence;
+    scopePreviewBusyRef.current = true;
     setBusy(true);
     setNotice('');
+    setScopePreview(undefined);
+    setScopePreviewError('');
+    setScopePreviewLoading(true);
     try {
       const preview = await api<CodeGraphProjectScopePreview>(
         `/api/worksets/project-graph-preview?project=${encodeURIComponent(selectedProject.name)}`,
+        undefined,
+        {signal: controller.signal},
       );
+      if (sequence !== scopePreviewSequenceRef.current || controller.signal.aborted) return;
       setScopePreview(preview);
     } catch (cause) {
-      setNotice(errorMessage(cause));
+      if (sequence === scopePreviewSequenceRef.current && !controller.signal.aborted) {
+        setScopePreviewError(errorMessage(cause));
+      }
     } finally {
-      setBusy(false);
+      if (sequence === scopePreviewSequenceRef.current) {
+        scopePreviewBusyRef.current = false;
+        setBusy(false);
+        setScopePreviewLoading(false);
+      }
     }
   }
 
@@ -302,7 +337,7 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
                   Edit project
                 </button>
                 <button disabled={!selectedProject || busy} onClick={() => void previewScope()} type="button">
-                  Preview graph scope
+                  {scopePreviewLoading ? 'Previewing graph scope…' : 'Preview graph scope'}
                 </button>
                 <button
                   className="danger"
@@ -351,13 +386,18 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
                   </div>
                 </dl>
               ) : null}
-              {scopePreview ? (
-                <p className="worksets-muted">
-                  Scope preview: {scopePreview.inventory.included.files} included /{' '}
-                  {scopePreview.inventory.excluded.files} excluded files · {scopePreview.scope.completeness}. Preview
-                  only; scoped indexing is not enabled yet.
+              {scopePreviewLoading ? (
+                <p className="worksets-muted" role="status">
+                  Previewing graph scope…
                 </p>
               ) : null}
+              {scopePreviewError ? (
+                <p className="worksets-error" role="alert">
+                  Couldn&apos;t preview graph scope: {scopePreviewError} Review the project path and graph roots, then
+                  try again.
+                </p>
+              ) : null}
+              {scopePreview ? <ProjectScopePreview preview={scopePreview} /> : null}
             </section>
           </>
         ) : (
@@ -393,6 +433,56 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
         />
       ) : null}
     </div>
+  );
+}
+
+function ProjectScopePreview(props: {readonly preview: CodeGraphProjectScopePreview}): React.ReactElement {
+  const {preview} = props;
+  return (
+    <section aria-label="Graph scope preview" className="project-scope-preview">
+      <header>
+        <div>
+          <p className="eyebrow">Read-only result</p>
+          <h3>Graph scope preview</h3>
+        </div>
+        <p className="worksets-muted" role="status">
+          {preview.scope.completeness === 'complete' ? 'Complete' : 'Partial'}
+        </p>
+      </header>
+      <p>
+        {preview.inventory.included.files} included / {preview.inventory.excluded.files} excluded files ·{' '}
+        {preview.scope.completeness}
+      </p>
+      <dl className="project-manifest-fields">
+        <div>
+          <dt>Repository</dt>
+          <dd>
+            {preview.repository.displayName} @ {preview.repository.commit.slice(0, 12)}
+            {preview.repository.dirty ? ' (dirty)' : ''}
+          </dd>
+        </div>
+        <div>
+          <dt>Root components</dt>
+          <dd>{preview.scope.rootComponents.join(', ') || 'Full repository'}</dd>
+        </div>
+        <div>
+          <dt>Dependency components</dt>
+          <dd>{preview.scope.dependencyComponents.length}</dd>
+        </div>
+        <div>
+          <dt>Additional includes</dt>
+          <dd>{preview.scope.includes.join(', ') || 'None'}</dd>
+        </div>
+      </dl>
+      {preview.scope.diagnostics.length > 0 ? (
+        <ul className="project-scope-preview-diagnostics">
+          {preview.scope.diagnostics.map(diagnostic => (
+            <li key={diagnostic}>{diagnostic}</li>
+          ))}
+        </ul>
+      ) : null}
+      <p className="worksets-muted">Read-only preview; no index was started.</p>
+    </section>
   );
 }
 

@@ -20,6 +20,10 @@ interface PendingProjectDetail extends PendingQuery {
   readonly name: string;
 }
 
+interface PendingScopePreview extends PendingQuery {
+  readonly name: string;
+}
+
 interface PendingCatalog extends PendingQuery {
   readonly body: ReturnType<typeof catalog>;
 }
@@ -40,6 +44,9 @@ let projectDetails: Map<
 let projectRevisionConflictOnce: boolean;
 let deferProjectDetails: boolean;
 let pendingProjectDetails: PendingProjectDetail[];
+let deferScopePreview: boolean;
+let pendingScopePreviews: PendingScopePreview[];
+let scopePreviewFailure: string | undefined;
 let deferCatalog: boolean;
 let pendingCatalogs: PendingCatalog[];
 let statusUnavailable: boolean;
@@ -60,6 +67,9 @@ beforeEach(() => {
   projectRevisionConflictOnce = false;
   deferProjectDetails = false;
   pendingProjectDetails = [];
+  deferScopePreview = false;
+  pendingScopePreviews = [];
+  scopePreviewFailure = undefined;
   deferCatalog = false;
   pendingCatalogs = [];
   statusUnavailable = false;
@@ -84,6 +94,18 @@ beforeEach(() => {
         );
       }
       return Promise.resolve(jsonResponse(detail));
+    }
+    if (url.startsWith('/api/worksets/project-graph-preview?')) {
+      const name = new URL(url, 'http://manager.test').searchParams.get('project') ?? '';
+      if (scopePreviewFailure !== undefined) {
+        return Promise.resolve(jsonResponse({error: scopePreviewFailure}, 422));
+      }
+      if (deferScopePreview) {
+        return new Promise<Response>(resolve =>
+          pendingScopePreviews.push({name, resolve, signal: init?.signal ?? undefined}),
+        );
+      }
+      return Promise.resolve(jsonResponse(scopePreview(name)));
     }
     if (url === '/api/worksets/projects') {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -380,6 +402,56 @@ describe('Manager Worksets interaction fencing', () => {
     });
   });
 
+  it('shows graph scope preview progress and a completed preview result', async () => {
+    deferScopePreview = true;
+    await renderWorksets();
+    await clickButtonStartingWith('Projects');
+    await waitForButtonEnabled('Preview graph scope');
+    await clickButton('Preview graph scope');
+    await waitForPendingScopePreviews(1);
+
+    expect(findButton('Previewing graph scope…')?.disabled).toBe(true);
+    expect(document.querySelector('[role="status"]')?.textContent).toContain('Previewing graph scope…');
+
+    pendingScopePreviews[0]?.resolve(jsonResponse(scopePreview('alpha')));
+    await waitForElement<HTMLElement>('[aria-label="Graph scope preview"]');
+    expect(document.body.textContent).toContain('12 included / 4 excluded files · complete');
+    expect(document.body.textContent).toContain('Kashkovsky/alpha @ abcdef123456');
+    expect(document.body.textContent).toContain('apps/web, packages/core');
+    expect(document.body.textContent).toContain('Read-only preview; no index was started.');
+    expect(findButton('Preview graph scope')?.disabled).toBe(false);
+  });
+
+  it('shows partial graph scope preview completeness', async () => {
+    deferScopePreview = true;
+    await renderWorksets();
+    await clickButtonStartingWith('Projects');
+    await waitForButtonEnabled('Preview graph scope');
+    await clickButton('Preview graph scope');
+    await waitForPendingScopePreviews(1);
+
+    pendingScopePreviews[0]?.resolve(jsonResponse(scopePreview('alpha', 'partial')));
+    await waitForElement<HTMLElement>('[aria-label="Graph scope preview"]');
+
+    expect(document.querySelector('[aria-label="Graph scope preview"] [role="status"]')?.textContent).toContain(
+      'Partial',
+    );
+    expect(document.querySelector('[aria-label="Graph scope preview"] [role="status"]')?.textContent).not.toContain(
+      'Complete',
+    );
+  });
+
+  it('keeps graph scope preview failures actionable', async () => {
+    scopePreviewFailure = 'The configured project is not an available local Git repository.';
+    await renderWorksets();
+    await clickButtonStartingWith('Projects');
+    await waitForButtonEnabled('Preview graph scope');
+    await clickButton('Preview graph scope');
+    await waitForText("Couldn't preview graph scope");
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain(scopePreviewFailure);
+    expect(document.body.textContent).toContain('Review the project path and graph roots, then try again.');
+  });
+
   it('keeps the deletion receipt visible after removing the final project', async () => {
     projectInventory = ['solo'];
     projectDetails = new Map([['solo', manifestProject('solo')]]);
@@ -516,7 +588,9 @@ describe('Manager Worksets interaction fencing', () => {
       /@media \(max-width: 980px\)[\s\S]*\.worksets-workspace\s*\{[\s\S]*grid-template-columns: 1fr/u,
     );
     expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.primary-nav\s*\{[\s\S]*repeat\(3,/u);
-    expect(css).toMatch(/\.worksets-editor\s*\{[\s\S]*max-height: calc\(100dvh - 16px\);[\s\S]*overflow-y: auto/u);
+    expect(css).toMatch(
+      /\.worksets-editor\s*\{[\s\S]*max-height: min\(760px, calc\(100dvh - 40px\)\);[\s\S]*overflow-y: auto/u,
+    );
   });
 });
 
@@ -614,6 +688,14 @@ async function waitForPendingProjectDetails(count: number): Promise<void> {
   throw new Error(`Expected ${count} pending project detail requests.`);
 }
 
+async function waitForPendingScopePreviews(count: number): Promise<void> {
+  for (let index = 0; index < 20; index += 1) {
+    if (pendingScopePreviews.length >= count) return;
+    await flush();
+  }
+  throw new Error(`Expected ${count} pending graph scope previews.`);
+}
+
 async function waitForPendingCatalogs(count: number): Promise<void> {
   for (let index = 0; index < 20; index += 1) {
     if (pendingCatalogs.length >= count) return;
@@ -693,6 +775,29 @@ function manifestProject(name: string) {
     path: `/workspace/${name}-service`,
     seed: ['AGENTS.md'],
     uri: `threadnote://resources/repos/${name}`,
+  };
+}
+
+function scopePreview(name: string, completeness: 'complete' | 'partial' = 'complete') {
+  return {
+    inventory: {
+      excluded: {bytes: 1_024, files: 4},
+      included: {bytes: 4_096, files: 12},
+    },
+    project: {graph: {closure: 'dependencies', include: ['tools/generated'], roots: ['apps/web']}, name},
+    repository: {commit: 'abcdef1234567890', dirty: false, displayName: `Kashkovsky/${name}`},
+    scope: {
+      completeness,
+      controlPaths: ['AGENTS.md'],
+      dependencyComponents: ['packages/core'],
+      diagnostics: ['Included a dependency component.'],
+      includes: ['tools/generated'],
+      rootComponents: ['apps/web', 'packages/core'],
+      roots: ['apps/web'],
+    },
+    snapshotReuse: 'not-evaluated',
+    type: 'code-graph-project-scope-preview',
+    version: 1,
   };
 }
 

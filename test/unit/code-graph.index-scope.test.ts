@@ -154,6 +154,45 @@ describe('code graph index scope', () => {
     expect(partial.closureDigest).not.toBe(complete.closureDigest);
   });
 
+  it('keeps non-blocking package identity diagnostics from weakening scope completeness', () => {
+    const app = project('app', 'apps/app');
+    const scope = resolveCodeGraphIndexScope(
+      {graph: {closure: 'dependencies', roots: ['apps/app']}, uri: 'threadnote://resources/repos/app'},
+      {
+        ...catalog([app]),
+        workspace: {
+          ...catalog([app]).workspace,
+          diagnostics: ['apps/app/package.json: npm package name cannot form a package moniker'],
+        },
+      },
+    );
+
+    expect(scope.completeness).toBe('complete');
+    expect(scope.diagnostics).toEqual(['apps/app/package.json: npm package name cannot form a package moniker']);
+  });
+
+  it('collapses repeated diagnostic classes before applying the scope output bound', () => {
+    const app = project('app', 'apps/app');
+    const scope = resolveCodeGraphIndexScope(
+      {graph: {closure: 'dependencies', roots: ['apps/app']}, uri: 'threadnote://resources/repos/app'},
+      {
+        ...catalog([app]),
+        workspace: {
+          ...catalog([app]).workspace,
+          diagnostics: Array.from(
+            {length: 150},
+            (_, index) => `apps/app/package-${index}.json: npm package name cannot form a package moniker`,
+          ),
+        },
+      },
+    );
+
+    expect(scope.completeness).toBe('complete');
+    expect(scope.diagnostics).toEqual([
+      'apps/app/package-0.json: npm package name cannot form a package moniker (150 occurrences)',
+    ]);
+  });
+
   it('keeps unrelated workspace diagnostics out of a selected project scope', () => {
     const app = project('app', 'apps/app');
     const workspace = catalog([app, project('other', 'apps/other')]);
@@ -219,7 +258,9 @@ describe('code graph index scope', () => {
       },
     );
 
-    expect(workspace.diagnostics).toHaveLength(100);
+    expect(workspace.diagnostics).toEqual([
+      expect.stringMatching(/^apps\/a-000\/tsconfig\.json: invalid TypeScript config.*\(106 occurrences\)$/u),
+    ]);
     expect(workspace.diagnostics.some(diagnostic => diagnostic.startsWith('apps/z-selected/'))).toBe(false);
     expect(selected.completeness).toBe('partial');
     expect(selected.diagnostics).toEqual([

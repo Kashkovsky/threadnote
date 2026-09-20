@@ -15,6 +15,7 @@ export interface ProjectCandidate {
   readonly aliases: readonly string[];
   readonly buildSystem: CodeGraphWorkspaceBuildSystem;
   readonly dependencyAliases: readonly string[];
+  readonly dependencyEvidence?: ReadonlyMap<string, string>;
   readonly diagnostics: readonly string[];
   readonly evidence?: string;
   readonly externalDependencies?: readonly CodeGraphExternalDependencyV1[];
@@ -25,6 +26,7 @@ export interface ProjectCandidate {
   readonly name: string;
   readonly packageNameSpan?: CodeGraphSpan;
   readonly packageNameDeclared?: boolean;
+  readonly packageNameRegistryValid?: boolean;
   readonly packageVersion?: string;
   readonly provenance: CodeGraphWorkspaceProvenance;
   readonly resolutionDomain: string;

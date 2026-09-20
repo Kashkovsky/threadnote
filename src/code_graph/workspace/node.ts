@@ -21,6 +21,7 @@ interface NodePackageManifest {
   readonly file: CodeGraphInventoryFile;
   readonly name: string;
   readonly nameDeclared: boolean;
+  readonly nameRegistryValid: boolean;
   readonly nameSpan: ReturnType<typeof sourceSpan>;
   readonly root: string;
   readonly version?: string;
@@ -33,6 +34,19 @@ interface ParsedTsconfig {
   readonly file: CodeGraphInventoryFile;
   readonly root: string;
   readonly sourceRoots: readonly string[];
+  readonly pathMappings: readonly TypeScriptPathMapping[];
+}
+
+interface TypeScriptPathMapping {
+  readonly alias: string;
+  readonly evidence: string;
+  readonly targets: readonly string[];
+}
+
+interface NodePackageManifestIndex {
+  readonly byName: ReadonlyMap<string, readonly NodePackageManifest[]>;
+  readonly byRoot: ReadonlyMap<string, NodePackageManifest>;
+  readonly sortedNames: readonly string[];
 }
 
 interface NxProjectManifest {
@@ -69,13 +83,17 @@ export function discoverNodeWorkspaceCandidates(
 ): readonly ProjectCandidate[] {
   const orderedFiles = [...files].sort((left, right) => compareCodeUnits(left.path, right.path));
   const manifests = parsePackageManifests(orderedFiles, diagnostics);
-  const manifestsByRoot = new Map(manifests.map(manifest => [manifest.root, manifest]));
+  const manifestIndex = indexNodePackageManifests(manifests);
+  const manifestsByRoot = manifestIndex.byRoot;
   const pnpmPatterns = parsePnpmWorkspaces(orderedFiles);
   const nxRoots = new Set(
     orderedFiles.filter(file => basename(file.path).toLowerCase() === 'nx.json').map(file => dirname(file.path)),
   );
   const tsconfigs = parseTsconfigs(orderedFiles, diagnostics);
   const tsconfigsByPath = new Map(tsconfigs.map(config => [config.file.path, config]));
+  const pathDependenciesByConfig = new Map(
+    tsconfigs.map(config => [config.file.path, typescriptPathDependencies(config, manifestIndex)] as const),
+  );
 
   const packageCandidates = manifests.map(manifest => {
     const match = nearestNodeWorkspace(manifest.root, manifestsByRoot, pnpmPatterns);
@@ -86,10 +104,20 @@ export function discoverNodeWorkspaceCandidates(
       const target = manifestsByRoot.get(referenceRoot);
       return target ? [target.name] : [];
     });
+    const pathDependencies = tsconfig ? pathDependenciesByConfig.get(tsconfig.file.path)! : [];
+    const dependencyEvidence = new Map(
+      pathDependencies.flatMap(dependency => dependency.aliases.map(alias => [alias, dependency.evidence] as const)),
+    );
     return {
       aliases: uniqueStrings([manifest.name, manifest.root]),
       buildSystem: match?.buildSystem ?? 'node',
-      dependencyAliases: uniqueStrings([...manifest.dependencyAliases, ...referenceRoots, ...referencedPackageNames]),
+      dependencyAliases: uniqueStrings([
+        ...manifest.dependencyAliases,
+        ...referenceRoots,
+        ...referencedPackageNames,
+        ...pathDependencies.flatMap(dependency => dependency.aliases),
+      ]),
+      dependencyEvidence,
       diagnostics: [],
       evidence: manifest.file.path,
       externalDependencies: manifest.externalDependencies,
@@ -98,6 +126,7 @@ export function discoverNodeWorkspaceCandidates(
       name: manifest.name,
       packageNameSpan: manifest.nameSpan,
       packageNameDeclared: manifest.nameDeclared,
+      packageNameRegistryValid: manifest.nameRegistryValid,
       ...(manifest.version === undefined ? {} : {packageVersion: manifest.version}),
       provenance: 'declared',
       resolutionDomain: 'typescript',
@@ -115,6 +144,8 @@ export function discoverNodeWorkspaceCandidates(
   const tsconfigCandidates = tsconfigs.map(config => {
     const workspaceRoot = nearestAncestor(config.root, declaredWorkspaceRoots) ?? config.root;
     const candidateDiagnostics = [...config.diagnostics];
+    const pathDependencies = pathDependenciesByConfig.get(config.file.path)!;
+    const localPackage = manifestsByRoot.get(config.root);
     for (const alias of config.dependencyAliases) {
       if (!tsconfigsByPath.has(alias.slice('tsconfig:'.length))) {
         candidateDiagnostics.push(
@@ -123,17 +154,26 @@ export function discoverNodeWorkspaceCandidates(
       }
     }
     return {
-      aliases: [`tsconfig:${config.file.path}`],
+      aliases: uniqueStrings([
+        `tsconfig:${config.file.path}`,
+        ...(localPackage ? [localPackage.name, config.root] : []),
+      ]),
       buildSystem: 'typescript',
-      dependencyAliases: config.dependencyAliases,
+      dependencyAliases: uniqueStrings([
+        ...config.dependencyAliases,
+        ...pathDependencies.flatMap(dependency => dependency.aliases),
+      ]),
+      dependencyEvidence: new Map(
+        pathDependencies.flatMap(dependency => dependency.aliases.map(alias => [alias, dependency.evidence] as const)),
+      ),
       diagnostics: uniqueStrings(candidateDiagnostics),
       evidence: config.file.path,
-      identityKey: `tsconfig:${config.file.path}`,
+      ...(localPackage === undefined ? {identityKey: `tsconfig:${config.file.path}`} : {}),
       kind: 'project',
       languages: ['javascript', 'typescript'],
       name: tsconfigName(config.file.path),
       provenance: 'declared',
-      resolutionDomain: 'typescript-config',
+      resolutionDomain: localPackage === undefined ? 'typescript-config' : 'typescript',
       root: config.root,
       sourceRoots: config.sourceRoots,
       workspaceRoots: [workspaceRoot],
@@ -155,9 +195,11 @@ function parsePackageManifests(
       const root = dirname(file.path);
       const declaredName = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name.trim() : undefined;
       let name = declaredName ?? (root.split('/').at(-1) || 'root');
+      let nameRegistryValid = false;
       if (declaredName !== undefined) {
         try {
           name = normalizeNpmPackageName(declaredName);
+          nameRegistryValid = true;
         } catch {
           // Retain the workspace component even when its registry identity is
           // invalid; materialization will omit only the unsafe export moniker.
@@ -180,6 +222,7 @@ function parsePackageManifests(
           file,
           name,
           nameDeclared: declaredName !== undefined,
+          nameRegistryValid,
           nameSpan: jsonPropertySpan(file, 'name', declaredName ?? name, stringTokens, lineIndex),
           root,
           ...(typeof manifest.version === 'string' && manifest.version.trim()
@@ -213,10 +256,112 @@ function parseTsconfigs(files: readonly CodeGraphInventoryFile[], diagnostics: s
           dependencyAliases: typescriptReferencePaths(root, parsed).map(path => `tsconfig:${path}`),
           diagnostics: configDiagnostics,
           file,
+          pathMappings: typescriptPathMappings(root, parsed, file.path, configDiagnostics),
           root,
           sourceRoots: typescriptSourceRoots(root, parsed, file.path, configDiagnostics),
         },
       ];
+    });
+}
+
+function typescriptPathDependencies(
+  config: ParsedTsconfig,
+  manifests: NodePackageManifestIndex,
+): readonly {readonly aliases: readonly string[]; readonly evidence: string}[] {
+  const dependencies = new Map<string, {readonly aliases: readonly string[]; readonly evidence: string}>();
+  for (const mapping of config.pathMappings) {
+    for (const manifest of manifestsMatchingAlias(mapping.alias, manifests)) {
+      const capture = matchTypeScriptPathAlias(mapping.alias, manifest.name);
+      if (capture === undefined) continue;
+      const matchesTarget = mapping.targets.some(target => {
+        const resolved = normalizeContainedPath('', target.replaceAll('*', capture));
+        return resolved === manifest.root;
+      });
+      if (!matchesTarget) continue;
+      dependencies.set(manifest.root, {
+        aliases: uniqueStrings([manifest.name, manifest.root]),
+        evidence: mapping.evidence,
+      });
+    }
+  }
+  return [...dependencies.values()].sort((left, right) =>
+    compareCodeUnits(left.aliases[0] ?? '', right.aliases[0] ?? ''),
+  );
+}
+
+function indexNodePackageManifests(manifests: readonly NodePackageManifest[]): NodePackageManifestIndex {
+  const byName = new Map<string, NodePackageManifest[]>();
+  const byRoot = new Map<string, NodePackageManifest>();
+  for (const manifest of manifests) {
+    byRoot.set(manifest.root, manifest);
+    const named = byName.get(manifest.name);
+    if (named) named.push(manifest);
+    else byName.set(manifest.name, [manifest]);
+  }
+  return {byName, byRoot, sortedNames: [...byName.keys()].sort(compareCodeUnits)};
+}
+
+function manifestsMatchingAlias(pattern: string, manifests: NodePackageManifestIndex): readonly NodePackageManifest[] {
+  const wildcard = pattern.indexOf('*');
+  if (wildcard < 0) return manifests.byName.get(pattern) ?? [];
+  if (pattern.indexOf('*', wildcard + 1) >= 0) return [];
+  const prefix = pattern.slice(0, wildcard);
+  const suffix = pattern.slice(wildcard + 1);
+  const start = lowerBound(manifests.sortedNames, prefix);
+  const matches: NodePackageManifest[] = [];
+  for (let index = start; index < manifests.sortedNames.length; index += 1) {
+    const name = manifests.sortedNames[index];
+    if (!name.startsWith(prefix)) break;
+    if (!name.endsWith(suffix) || name.length < prefix.length + suffix.length) continue;
+    matches.push(...(manifests.byName.get(name) ?? []));
+  }
+  return matches;
+}
+
+function lowerBound(values: readonly string[], target: string): number {
+  let lower = 0;
+  let upper = values.length;
+  while (lower < upper) {
+    const middle = lower + Math.floor((upper - lower) / 2);
+    if (compareCodeUnits(values[middle], target) < 0) lower = middle + 1;
+    else upper = middle;
+  }
+  return lower;
+}
+
+function matchTypeScriptPathAlias(pattern: string, packageName: string): string | undefined {
+  const wildcard = pattern.indexOf('*');
+  if (wildcard < 0) return pattern === packageName ? '' : undefined;
+  if (pattern.indexOf('*', wildcard + 1) >= 0) return undefined;
+  const prefix = pattern.slice(0, wildcard);
+  const suffix = pattern.slice(wildcard + 1);
+  return packageName.startsWith(prefix) && packageName.endsWith(suffix)
+    ? packageName.slice(prefix.length, packageName.length - suffix.length)
+    : undefined;
+}
+
+function typescriptPathMappings(
+  root: string,
+  config: Record<string, unknown>,
+  evidence: string,
+  diagnostics: string[],
+): readonly TypeScriptPathMapping[] {
+  const compilerOptions = Predicate.isObject(config.compilerOptions) ? config.compilerOptions : {};
+  if (!Predicate.isObject(compilerOptions.paths)) return [];
+  const baseRoot =
+    typeof compilerOptions.baseUrl === 'string' ? normalizeContainedPath(root, compilerOptions.baseUrl) : root;
+  if (baseRoot === undefined) {
+    diagnostics.push(`${evidence}: TypeScript baseUrl escapes the repository`);
+    return [];
+  }
+  return Object.entries(compilerOptions.paths)
+    .sort(([left], [right]) => compareCodeUnits(left, right))
+    .flatMap(([alias, targets]) => {
+      const values = stringArray(targets).flatMap(target => {
+        const normalized = normalizeContainedPath(baseRoot, target);
+        return normalized === undefined ? [] : [normalized];
+      });
+      return alias && values.length > 0 ? [{alias, evidence, targets: values}] : [];
     });
 }
 
@@ -772,13 +917,30 @@ function stripJsonCommentsAndTrailingCommas(content: string): string {
       continue;
     }
     if (character === ',') {
-      let lookahead = index + 1;
-      while (/\s/.test(content[lookahead] ?? '')) lookahead += 1;
+      const lookahead = nextJsoncToken(content, index + 1);
       if (content[lookahead] === '}' || content[lookahead] === ']') continue;
     }
     output += character;
   }
   return output;
+}
+
+function nextJsoncToken(content: string, start: number): number {
+  let index = start;
+  for (;;) {
+    while (/\s/u.test(content[index] ?? '')) index += 1;
+    if (content[index] === '/' && content[index + 1] === '/') {
+      while (index < content.length && content[index] !== '\n') index += 1;
+      continue;
+    }
+    if (content[index] === '/' && content[index + 1] === '*') {
+      index += 2;
+      while (index < content.length && !(content[index] === '*' && content[index + 1] === '/')) index += 1;
+      index += 2;
+      continue;
+    }
+    return index;
+  }
 }
 
 function stringArray(value: unknown): readonly string[] {
