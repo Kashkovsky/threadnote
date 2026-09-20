@@ -880,7 +880,7 @@ function gitWorktreeRegistrationWorkerSpawnPlan(system: SystemInfoShape) {
     executableName === 'bun' || executableName === 'bun.exe'
       ? candidate && /(?:^|[/\\])(?:standalone\.(?:js|ts)|threadnote\.cjs)$/i.test(candidate)
         ? candidate
-        : Bun.fileURLToPath(new URL('../standalone.ts', import.meta.url))
+        : Bun.fileURLToPath(new URL('../../../standalone.ts', import.meta.url))
       : undefined;
   return {
     arguments: [...(script === undefined ? [] : [script]), CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT],
