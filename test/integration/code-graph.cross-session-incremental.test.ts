@@ -31,6 +31,7 @@ import {
   type CodeGraphVisualizationCatalog,
 } from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, type CodeGraphIndexSummary} from '../../src/code_graph/types.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../../src/code_graph/index_scope.js';
 import {CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES} from '../../src/code_graph/inventory_policy.js';
 import {
   validateContextBriefFileCitation,
@@ -2025,13 +2026,13 @@ function promoteLegacySnapshot(databasePath: string, worktreeId: string, snapsho
   try {
     database
       .query(
-        `INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(worktree_id) DO UPDATE SET
+        `INSERT INTO active_snapshots (worktree_id, scope_id, snapshot_id, activated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(worktree_id, scope_id) DO UPDATE SET
            snapshot_id = excluded.snapshot_id,
            activated_at = excluded.activated_at`,
       )
-      .run(worktreeId, snapshotId, '2026-07-31T00:00:02.000Z');
+      .run(worktreeId, CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY, snapshotId, '2026-07-31T00:00:02.000Z');
   } finally {
     database.close();
   }

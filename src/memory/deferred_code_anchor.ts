@@ -249,15 +249,20 @@ export const stageDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.stage')
   if (!path.isAbsolute(input.request.callerCwd)) {
     return yield* deferredCodeAnchorError('Deferred code-anchor callerCwd must be absolute.');
   }
+  const fs = yield* FileSystem.FileSystem;
   const query = yield* CodeGraphQueryService;
+  const requestedProject =
+    config.manifestSource === 'bundled-example' || !(yield* fs.exists(config.manifestPath))
+      ? undefined
+      : input.request.project;
   const status = yield* query.status(config.agentContextHome, input.request.callerCwd, {
-    project: input.request.project,
+    project: requestedProject,
     manifestPath: config.manifestPath,
     observeWorktree: true,
     requestMaintenance: false,
   });
-  const project = input.request.project === undefined ? undefined : status.projectCoverage?.project;
-  if (input.request.project !== undefined && project === undefined) {
+  const project = requestedProject === undefined ? undefined : status.projectCoverage?.project;
+  if (requestedProject !== undefined && project === undefined) {
     return yield* deferredCodeAnchorError('Deferred code anchors require verified selected project graph evidence.');
   }
   const projectScope =
