@@ -1,5 +1,5 @@
 import {Schema} from 'effect';
-import {MAX_MEMORY_CODE_CITATIONS} from '../memory/code_citation.js';
+import {MAX_MEMORY_CODE_CITATIONS} from '../memory/code/citation.js';
 import {parseRemoteShareAddress} from './address.js';
 
 export const RemoteCitationSourcesSchema = Schema.Array(

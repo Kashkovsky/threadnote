@@ -8,7 +8,7 @@ import {isAgentSetupCompletion} from '../agent_integration/registry.js';
 import {AgentSurfaceError} from '../agent_integration/surfaces.js';
 import type {RuntimeConfig} from '../types.js';
 import {recordSetupCompletionValueEvent} from '../value_report/events.js';
-import {boolean, optionalChoice} from './cli_flags.js';
+import {boolean, optionalChoice} from './cli/flags.js';
 
 export const agentsCommandMetadata = {
   productionLog: {

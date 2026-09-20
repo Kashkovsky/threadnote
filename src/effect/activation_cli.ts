@@ -2,7 +2,7 @@ import {Effect} from 'effect';
 import {Command} from 'effect/unstable/cli';
 import {runActivationProductionCommandV1, type ActivationProductionCommandV1} from '../activation/production.js';
 import type {RuntimeConfig} from '../types.js';
-import {boolean, optionalString, requiredString} from './cli_flags.js';
+import {boolean, optionalString, requiredString} from './cli/flags.js';
 
 const apply = boolean('apply', 'Apply work until the next explicit review boundary');
 const approved = boolean('approved', 'Confirm explicit approval of the exact current preview');

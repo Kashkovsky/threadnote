@@ -1,14 +1,14 @@
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {normalizeSchemaDefinition} from './schema_normalization.js';
-import {inspectBoundedSchemaMetadataValue} from './schema_metadata.js';
+import {normalizeSchemaDefinition} from './schema/normalization.js';
+import {inspectBoundedSchemaMetadataValue} from './schema/metadata.js';
 import {
   CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_TABLE,
   CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_TABLE_SQL,
   CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM,
   CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM,
   nextCodeGraphSqliteSchemaVersion,
-} from './schema_receipt.js';
+} from './schema/receipt.js';
 import {
   CODE_GRAPH_SCHEMA_VERSION,
   type CodeGraphSnapshotFileCitationBaseIndexState,
@@ -21,7 +21,7 @@ import {
   codeGraphPersistentSchemaMigrationPending,
   codeGraphPersistentSchemaProfile,
   codeGraphPersistentSchemaSupports,
-} from './schema_revision.js';
+} from './schema/revision.js';
 
 interface CodeGraphReferenceIndex {
   readonly columns: readonly string[];

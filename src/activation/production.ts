@@ -16,7 +16,7 @@ import {
   ACTIVATION_REQUEST_MAX_BYTES,
   parseActivationProductionRequestV1,
   type ActivationProductionRequestV1,
-} from './production_contract.js';
+} from './production/contract.js';
 import {
   activationApprovalTokenV1,
   activationApprovedProjectionEvidenceHashV1,
@@ -38,21 +38,21 @@ import {
   readAppliedActivationDecisionV1,
   readOptionalPublishedActivationDecisionV1,
   readPublishedActivationDecisionV1,
-} from './production_evidence.js';
-import {readActivationProposalEvidenceV1} from './production_proposal_store.js';
-import {buildActivationSecondSurfaceProofContextV1, makeActivationProductionExecutorV1} from './production_executor.js';
+} from './production/evidence.js';
+import {readActivationProposalEvidenceV1} from './production/proposal_store.js';
+import {buildActivationSecondSurfaceProofContextV1, makeActivationProductionExecutorV1} from './production/executor.js';
 import {
   activationProductionError,
   observeActivationProductionV1,
   type ActivationProductionObservationV1,
-} from './production_observe.js';
-import {runActivationProductionUndoV1} from './production_undo.js';
-import {readActivationUndoReceiptV1} from './production_undo_store.js';
+} from './production/observe.js';
+import {runActivationProductionUndoV1} from './production/undo.js';
+import {readActivationUndoReceiptV1} from './production/undo_store.js';
 import {
   readSecondSurfaceProofChallengeV1,
   secondSurfaceChallengeIdV1,
   verifySecondSurfaceProofAttestationV1,
-} from './second_surface_store.js';
+} from './second/surface_store.js';
 import {readActivationStateV1, type ActivationStateV1} from './store.js';
 import {reconcileActivationValueEventsV1} from './value.js';
 

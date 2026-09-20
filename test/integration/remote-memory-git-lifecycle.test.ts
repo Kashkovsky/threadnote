@@ -2,7 +2,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import * as FC from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import type {TransactionSql} from 'postgres';
-import {ingestGitShare} from '../../src/remote_memory/git_ingest.js';
+import {ingestGitShare} from '../../src/remote_memory/git/ingest.js';
 import {mkdir, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
@@ -19,9 +19,9 @@ import {
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
 import {provisionGitTeamShare} from '../../src/remote_memory/composer_serve.js';
-import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git_canonical_store.js';
-import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres_control_plane.js';
-import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres_repository.js';
+import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git/canonical_store.js';
+import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres/control_plane.js';
+import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres/repository.js';
 import {RemoteMemoryIndexer} from '../../src/remote_memory/indexer.js';
 import type {AuthorizedRemotePrincipal} from '../../src/remote_memory/authorization.js';
 

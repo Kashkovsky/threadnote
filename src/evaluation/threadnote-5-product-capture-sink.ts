@@ -2,7 +2,7 @@ import {ByteSize, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {
   deferredCodeAnchorPathEntryKind,
   ensurePrivateDeferredCodeAnchorDirectory,
-} from '../memory/deferred_code_anchor_private_fs.js';
+} from '../memory/deferred/code_anchor_private_fs.js';
 import {runtimePlatform} from '../effect/system.js';
 import {
   createThreadnote5ProductCaptureV1,

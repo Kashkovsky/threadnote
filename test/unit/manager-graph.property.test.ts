@@ -16,13 +16,13 @@ import {
   representativeManagerGraphEdges,
   type ManagerGraphEdge,
 } from '../../src/code_graph/visualization.js';
-import {managerGraphCatalogRevision} from '../../src/code_graph/manager_catalog_revision.js';
+import {managerGraphCatalogRevision} from '../../src/code_graph/manager/catalog_revision.js';
 import type {CodeGraphEdge, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
   MANAGER_GRAPH_MAX_NODE_LIMIT,
   managerGraphVisualizationLimits,
-} from '../../src/manager/graph_limits.js';
+} from '../../src/manager/graph/limits.js';
 
 describe('Manager graph properties', () => {
   it('keeps catalog revisions order-independent and sensitive to lifecycle changes', () => {

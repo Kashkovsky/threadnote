@@ -8,7 +8,7 @@ import {
   effectiveSnapshotParameters,
   effectiveSymbolsCte,
   selectBaseSnapshotId,
-} from './query_core.js';
+} from './query/core.js';
 import {type CodeGraphEdge, type CodeGraphProvenance, CodeGraphStoreError} from '../types.js';
 
 const COMPONENT_EDGE_AGGREGATE_VERSION = 1;

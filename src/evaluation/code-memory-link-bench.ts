@@ -20,7 +20,7 @@ import {
 } from '../context_brief/index.js';
 import {validateContextBriefMemoryCitations} from '../context_brief/citation_validation.js';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION, type MemoryCodeCitationV1} from '../memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION, type MemoryCodeCitationV1} from '../memory/code/citation.js';
 import {formatMemoryDocument} from '../memory/document.js';
 import {loadRecallIndexData} from '../recall/index.js';
 import type {RuntimeConfig} from '../types.js';

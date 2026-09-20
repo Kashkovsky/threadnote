@@ -23,7 +23,7 @@ import {
   lastStatementChangeCount,
   persistedIncrementalFactCounts,
   validateStagedEdgeSymbols,
-} from './activation_core.js';
+} from './activation/core.js';
 import {
   type CompactLexicalFormatReceipt,
   isPersistedIncrementalResolutionClosure,
@@ -31,12 +31,12 @@ import {
   persistedIncrementalSurfaceMatches,
   recordCompactLexicalFormat,
   validatedCompactLexicalCount,
-} from './build_core.js';
-import {activateCleanStagedSnapshot} from './activation_persistent.js';
+} from './build/core.js';
+import {activateCleanStagedSnapshot} from './activation/persistent.js';
 import {clearCompactLexicalSnapshotRows, purgeSnapshotTerms} from './cleanup_core.js';
 import {upsertRepository} from './utilities.js';
 import {copyActivationCompactLexicalFacts} from './staging_core.js';
-import {identifyChangedSymbols} from './resolution_core.js';
+import {identifyChangedSymbols} from './resolution/core.js';
 import {associateSnapshotFileShards, inheritSnapshotFileShards} from './cache.js';
 import {insertActivationLease, recordSnapshotExtractorGeneration} from './maintenance_core.js';
 import {selectReusableBaseReceipt} from './queries.js';
@@ -46,7 +46,7 @@ import {
   persistedIncrementalFileDeletionsStatement,
   persistedIncrementalReexportMismatchStatement,
   persistedIncrementalSymbolDeletionsStatement,
-} from './incremental_plan.js';
+} from './incremental/plan.js';
 
 const recordLayeredSnapshotInventoryReceipt = Effect.fn('codeGraph.recordLayeredSnapshotInventoryReceipt')(function* (
   sql: SqlClient.SqlClient,

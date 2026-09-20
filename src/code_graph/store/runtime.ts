@@ -1,6 +1,6 @@
 import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file/lock.js';
 import {SystemInfo} from '../../effect/system.js';
 import {type CodeGraphDatabaseSessionOptions} from './shape.js';
 import {
@@ -16,9 +16,9 @@ import {
   useDatabaseDirect,
 } from './session.js';
 import {storeError} from './utilities.js';
-import {initializeSchema} from './schema_initialization.js';
+import {initializeSchema} from './schema/initialization.js';
 import {pruneRoutinePhysicalRowsPage} from './routine_cleanup.js';
-import {drainCompletedPersistentBuildRows} from './activation_persistent.js';
+import {drainCompletedPersistentBuildRows} from './activation/persistent.js';
 import {initializeRoutineMaintenanceSchema} from './leases.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './reconciliation.js';
 

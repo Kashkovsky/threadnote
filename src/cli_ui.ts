@@ -1,5 +1,5 @@
 import {Clock, Console, Effect, Fiber, Ref, Schedule, Semaphore, Terminal} from 'effect';
-import {CliOutput, flushCliOutput} from './effect/cli_output.js';
+import {CliOutput, flushCliOutput} from './effect/cli/output.js';
 import {SystemInfo} from './effect/system.js';
 
 type ColorName = 'blue' | 'cyan' | 'dim' | 'green' | 'red' | 'yellow';

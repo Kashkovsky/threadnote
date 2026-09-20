@@ -1,13 +1,13 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {applyMaintenanceMetadataV1, previewMaintenanceMetadataV1} from '../../src/memory/maintenance_metadata.js';
+import {applyMaintenanceMetadataV1, previewMaintenanceMetadataV1} from '../../src/memory/maintenance/metadata.js';
 import {
   formatMemoryDocument,
   parseMemoryDocument,
   type MemoryMetadata,
   type MemoryRecord,
 } from '../../src/memory/document.js';
-import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 
 const URI = 'threadnote://user/test/memories/durable/projects/threadnote/topic.md';
 const NOW = '2026-09-18T12:00:00.000Z';

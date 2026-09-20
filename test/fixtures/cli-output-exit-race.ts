@@ -1,5 +1,5 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
-import {makeFinalCliOutput} from '../../src/effect/cli_output.js';
+import {makeFinalCliOutput} from '../../src/effect/cli/output.js';
 
 const writeDelayedFinalOutput = makeFinalCliOutput(async output => {
   await Bun.sleep(500);

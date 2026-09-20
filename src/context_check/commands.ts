@@ -3,12 +3,12 @@ import {inspectCodeGraphImpactIsolated} from '../code_graph/isolated/impact_quer
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {CommandExecutor} from '../effect/command.js';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
 import {SystemInfo} from '../effect/system.js';
 import {guidanceSourceUrisForChangedPaths} from '../guidance/index.js';
-import {readActiveProjectMemoryRecords} from '../memory/maintenance_records.js';
-import {buildContextHealthReport} from '../memory/context_health.js';
-import {collectContextHealth} from '../memory/context_health_commands.js';
+import {readActiveProjectMemoryRecords} from '../memory/maintenance/records.js';
+import {buildContextHealthReport} from '../memory/context/health.js';
+import {collectContextHealth} from '../memory/context/health_commands.js';
 import type {MemoryRecord} from '../memory/document.js';
 import type {RuntimeConfig} from '../types.js';
 import {citedDocumentCitationUris, selectContextCheckGraphImpact} from './graph_impact.js';

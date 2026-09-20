@@ -3,7 +3,7 @@ import * as FC from 'fast-check';
 import {
   graphShareContributionRetryDelay,
   graphShareSignedContributionRetryDelay,
-} from '../../src/code_graph/sharing/contribution_retry_state.js';
+} from '../../src/code_graph/sharing/contribution/retry_state.js';
 import {graphShareRetryAfterMilliseconds} from '../../src/code_graph/sharing/errors.js';
 
 describe('automatic graph contribution retry timing', () => {

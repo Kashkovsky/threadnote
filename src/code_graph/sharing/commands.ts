@@ -1,5 +1,5 @@
 import {Console, Effect} from 'effect';
-import {writeFinalCliOutput} from '../../effect/cli_output.js';
+import {writeFinalCliOutput} from '../../effect/cli/output.js';
 import type {RuntimeConfig} from '../../types.js';
 import {graphSharingFailure} from './errors.js';
 import {
@@ -9,8 +9,8 @@ import {
   loginRegistryOAuthUser,
   logoutGraphOAuthUser,
   logoutRegistryOAuthUser,
-} from './oauth_user.js';
-import {graphPublisherPublicationMessage, readGraphPublisherRegistryStatus} from './publisher_registry.js';
+} from './oauth/user.js';
+import {graphPublisherPublicationMessage, readGraphPublisherRegistryStatus} from './publisher/registry.js';
 import {
   runGraphContributeSet,
   runGraphContributeStatus,

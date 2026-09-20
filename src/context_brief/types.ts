@@ -1,6 +1,6 @@
 import type {CodeGraphProvenance, CodeGraphRelation, CodeGraphSpan} from '../code_graph/types.js';
 import type {AgentToolResponseMeasurement} from '../evaluation/agent-response.js';
-import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import type {MemoryCodeCitationV1} from '../memory/code/citation.js';
 import type {MemoryAuthority, MemoryTrust} from '../memory/document.js';
 import type {VerifiedProcedureEvidence} from '../procedure/selection.js';
 import {Predicate} from 'effect';

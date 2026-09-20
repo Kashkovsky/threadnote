@@ -27,7 +27,7 @@ import {
   MemoryReadTooLargeError,
   projectMemoryRead,
   type MemoryRead,
-} from '../memory/read_projection.js';
+} from '../memory/read/projection.js';
 import {Predicate} from 'effect';
 import {
   projectRemoteRecallResponse,
@@ -35,7 +35,7 @@ import {
   REMOTE_RECALL_MAXIMUM_BUDGET_TOKENS,
   REMOTE_RECALL_MINIMUM_BUDGET_TOKENS,
   RemoteRecallProjectionError,
-} from './recall_projection.js';
+} from './recall/projection.js';
 import {MAX_MEMORY_RELATIONS, MEMORY_RELATION_TYPES} from '../memory/document.js';
 import {
   projectRemoteContextBrief,
@@ -45,7 +45,7 @@ import {
   RemoteContextBriefAnchorSchemaV1,
   normalizeRemoteContextBriefAnchors,
   type RemoteContextBriefAnchorV1,
-} from './context_brief.js';
+} from './context/brief.js';
 
 export const REMOTE_MEMORY_TOOL_NAMES = [
   'context_brief',

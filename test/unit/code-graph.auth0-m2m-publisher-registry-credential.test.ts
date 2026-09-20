@@ -5,7 +5,7 @@ import {
   getAuth0M2MPublisherRegistryCredential,
   parseAuth0M2MPublisherRegistryCredentialConfig,
   runAuth0M2MPublisherRegistryCredentialHelper,
-} from '../../src/code_graph/sharing/auth0_m2m_registry_credential.js';
+} from '../../src/code_graph/sharing/auth0/m2m_registry_credential.js';
 
 const now = Math.floor(Date.now() / 1000);
 const origin = 'https://registry.threadnote.test';

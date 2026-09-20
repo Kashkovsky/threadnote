@@ -24,7 +24,7 @@ import {
   type ProjectResolutionCandidateFactPage,
   type ProjectResolutionCandidateScanPlan,
   type ProjectResolutionReexportKeys,
-} from '../../src/code_graph/store/resolution_candidate_closure.js';
+} from '../../src/code_graph/store/resolution/candidate_closure.js';
 import {CODE_GRAPH_RESOLUTION_PASS_MAXIMUM} from '../../src/code_graph/store/resolution.js';
 import type {
   CodeGraphFileFacts,

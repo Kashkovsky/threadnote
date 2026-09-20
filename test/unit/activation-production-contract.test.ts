@@ -4,8 +4,8 @@ import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {activationContinuationCommandV1, runActivationProductionCommandV1} from '../../src/activation/production.js';
-import {makeActivationProductionExecutorV1} from '../../src/activation/production_executor.js';
-import {parseActivationProductionRequestV1} from '../../src/activation/production_contract.js';
+import {makeActivationProductionExecutorV1} from '../../src/activation/production/executor.js';
+import {parseActivationProductionRequestV1} from '../../src/activation/production/contract.js';
 import {
   activationApprovedProjectionEvidenceHashV1,
   activationImportedMemoriesEvidenceHashV1,
@@ -20,18 +20,18 @@ import {
   readAppliedActivationDecisionV1,
   readAppliedActivationImportsV1,
   type AppliedActivationDecisionV1,
-} from '../../src/activation/production_evidence.js';
+} from '../../src/activation/production/evidence.js';
 import {canonicalMemoryDocumentContent, parseMemoryDocument} from '../../src/memory/document.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import type {CandidateReview, MemoryCandidate} from '../../src/memory/candidate.js';
 import {
   activationReplacementTargetIdentityHashV1,
   observeActivationProductionV1,
-} from '../../src/activation/production_observe.js';
+} from '../../src/activation/production/observe.js';
 import {
   completeActivationMutationIntentV1,
   prepareActivationMutationIntentV1,
-} from '../../src/activation/production_mutation_store.js';
+} from '../../src/activation/production/mutation_store.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runCloseoutApply} from '../../src/memory/closeout.js';
@@ -48,12 +48,12 @@ import {initializeActivationStateV1} from '../../src/activation/store.js';
 import {
   activationProductionUndoApprovalTokenV1,
   runActivationProductionUndoV1,
-} from '../../src/activation/production_undo.js';
+} from '../../src/activation/production/undo.js';
 import {
   buildReviewedKnowledgeDeltaGitProposal,
   runKnowledgeDeltaGitProposalMaterialize,
 } from '../../src/git_proposal/commands.js';
-import {initializeActivationProposalEvidenceV1} from '../../src/activation/production_proposal_store.js';
+import {initializeActivationProposalEvidenceV1} from '../../src/activation/production/proposal_store.js';
 import type {ActivationPlanV1} from '../../src/activation/contract.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

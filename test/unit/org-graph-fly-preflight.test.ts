@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
 import fc from 'fast-check';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
-import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile_oci_artifact.js';
+import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile/oci_artifact.js';
 import {
   defaultGraphShareProfile,
   graphShareProfileDigest,

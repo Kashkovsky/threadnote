@@ -28,16 +28,16 @@ import {
   type DeferredCodeAnchorWriteRequest,
   type DeferredCodeAnchorFinalizationRoute,
   withDeferredCodeAnchorMutationLocks,
-} from '../../src/memory/deferred_code_anchor.js';
+} from '../../src/memory/deferred/code_anchor.js';
 import {
   ensurePrivateDeferredCodeAnchorDirectory,
   quarantinePrivateDeferredCodeAnchorRouteEntry,
   writePrivateDeferredCodeAnchorFile,
-} from '../../src/memory/deferred_code_anchor_private_fs.js';
-import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
-import {MemoryCodeCitationCaptureError} from '../../src/memory/code_citation_capture.js';
-import {deferredCodeAnchorCaptureFailureItem} from '../../src/memory/deferred_code_anchor_failure.js';
-import {finalizedDeferredCodeAnchorUris} from '../../src/memory/deferred_code_anchor_finalization.js';
+} from '../../src/memory/deferred/code_anchor_private_fs.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
+import {MemoryCodeCitationCaptureError} from '../../src/memory/code/citation_capture.js';
+import {deferredCodeAnchorCaptureFailureItem} from '../../src/memory/deferred/code_anchor_failure.js';
+import {finalizedDeferredCodeAnchorUris} from '../../src/memory/deferred/code_anchor_finalization.js';
 import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

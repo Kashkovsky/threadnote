@@ -11,9 +11,9 @@ import {
   loginRegistryOAuthUser,
   logoutRegistryOAuthUser,
   type OAuthUserBackend,
-} from '../../src/code_graph/sharing/oauth_user.js';
-import {runOAuthUserRegistryCredentialHelper} from '../../src/code_graph/sharing/oauth_user_registry_credential.js';
-import {withOAuthRegistryReaderHelper} from '../../src/code_graph/sharing/oauth_user_registry_docker.js';
+} from '../../src/code_graph/sharing/oauth/user.js';
+import {runOAuthUserRegistryCredentialHelper} from '../../src/code_graph/sharing/oauth/user_registry_credential.js';
+import {withOAuthRegistryReaderHelper} from '../../src/code_graph/sharing/oauth/user_registry_docker.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {RuntimeConfig} from '../../src/types.js';

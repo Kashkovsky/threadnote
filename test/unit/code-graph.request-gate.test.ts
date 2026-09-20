@@ -4,7 +4,7 @@ import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
 import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer/build.js';
-import {withSharedCodeGraphRequestGate} from '../../src/code_graph/indexer/request_gate.js';
+import {withSharedCodeGraphRequestGate} from '../../src/code_graph/indexer/request/gate.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

@@ -3,8 +3,8 @@ import {Command} from 'effect/unstable/cli';
 import type {
   runMaintenanceMetadataApply,
   runMaintenanceMetadataPreview,
-} from '../memory/maintenance_metadata_commands.js';
-import {boolean, optionalString, requiredString} from './cli_flags.js';
+} from '../memory/maintenance/metadata_commands.js';
+import {boolean, optionalString, requiredString} from './cli/flags.js';
 
 const clearFlag = boolean;
 

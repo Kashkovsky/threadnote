@@ -9,7 +9,7 @@ import {Effect} from 'effect';
 import * as FC from 'fast-check';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
-import {persistedIncrementalSurfaceMatches} from '../../src/code_graph/store/incremental_surface.js';
+import {persistedIncrementalSurfaceMatches} from '../../src/code_graph/store/incremental/surface.js';
 import type {
   CodeGraphFileFacts,
   CodeGraphInventoryFile,

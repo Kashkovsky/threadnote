@@ -4,7 +4,7 @@ import {applyScrubber} from './scrubber.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../memory/code_citation_policy.js';
+} from '../memory/code/citation_policy.js';
 
 import type {
   ShareConflictOptions,

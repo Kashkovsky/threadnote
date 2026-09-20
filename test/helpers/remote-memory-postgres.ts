@@ -1,7 +1,7 @@
 import postgres, {type Sql} from 'postgres';
 import {migrateRemoteMemoryDatabase} from '../../src/remote_memory/migrations.js';
 import {randomUuidV4} from '../../src/crypto/uuid.js';
-import {createRemoteMemorySql} from '../../src/remote_memory/postgres_control_plane.js';
+import {createRemoteMemorySql} from '../../src/remote_memory/postgres/control_plane.js';
 
 export interface RemoteMemoryPostgresFixture {
   readonly databaseName: string;

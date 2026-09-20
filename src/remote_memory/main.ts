@@ -4,9 +4,9 @@ import {remoteMemoryConfigFromEnvironment, redactedRemoteMemoryConfig} from './c
 import {createCursorTokenVerifier} from './cursor_oidc.js';
 import {migrateRemoteMemoryDatabase} from './migrations.js';
 import {createOAuthTokenVerifier} from './oauth.js';
-import {createRemoteMemorySql, PostgresRemoteControlPlane} from './postgres_control_plane.js';
-import {GitCanonicalMemoryStore, ensureLiveGitShareWorktree} from './git_canonical_store.js';
-import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
+import {createRemoteMemorySql, PostgresRemoteControlPlane} from './postgres/control_plane.js';
+import {GitCanonicalMemoryStore, ensureLiveGitShareWorktree} from './git/canonical_store.js';
+import {PostgresRemoteMemoryRepository} from './postgres/repository.js';
 import {PostgresRemoteRateLimiter} from './rate_limit.js';
 import {RemoteMemoryIndexer} from './indexer.js';
 import {RemoteHandoffRetentionWorker} from './handoff_retention.js';

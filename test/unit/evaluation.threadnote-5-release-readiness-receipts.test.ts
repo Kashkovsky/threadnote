@@ -34,11 +34,11 @@ import {
 } from '../../src/evaluation/threadnote-5-release-readiness-receipts.js';
 import {buildKnowledgeDeltaGitProposalV1} from '../../src/git_proposal/knowledge_delta.js';
 import {type CandidateReview} from '../../src/memory/candidate.js';
-import {buildContextHealthReport} from '../../src/memory/context_health.js';
+import {buildContextHealthReport} from '../../src/memory/context/health.js';
 import {
   aggregateContextHealthReportsV1,
   buildContextHealthSchedulePlanV1,
-} from '../../src/memory/context_health_schedule.js';
+} from '../../src/memory/context/health_schedule.js';
 import {canonicalMemoryDocumentContent} from '../../src/memory/document.js';
 import {projectKnowledgeDeltaV1} from '../../src/memory/knowledge_delta.js';
 import {createProcedureVerificationReceipt, parseProcedureManifest} from '../../src/procedure/contract.js';
@@ -62,8 +62,8 @@ import {
   type SecondSurfaceProofContextV1,
   type SecondSurfaceReadObservationV1,
   type SecondSurfaceRecallObservationV1,
-} from '../../src/activation/second_surface.js';
-import {secondSurfaceChallengeIdV1} from '../../src/activation/second_surface_store.js';
+} from '../../src/activation/second/surface.js';
+import {secondSurfaceChallengeIdV1} from '../../src/activation/second/surface_store.js';
 import {summarizeLocalValueEvents} from '../../src/value_report/events.js';
 import {renderManagedGuidanceBlock} from '../../src/guidance/index.js';
 import {parseContextBriefV1, renderContextBriefText} from '../../src/context_brief/projector.js';

@@ -26,7 +26,7 @@ import {
 } from '../../src/code_graph/types.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {captureConsole} from '../../src/effect/console.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';

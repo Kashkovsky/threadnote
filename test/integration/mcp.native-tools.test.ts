@@ -14,7 +14,7 @@ import {
   createMemoryCodeCitation,
   MAX_MEMORY_CODE_CITATIONS,
   MEMORY_SCHEMA_VERSION,
-} from '../../src/memory/code_citation.js';
+} from '../../src/memory/code/citation.js';
 import {
   canonicalMemoryDocumentContent,
   formatMemoryDocument,
@@ -23,7 +23,7 @@ import {
   parseMemoryDocument,
 } from '../../src/memory/document.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
-import {isDeferredCodeAnchorIntentFilename} from '../../src/memory/deferred_code_anchor.js';
+import {isDeferredCodeAnchorIntentFilename} from '../../src/memory/deferred/code_anchor.js';
 import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
 import {
   parseContextBriefAgentViewText,
@@ -31,7 +31,7 @@ import {
   projectContextBriefAgentView,
 } from '../../src/context_brief/projector.js';
 import {MCP_RESOURCE_READ_MAX_BYTES} from '../../src/effect/ai/mcp_resource.js';
-import {MEMORY_READ_PAGE_BYTES} from '../../src/memory/read_projection.js';
+import {MEMORY_READ_PAGE_BYTES} from '../../src/memory/read/projection.js';
 
 interface TextContent {
   readonly text: string;

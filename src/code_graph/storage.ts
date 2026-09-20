@@ -1,8 +1,8 @@
 import {Database} from 'bun:sqlite';
 import {Effect, FileSystem, Option, Path, Schema} from 'effect';
-import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file/lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
-import {recordCodeGraphAutomaticCompactionAttempt} from './automatic_compaction_receipt.js';
+import {recordCodeGraphAutomaticCompactionAttempt} from './automatic/compaction_receipt.js';
 import {codeGraphMaintenanceLockPath, codeGraphRepositoryLockPath, codeGraphRepositoryRoot} from './layout.js';
 import {
   awaitCodeGraphWorktreeBuilds,

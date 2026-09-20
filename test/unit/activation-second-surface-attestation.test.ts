@@ -18,7 +18,7 @@ import {createActivationPlanV1} from '../../src/activation/planner.js';
 import {
   observeCurrentActivationSurfaceV1,
   type CurrentActivationSurfaceV1,
-} from '../../src/activation/production_evidence.js';
+} from '../../src/activation/production/evidence.js';
 import {
   bindActivationApprovalV1,
   createActivationReceiptV1,
@@ -29,14 +29,14 @@ import {
   type SecondSurfaceProofContextV1,
   type SecondSurfaceReadObservationV1,
   type SecondSurfaceRecallObservationV1,
-} from '../../src/activation/second_surface.js';
-import {produceSecondSurfaceProofV1} from '../../src/activation/second_surface_producer.js';
+} from '../../src/activation/second/surface.js';
+import {produceSecondSurfaceProofV1} from '../../src/activation/second/surface_producer.js';
 import {
   completeSecondSurfaceProofChallengeV1,
   issueSecondSurfaceProofChallengeV1,
   secondSurfaceChallengeIdV1,
   verifySecondSurfaceProofAttestationV1,
-} from '../../src/activation/second_surface_store.js';
+} from '../../src/activation/second/surface_store.js';
 import {initializeActivationStateV1} from '../../src/activation/store.js';
 import {reconcileActivationValueEventsV1} from '../../src/activation/value.js';
 import {captureThreadnote5ActivationTrialV1} from '../../src/evaluation/threadnote-5-release-readiness-receipts.js';

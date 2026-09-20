@@ -8,7 +8,7 @@ import {
   selectContextCheckGraphImpact,
 } from '../../src/context_check/graph_impact.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
 import type {MemoryRecord} from '../../src/memory/document.js';
 
 const repositoryId = 'a'.repeat(64);

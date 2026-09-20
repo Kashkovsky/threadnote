@@ -29,7 +29,7 @@ import {parseResourceId} from './storage/resource-id.js';
 import {isThreadnoteStorageLayoutReceipt} from './storage/layout.js';
 import type {CommandStatus, JsonObject} from './types.js';
 import {getThreadnoteVersion} from './release/runtime_version.js';
-import {compareVersions} from './release/version_compare.js';
+import {compareVersions} from './release/version/compare.js';
 import {findWorkspaceComponentManifest} from './workspace_component.js';
 
 class UtilityOperationError extends Schema.TaggedError<UtilityOperationError>()('UtilityOperationError', {
@@ -38,7 +38,7 @@ class UtilityOperationError extends Schema.TaggedError<UtilityOperationError>()(
 }) {}
 
 export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
-export {compareVersions} from './release/version_compare.js';
+export {compareVersions} from './release/version/compare.js';
 
 export function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

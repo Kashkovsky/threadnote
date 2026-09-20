@@ -16,26 +16,26 @@ import {
   MAXIMUM_CANONICAL_DATE_MILLISECONDS,
   REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY,
   REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS,
-} from './removed_view_schema_contracts.js';
+} from './removed/view_schema_contracts.js';
 import {
   removedViewAuthorityTableState,
   removedViewCleanupRecordedRevision,
   removedViewCleanupSchemaState,
-} from './removed_view_schema_inspection.js';
-import {normalizeSchemaDefinition} from './schema_normalization.js';
+} from './removed/view_schema_inspection.js';
+import {normalizeSchemaDefinition} from './schema/normalization.js';
 import {
   REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
   type SchemaMetadataMaximumRows,
   inspectBoundedSchemaMetadataRowCount,
   inspectBoundedSchemaMetadataValue,
-} from './schema_metadata.js';
+} from './schema/metadata.js';
 import {
   CODE_GRAPH_SCHEMA_VERSION,
   CodeGraphStoreCorruptionError,
   CodeGraphStoreError,
   CodeGraphStoreIncompatibleSchemaError,
 } from '../types.js';
-import {codeGraphPersistentSchemaIsCurrent} from './schema_revision.js';
+import {codeGraphPersistentSchemaIsCurrent} from './schema/revision.js';
 import {
   allocateRemovedViewCleanupEpoch,
   authorityPrimaryKeyBinary,
@@ -63,32 +63,32 @@ import {
   validCanonicalTimestamp,
   validRemovedViewCleanupBlockedCode,
   validRemovedViewCleanupEntry,
-} from './reconciliation_core.js';
+} from './reconciliation/core.js';
 import {
   CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL,
   CODE_GRAPH_SCOPED_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL,
   codeGraphRemovedViewCleanupBaseSchemaAdmission,
   inspectRemovedViewCleanupAdmissionCursor,
-} from './schema_core.js';
+} from './schema/core.js';
 import {
   boundedSnapshotLeaseProjection,
   type BoundedSnapshotLeaseRow,
   decodeSnapshotLeaseManifest,
 } from './maintenance_core.js';
-import {lastStatementChangeCount} from './activation_core.js';
+import {lastStatementChangeCount} from './activation/core.js';
 import {type CodeGraphSqlQueryStatement} from './visualization_sql.js';
-import {codeGraphScopeAuthorityInstalled, codeGraphScopeAuthoritySchemaCompatible} from './scope_schema.js';
+import {codeGraphScopeAuthorityInstalled, codeGraphScopeAuthoritySchemaCompatible} from './scope/schema.js';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../index_scope.js';
 import {
   SCOPED_REMOVED_VIEW_CLEANUP_COLUMNS,
   SCOPED_REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS,
-} from './scope_schema_contracts.js';
+} from './scope/schema_contracts.js';
 import {
   CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES,
   CODE_GRAPH_SCOPE_CURSOR_PATTERN,
   codeGraphScopeCursor,
   codeGraphScopeCursorParameters,
-} from './scope_cursor.js';
+} from './scope/cursor.js';
 
 const WORKTREE_RECONCILIATION_CURSOR_KEY = 'worktree_reconciliation_cursor';
 const WORKTREE_RECONCILIATION_CURSOR_PATTERN = CODE_GRAPH_SCOPE_CURSOR_PATTERN;

@@ -1,6 +1,6 @@
 import {Effect, Schema} from 'effect';
 import {putCasBytes, readVerifiedCasBlob} from './cas.js';
-import {graphShareControlGetCas} from './control_client.js';
+import {graphShareControlGetCas} from './control/client.js';
 import {parseSha256Digest, sha256Digest} from './digest.js';
 import {GraphSharingError, graphSharingFailure, graphSharingUnavailable} from './errors.js';
 

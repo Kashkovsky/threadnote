@@ -7,21 +7,21 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
-import {monitorGraphShareSignedContributions} from '../../src/code_graph/sharing/contribution_retry.js';
-import {drainQueuedGraphShareSignedContributions} from '../../src/code_graph/sharing/worker_delivery.js';
-import {readContributionRetryState} from '../../src/code_graph/sharing/contribution_retry_state.js';
+import {monitorGraphShareSignedContributions} from '../../src/code_graph/sharing/contribution/retry.js';
+import {drainQueuedGraphShareSignedContributions} from '../../src/code_graph/sharing/worker/delivery.js';
+import {readContributionRetryState} from '../../src/code_graph/sharing/contribution/retry_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
 import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
 import {
   listGraphShareSignedCandidatePageIds,
   persistGraphShareSignedCandidates,
-} from '../../src/code_graph/sharing/signed_candidate.js';
+} from '../../src/code_graph/sharing/signed/candidate.js';
 import {writeGraphShareTrustReceipt} from '../../src/code_graph/sharing/trust.js';
 import {
   graphWorkerDeliveryScope,
   listGraphWorkerDeliveryOutboxOperations,
-} from '../../src/code_graph/sharing/worker_delivery_outbox.js';
+} from '../../src/code_graph/sharing/worker/delivery_outbox.js';
 import {writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';

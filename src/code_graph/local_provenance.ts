@@ -1,6 +1,6 @@
 import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, PlatformError, Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo} from '../effect/system.js';
 import {
   captureCodeGraphGitWorktreeRegistration,
@@ -8,7 +8,7 @@ import {
   parseCodeGraphGitWorktreeRegistration,
   sameCodeGraphGitWorktreeRegistration,
   type CodeGraphGitWorktreeRegistration,
-} from './git/worktree_registration.js';
+} from './git/worktree/registration.js';
 import {classifyCodeGraphLifecycle} from './lifecycle/classification.js';
 import {normalizeRepositoryBranchName, resolveRepositoryIdentityDetail} from './repository.js';
 import {codeGraphLocalProvenanceLockPath} from './layout.js';

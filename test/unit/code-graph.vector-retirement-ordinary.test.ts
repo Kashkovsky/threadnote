@@ -13,7 +13,7 @@ import {
   evaluateCodeGraphDiskCapacity,
 } from '../../src/code_graph/disk/capacity.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {
   type CodeGraphVectorRetirementCapacityProtector,
   type CodeGraphOrdinaryVectorMaintenanceUnitInput,

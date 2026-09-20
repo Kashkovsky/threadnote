@@ -3,7 +3,7 @@ import {
   OPERATIONS_CHECKS,
   OPERATIONS_CHECK_SPECIFICATIONS,
   type OperationsManifest,
-} from '../../src/remote_memory/operations_contract.js';
+} from '../../src/remote_memory/operations/contract.js';
 
 export const checkedAt = '2026-09-18T01:00:00.000Z';
 export function operationsDraft() {

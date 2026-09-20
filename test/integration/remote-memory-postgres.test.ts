@@ -2,7 +2,7 @@ import type {Sql, TransactionSql} from 'postgres';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {randomUuidV4} from '../../src/crypto/uuid.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
 import type {RemoteRememberInputV1} from '../../src/memory_domain/contracts.js';
@@ -16,19 +16,19 @@ import {RemoteHandoffRetentionWorker} from '../../src/remote_memory/handoff_rete
 import {RemoteMemoryIndexer} from '../../src/remote_memory/indexer.js';
 import {migrateRemoteMemoryDatabase, remoteMemoryMigrationVersions} from '../../src/remote_memory/migrations.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
-import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator_postgres.js';
+import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator/postgres.js';
 import {
   applyRemoteMemoryProvisioningOperator,
   planRemoteMemoryProvisioningOperator,
 } from '../../src/remote_memory/operator.js';
 import type {RemoteMemoryProvisioningRequestV1} from '../../src/remote_memory/provisioning.js';
-import {remoteContextBriefAnchorSelectors} from '../../src/remote_memory/context_brief.js';
+import {remoteContextBriefAnchorSelectors} from '../../src/remote_memory/context/brief.js';
 import type {RemoteMemoryPortableRecordV1} from '../../src/remote_memory/portability.js';
 import {
   PostgresRemoteControlPlane,
   type RemoteMemoryProvisioningInput,
-} from '../../src/remote_memory/postgres_control_plane.js';
-import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres_repository.js';
+} from '../../src/remote_memory/postgres/control_plane.js';
+import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres/repository.js';
 import {
   createRemoteMemoryPostgresFixture,
   type RemoteMemoryPostgresFixture,

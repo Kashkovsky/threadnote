@@ -1,13 +1,13 @@
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './schema_contracts.js';
+import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './schema/contracts.js';
 import {tableExists} from './session.js';
 import {CodeGraphStoreError} from '../types.js';
-import {type CodeGraphWriterGate} from './build_core.js';
-import {initializeSchema} from './schema_initialization.js';
-import {drainCompletedPersistentBuildRows} from './activation_persistent.js';
+import {type CodeGraphWriterGate} from './build/core.js';
+import {initializeSchema} from './schema/initialization.js';
+import {drainCompletedPersistentBuildRows} from './activation/persistent.js';
 import {pruneRetiredCompactLexicalRows, RETIRED_SNAPSHOT_CLEANUP_SPECS} from './cleanup_core.js';
-import {nextPersistentActivationBatchRows} from './activation_core.js';
+import {nextPersistentActivationBatchRows} from './activation/core.js';
 
 /** @internal Bounded keyset page retained for admission query-plan and load regressions. */
 

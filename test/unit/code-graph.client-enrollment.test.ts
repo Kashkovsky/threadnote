@@ -5,7 +5,7 @@ import {TestClock} from 'effect/testing';
 import {
   enrollGraphControlClient,
   prepareGraphControlWorkerIdentity,
-} from '../../src/code_graph/sharing/client_enrollment.js';
+} from '../../src/code_graph/sharing/client/enrollment.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingUnavailable} from '../../src/code_graph/sharing/errors.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

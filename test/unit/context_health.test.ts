@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import type {MemoryMetadata, MemoryRecord} from '../../src/memory/document.js';
-import {buildContextHealthReport} from '../../src/memory/context_health.js';
+import {buildContextHealthReport} from '../../src/memory/context/health.js';
 
 const now = new Date('2026-09-17T12:00:00.000Z');
 

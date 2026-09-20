@@ -1,7 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import * as FC from 'fast-check';
-import {parseGraphShareRegistryTarget} from '../../src/code_graph/sharing/registry_reference.js';
-import {parseGraphShareRegistryChallenge} from '../../src/code_graph/sharing/registry_auth.js';
+import {parseGraphShareRegistryTarget} from '../../src/code_graph/sharing/registry/reference.js';
+import {parseGraphShareRegistryChallenge} from '../../src/code_graph/sharing/registry/auth.js';
 
 const name = FC.array(FC.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789'), {minLength: 1, maxLength: 20}).map(
   chars => chars.join(''),

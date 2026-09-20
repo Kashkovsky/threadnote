@@ -9,7 +9,7 @@ import type {MaterializationStorageTelemetry} from './materialization.js';
 import type {CodeGraphWorkspace} from '../languages/types.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../languages/registry.js';
 import type {CodeGraphLayout} from '../layout.js';
-import type {CodeGraphBuilderAdmissionClass} from '../builder_admission.js';
+import type {CodeGraphBuilderAdmissionClass} from '../builder/admission.js';
 import type {CodeGraphEmbeddingIndexShape} from '../embedding.js';
 import type {CodeGraphResolutionPublicationAssessment} from '../resolution/surface.js';
 import type {CodeGraphMaintenanceCoordinatorShape} from '../maintenance/coordinator.js';

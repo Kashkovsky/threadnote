@@ -33,7 +33,7 @@ import {
   CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   codeGraphRuntimeSchemaRequiresReconnect,
-} from './schema_revision.js';
+} from './schema/revision.js';
 
 export {
   CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION,

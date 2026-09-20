@@ -2,7 +2,7 @@ import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path, S
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {CommandExecutor} from '../../effect/command.js';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {SystemInfo} from '../../effect/system.js';
 import {getThreadnoteVersion} from '../../release/runtime_version.js';
 import {
@@ -13,8 +13,8 @@ import {
 import {assessCodeGraphScopeApplicability, codeGraphScopeAdmissionEvidence} from '../scope/applicability.js';
 import {codeGraphScopeIdentityCompatible} from '../scope/identity.js';
 import {makeCodeGraphBuildReporter, type CodeGraphBuildReporter} from '../build_status.js';
-import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, withCodeGraphBuilderAdmission} from '../builder_admission.js';
-import type {CodeGraphBuilderAdmissionQueue} from '../builder_admission_scheduler.js';
+import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, withCodeGraphBuilderAdmission} from '../builder/admission.js';
+import type {CodeGraphBuilderAdmissionQueue} from '../builder/admission_scheduler.js';
 import {makeCodeGraphBuildResourceCoordinator} from '../build/resources.js';
 import {isCodeGraphCapacityPause} from '../disk/capacity.js';
 import {CodeGraphEmbeddingIndex} from '../embedding.js';
@@ -31,7 +31,7 @@ import {
   withCodeGraphProcessLock,
   writerSessionOptions,
 } from './build.js';
-import {withSharedCodeGraphRequestGate} from './request_gate.js';
+import {withSharedCodeGraphRequestGate} from './request/gate.js';
 import {completedConcurrentSnapshot} from './concurrent_snapshot.js';
 import {assessIncrementalOverlay, assessIncrementalOverlayCompatibility} from './incremental.js';
 import {attemptSparseReusableOverlay} from './sparse.js';
@@ -102,9 +102,9 @@ import {
   drainQueuedGraphShareContributions,
   enqueueLocalGraphShareParseResults,
   hydrateSharedParseCache,
-} from '../sharing/parse_cache.js';
+} from '../sharing/parse/cache.js';
 import {graphShareEnrollmentPath} from '../sharing/layout.js';
-import {finalizeGraphShareSignedCandidates} from '../sharing/signed_candidate.js';
+import {finalizeGraphShareSignedCandidates} from '../sharing/signed/candidate.js';
 import {CodeGraphStore} from '../store.js';
 import {TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import type {CodeGraphIndexSummary, CodeGraphInventoryFile, CodeGraphProgress, CodeGraphSnapshot} from '../types.js';

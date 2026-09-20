@@ -9,7 +9,7 @@ import {
   buildBoundedRecallMemoryLinkRawQuery,
   MAX_INDEXED_MEMORY_LINKS_PER_SOURCE,
   memoryLinkLocatorDigest,
-} from '../../src/recall/memory_links.js';
+} from '../../src/recall/memory/links.js';
 import {
   clearRecallIndexMemoryCache,
   expireRecallIndexValidation,

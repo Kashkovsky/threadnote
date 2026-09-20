@@ -4,9 +4,9 @@ import type {Sql, TransactionSql} from 'postgres';
 import type {AuthorizedRemotePrincipal} from './authorization.js';
 import {RemoteMemoryError} from './errors.js';
 import {rotateShares} from './indexer.js';
-import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
-import {remoteRetentionPrincipalId} from './postgres_control_plane.js';
-import type {GitCanonicalMemoryStore} from './git_canonical_store.js';
+import {PostgresRemoteMemoryRepository} from './postgres/repository.js';
+import {remoteRetentionPrincipalId} from './postgres/control_plane.js';
+import type {GitCanonicalMemoryStore} from './git/canonical_store.js';
 import {REMOTE_MEMORY_PROPOSAL_CLAIM_LEASE_MILLISECONDS} from './proposals.js';
 
 const DEFAULT_RETENTION_LIMIT = 64;

@@ -1,6 +1,6 @@
 import {Crypto, Effect, FileSystem, Option, Path, PlatformError, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
-import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file/lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../../effect/system.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from '../disk/capacity.js';
 import {codeGraphVectorRetirementCursorLockPath, codeGraphVectorWriteLockPath} from '../layout.js';

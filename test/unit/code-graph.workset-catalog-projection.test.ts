@@ -11,11 +11,11 @@ import {
   buildCodeGraphWorksetRoutingProjection,
   buildCodeGraphWorksetRoutingProjectionScoped,
   stageCodeGraphWorksetRoutingProjectionScoped,
-} from '../../src/code_graph/workset_catalog/projection_builder.js';
+} from '../../src/code_graph/workset_catalog/projection/builder.js';
 import {
   codeGraphWorksetRoutingProjectionLogicalBytes,
   codeGraphWorksetRoutingProjectionPages,
-} from '../../src/code_graph/workset_catalog/projection_storage.js';
+} from '../../src/code_graph/workset_catalog/projection/storage.js';
 import {
   configureCodeGraphWorksetProjectionTemporaryStorage,
   inspectCodeGraphWorksetProjectionPreparationQueryPlan,

@@ -12,7 +12,7 @@ import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/reg
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
 import {
   acknowledgeGraphShareSignedCandidatePage,
   finalizeGraphShareSignedCandidates,
@@ -27,7 +27,7 @@ import {
   signedCandidateQueuePath,
   type GraphSharePendingSignedCandidate,
   type GraphShareSignedCandidateV2,
-} from '../../src/code_graph/sharing/signed_candidate.js';
+} from '../../src/code_graph/sharing/signed/candidate.js';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store/shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot} from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';

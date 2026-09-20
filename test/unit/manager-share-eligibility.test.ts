@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import type {TreeNode} from '../../src/manager/ui.js';
-import {canPublishMemoryFromManager, canPublishSelectedMemoriesFromManager} from '../../src/manager/ui_support.js';
+import {canPublishMemoryFromManager, canPublishSelectedMemoriesFromManager} from '../../src/manager/ui/support.js';
 
 describe('Manager Publish availability', () => {
   const durable = 'threadnote://user/tester/memories/durable/projects/foo/bar.md';

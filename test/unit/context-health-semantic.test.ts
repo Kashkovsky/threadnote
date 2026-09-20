@@ -1,17 +1,17 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {buildContextHealthReport} from '../../src/memory/context_health.js';
-import {renderContextHealth} from '../../src/memory/context_health_commands.js';
+import {buildContextHealthReport} from '../../src/memory/context/health.js';
+import {renderContextHealth} from '../../src/memory/context/health_commands.js';
 import {
   analyzeContextHealthSemantics,
   MAXIMUM_CONTEXT_HEALTH_SEMANTIC_RECORDS,
-} from '../../src/memory/context_health_semantic.js';
-import {previewContextHealthRepairPlanV1} from '../../src/memory/context_health_repair.js';
+} from '../../src/memory/context/health_semantic.js';
+import {previewContextHealthRepairPlanV1} from '../../src/memory/context/health_repair.js';
 import {
   normalizeContextHealthSelector,
   projectContextHealthRecords,
   type ContextHealthSelectorV1,
-} from '../../src/memory/context_health_selector.js';
+} from '../../src/memory/context/health_selector.js';
 import type {MemoryMetadata, MemoryRecord} from '../../src/memory/document.js';
 
 const now = new Date('2026-09-18T08:00:00.000Z');

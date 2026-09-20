@@ -13,12 +13,12 @@ import {
 } from 'effect';
 import {uriSegment} from '../manifest.js';
 import {globToRegExp} from '../utils.js';
-import {readExclusiveFileLockOwner, withExclusiveFileLock} from './file_lock.js';
-import {resourceAccountMutationLockPath} from './resource_lock.js';
+import {readExclusiveFileLockOwner, withExclusiveFileLock} from './file/lock.js';
+import {resourceAccountMutationLockPath} from './resource/lock.js';
 import {
   advanceCanonicalMutationGeneration,
   type CanonicalMutationGenerationTransition,
-} from './resource_mutation_generation.js';
+} from './resource/mutation_generation.js';
 import {SystemInfo} from './system.js';
 import {
   canonicalResourceUri,

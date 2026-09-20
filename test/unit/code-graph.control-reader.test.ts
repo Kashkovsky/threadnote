@@ -16,9 +16,9 @@ import {
 } from '../../src/code_graph/sharing/artifacts.js';
 import {writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {casBlobPath, putCasBytes} from '../../src/code_graph/sharing/cas.js';
-import {makeGraphControlReader, readGraphControlFrontier} from '../../src/code_graph/sharing/control_reader.js';
-import {emptyGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_protocol.js';
-import {readGraphControlPolicy} from '../../src/code_graph/sharing/control_authorization.js';
+import {makeGraphControlReader, readGraphControlFrontier} from '../../src/code_graph/sharing/control/reader.js';
+import {emptyGraphShareCoordinatorState} from '../../src/code_graph/sharing/control/protocol.js';
+import {readGraphControlPolicy} from '../../src/code_graph/sharing/control/authorization.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {adoptPublishedFrontier, observeCanonicalHead} from '../../src/code_graph/sharing/frontier.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';

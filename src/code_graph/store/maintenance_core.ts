@@ -2,8 +2,8 @@ import {Clock, DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {SystemInfo} from '../../effect/system.js';
 import {classifyCodeGraphBuildOwner} from '../build/owner.js';
-import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './removed_view_schema_contracts.js';
-import {removedViewCleanupRecordedRevision} from './removed_view_schema_inspection.js';
+import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './removed/view_schema_contracts.js';
+import {removedViewCleanupRecordedRevision} from './removed/view_schema_inspection.js';
 import {
   codeGraphCacheReferenceIndexState,
   CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX,
@@ -16,9 +16,9 @@ import {
   tableExists,
 } from './session.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, CodeGraphStoreError} from '../types.js';
-import {codeGraphPersistentSchemaIsCurrent} from './schema_revision.js';
+import {codeGraphPersistentSchemaIsCurrent} from './schema/revision.js';
 import {type CodeGraphActivationLease, type PersistentBuildOwnerCandidate} from './internal_models.js';
-import {lastStatementChangeCount} from './activation_core.js';
+import {lastStatementChangeCount} from './activation/core.js';
 
 const CODE_GRAPH_ROUTINE_EXPIRED_LEASE_PAGE_SIZE = 100;
 

@@ -9,7 +9,7 @@ import {
   readGitBetaMemorySources,
   writeOperatorJsonExclusive,
   writeRemoteMemoryExportBundle,
-} from '../../src/remote_memory/operator_files.js';
+} from '../../src/remote_memory/operator/files.js';
 import {
   planGitBetaImport,
   materializeGitBetaImport,

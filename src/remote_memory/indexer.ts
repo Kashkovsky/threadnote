@@ -1,7 +1,7 @@
 import type {Sql, TransactionSql} from 'postgres';
-import {GitCanonicalMemoryStore} from './git_canonical_store.js';
-import {assertGitMemoryBinding, requireGitMemoryBinding} from './git_binding.js';
-import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
+import {GitCanonicalMemoryStore} from './git/canonical_store.js';
+import {assertGitMemoryBinding, requireGitMemoryBinding} from './git/binding.js';
+import {PostgresRemoteMemoryRepository} from './postgres/repository.js';
 import {parseMemoryDocument} from '../memory/document.js';
 import {formatRemoteMemoryUri} from '../memory_domain/address.js';
 import {replaceRemoteCodeLinkBacklinks} from './code_link_backlinks.js';

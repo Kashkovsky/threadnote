@@ -25,8 +25,8 @@ import {
   writeGraphShareTrustReceipt,
   writeGraphShareRepositoryContributionMode,
 } from '../../src/code_graph/sharing/trust.js';
-import {resolveGraphShareRepositoryClient} from '../../src/code_graph/sharing/client_state.js';
-import {drainQueuedGraphShareContributions} from '../../src/code_graph/sharing/parse_cache.js';
+import {resolveGraphShareRepositoryClient} from '../../src/code_graph/sharing/client/state.js';
+import {drainQueuedGraphShareContributions} from '../../src/code_graph/sharing/parse/cache.js';
 import {
   effectiveGraphShareContributionPolicy,
   enqueuePersistedGraphShareContribution,

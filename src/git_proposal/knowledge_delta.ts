@@ -7,7 +7,7 @@ import {canonicalMemoryDocumentContent, parseMemoryDocument, type MemoryRelation
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../memory/code_citation_policy.js';
+} from '../memory/code/citation_policy.js';
 import {memoryIdFromIdentityAlias, isMemoryId} from '../memory/identity_alias.js';
 import type {KnowledgeDeltaItemV1, KnowledgeDeltaV1} from '../memory/knowledge_delta.js';
 import {

@@ -10,8 +10,8 @@ import {discardMemoryRelocation} from '../memory/relocation.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../memory/code_citation_policy.js';
-import {stripGeneratedMemoryHygieneSources} from '../memory/hygiene_provenance.js';
+} from '../memory/code/citation_policy.js';
+import {stripGeneratedMemoryHygieneSources} from '../memory/hygiene/provenance.js';
 
 import {ResourceStore} from '../effect/resource-store.js';
 

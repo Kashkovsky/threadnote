@@ -1,15 +1,15 @@
 import postgres, {type Sql, type TransactionSql} from 'postgres';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 
-import {aggregateContextHealthReportsV1} from '../../src/memory/context_health_schedule.js';
-import type {ContextHealthReportV1} from '../../src/memory/context_health.js';
+import {aggregateContextHealthReportsV1} from '../../src/memory/context/health_schedule.js';
+import type {ContextHealthReportV1} from '../../src/memory/context/health.js';
 import {randomUuidV4} from '../../src/crypto/uuid.js';
 import {
   buildHostedContextHealthPolicyV1,
   buildHostedContextHealthScheduleV1,
   signHostedContextHealthEvaluationV1,
   type HostedContextHealthRunInputV1,
-} from '../../src/remote_memory/hosted_context_health.js';
+} from '../../src/remote_memory/hosted/context_health.js';
 import {
   claimHostedContextHealthJobs,
   completeHostedContextHealthCycle,
@@ -18,8 +18,8 @@ import {
   registerHostedContextHealthSchedule,
   setHostedContextHealthScheduleStatus,
   type HostedContextHealthClaimV1,
-} from '../../src/remote_memory/hosted_context_health_postgres.js';
-import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres_control_plane.js';
+} from '../../src/remote_memory/hosted/context_health_postgres.js';
+import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres/control_plane.js';
 import {
   createRemoteMemoryPostgresFixture,
   type RemoteMemoryPostgresFixture,

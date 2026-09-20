@@ -1,5 +1,5 @@
 import {Crypto, Effect, FileSystem, Path} from 'effect';
-import {syncWritableFile} from '../effect/file_durability.js';
+import {syncWritableFile} from '../effect/file/durability.js';
 import type {CodeMemoryLinkAgentLedgerLayout} from './code-memory-link-agent-attempts.js';
 
 export const CODE_MEMORY_LINK_AGENT_LEDGER_DURABILITY_STEPS = [

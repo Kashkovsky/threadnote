@@ -19,7 +19,7 @@ import {Effect, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {afterEach, describe, expect} from 'vitest';
-import type {CodeGraphWorktreeReconciliationAuthorityObservation} from '../../src/code_graph/git/worktree_registration.js';
+import type {CodeGraphWorktreeReconciliationAuthorityObservation} from '../../src/code_graph/git/worktree/registration.js';
 import {
   recordVerifiedCodeGraphLocalAssociation,
   type CodeGraphWorktreeReconciliationEvidenceCandidate,
@@ -38,7 +38,7 @@ import {
 } from '../../src/code_graph/orphan_provenance_cleanup.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store/schema_metadata.js';
+import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store/schema/metadata.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';

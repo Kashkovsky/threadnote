@@ -1,13 +1,13 @@
 import {Clock, Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {saturatingCapacityAdd, saturatingCapacityMultiply} from '../disk/capacity.js';
-import {assertPersistentBuildOwner, type CodeGraphWriterGate} from './build_core.js';
+import {assertPersistentBuildOwner, type CodeGraphWriterGate} from './build/core.js';
 import {
   type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphSecondaryIndexRestorationProgressCallback,
 } from './models.js';
-import {CODE_GRAPH_QUERY_INDEX_DEFINITIONS, inspectCodeGraphQueryIndexes} from './query_indexes.js';
-import {recordCodeGraphSchemaInitializationReceipt} from './schema_receipt.js';
+import {CODE_GRAPH_QUERY_INDEX_DEFINITIONS, inspectCodeGraphQueryIndexes} from './query/indexes.js';
+import {recordCodeGraphSchemaInitializationReceipt} from './schema/receipt.js';
 import {CodeGraphStoreError} from '../types.js';
 
 const DEFERRED_QUERY_INDEX_STATE_KEY = 'query_indexes_deferred';

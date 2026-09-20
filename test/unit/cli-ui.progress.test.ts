@@ -5,7 +5,7 @@ import {Console, Effect, Terminal} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {clipInteractiveProgressText, promptForSelection, startProgress} from '../../src/cli_ui.js';
-import {CliOutput, makeQueuedCliWriter, withCliOutputConsole} from '../../src/effect/cli_output.js';
+import {CliOutput, makeQueuedCliWriter, withCliOutputConsole} from '../../src/effect/cli/output.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';

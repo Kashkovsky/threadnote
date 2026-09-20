@@ -1,5 +1,5 @@
 import {remoteMemoryError} from './errors.js';
-import {requireGitMemoryBinding, type GitMemoryBinding} from './git_binding.js';
+import {requireGitMemoryBinding, type GitMemoryBinding} from './git/binding.js';
 
 export type RemoteMemoryCanonicalStore = 'git' | 'postgres';
 

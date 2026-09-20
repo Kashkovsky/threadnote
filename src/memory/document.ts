@@ -9,7 +9,7 @@ import {
   parseMemoryCodeCitationHeaders,
   type MemoryCodeCitationError,
   type MemoryCodeCitationV1,
-} from './code_citation.js';
+} from './code/citation.js';
 
 export type MemoryAuthority = 'agent_generated' | 'canonical_repo' | 'external' | 'reviewed_shared' | 'user_approved';
 

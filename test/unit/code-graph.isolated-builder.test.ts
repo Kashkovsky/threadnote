@@ -30,7 +30,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {
   CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE,
   CodeGraphRefreshDemandSuperseded,

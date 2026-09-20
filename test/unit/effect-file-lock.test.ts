@@ -5,7 +5,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Clock, DateTime, Deferred, Effect, Exit, Fiber, FileSystem, Layer, PlatformError, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {FileLockTimeout, withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {FileLockTimeout, withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {join, mkdir, mkdtemp, rm, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';

@@ -7,7 +7,7 @@ import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {formatMemoryDocument, MEMORY_RELATION_TYPES, type MemoryMetadata} from '../../src/memory/document.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
-import {memoryLinkLocatorDigest} from '../../src/recall/memory_links.js';
+import {memoryLinkLocatorDigest} from '../../src/recall/memory/links.js';
 import {clearRecallIndexMemoryCache, loadRecallIndexData, recallIndexDatabaseFilename} from '../../src/recall/index.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

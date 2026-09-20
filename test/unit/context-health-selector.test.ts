@@ -4,7 +4,7 @@ import {
   contextHealthSelectorCliFlags,
   normalizeContextHealthSelector,
   projectContextHealthRecords,
-} from '../../src/memory/context_health_selector.js';
+} from '../../src/memory/context/health_selector.js';
 import type {MemoryRecord} from '../../src/memory/document.js';
 
 describe('context health selectors', () => {

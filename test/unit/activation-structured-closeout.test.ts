@@ -1,9 +1,9 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {findOrCreateActivationDecisionReviewV1} from '../../src/activation/production_evidence.js';
-import {parseActivationProductionRequestV1} from '../../src/activation/production_contract.js';
-import {observeActivationProductionV1} from '../../src/activation/production_observe.js';
+import {findOrCreateActivationDecisionReviewV1} from '../../src/activation/production/evidence.js';
+import {parseActivationProductionRequestV1} from '../../src/activation/production/contract.js';
+import {observeActivationProductionV1} from '../../src/activation/production/observe.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {projectKnowledgeDeltaV1} from '../../src/memory/knowledge_delta.js';

@@ -1,6 +1,6 @@
 import {Crypto, Effect, FileSystem, Path, Schema} from 'effect';
 import * as yaml from 'js-yaml';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {parseResourceId, resourceIdWithoutAnchor} from '../storage/resource-id.js';
 import type {MemoryKind, MemoryStatus, RuntimeConfig} from '../types.js';
 import {isJsonObject} from '../utils.js';

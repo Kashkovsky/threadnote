@@ -28,7 +28,7 @@ import {
   type CodeGraphVectorPageStorage,
   type CodeGraphVectorRetirementMarker,
   type LegacyPointerIndexPlan,
-} from './retirement_inspection.js';
+} from './retirement/inspection.js';
 import {
   CODE_GRAPH_VECTOR_POINTER_GENERATION_INDEX_SQL,
   CODE_GRAPH_VECTOR_RETIREMENTS_TABLE_SQL,
@@ -50,7 +50,7 @@ import {
   VECTOR_SNAPSHOT_BYTES,
   VECTOR_SYMBOL_BYTES,
   storedSchemaSql,
-} from './retirement_schema.js';
+} from './retirement/schema.js';
 
 export {
   codeGraphVectorRetirementLegacyPointerProbeStatement,
@@ -59,7 +59,7 @@ export {
   type CodeGraphVectorPageStorage,
   type CodeGraphVectorRetirementMarker,
   type LegacyPointerIndexPlan,
-} from './retirement_inspection.js';
+} from './retirement/inspection.js';
 export {
   CODE_GRAPH_VECTORS_TABLE_SQL,
   CODE_GRAPH_VECTOR_GENERATIONS_TABLE_SQL,
@@ -77,7 +77,7 @@ export {
   CODE_GRAPH_VECTOR_RETIREMENT_STATE_TABLE_SQL,
   CODE_GRAPH_VECTOR_RETIREMENT_TRIGGER_DEFINITIONS,
   CODE_GRAPH_VECTOR_REUSE_INDEX_SQL,
-} from './retirement_schema.js';
+} from './retirement/schema.js';
 
 export type CodeGraphVectorRetirementPreparationResult = {readonly state: 'prepared' | 'ready'};
 

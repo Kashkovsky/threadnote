@@ -1,4 +1,4 @@
-import type {FileLockOwner} from '../../effect/file_lock.js';
+import type {FileLockOwner} from '../../effect/file/lock.js';
 import type {ObservedCodeGraphBuildStatus} from '../build_status.js';
 
 export function annotateBuildCoordination(

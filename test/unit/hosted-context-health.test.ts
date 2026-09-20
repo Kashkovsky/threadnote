@@ -1,8 +1,8 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 
-import {aggregateContextHealthReportsV1} from '../../src/memory/context_health_schedule.js';
-import type {ContextHealthReportV1} from '../../src/memory/context_health.js';
+import {aggregateContextHealthReportsV1} from '../../src/memory/context/health_schedule.js';
+import type {ContextHealthReportV1} from '../../src/memory/context/health.js';
 import {
   buildHostedContextHealthPolicyV1,
   buildHostedContextHealthReceiptV1,
@@ -13,7 +13,7 @@ import {
   signHostedContextHealthEvaluationV1,
   verifyHostedContextHealthEvaluationV1,
   type HostedContextHealthRunInputV1,
-} from '../../src/remote_memory/hosted_context_health.js';
+} from '../../src/remote_memory/hosted/context_health.js';
 
 const policy = buildHostedContextHealthPolicyV1({
   backlogAlertCount: 10,

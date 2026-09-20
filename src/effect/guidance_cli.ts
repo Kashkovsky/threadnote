@@ -10,7 +10,7 @@ import {
   runGuidanceStatus,
 } from '../guidance/index.js';
 import type {RuntimeConfig} from '../types.js';
-import {boolean, optionalString, repeatedString, requiredString} from './cli_flags.js';
+import {boolean, optionalString, repeatedString, requiredString} from './cli/flags.js';
 
 export const guidanceCommandMetadata = {
   productionLog: {

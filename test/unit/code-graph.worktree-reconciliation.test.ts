@@ -22,7 +22,7 @@ import fc from 'fast-check';
 import {afterEach, describe, expect} from 'vitest';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
-import type {CodeGraphWorktreeReconciliationAuthorityObservation} from '../../src/code_graph/git/worktree_registration.js';
+import type {CodeGraphWorktreeReconciliationAuthorityObservation} from '../../src/code_graph/git/worktree/registration.js';
 import {
   recordVerifiedCodeGraphLocalAssociation,
   type CodeGraphWorktreeReconciliationEvidenceCandidate,
@@ -47,7 +47,7 @@ import {
   isCodeGraphStoreError,
   type CodeGraphSnapshot,
 } from '../../src/code_graph/types.js';
-import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store/schema_metadata.js';
+import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store/schema/metadata.js';
 import type {RepositoryIdentity} from '../../src/code_graph/types.js';
 import {
   CODE_GRAPH_WORKTREE_RECONCILIATION_CANDIDATE_LIMIT,

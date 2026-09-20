@@ -16,7 +16,7 @@ import {
   optional,
   optionalString,
   withValueAlias,
-} from './cli_flags.js';
+} from './cli/flags.js';
 
 export const codeGraphCliBounds = {
   cwd: optionalString('cwd', 'Repository or worktree directory; defaults to the current directory'),

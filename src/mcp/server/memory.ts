@@ -8,7 +8,7 @@ import {
   parseMemoryDocument,
   type MemoryRecord,
 } from '../../memory/hygiene.js';
-import {applyAtomicExactDuplicateActions} from '../../memory/hygiene_apply.js';
+import {applyAtomicExactDuplicateActions} from '../../memory/hygiene/apply.js';
 import {
   ensureSharedDirectoryChain,
   assertShareTeamWritable,
@@ -32,7 +32,7 @@ import {EffectMcpServerAdapter, McpInput} from '../../effect/ai/mcp.js';
 import {sha256Hex} from '../../effect/digest.js';
 import {withMemoryUriLocks} from '../../effect/memory_lock.js';
 import {syncSharedReposBeforeAgentRead} from '../../effect/share.js';
-import {withSharedRepositoryLock} from '../../effect/share_lock.js';
+import {withSharedRepositoryLock} from '../../effect/share/lock.js';
 import {ResourceStore, type ResourceStoreMutation} from '../../effect/resource-store.js';
 import {
   assertMemoryDocumentSchemaWritable,
@@ -45,8 +45,8 @@ import {
 import {
   memoryCodeCitationSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../../memory/code_citation_policy.js';
-import {MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
+} from '../../memory/code/citation_policy.js';
+import {MEMORY_SCHEMA_VERSION} from '../../memory/code/citation.js';
 import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
 import {
   MemoryRelationWriteError,
@@ -60,7 +60,7 @@ import {
   stageDeferredCodeAnchorIntent,
   type DeferredCodeAnchorWriteRequest,
   withDeferredCodeAnchorMutationLocks,
-} from '../../memory/deferred_code_anchor.js';
+} from '../../memory/deferred/code_anchor.js';
 import {isMemoryRelocationUri, readMemoryWithRelocations, recordMemoryRelocation} from '../../memory/relocation.js';
 import {resolveLocalMemoryReplacementTarget} from '../../memory/replacement_target.js';
 import {
@@ -83,8 +83,8 @@ import {
   uriSegment,
 } from './common.js';
 import {memoryReadErrorResult} from './memory_read_recovery.js';
-import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../../recall/memory_identity.js';
-import {refreshRecallDerivedIndexesAfterCanonicalMutation} from '../../recall/mcp_refresh.js';
+import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../../recall/memory/identity.js';
+import {refreshRecallDerivedIndexesAfterCanonicalMutation} from '../../recall/mcp/refresh.js';
 export function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'compact_context',

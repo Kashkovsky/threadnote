@@ -12,9 +12,9 @@ import {runCodeGraphIndex} from '../code_graph/commands.js';
 import {worktreeBuildRequestState} from '../code_graph/inventory.js';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {compileSetupSourceVerificationBrief} from '../context_brief/index.js';
-import {retrieveContextBriefGraphEvidence} from '../context_brief/graph_evidence.js';
+import {retrieveContextBriefGraphEvidence} from '../context_brief/graph/evidence.js';
 import {planContextBrief} from '../context_brief/planner.js';
-import {hasCurrentCursorHooks, hasManagedCursorHooks} from '../cursor_hooks.js';
+import {hasCurrentCursorHooks, hasManagedCursorHooks} from '../cursor/hooks.js';
 import {CLAUDE_SETTINGS_PATH, USER_MANIFEST_NAME} from '../constants.js';
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
@@ -28,7 +28,7 @@ import {hasCurrentClaudeHooks, hasManagedClaudeHooks, runHooksInstall} from '../
 import {collectDoctorChecks, runInstall} from '../lifecycle.js';
 import {readSeedManifest} from '../manifest.js';
 import {hasCurrentOmpHooks, hasManagedOmpHooks} from '../omp_hooks.js';
-import {refreshRecallDerivedIndexesFromSelection} from '../recall/mcp_refresh.js';
+import {refreshRecallDerivedIndexesFromSelection} from '../recall/mcp/refresh.js';
 import {runInitManifest, runSeed} from '../seeding.js';
 import type {DoctorCheck, RuntimeConfig} from '../types.js';
 import {expandPath, readFileIfExists, resolveRepoName} from '../utils.js';

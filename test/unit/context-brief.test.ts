@@ -36,7 +36,7 @@ import {
   CONTEXT_BRIEF_PROCEDURE_VERSION,
 } from '../../src/context_brief/index.js';
 import {createCodeMemoryLinkAgentSuiteCorpusV1} from '../../src/evaluation/code-memory-link-agent-suite.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {canonicalResourceUri} from '../../src/storage/resource-id.js';
 import {renderCodeBriefEditContext} from '../../src/context_brief/edit_hook.js';

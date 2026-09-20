@@ -7,7 +7,7 @@ import {codeGraphCommittedContentHash} from '../content_identity.js';
 import {decodeStoredCodeGraphFact} from '../fact/storage.js';
 import {decodeCodeGraphInventoryReuseReceipt} from '../inventory/reuse.js';
 import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../inventory/policy.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store/build_core.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store/build/core.js';
 import {
   CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,

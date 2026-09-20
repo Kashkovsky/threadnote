@@ -14,7 +14,7 @@ import {
   type PilotMetric,
   type PilotMetricSummary,
   type PilotReport,
-} from './pilot_contract.js';
+} from './pilot/contract.js';
 
 type Sample = {
   readonly actor: number;

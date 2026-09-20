@@ -23,7 +23,7 @@ import {inventoryRepository, worktreeBuildRequestState} from './inventory.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult, type CodeGraphStoreShape} from './store.js';
 import {CommandExecutor, runCommandEffect, type CommandOptions} from '../effect/command.js';
-import {readExclusiveFileLockOwner} from '../effect/file_lock.js';
+import {readExclusiveFileLockOwner} from '../effect/file/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import type {CommandResult} from '../types.js';
 import type {
@@ -69,7 +69,7 @@ import {
 } from './recovery_coordinator.js';
 import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} from './anonymous_telemetry.js';
 import {anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure} from '../telemetry/diagnostic.js';
-import type {CodeGraphBuilderAdmissionClass} from './builder_admission.js';
+import type {CodeGraphBuilderAdmissionClass} from './builder/admission.js';
 import {codeGraphBuildRequestKey} from './indexer/build.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {

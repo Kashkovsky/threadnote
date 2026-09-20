@@ -1,11 +1,11 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {safeChildDirectoryNames, scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {SystemInfo} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
 import {canonicalMemoryDocumentContent, parseMemoryDocument, type MemoryRecord} from './document.js';
-import {assertMemoryCodeCitation, formatMemoryCodeCitationLines, type MemoryCodeCitationV1} from './code_citation.js';
+import {assertMemoryCodeCitation, formatMemoryCodeCitationLines, type MemoryCodeCitationV1} from './code/citation.js';
 import type {MemoryKind} from '../types.js';
 
 export type CandidateCategory = 'decision' | 'handoff' | 'invariant' | 'preference';

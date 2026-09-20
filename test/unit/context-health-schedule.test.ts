@@ -5,8 +5,8 @@ import {
   aggregateContextHealthReportsV1,
   buildContextHealthSchedulePlanV1,
   type ContextHealthAggregateSourceV1,
-} from '../../src/memory/context_health_schedule.js';
-import type {ContextHealthReportV1} from '../../src/memory/context_health.js';
+} from '../../src/memory/context/health_schedule.js';
+import type {ContextHealthReportV1} from '../../src/memory/context/health.js';
 
 const PROJECT = 'threadnote';
 const PERSONAL_REVISION = '1'.repeat(64);

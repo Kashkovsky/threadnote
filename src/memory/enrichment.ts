@@ -6,7 +6,7 @@ import {
 } from '../effect/ai/enrichment.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
-import {withSharedRepositoryLock} from '../effect/share_lock.js';
+import {withSharedRepositoryLock} from '../effect/share/lock.js';
 import {runModelInstall, runModelSelect} from '../models/commands.js';
 import {resolveSelectedLocalModel} from '../models/inference.js';
 import type {EnrichMemoriesOptions, RuntimeConfig} from '../types.js';
@@ -23,7 +23,7 @@ import {
 } from '../share/index.js';
 import {uriSegment} from '../manifest.js';
 import {canonicalMemoryDocumentContent, formatMemoryDocumentWithKeywords} from './document.js';
-import {findUrisWithDeferredCodeAnchorIntents} from './deferred_code_anchor.js';
+import {findUrisWithDeferredCodeAnchorIntents} from './deferred/code_anchor.js';
 import {parseMemoryDocument, type MemoryRecord} from './hygiene.js';
 import {localUserMemoriesRoot, MemoryOperationError, NATIVE_RESOURCE_BACKEND} from './migrations.js';
 

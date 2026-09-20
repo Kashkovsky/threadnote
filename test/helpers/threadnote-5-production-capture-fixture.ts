@@ -31,21 +31,21 @@ import {
   type SecondSurfaceProofContextV1,
   type SecondSurfaceReadObservationV1,
   type SecondSurfaceRecallObservationV1,
-} from '../../src/activation/second_surface.js';
-import {secondSurfaceChallengeIdV1} from '../../src/activation/second_surface_store.js';
+} from '../../src/activation/second/surface.js';
+import {secondSurfaceChallengeIdV1} from '../../src/activation/second/surface_store.js';
 import {activationValueEventsV1} from '../../src/activation/value.js';
 import {parseContextBriefV1, renderContextBriefText} from '../../src/context_brief/projector.js';
 import {buildKnowledgeDeltaGitProposalV1} from '../../src/git_proposal/knowledge_delta.js';
 import type {CandidateReview} from '../../src/memory/candidate.js';
-import {buildContextHealthReport, type ContextHealthReportInputV1} from '../../src/memory/context_health.js';
+import {buildContextHealthReport, type ContextHealthReportInputV1} from '../../src/memory/context/health.js';
 import {
   applyContextHealthRepairProposalV1,
   previewContextHealthRepairPlanV1,
-} from '../../src/memory/context_health_repair.js';
+} from '../../src/memory/context/health_repair.js';
 import {
   aggregateContextHealthReportsV1,
   buildContextHealthSchedulePlanV1,
-} from '../../src/memory/context_health_schedule.js';
+} from '../../src/memory/context/health_schedule.js';
 import {
   canonicalMemoryDocumentContent,
   formatMemoryDocument,

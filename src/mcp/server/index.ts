@@ -23,9 +23,9 @@ import {monitorSharedRepositories} from '../../effect/share.js';
 import {
   monitorGraphShareContributions,
   monitorGraphShareSignedContributions,
-} from '../../code_graph/sharing/contribution_retry.js';
-import {runCodeGraphAutomaticCompactionScheduler} from '../../code_graph/automatic_compaction.js';
-import {refreshPendingDeferredCodeAnchorWorkspaces} from '../../memory/deferred_code_anchor_refresh.js';
+} from '../../code_graph/sharing/contribution/retry.js';
+import {runCodeGraphAutomaticCompactionScheduler} from '../../code_graph/automatic/compaction.js';
+import {refreshPendingDeferredCodeAnchorWorkspaces} from '../../memory/deferred/code_anchor_refresh.js';
 import {runObsidianProjectionPublish} from '../../obsidian/projection.js';
 import {withProductionLogging} from '../../effect/production_log.js';
 import {withAnonymousTelemetry} from '../../effect/telemetry.js';
@@ -70,8 +70,8 @@ import {
   runNativeHealthTool,
   runNativeRemoveTool,
 } from './memory.js';
-import {registerContextHealthTool} from './context_health.js';
-import {registerContextHealthRepairTools} from './context_health_repair.js';
+import {registerContextHealthTool} from './context/health.js';
+import {registerContextHealthRepairTools} from './context/health_repair.js';
 import {registerMaintenanceMetadataTools} from './maintenance_metadata.js';
 import {registerKnowledgeDeltaGitProposalTool} from './git_proposal.js';
 import {registerProcedurePublicationTools} from './procedure.js';

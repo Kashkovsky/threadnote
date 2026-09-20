@@ -28,7 +28,7 @@ import {
   createMemoryCodeCitation,
   MEMORY_CODE_CITATION_VERSION,
   MEMORY_SCHEMA_VERSION,
-} from '../../src/memory/code_citation.js';
+} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import {parseContextBriefV1} from '../../src/context_brief/projector.js';
 import {

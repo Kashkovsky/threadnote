@@ -16,7 +16,7 @@ import {
   parseSecondSurfaceProofReceiptV1,
   secondSurfaceProofMatchesContextV1,
   type SecondSurfaceProofReceiptV1,
-} from '../activation/second_surface.js';
+} from '../activation/second/surface.js';
 import {activationValueEventsV1} from '../activation/value.js';
 import {readActivationStateV1} from '../activation/store.js';
 import {
@@ -24,7 +24,7 @@ import {
   parseSecondSurfaceProofChallengeV1,
   readSecondSurfaceProofChallengeV1,
   verifySecondSurfaceProofAttestationV1,
-} from '../activation/second_surface_store.js';
+} from '../activation/second/surface_store.js';
 import {readLocalValueEvents, type LocalValueEventV1} from '../value_report/events.js';
 import {
   buildKnowledgeDeltaGitProposalV1,

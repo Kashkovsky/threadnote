@@ -1,6 +1,6 @@
 import {Effect} from 'effect';
 import {uriSegment} from '../manifest.js';
-import {resolveMemoryReplacementTarget} from '../recall/memory_identity.js';
+import {resolveMemoryReplacementTarget} from '../recall/memory/identity.js';
 import type {RuntimeConfig} from '../types.js';
 import {parseMemoryDocument} from './document.js';
 import {localMemoryPathForUri, readTextIfExists} from './migrations.js';

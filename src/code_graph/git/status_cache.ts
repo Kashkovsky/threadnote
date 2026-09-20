@@ -1,7 +1,7 @@
 import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../../effect/command.js';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {codeGraphGitIndexSemanticSha256} from './index_semantic.js';
 import type {RepositoryIdentity} from '../types.js';
 

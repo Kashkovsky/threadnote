@@ -17,8 +17,8 @@ import {claimPersistentSnapshotBuild} from '../../src/code_graph/store/persisten
 import {
   CODE_GRAPH_QUERY_INDEX_DEFINITIONS,
   inspectCodeGraphQueryIndexes,
-} from '../../src/code_graph/store/query_indexes.js';
-import {codeGraphSchemaInitializationReceiptCurrent} from '../../src/code_graph/store/schema_receipt.js';
+} from '../../src/code_graph/store/query/indexes.js';
+import {codeGraphSchemaInitializationReceiptCurrent} from '../../src/code_graph/store/schema/receipt.js';
 import type {
   CodeGraphEdge,
   CodeGraphInventoryFile,

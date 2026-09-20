@@ -12,7 +12,7 @@ import type {AgentAdapter, AgentGuidanceContract} from '../agent_integration/ada
 import {AGENT_ADAPTERS} from '../agent_integration/adapters.js';
 import {credentialScrubberBlocker} from '../share/scrubber.js';
 import {buildExactDurableCandidateReview, listCandidateReviews, saveCandidateReview} from '../memory/candidate.js';
-import {readActiveProjectMemoryRecords} from '../memory/maintenance_records.js';
+import {readActiveProjectMemoryRecords} from '../memory/maintenance/records.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import type {RuntimeConfig} from '../types.js';
 import {readFileIfExists} from '../utils.js';

@@ -31,7 +31,7 @@ import {captureConsoleWithoutProgress} from '../effect/console.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {ResourceStore} from '../effect/resource-store.js';
 import type {ApplicationServices} from '../effect/runtime.js';
-import {withSharedRepositoryLock} from '../effect/share_lock.js';
+import {withSharedRepositoryLock} from '../effect/share/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   runShareInit,
@@ -61,14 +61,14 @@ import {
   removeManagerPersonalMemorySource,
   removeManagerSharedMemorySource,
   storeManagerPersonalMemoryMove,
-} from './memory_move.js';
-import {assertManagerRawPersonalMemorySave, assertManagerRawSharedMemorySave} from './memory_save.js';
-import {ManagerMemoryRelationsError, updateManagerMemoryRelations} from './memory_relations.js';
+} from './memory/move.js';
+import {assertManagerRawPersonalMemorySave, assertManagerRawSharedMemorySave} from './memory/save.js';
+import {ManagerMemoryRelationsError, updateManagerMemoryRelations} from './memory/relations.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../memory/code_citation_policy.js';
-import {discardDeferredCodeAnchorIntent} from '../memory/deferred_code_anchor.js';
+} from '../memory/code/citation_policy.js';
+import {discardDeferredCodeAnchorIntent} from '../memory/deferred/code_anchor.js';
 import {parseMemoryDocument, type MemoryRecord} from '../memory/hygiene.js';
 import {
   ensureSharedDirectoryChain,
@@ -94,8 +94,8 @@ import {
   isManagerWorksetApiPath,
   managerWorksetRequestAllowedDuringMaintenance,
 } from './worksets.js';
-import * as graphProjects from './graph_projects.js';
-import * as graphActions from './graph_actions.js';
+import * as graphProjects from './graph/projects.js';
+import * as graphActions from './graph/actions.js';
 import {
   cleanupMode,
   consolidationAgent,
@@ -116,7 +116,7 @@ import {
   compactCodeGraphStorageIsolated,
   runCodeGraphAutomaticCompactionScheduler,
   type CodeGraphAutomaticCompactionStatus,
-} from '../code_graph/automatic_compaction.js';
+} from '../code_graph/automatic/compaction.js';
 import {inspectAllCodeGraphsLocal} from '../code_graph/diagnostics.js';
 import {readAllCodeGraphBuildStatuses} from '../code_graph/build_status.js';
 import {

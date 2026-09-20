@@ -1,5 +1,5 @@
 import {Effect} from 'effect';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
 import {SystemInfo} from '../effect/system.js';
 import type {RuntimeConfig} from '../types.js';
 import {compileContextBrief} from './index.js';

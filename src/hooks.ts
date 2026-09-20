@@ -8,7 +8,7 @@ import {
   THREADNOTE_HOOK_MARKER,
   THREADNOTE_HOOK_MARKER_VALUE,
 } from './constants.js';
-import {runCursorHooksInstall} from './cursor_hooks.js';
+import {runCursorHooksInstall} from './cursor/hooks.js';
 import {runOmpHooksInstall} from './omp_hooks.js';
 import {parseAgentClient} from './mcp/index.js';
 import {captureConsole} from './effect/console.js';

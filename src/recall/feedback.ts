@@ -1,6 +1,6 @@
 import {Crypto, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {RECALL_RANKER_VERSION} from './rank.js';
 
 export const RECALL_FEEDBACK_ACTIONS = ['useful', 'wrong', 'pin', 'dismiss', 'applied'] as const;

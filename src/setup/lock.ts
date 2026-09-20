@@ -1,5 +1,5 @@
 import {Effect, FileSystem, Path} from 'effect';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 
 const SETUP_LOCK_OPTIONS = {
   retryIntervalMilliseconds: 50,

@@ -6,7 +6,7 @@ import {
   isGraphShareRegistryReference,
   parseGraphShareRegistryTarget,
   type GraphShareRegistryTarget,
-} from './registry_reference.js';
+} from './registry/reference.js';
 
 const STRICT = {errors: 'all', onExcessProperty: 'error'} as const;
 const ORGANIZATION = /^[a-z0-9][a-z0-9._-]{0,63}$/u;

@@ -27,7 +27,7 @@ import {
   createMemoryCodeCitation,
   formatMemoryCodeCitation,
   MEMORY_SCHEMA_VERSION,
-} from '../../src/memory/code_citation.js';
+} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';

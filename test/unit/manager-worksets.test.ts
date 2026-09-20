@@ -15,7 +15,7 @@ import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance/gate.js';
 import {readSeedManifest} from '../../src/manifest.js';
-import {validateManagerProjectRoots} from '../../src/manager/project_roots.js';
+import {validateManagerProjectRoots} from '../../src/manager/project/roots.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {
   handleManagerWorksetRequest,

@@ -1,5 +1,5 @@
 import {Crypto, Effect, Encoding, FileSystem, Option, Path, Result, Schema} from 'effect';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import type {RuntimeConfig} from '../types.js';
 import {isJsonObject} from '../utils.js';

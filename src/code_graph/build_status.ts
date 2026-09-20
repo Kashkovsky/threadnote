@@ -1,6 +1,6 @@
 import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, PlatformError, Ref, Schema, Semaphore} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
+import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file/lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import type {CodeGraphBuildOwnerIdentity} from './build/owner.js';
 import {parseCodeGraphBuildStatus} from './build_status/codec.js';
@@ -16,7 +16,7 @@ import {
   observeCodeGraphBuildResource,
   type CodeGraphBuildScheduling,
 } from './build_status/scheduling.js';
-import type {CodeGraphBuilderAdmissionQueue} from './builder_admission_scheduler.js';
+import type {CodeGraphBuilderAdmissionQueue} from './builder/admission_scheduler.js';
 import {
   CODE_GRAPH_BUILD_HASH_ID as HASH_ID,
   CODE_GRAPH_BUILD_ID as BUILD_ID,

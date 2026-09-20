@@ -3,8 +3,8 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {Crypto, Effect, Layer} from 'effect';
 import {succeedUndefined} from './optional.js';
 import {CommandExecutor} from './command.js';
-import {threadnoteCliFormatterLayer} from './cli_help.js';
-import {CliOutput} from './cli_output.js';
+import {threadnoteCliFormatterLayer} from './cli/help.js';
+import {CliOutput} from './cli/output.js';
 import {HttpService} from './http.js';
 import {ResourceStore} from './resource-store.js';
 import {SystemInfo} from './system.js';
@@ -25,8 +25,8 @@ import {CodeGraphParserPool} from '../code_graph/parser_worker.js';
 import {
   healAfterPublishedGraphIndex,
   withDeferredCodeAnchorIndexHeal,
-} from '../memory/deferred_code_anchor_index_heal.js';
-import {deferredCodeAnchorRefreshSchedulerLayer} from '../memory/deferred_code_anchor_refresh.js';
+} from '../memory/deferred/code_anchor_index_heal.js';
+import {deferredCodeAnchorRefreshSchedulerLayer} from '../memory/deferred/code_anchor_refresh.js';
 import {resolveTelemetryConfiguration} from '../telemetry/config.js';
 import {
   resolveAgentSession,

@@ -29,8 +29,8 @@ import {
   type CodeGraphStoreFailure,
 } from '../types.js';
 import {CodeGraphCacheCapacityPlanChanged} from './internal_models.js';
-import {lastStatementChangeCount} from './activation_core.js';
-import {assertPersistentBuildOwner} from './build_core.js';
+import {lastStatementChangeCount} from './activation/core.js';
+import {assertPersistentBuildOwner} from './build/core.js';
 
 interface PlannedFreshFactCacheRow extends CodeGraphCacheCapacityRow {
   readonly blobId?: string;

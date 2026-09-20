@@ -1,7 +1,7 @@
 import {Clock, Effect, FileSystem, Option} from 'effect';
 import type {CodeGraphEmbeddingIndexShape, CodeGraphEmbeddingStatus} from '../embedding.js';
 import {currentSnapshotReusableBaseReceipt, reusableBaseFileSetFingerprint} from './incremental.js';
-import {verifyCommittedIndexInput} from './input_verification.js';
+import {verifyCommittedIndexInput} from './input/verification.js';
 import {
   CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
   embeddingSymbolSource,

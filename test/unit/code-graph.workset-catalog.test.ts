@@ -17,7 +17,7 @@ import {
 import {
   codeGraphWorksetRoutingProjectionLogicalBytes,
   codeGraphWorksetRoutingProjectionLogicalBytesAppend,
-} from '../../src/code_graph/workset_catalog/projection_storage.js';
+} from '../../src/code_graph/workset_catalog/projection/storage.js';
 import {
   ensureCodeGraphWorksetCatalog,
   inspectCodeGraphWorksetCatalog,

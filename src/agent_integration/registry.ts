@@ -1,5 +1,5 @@
 import {Effect, FileSystem, Path, Predicate, Schema} from 'effect';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {parseMcpToolset, type McpToolset} from '../mcp/toolset.js';
 import type {AgentClient, ClaudeMcpScope, RuntimeConfig} from '../types.js';

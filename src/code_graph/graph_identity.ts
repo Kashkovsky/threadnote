@@ -2,7 +2,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {codeGraphInventorySha256Hex} from './inventory/identity.js';
 import {compareCodeUnits} from './ordering.js';
 import {codeGraphScopeIdentitySuffix, type CodeGraphScopeIdentity} from './scope/identity.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './store/build_core.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './store/build/core.js';
 import type {CodeGraphLanguagePackProvenance} from './store/models.js';
 import {CODE_GRAPH_EXTRACTOR_SET_VERSION} from './types.js';
 

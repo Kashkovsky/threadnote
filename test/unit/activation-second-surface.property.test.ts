@@ -6,7 +6,7 @@ import {
   type SecondSurfaceProofContextV1,
   type SecondSurfaceReadObservationV1,
   type SecondSurfaceRecallObservationV1,
-} from '../../src/activation/second_surface.js';
+} from '../../src/activation/second/surface.js';
 
 const hash = fc.string({unit: fc.constantFrom(...'0123456789abcdef'), minLength: 64, maxLength: 64});
 const identity = fc.stringMatching(/^[a-z][a-z0-9-]{0,20}$/u);

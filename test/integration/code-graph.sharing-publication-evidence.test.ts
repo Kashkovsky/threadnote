@@ -10,22 +10,22 @@ import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {runCodeGraphCheckpointExport} from '../../src/code_graph/checkpoint/commands.js';
 import {runGraphShareJoin, runGraphShareLeave} from '../../src/code_graph/sharing/client.js';
-import {graphShareControlGetStatus} from '../../src/code_graph/sharing/control_client.js';
+import {graphShareControlGetStatus} from '../../src/code_graph/sharing/control/client.js';
 import {parseSha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
   verifyGraphShareParseReceipt,
   type VerifiedGraphShareParseReceipt,
-} from '../../src/code_graph/sharing/parse_cache.js';
+} from '../../src/code_graph/sharing/parse/cache.js';
 import {graphSharingLayout, graphSharingFrontierPointerPath} from '../../src/code_graph/sharing/layout.js';
 import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
 import {readJsonFile, writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
-import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_server.js';
+import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control/server.js';
 import {lookupGraphShareTrustReceipt, writeGraphShareTrustReceipt} from '../../src/code_graph/sharing/trust.js';
 import {announceGraphShareResult} from '../../src/code_graph/sharing/receipts.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
-import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
+import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher/cycle.js';
 import {
   runGraphPublisherBootstrap,
   runGraphPublisherListen,

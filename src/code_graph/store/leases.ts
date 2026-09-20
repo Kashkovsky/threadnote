@@ -5,15 +5,15 @@ import {
   type CodeGraphViewSnapshotLeaseRetainResult,
   type CodeGraphViewSnapshotLeaseValidationResult,
 } from './models.js';
-import {MAXIMUM_CANONICAL_DATE_MILLISECONDS, REMOVED_VIEWS_TABLE_SQL} from './removed_view_schema_contracts.js';
-import {removedViewAuthorityTableState, removedViewCleanupRecordedRevision} from './removed_view_schema_inspection.js';
+import {MAXIMUM_CANONICAL_DATE_MILLISECONDS, REMOVED_VIEWS_TABLE_SQL} from './removed/view_schema_contracts.js';
+import {removedViewAuthorityTableState, removedViewCleanupRecordedRevision} from './removed/view_schema_inspection.js';
 import {configureConnection, tableExists} from './session.js';
 import {CodeGraphStoreError} from '../types.js';
 import {
   codeGraphPersistentSchemaIsCurrentOrNewer,
   codeGraphPersistentSchemaMigrationPending,
   observeCodeGraphPersistentSchemaRevision,
-} from './schema_revision.js';
+} from './schema/revision.js';
 import {
   boundedSnapshotLeaseProjection,
   type BoundedSnapshotLeaseRow,
@@ -29,12 +29,12 @@ import {
   CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX,
   codeGraphReconciliationIndexState,
   observeActiveView,
-} from './reconciliation_core.js';
-import {ensureSnapshotLeaseSchema} from './schema_core.js';
+} from './reconciliation/core.js';
+import {ensureSnapshotLeaseSchema} from './schema/core.js';
 import {type PersistentBuildOwnerCandidate} from './internal_models.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './reconciliation.js';
-import {lastStatementChangeCount} from './activation_core.js';
-import {codeGraphScopeAuthorityInstalled} from './scope_schema.js';
+import {lastStatementChangeCount} from './activation/core.js';
+import {codeGraphScopeAuthorityInstalled} from './scope/schema.js';
 import {retireReadySnapshotsIfUnused} from './cleanup_core.js';
 import {
   CODE_GRAPH_DETACHED_READY_COUNT_MAXIMUM,

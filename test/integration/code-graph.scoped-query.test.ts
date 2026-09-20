@@ -7,7 +7,7 @@ import {CommandExecutor} from '../../src/effect/command.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {prepareCodeGraphWorkset, inspectCodeGraphWorksetStatus} from '../../src/code_graph/workset_catalog/workset.js';
-import {captureMemoryCodeCitations} from '../../src/memory/code_citation_capture.js';
+import {captureMemoryCodeCitations} from '../../src/memory/code/citation_capture.js';
 import {
   readPublishedCodeGraphWorksetCatalogGeneration,
   registerCodeGraphQualifiedRef,

@@ -4,7 +4,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {promisify} from 'node:util';
 import {afterEach, describe, expect, it} from 'vitest';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 

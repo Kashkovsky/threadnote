@@ -2,7 +2,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import type {AuthorizedRemotePrincipal, RemoteMemoryScope} from './authorization.js';
 import {canonicalCursorRepositoryBinding} from './cursor_oidc.js';
 import {remoteMemoryError} from './errors.js';
-import type {GitMemoryBinding} from './git_binding.js';
+import type {GitMemoryBinding} from './git/binding.js';
 
 export const ORG_CLOUD_ACCESS_HEADER = 'threadnote-cloud-access';
 export const ORG_CLOUD_REPOSITORY_SET_HEADER = 'threadnote-repository-set';

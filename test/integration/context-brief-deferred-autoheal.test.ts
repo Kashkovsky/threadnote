@@ -12,8 +12,8 @@ import {
   isDeferredCodeAnchorIntentFilename,
   stageDeferredCodeAnchorIntent,
   type DeferredCodeAnchorRouteFinalizationReceiptV1,
-} from '../../src/memory/deferred_code_anchor.js';
-import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+} from '../../src/memory/deferred/code_anchor.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

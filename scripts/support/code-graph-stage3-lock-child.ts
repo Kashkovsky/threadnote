@@ -1,7 +1,7 @@
 import {Database} from 'bun:sqlite';
 import {BunRuntime} from '@effect/platform-bun';
 import {Clock, Effect, FileSystem} from 'effect';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {StandaloneBrokerLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideScriptLayer, ScriptError} from '../effect/errors.js';

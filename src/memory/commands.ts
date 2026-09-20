@@ -11,9 +11,9 @@ import {
 import {resolveEffectAiConfiguration} from '../effect/ai/consolidator.js';
 import {enrichMemoryMetadataWithConfiguredLocalAi} from '../effect/ai/enrichment.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
 import {syncSharedReposBeforeAgentRead} from '../effect/share.js';
-import {withSharedRepositoryLock} from '../effect/share_lock.js';
+import {withSharedRepositoryLock} from '../effect/share/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {ResourceStore, type ResourceStoreMutation} from '../effect/resource-store.js';
 import {withAnonymousTelemetryPhase} from '../effect/telemetry.js';
@@ -41,7 +41,7 @@ import {
   topicForRecord,
   type MemoryRecord,
 } from './hygiene.js';
-import {applyCliCompactKeepUpdates} from './hygiene_apply.js';
+import {applyCliCompactKeepUpdates} from './hygiene/apply.js';
 import {
   assertMemoryDocumentSchemaWritable,
   formatMemoryDocument,
@@ -49,8 +49,8 @@ import {
   memoryArchiveMetadata,
   type MemoryMetadata,
 } from './document.js';
-import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from './code_citation_capture.js';
-import {deferredCodeAnchorStoredMessage} from './code_citation_messages.js';
+import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from './code/citation_capture.js';
+import {deferredCodeAnchorStoredMessage} from './code/citation_messages.js';
 import {
   discardDeferredCodeAnchorIntent,
   discardDeferredCodeAnchorIntentsWithin,
@@ -58,15 +58,15 @@ import {
   stageDeferredCodeAnchorIntent,
   type DeferredCodeAnchorWriteRequest,
   withDeferredCodeAnchorMutationLocks,
-} from './deferred_code_anchor.js';
-import {finalizeDeferredCodeAnchorsWithDerivedIndexes} from './deferred_code_anchor_finalization.js';
+} from './deferred/code_anchor.js';
+import {finalizeDeferredCodeAnchorsWithDerivedIndexes} from './deferred/code_anchor_finalization.js';
 import {
   assertCurrentReplacementRawContent,
   assertCurrentReplacementWritable,
   assertPersonalMemoryDestinationWritable,
 } from './destination_guard.js';
-import {MEMORY_SCHEMA_VERSION} from './code_citation.js';
-import {memoryCodeCitationSharingBlocker, memoryCodeCitationSharingBlockerMessage} from './code_citation_policy.js';
+import {MEMORY_SCHEMA_VERSION} from './code/citation.js';
+import {memoryCodeCitationSharingBlocker, memoryCodeCitationSharingBlockerMessage} from './code/citation_policy.js';
 import {
   memoryIdentityWriteLockKeys,
   parseMemoryRelationOption,
@@ -79,7 +79,7 @@ import {
   readMemoryWithRelocations,
   recordMemoryRelocation,
 } from './relocation.js';
-import {memoryReadRecoveryForError, memoryReadRecoveryText} from './read_recovery.js';
+import {memoryReadRecoveryForError, memoryReadRecoveryText} from './read/recovery.js';
 import {resolveLocalMemoryReplacementTarget, resolveStoreMemoryReplacementOptions} from './replacement_target.js';
 import type {StoreMemoryOptions} from './store_contract.js';
 import {
@@ -110,8 +110,8 @@ import {
   type RecallSemanticScoresResult,
 } from '../recall/runtime.js';
 import {loadRecallExactMatches} from '../recall/index.js';
-import {refreshRecallDerivedIndexesAfterCanonicalMutation} from '../recall/mcp_refresh.js';
-import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../recall/memory_identity.js';
+import {refreshRecallDerivedIndexesAfterCanonicalMutation} from '../recall/mcp/refresh.js';
+import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../recall/memory/identity.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../recall/eligibility.js';
 import {
   lexicalIndexUnavailableWarning,
@@ -121,7 +121,7 @@ import {
 } from '../recall/warning.js';
 import type {RecallConfidence} from '../recall/rank.js';
 import {parseRecallCliInput, projectRecallCliResponse} from '../recall/cli_response.js';
-import type {RecallMemoryConnectionsResult} from '../recall/memory_connections.js';
+import type {RecallMemoryConnectionsResult} from '../recall/memory/connections.js';
 import type {
   ArchiveOptions,
   CompactOptions,

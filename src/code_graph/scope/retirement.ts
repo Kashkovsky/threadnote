@@ -1,6 +1,6 @@
 import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {fromPromise} from '../../effect/errors.js';
 import {
   fileSystemModeIsPrivate,

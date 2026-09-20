@@ -42,7 +42,7 @@ import {
   type CodeGraphCheckpointHeaderV1,
 } from '../../src/code_graph/checkpoint/schema.js';
 import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../../src/code_graph/inventory/policy.js';
-import {CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION} from '../../src/code_graph/store/schema_revision.js';
+import {CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION} from '../../src/code_graph/store/schema/revision.js';
 import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 
 describe('code graph checkpoint import store', () => {

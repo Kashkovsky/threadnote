@@ -20,7 +20,7 @@ import {
 } from '../../src/code_graph/view_removal.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, CodeGraphStoreBusyError} from '../../src/code_graph/types.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {withCodeGraphTargetWorktreeLock} from '../../src/code_graph/maintenance/gate.js';

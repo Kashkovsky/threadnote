@@ -751,7 +751,7 @@ export function codeGraphActiveParserCacheKey(key: string, storedIdentity: strin
   return key.includes(embeddedGeneration) ? key.replace(embeddedGeneration, () => `\0${activeIdentity}\0`) : key;
 }
 
-export {verifyIndexInput} from './input_observation.js';
+export {verifyIndexInput} from './input/observation.js';
 
 export function extractorSetIdentity(
   files: readonly {readonly contentHash: string; readonly path: string}[],

@@ -26,7 +26,7 @@ import {
   upsertGuidanceBlock,
 } from '../../src/guidance/index.js';
 import {listCandidateReviews} from '../../src/memory/candidate.js';
-import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {runRemember} from '../../src/memory/index.js';
 import {localMemoryPathForUri} from '../../src/memory/migrations.js';

@@ -23,12 +23,12 @@ import {
   persistentSnapshotBuildIdentityMatches,
   type PreparedPersistedFullWorkspace,
   registerPersistentMaterializationPlan,
-} from './build_core.js';
+} from './build/core.js';
 import {persistentSnapshotMatchesLogicalIdentity} from './maintenance_core.js';
-import {initializeSchema} from './schema_initialization.js';
+import {initializeSchema} from './schema/initialization.js';
 import {type SnapshotRow} from './internal_models.js';
 import {snapshotFromRow} from './rows.js';
-import {lastStatementChangeCount} from './activation_core.js';
+import {lastStatementChangeCount} from './activation/core.js';
 import {pruneRetiredSnapshotRows} from './retirement.js';
 import {chunk, uniqueBy, upsertRepository} from './utilities.js';
 import {
@@ -38,7 +38,7 @@ import {
   stageActivationMonikers,
   stageSnapshotMonikers,
 } from './staging_core.js';
-import {persistentReexportAliasCapacityBoundary, type ReexportClosureRow} from './resolution_core.js';
+import {persistentReexportAliasCapacityBoundary, type ReexportClosureRow} from './resolution/core.js';
 
 /** @internal Exposed for deterministic SQLite snapshot-contract tests. */
 

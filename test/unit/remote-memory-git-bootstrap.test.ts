@@ -1,7 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import * as FC from 'fast-check';
 import {remoteMemoryConfigFromEnvironment, redactedRemoteMemoryConfig} from '../../src/remote_memory/config.js';
-import {GitCanonicalMemoryStore, ensureLiveGitShareWorktree} from '../../src/remote_memory/git_canonical_store.js';
+import {GitCanonicalMemoryStore, ensureLiveGitShareWorktree} from '../../src/remote_memory/git/canonical_store.js';
 import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
 import {createGitShareWorktreeFixture, git} from '../helpers/git-share-worktree.js';
 import {mkdir, rm, writeFile} from '../helpers/node-fs-promises.js';

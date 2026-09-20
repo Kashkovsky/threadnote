@@ -4,13 +4,13 @@ import type {
   HostedContextHealthRunInputV1,
   HostedContextHealthScheduleReceiptV1,
   HostedContextHealthScheduleV1,
-} from './hosted_context_health.js';
+} from './hosted/context_health.js';
 import type {
   HostedContextHealthClaimBatchV1,
   HostedContextHealthClaimV1,
   HostedContextHealthCycleCompletionV1,
-} from './hosted_context_health_postgres.js';
-import type {RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
+} from './hosted/context_health_postgres.js';
+import type {RemoteMemoryProvisioningInput} from './postgres/control_plane.js';
 import {
   planRemoteMemoryProvisioning,
   remoteMemoryProvisioningReceipt,

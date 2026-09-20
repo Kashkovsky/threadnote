@@ -5,7 +5,7 @@ import {
   buildHostedContextCiPolicyV1,
   hostedContextCiDiagnosticsV1,
   type HostedContextCiEventV1,
-} from '../../src/remote_memory/hosted_context_ci.js';
+} from '../../src/remote_memory/hosted/context_ci.js';
 
 const secret = 'webhook-test-key-at-least-thirty-two-bytes';
 const now = 1_800_000_000_000;

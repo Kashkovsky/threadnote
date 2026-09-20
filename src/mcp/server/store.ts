@@ -3,20 +3,20 @@ import {Console, Effect, Schema} from 'effect';
 import {EffectMcpServerAdapter, McpInput} from '../../effect/ai/mcp.js';
 import {enrichMemoryMetadataWithConfiguredLocalAi} from '../../effect/ai/enrichment.js';
 import {isInSharedNamespace, sharedTeamNameForUri} from '../../share/index.js';
-import {MemoryCodeCitationCaptureError} from '../../memory/code_citation_capture.js';
-import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
+import {MemoryCodeCitationCaptureError} from '../../memory/code/citation_capture.js';
+import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code/citation.js';
 import {
   memoryCodeCitationSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../../memory/code_citation_policy.js';
+} from '../../memory/code/citation_policy.js';
 import {MAX_MEMORY_RELATIONS, MEMORY_RELATION_TYPES, type MemoryMetadata} from '../../memory/document.js';
 import {resolveLocalMemoryReplacementTarget} from '../../memory/replacement_target.js';
 import {resolveAuthoredMemoryRelations} from '../../memory/relations.js';
 import {
   DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
   type DeferredCodeAnchorWriteRequest,
-} from '../../memory/deferred_code_anchor.js';
-import {finalizeDeferredCodeAnchorsWithDerivedIndexes} from '../../memory/deferred_code_anchor_finalization.js';
+} from '../../memory/deferred/code_anchor.js';
+import {finalizeDeferredCodeAnchorsWithDerivedIndexes} from '../../memory/deferred/code_anchor_finalization.js';
 import {
   cursorCloudScopeRoots,
   cursorCloudScopeTeams,

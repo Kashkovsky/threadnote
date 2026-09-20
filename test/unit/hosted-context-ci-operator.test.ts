@@ -2,13 +2,13 @@ import {describe, expect, it, vi} from 'vitest';
 import {
   admitHostedContextCiWebhookV1,
   buildHostedContextCiPolicyV1,
-} from '../../src/remote_memory/hosted_context_ci.js';
+} from '../../src/remote_memory/hosted/context_ci.js';
 import {
   evaluateHostedContextCiJobV1,
   publishHostedContextCiJobV1,
   type HostedContextCiReadIdentityV1,
   type HostedContextCiPublicationIdentityV1,
-} from '../../src/remote_memory/hosted_context_ci_operator.js';
+} from '../../src/remote_memory/hosted/context_ci_operator.js';
 
 const policy = buildHostedContextCiPolicyV1({
   tenantId: 'tenant',

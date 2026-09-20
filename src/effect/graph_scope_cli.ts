@@ -1,7 +1,7 @@
 import {Console, Effect} from 'effect';
 import {Command} from 'effect/unstable/cli';
 import {applicationError} from './errors.js';
-import {argument, boolean, defaultChoice, repeatedString} from './cli_flags.js';
+import {argument, boolean, defaultChoice, repeatedString} from './cli/flags.js';
 import {
   mutateManagerManifestProject,
   previewManagerManifestProjectGraphScope,

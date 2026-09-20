@@ -2,7 +2,7 @@ import {Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect'
 import {succeedUndefined} from '../../effect/optional.js';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../../effect/command.js';
-import {writeFinalCliOutput} from '../../effect/cli_output.js';
+import {writeFinalCliOutput} from '../../effect/cli/output.js';
 import {SystemInfo} from '../../effect/system.js';
 import type {RuntimeConfig} from '../../types.js';
 import {codeGraphCommittedContentHash} from '../content_identity.js';
@@ -22,7 +22,7 @@ import {
   hydrateCodeGraphCheckpointReusableBaseReceipt,
   type CodeGraphCheckpointImportReceiptInput,
 } from '../store.js';
-import {CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION} from '../store/schema_revision.js';
+import {CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION} from '../store/schema/revision.js';
 import type {CodeGraphSnapshot, RepositoryIdentity} from '../types.js';
 import {codeGraphCheckpointAbiInputV1, inspectCodeGraphCheckpointCompatibilityV1} from './compatibility.js';
 import {withCodeGraphCheckpointAuthorityVerification} from './authority.js';

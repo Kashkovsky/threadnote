@@ -1,7 +1,7 @@
 import {DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
-import {isFileLockTimeout} from '../../effect/file_lock.js';
+import {isFileLockTimeout} from '../../effect/file/lock.js';
 import {compareCodeUnits} from '../ordering.js';
 import {
   classifyCodeGraphStoreFailure,

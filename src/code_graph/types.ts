@@ -6,7 +6,7 @@ export {
   CODE_GRAPH_CORE_SCHEMA_VERSION as CODE_GRAPH_SCHEMA_VERSION,
   CODE_GRAPH_MINIMUM_BACKGROUND_SCHEMA_REVISION as CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION,
   CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION as CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
-} from './store/schema_revision.js';
+} from './store/schema/revision.js';
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
 export const CODE_GRAPH_EXTRACTOR_GENERATION = 14 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
@@ -420,7 +420,7 @@ export type CodeGraphProgress =
         'applying-deltas' | 'building-local-overlay' | 'discovering-shared-base' | 'downloading-checkpoint';
     }
   | {
-      readonly admission?: import('./builder_admission_scheduler.js').CodeGraphBuilderAdmissionQueue;
+      readonly admission?: import('./builder/admission_scheduler.js').CodeGraphBuilderAdmissionQueue;
       readonly phase: 'waiting';
       readonly reason?:
         | 'database-writer'

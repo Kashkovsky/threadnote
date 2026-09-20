@@ -11,7 +11,7 @@ import {
   OPERATIONS_ALERTS,
   OPERATIONS_CHECKS,
   OPERATIONS_CHECK_SPECIFICATIONS,
-} from '../../src/remote_memory/operations_contract.js';
+} from '../../src/remote_memory/operations/contract.js';
 import {operationsDraft, observedOperationsEvidence, checkedAt} from '../helpers/operations-fixtures.js';
 
 describe('operations evidence boundary', () => {

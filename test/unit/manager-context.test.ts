@@ -27,9 +27,9 @@ import {
   type ManagerRecallResponse,
   type ManagerRecallResult,
 } from '../../src/manager/context.js';
-import {projectManagerRecallPage} from '../../src/manager/context_paging.js';
+import {projectManagerRecallPage} from '../../src/manager/context/paging.js';
 import {loadRecallIndex} from '../../src/recall/index.js';
-import {MemoryIdentityResolutionError} from '../../src/recall/memory_identity.js';
+import {MemoryIdentityResolutionError} from '../../src/recall/memory/identity.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

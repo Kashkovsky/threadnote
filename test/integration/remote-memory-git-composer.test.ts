@@ -10,10 +10,10 @@ import type {RemoteRememberInputV1} from '../../src/memory_domain/contracts.js';
 import {formatRemoteMemoryLogicalKey, REMOTE_MEMORY_REVISION_VERSION} from '../../src/memory_domain/revisions.js';
 import type {AuthorizedRemotePrincipal, RemoteMemoryScope} from '../../src/remote_memory/authorization.js';
 import {provisionGitTeamShare} from '../../src/remote_memory/composer_serve.js';
-import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git_canonical_store.js';
+import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git/canonical_store.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
-import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres_control_plane.js';
-import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres_repository.js';
+import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres/control_plane.js';
+import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres/repository.js';
 import {RemoteMemoryIndexer} from '../../src/remote_memory/indexer.js';
 import {
   cloneGitShareWorktree,

@@ -1,5 +1,5 @@
 import type {MemoryMetadata} from './document.js';
-import type {DeferredCodeAnchorWriteRequest} from './deferred_code_anchor.js';
+import type {DeferredCodeAnchorWriteRequest} from './deferred/code_anchor.js';
 
 export interface StoreMemoryOptions {
   readonly bodyText: string;

@@ -15,16 +15,16 @@ import {
   type RetiredSnapshotCleanupPage,
   retireReadySnapshotsIfUnused,
 } from './cleanup_core.js';
-import {lastStatementChangeCount} from './activation_core.js';
+import {lastStatementChangeCount} from './activation/core.js';
 import {
   CODE_GRAPH_SNAPSHOT_ID,
   validateRemovedViewSnapshotAuthority,
   validateViewRemovalTarget,
   validCanonicalTimestamp,
   validRemovedViewCleanupEvidence,
-} from './reconciliation_core.js';
+} from './reconciliation/core.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible, ensureRemovedViewCleanupEpoch} from './reconciliation.js';
-import {type CompactLexicalSnapshotKeyRow, validatedCompactLexicalCount} from './build_core.js';
+import {type CompactLexicalSnapshotKeyRow, validatedCompactLexicalCount} from './build/core.js';
 import {nextCodeGraphActiveViewActivationTimestamp} from './active_views.js';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../index_scope.js';
 

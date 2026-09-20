@@ -7,7 +7,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {runNativeReadTool} from '../../src/mcp/server/memory.js';
 import {memoryReadResourcesFromNativeResult} from '../../src/mcp/server/recall.js';
-import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

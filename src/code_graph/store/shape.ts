@@ -92,7 +92,7 @@ import type {
   LoadedCodeGraphFacts,
   StoredCodeGraph,
 } from './models.js';
-import type {CodeGraphPersistentSchemaMigrationPhase} from './schema_contracts.js';
+import type {CodeGraphPersistentSchemaMigrationPhase} from './schema/contracts.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,

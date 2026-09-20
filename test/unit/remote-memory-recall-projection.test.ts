@@ -1,8 +1,8 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import type {RemoteMemoryReceiptV1} from '../../src/memory_domain/receipts.js';
-import {projectRemoteRecallResponse} from '../../src/remote_memory/recall_projection.js';
-import type {RemoteMemoryRecallResult} from '../../src/remote_memory/postgres_repository.js';
+import {projectRemoteRecallResponse} from '../../src/remote_memory/recall/projection.js';
+import type {RemoteMemoryRecallResult} from '../../src/remote_memory/postgres/repository.js';
 
 const receipt: RemoteMemoryReceiptV1 = {
   consistency: 'current',

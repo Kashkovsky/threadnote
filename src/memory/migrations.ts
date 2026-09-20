@@ -10,7 +10,7 @@ import {
   memoryHeaderValue,
   type MemoryMetadata,
 } from './document.js';
-import {MEMORY_SCHEMA_VERSION} from './code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from './code/citation.js';
 import type {
   MigrateLifecycleOptions,
   MigrateMemoriesOptions,

@@ -1,7 +1,7 @@
 import {Cause, Clock, Crypto, Effect, Exit, FileSystem, Path, Ref, Result, Semaphore, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {CommandExecutor} from '../../effect/command.js';
-import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file/lock.js';
 import {SystemInfo} from '../../effect/system.js';
 import {requireWorkset} from '../../manifest.js';
 import type {ProjectManifest, ResolvedWorkset, RuntimeConfig} from '../../types.js';
@@ -36,7 +36,7 @@ import {
   type CodeGraphStoreRecovery,
   type RepositoryIdentity,
 } from '../types.js';
-import {stageCodeGraphWorksetRoutingProjectionScoped} from './projection_builder.js';
+import {stageCodeGraphWorksetRoutingProjectionScoped} from './projection/builder.js';
 import {codeGraphWorksetCatalogLayout} from './layout.js';
 import {normalizeWorksetScopeReceipt} from './scope_receipt.js';
 import {renderCodeGraphWorksetPrepareProgress} from './progress_render.js';

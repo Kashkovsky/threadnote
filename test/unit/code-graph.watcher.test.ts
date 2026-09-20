@@ -31,7 +31,7 @@ import {
   CodeGraphStorePermissionError,
   CodeGraphStoreTransientIoError,
 } from '../../src/code_graph/types.js';
-import {orderCodeGraphBuilderAdmissionTickets} from '../../src/code_graph/builder_admission.js';
+import {orderCodeGraphBuilderAdmissionTickets} from '../../src/code_graph/builder/admission.js';
 
 const options: CodeGraphWatchOptions = {
   cwd: '/fixture/repository',

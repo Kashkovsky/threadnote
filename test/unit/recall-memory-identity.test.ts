@@ -7,7 +7,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {readMemoryWithRelocations, recordMemoryRelocation} from '../../src/memory/relocation.js';
 import {loadRecallIndex, recallIndexDatabaseFilename} from '../../src/recall/index.js';
-import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../../src/recall/memory_identity.js';
+import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../../src/recall/memory/identity.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

@@ -1,10 +1,10 @@
 import {Clock, Data, DateTime, Effect, FileSystem, Path} from 'effect';
-import {MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from '../memory/code/citation.js';
 import {readMemoryRecordsByUri} from '../memory/commands.js';
 import {formatMemoryDocument, type MemoryMetadata, type MemoryRelation} from '../memory/document.js';
 import {loadRecallIndexData, recallIndexStatus} from '../recall/index.js';
-import {projectRecallMcpResponse} from '../recall/mcp_response.js';
-import {retrieveRecallMemoryConnections} from '../recall/memory_connections.js';
+import {projectRecallMcpResponse} from '../recall/mcp/response.js';
+import {retrieveRecallMemoryConnections} from '../recall/memory/connections.js';
 import type {RuntimeConfig} from '../types.js';
 import {
   MEMORY_CONNECTIONS_SCALE_FIXTURE,

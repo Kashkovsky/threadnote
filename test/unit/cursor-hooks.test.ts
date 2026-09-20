@@ -9,7 +9,7 @@ import {
   hasManagedCursorHooks,
   runCursorHooksInstall,
   withCursorHooks,
-} from '../../src/cursor_hooks.js';
+} from '../../src/cursor/hooks.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {JsonObject} from '../../src/types.js';

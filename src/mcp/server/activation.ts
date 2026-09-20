@@ -1,6 +1,6 @@
 import {Effect} from 'effect';
 import {EffectMcpServerAdapter, McpInput} from '../../effect/ai/mcp.js';
-import {produceSecondSurfaceProofV1} from '../../activation/second_surface_producer.js';
+import {produceSecondSurfaceProofV1} from '../../activation/second/surface_producer.js';
 import type {RuntimeConfig} from '../../types.js';
 
 export function registerActivationProofTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {

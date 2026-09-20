@@ -2,12 +2,12 @@ import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Effect, Layer} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphDatabaseHealth} from './models.js';
-import {codeGraphPersistentExtensionSchemaCompatible} from './schema_inspection.js';
-import {codeGraphRemovedViewCleanupSchemaAdmission} from './schema_migration.js';
+import {codeGraphPersistentExtensionSchemaCompatible} from './schema/inspection.js';
+import {codeGraphRemovedViewCleanupSchemaAdmission} from './schema/migration.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './reconciliation.js';
 import {inspectCodeGraphSnapshotFileCitationSchema} from './file_alias_schema.js';
 import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from '../types.js';
-import {codeGraphPersistentSchemaIsCurrent, codeGraphPersistentSchemaMigrationPending} from './schema_revision.js';
+import {codeGraphPersistentSchemaIsCurrent, codeGraphPersistentSchemaMigrationPending} from './schema/revision.js';
 
 export type CodeGraphDatabaseIntegrity = 'corrupt' | 'incompatible' | 'migration-pending' | 'ok';
 

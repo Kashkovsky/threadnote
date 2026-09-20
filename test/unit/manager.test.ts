@@ -19,7 +19,7 @@ import {
   resourcesTree,
   runManage,
 } from '../../src/manager/index.js';
-import {removeManagerSharedMemorySource, storeManagerPersonalMemoryMove} from '../../src/manager/memory_move.js';
+import {removeManagerSharedMemorySource, storeManagerPersonalMemoryMove} from '../../src/manager/memory/move.js';
 import {
   managerProjectOptions,
   pruneSelectedMemoryUris,
@@ -32,8 +32,8 @@ import * as memory from '../../src/memory/index.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
-import {withSharedRepositoryLock} from '../../src/effect/share_lock.js';
-import * as automaticCompaction from '../../src/code_graph/automatic_compaction.js';
+import {withSharedRepositoryLock} from '../../src/effect/share/lock.js';
+import * as automaticCompaction from '../../src/code_graph/automatic/compaction.js';
 import * as isolatedIndex from '../../src/code_graph/isolated/index.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
@@ -57,7 +57,7 @@ import {
   type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {readMemoryWithRelocations} from '../../src/memory/relocation.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -97,7 +97,7 @@ vi.mock('../../src/seeding.js', async importOriginal => {
 });
 
 vi.mock('../../src/code_graph/automatic_compaction.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/code_graph/automatic_compaction.js')>();
+  const actual = await importOriginal<typeof import('../../src/code_graph/automatic/compaction.js')>();
   return {...actual, compactCodeGraphStorageIsolated: vi.fn(actual.compactCodeGraphStorageIsolated)};
 });
 

@@ -1,5 +1,5 @@
 import {DateTime, Effect} from 'effect';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
 import {MemoryOperationError, normalizeOptionalMetadata} from '../memory/migrations.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import type {RuntimeConfig} from '../types.js';

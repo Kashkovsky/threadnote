@@ -1,8 +1,8 @@
 import {Cause, Clock, Console, Crypto, DateTime, Effect, Exit, FileSystem, Path, Result, Schema} from 'effect';
 import {runDetachedCommandEffect} from '../effect/command.js';
 import {applicationError} from '../effect/errors.js';
-import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file_durability.js';
-import {FileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
+import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file/durability.js';
+import {FileLockTimeout, withExclusiveFileLock} from '../effect/file/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {recordAnonymousTelemetryFields, type AnonymousTelemetryFields} from '../effect/telemetry.js';
 import {activeInstalledVersion, installationRoot} from '../installations.js';
@@ -13,7 +13,7 @@ import type {RuntimeConfig, UpdateOptions} from '../types.js';
 import {runUpdate} from './index.js';
 import {isJsonObject} from '../utils.js';
 import {isStandaloneThreadnoteBuild} from './runtime_version.js';
-import {isDevelopmentBuildVersion} from './version_compare.js';
+import {isDevelopmentBuildVersion} from './version/compare.js';
 
 const AUTO_UPDATE_STATE_FILE = 'auto-update.json';
 const AUTO_UPDATE_LOCK_FILE = '.auto-update.lock';

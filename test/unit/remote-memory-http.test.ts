@@ -8,7 +8,7 @@ import {createRemoteMemoryHttpHandler} from '../../src/remote_memory/http_transp
 import {createLocalIdp} from '../../src/remote_memory/local_idp.js';
 import type {LocalIdp} from '../../src/remote_memory/local_idp.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
-import type {RemoteMemoryRecallResult} from '../../src/remote_memory/postgres_repository.js';
+import type {RemoteMemoryRecallResult} from '../../src/remote_memory/postgres/repository.js';
 import type {
   RemoteMemoryServiceDependencies,
   RemoteMemoryServiceRepository,

@@ -5,7 +5,7 @@ import {TestClock} from 'effect/testing';
 import {expect} from 'vitest';
 import {SystemInfo} from '../../src/effect/system.js';
 import {buildPilotReport} from '../../src/value_report/pilot.js';
-import {exportPilotReport, managePilotReports} from '../../src/value_report/pilot_storage.js';
+import {exportPilotReport, managePilotReports} from '../../src/value_report/pilot/storage.js';
 import {
   deleteValueReportData,
   pruneValueReportData,

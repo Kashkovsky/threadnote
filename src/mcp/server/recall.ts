@@ -38,7 +38,7 @@ import {
   type MemoryMetadata,
 } from '../../memory/document.js';
 import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
-import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
+import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code/citation.js';
 import {
   MEMORY_READ_MAXIMUM_CONTENT_BYTES,
   MemoryReadProjectionError,
@@ -46,7 +46,7 @@ import {
   memoryReadMcpStructuredContent,
   projectMemoryRead,
   type MemoryReadResource,
-} from '../../memory/read_projection.js';
+} from '../../memory/read/projection.js';
 import {
   buildCandidateReview,
   assessReplacementSafety,
@@ -81,18 +81,18 @@ import {
   type CursorCloudMemoryScope,
 } from '../../cursor/cloud.js';
 import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
-import {memoryReadRecoveryForRequestedUri, memoryReadRecoveryText} from '../../memory/read_recovery.js';
+import {memoryReadRecoveryForRequestedUri, memoryReadRecoveryText} from '../../memory/read/recovery.js';
 import {RECALL_RANKER_VERSION} from '../../recall/rank.js';
 import {
   parseRecallMemoryConnectionInput,
   type ParsedRecallMemoryConnectionInput,
-} from '../../recall/memory_connections.js';
+} from '../../recall/memory/connections.js';
 import type {MemoryRelationType} from '../../memory/document.js';
 import {
   projectRecallMcpResponse,
   RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
   RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
-} from '../../recall/mcp_response.js';
+} from '../../recall/mcp/response.js';
 import {mergeRecallOperationalWarnings} from '../../recall/warning.js';
 import {syncObsidianSourcesBeforeRecall} from '../../obsidian/source.js';
 import {withProductionPhaseTiming} from '../../effect/production_log.js';

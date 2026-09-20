@@ -1,6 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import type {DoctorCheck} from '../types.js';
-import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file/lock.js';
 import {
   codeGraphMaintenanceLockPath,
   codeGraphRepositoriesRoot,
@@ -19,12 +19,12 @@ import {
 import type {CodeGraphCliPurgeProgress} from './cli/progress.js';
 import {CodeGraphStore, type CodeGraphDatabaseHealth} from './store.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
-import {CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR} from './store/schema_revision.js';
+import {CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR} from './store/schema/revision.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 import {diagnoseCodeGraphDatabaseReadOnly} from './store/health.js';
 import {diagnoseCodeGraphDatabase} from './deep_diagnostics.js';
-import {CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT} from './store/reconciliation_preparation.js';
-import {codeGraphSchemaMigrationPreservesIncompleteSnapshots} from './store/schema_migration.js';
+import {CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT} from './store/reconciliation/preparation.js';
+import {codeGraphSchemaMigrationPreservesIncompleteSnapshots} from './store/schema/migration.js';
 
 export {diagnoseCodeGraphDatabaseReadOnly} from './store/health.js';
 

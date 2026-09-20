@@ -15,7 +15,7 @@ import {captureConsole} from '../effect/console.js';
 import {ResourceNotFound, ResourceStore} from '../effect/resource-store.js';
 import {uriSegment} from '../manifest.js';
 import {parseMemoryDocument, type MemoryMetadata, type MemoryRecord, type MemoryRelation} from '../memory/document.js';
-import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import type {MemoryCodeCitationV1} from '../memory/code/citation.js';
 import {memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
 import {readMemoryRecordsByUri, runRecall} from '../memory/index.js';
 import {MemoryPointerNotFound, readMemoryWithRelocations} from '../memory/relocation.js';
@@ -27,13 +27,13 @@ import {
   MemoryIdentityResolutionError,
   resolveMemoryIdentityAliases,
   verifyResolvedMemoryIdentity,
-} from '../recall/memory_identity.js';
+} from '../recall/memory/identity.js';
 import {
   retrieveRecallMemoryConnections,
   type RecallMemoryConnectionCoverageV1,
   type RecallMemoryConnectionReceiptV1,
   type RecallMemoryPremiseReceiptV1,
-} from '../recall/memory_connections.js';
+} from '../recall/memory/connections.js';
 import {recordRecallFeedback, type RecallFeedbackAction} from '../recall/feedback.js';
 
 export const MANAGER_CONTEXT_RECALL_RESULT_MAXIMUM = 48 as const;

@@ -2,11 +2,11 @@ import {Effect, Result, Schedule, Schema} from 'effect';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {readMemoryRecordsByUri} from '../memory/index.js';
-import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code_citation_capture.js';
+import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code/citation_capture.js';
 import {
   finalizeDeferredCodeAnchorsForRoute,
   type DeferredCodeAnchorRouteFinalizationReceiptV1,
-} from '../memory/deferred_code_anchor.js';
+} from '../memory/deferred/code_anchor.js';
 import type {MemoryRecord} from '../memory/document.js';
 import {isMemoryId} from '../memory/identity_alias.js';
 import {uriSegment} from '../manifest.js';
@@ -16,7 +16,7 @@ import {
   loadRecallIndexData,
   loadRecallMemoryIdentities,
 } from '../recall/index.js';
-import {classifyMemoryIdentityCandidates} from '../recall/memory_identity.js';
+import {classifyMemoryIdentityCandidates} from '../recall/memory/identity.js';
 import {withCodeAnchorFinalizationAnonymousTelemetry} from '../telemetry/code_anchor_finalization.js';
 import type {RuntimeConfig} from '../types.js';
 import type {

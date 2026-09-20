@@ -6,7 +6,7 @@ import {
   publishCodeGraphWorksetCatalogGeneration,
   stageCodeGraphWorksetCatalogGenerationFromReceipts,
 } from '../../src/code_graph/workset_catalog/store.js';
-import {stageCodeGraphWorksetRoutingProjectionScoped} from '../../src/code_graph/workset_catalog/projection_builder.js';
+import {stageCodeGraphWorksetRoutingProjectionScoped} from '../../src/code_graph/workset_catalog/projection/builder.js';
 import {
   codeGraphWorksetManifestDigest,
   prepareCodeGraphWorksetBridgesForGeneration,

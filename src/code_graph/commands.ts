@@ -1,7 +1,7 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {startProgress, withProgressLine} from '../cli_ui.js';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
-import {readExclusiveFileLockOwner} from '../effect/file_lock.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
+import {readExclusiveFileLockOwner} from '../effect/file/lock.js';
 import {
   runtimeFileDescriptorStatSync,
   runtimePathStatSync,
@@ -9,7 +9,7 @@ import {
   SystemInfo,
   type RuntimeNativeFileStat,
 } from '../effect/system.js';
-import {healAnchorsAfterWorksetPrepare} from '../memory/deferred_code_anchor_recovery.js';
+import {healAnchorsAfterWorksetPrepare} from '../memory/deferred/code_anchor_recovery.js';
 import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer} from './indexer.js';
 import {

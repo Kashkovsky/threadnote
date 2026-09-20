@@ -1,5 +1,5 @@
 import {Effect, FileSystem, Path} from 'effect';
-import {withExclusiveFileLock, type ExclusiveFileLockOptions} from '../effect/file_lock.js';
+import {withExclusiveFileLock, type ExclusiveFileLockOptions} from '../effect/file/lock.js';
 
 const ACTIVATION_RECEIPT_LOCK_OPTIONS = {
   retryIntervalMilliseconds: 50,

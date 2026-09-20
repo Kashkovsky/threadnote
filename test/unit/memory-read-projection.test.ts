@@ -10,7 +10,7 @@ import {
   memoryReadContentBytes,
   projectMemoryRead,
   selectMemoryMarkdownSection,
-} from '../../src/memory/read_projection.js';
+} from '../../src/memory/read/projection.js';
 
 describe('complete memory read projection', () => {
   it('keeps the dual-channel response as the compatibility default', () => {

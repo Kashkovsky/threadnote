@@ -7,7 +7,7 @@ import {
   type SecondSurfaceProofContextV1,
   type SecondSurfaceReadObservationV1,
   type SecondSurfaceRecallObservationV1,
-} from '../../src/activation/second_surface.js';
+} from '../../src/activation/second/surface.js';
 
 const digest = (character: string) => character.repeat(64);
 const startedAt = '2026-09-18T08:00:00.000Z';

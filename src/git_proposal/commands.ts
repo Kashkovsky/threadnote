@@ -7,11 +7,11 @@ import {listCandidateReviews, withCandidateReviewLock, type CandidateReview} fro
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../memory/code_citation_policy.js';
-import {hasDeferredCodeAnchorIntent} from '../memory/deferred_code_anchor.js';
+} from '../memory/code/citation_policy.js';
+import {hasDeferredCodeAnchorIntent} from '../memory/deferred/code_anchor.js';
 import {canonicalMemoryDocumentContent, type MemoryRecord} from '../memory/document.js';
 import {projectKnowledgeDeltaV1} from '../memory/knowledge_delta.js';
-import {readMaintenanceMemoryRecords} from '../memory/maintenance_records.js';
+import {readMaintenanceMemoryRecords} from '../memory/maintenance/records.js';
 import {MemoryOperationError} from '../memory/migrations.js';
 import {assertSafeShareRelativePath, assertShareTeamWritable, resolveTeam} from '../share/core.js';
 import {gitFileContent} from '../share/git.js';

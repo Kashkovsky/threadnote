@@ -1,7 +1,7 @@
 import {Schema} from 'effect';
 import React, {useEffect, useRef, useState} from 'react';
 import {useManagerDialogs} from './dialog.js';
-import {ManagerApiError, api, errorMessage} from './ui_support.js';
+import {ManagerApiError, api, errorMessage} from './ui/support.js';
 import type {
   ManagerManifestProject,
   ManagerManifestProjectMutationResult,

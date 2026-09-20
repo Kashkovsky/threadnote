@@ -23,7 +23,7 @@ import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query/status_helpers.js';
 import {captureConsole} from '../../src/effect/console.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,

@@ -3,8 +3,8 @@ import {Effect, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import {parseSha256Digest, sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingUnavailable} from '../../src/code_graph/sharing/errors.js';
-import {graphShareRegistryRetentionRoot} from '../../src/code_graph/sharing/registry_retention.js';
-import {uploadGraphShareRegistryArtifacts} from '../../src/code_graph/sharing/registry_publication_upload.js';
+import {graphShareRegistryRetentionRoot} from '../../src/code_graph/sharing/registry/retention.js';
+import {uploadGraphShareRegistryArtifacts} from '../../src/code_graph/sharing/registry/publication_upload.js';
 
 effectIt.effect(
   'finishes a supported large inventory after a partial attempt within the deadline at 100ms RTT',

@@ -2,7 +2,7 @@ import {BunCrypto, BunFileSystem, BunPath} from '@effect/platform-bun';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import {describe, expect} from 'vitest';
-import {runRemoteMemoryOperator, type RemoteMemoryOperatorRuntime} from '../../src/remote_memory/operator_main.js';
+import {runRemoteMemoryOperator, type RemoteMemoryOperatorRuntime} from '../../src/remote_memory/operator/main.js';
 import type {RemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

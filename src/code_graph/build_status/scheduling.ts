@@ -1,6 +1,6 @@
 import type {CodeGraphBuildStatus} from '../build_status.js';
 import type {CodeGraphBuildResource} from '../build/resources.js';
-import type {CodeGraphBuilderAdmissionQueue} from '../builder_admission_scheduler.js';
+import type {CodeGraphBuilderAdmissionQueue} from '../builder/admission_scheduler.js';
 import {isBuildStatusRecord, isBuildStatusTimestamp} from './validation.js';
 import type {CodeGraphProgress} from '../types.js';
 

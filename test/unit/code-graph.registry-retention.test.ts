@@ -2,7 +2,7 @@ import {describe, expect, it} from 'vitest';
 import * as FC from 'fast-check';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {GRAPH_SHARE_OCI_EMPTY_CONFIG_DIGEST} from '../../src/code_graph/sharing/descriptor.js';
-import {graphShareRegistryRetentionRoot} from '../../src/code_graph/sharing/registry_retention.js';
+import {graphShareRegistryRetentionRoot} from '../../src/code_graph/sharing/registry/retention.js';
 
 describe('registry retention inventory', () => {
   it('is order independent, deduplicated and non-mutating with exact byte totals', () => {

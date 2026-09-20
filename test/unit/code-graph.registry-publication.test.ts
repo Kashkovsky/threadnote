@@ -25,14 +25,14 @@ import {
   defaultGraphShareProfile,
   graphShareProfileDigest,
 } from '../../src/code_graph/sharing/profile.js';
-import {publishGraphShareRegistryFrontier} from '../../src/code_graph/sharing/registry_publication.js';
+import {publishGraphShareRegistryFrontier} from '../../src/code_graph/sharing/registry/publication.js';
 import {
   graphSharePublicationAuthority,
   graphSharePublicationReceiptPath,
   readGraphSharePublicationReceipt,
-} from '../../src/code_graph/sharing/registry_publication_state.js';
-import {readGraphControlFrontier} from '../../src/code_graph/sharing/control_reader.js';
-import {collectGraphShareRegistryPublication} from '../../src/code_graph/sharing/registry_closure.js';
+} from '../../src/code_graph/sharing/registry/publication_state.js';
+import {readGraphControlFrontier} from '../../src/code_graph/sharing/control/reader.js';
+import {collectGraphShareRegistryPublication} from '../../src/code_graph/sharing/registry/closure.js';
 
 const layer = CommandExecutor.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(BunServices.layer, SystemInfo.layer, FetchHttpClient.layer)),

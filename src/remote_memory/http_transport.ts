@@ -7,7 +7,7 @@ import {completeCursorAttestation} from './cursor_oidc.js';
 import {publicRemoteMemoryError, remoteMemoryError, type RemoteMemoryError} from './errors.js';
 import {bearerTokenFromRequest, oauthChallenge, protectedResourceMetadata} from './oauth.js';
 import type {LocalIdp} from './local_idp.js';
-import {assertGitMemoryBinding} from './git_binding.js';
+import {assertGitMemoryBinding} from './git/binding.js';
 import {isLocalIdpPath} from './local_idp.js';
 import type {RemoteMemoryServiceDependencies} from './service_types.js';
 import {createRemoteMemoryMcpServer} from './tools.js';

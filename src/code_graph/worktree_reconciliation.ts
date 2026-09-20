@@ -6,7 +6,7 @@ import {
   observeCodeGraphWorktreeReconciliationAuthority,
   type CodeGraphWorktreeReconciliationAuthorityObservation,
   type CodeGraphWorktreeReconciliationAuthorityTarget,
-} from './git/worktree_registration.js';
+} from './git/worktree/registration.js';
 import {
   readCodeGraphWorktreeReconciliationEvidenceCandidate,
   sameCodeGraphWorktreeReconciliationEvidenceCandidate,

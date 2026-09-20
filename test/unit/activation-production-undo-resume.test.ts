@@ -9,26 +9,26 @@ import {
   recordActivationOutcomeV1,
 } from '../../src/activation/receipt.js';
 import {activationStatePathsV1, initializeActivationStateV1} from '../../src/activation/store.js';
-import {observeActivationProductionV1} from '../../src/activation/production_observe.js';
-import {parseActivationProductionRequestV1} from '../../src/activation/production_contract.js';
+import {observeActivationProductionV1} from '../../src/activation/production/observe.js';
+import {parseActivationProductionRequestV1} from '../../src/activation/production/contract.js';
 import {
   activationApprovedProjectionEvidenceHashV1,
   activationDecisionEvidenceHashV1,
   findOrCreateActivationDecisionReviewV1,
   onlyDecisionCandidate,
   readAppliedActivationDecisionV1,
-} from '../../src/activation/production_evidence.js';
+} from '../../src/activation/production/evidence.js';
 import {
   activationCandidateMutationOperationIdV1,
   completeActivationMutationIntentV1,
   prepareActivationMutationIntentV1,
-} from '../../src/activation/production_mutation_store.js';
-import {runActivationProductionUndoV1} from '../../src/activation/production_undo.js';
+} from '../../src/activation/production/mutation_store.js';
+import {runActivationProductionUndoV1} from '../../src/activation/production/undo.js';
 import {
   initializeActivationUndoReceiptV1,
   recordActivationUndoCompletionV1,
   type ActivationUndoReceiptV1,
-} from '../../src/activation/production_undo_store.js';
+} from '../../src/activation/production/undo_store.js';
 import type {ActivationPlanV1} from '../../src/activation/contract.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';

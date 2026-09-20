@@ -9,7 +9,7 @@ import {CodeGraphQueryService} from '../code_graph/query.js';
 import type {RuntimeConfig, ShareTeamConfig, ShareTeamsFile} from '../types.js';
 import {runShareInit, runShareSync} from '../share/index.js';
 import {normalizeTeamName, readTeamsFile, shareTeamAccess} from '../share/index.js';
-import {withSharedRepositoryLock} from '../effect/share_lock.js';
+import {withSharedRepositoryLock} from '../effect/share/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {canonicalResourceUri, resourceIdIsWithin} from '../storage/resource-id.js';
 import {uriSegment} from '../mcp/server/common.js';

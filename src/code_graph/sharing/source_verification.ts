@@ -7,7 +7,7 @@ import {graphShareLanguageAndRole, graphShareParseActionKey} from './action.js';
 import type {Sha256Digest} from './digest.js';
 import {sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
-import type {VerifiedGraphShareParseReceipt} from './parse_cache.js';
+import type {VerifiedGraphShareParseReceipt} from './parse/cache.js';
 
 export interface GraphShareSourceUseEvidence {
   readonly consumedActions: number;

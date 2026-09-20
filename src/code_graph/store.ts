@@ -1,10 +1,10 @@
 import {Context, Effect, Layer} from 'effect';
 import {makeCodeGraphStoreRuntime} from './store/runtime.js';
-import {makeCodeGraphStoreDataMethods} from './store/service_data.js';
-import {makeCodeGraphStoreLifecycleMethods} from './store/service_lifecycle.js';
-import {makeCodeGraphStoreMaintenanceMethods} from './store/service_maintenance.js';
-import {makeCodeGraphStoreStagingMethods} from './store/service_staging.js';
-import {makeCodeGraphStoreCheckpointMethods} from './store/service_checkpoint.js';
+import {makeCodeGraphStoreDataMethods} from './store/service/data.js';
+import {makeCodeGraphStoreLifecycleMethods} from './store/service/lifecycle.js';
+import {makeCodeGraphStoreMaintenanceMethods} from './store/service/maintenance.js';
+import {makeCodeGraphStoreStagingMethods} from './store/service/staging.js';
+import {makeCodeGraphStoreCheckpointMethods} from './store/service/checkpoint.js';
 import {type CodeGraphStoreShape} from './store/shape.js';
 
 export {
@@ -66,21 +66,21 @@ export type {
 export {
   CODE_GRAPH_PERSISTENT_EXTENSION_TABLE_NAMES,
   type CodeGraphPersistentSchemaMigrationPhase,
-} from './store/schema_contracts.js';
-export {codeGraphPersistentExtensionSchemaCompatible} from './store/schema_inspection.js';
-export {CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE} from './store/cache_authority.js';
-export {CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES} from './store/schema_initialization.js';
+} from './store/schema/contracts.js';
+export {codeGraphPersistentExtensionSchemaCompatible} from './store/schema/inspection.js';
+export {CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE} from './store/cache/authority.js';
+export {CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES} from './store/schema/initialization.js';
 export {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from './types.js';
-export {nextPersistentActivationBatchRows} from './store/activation_core.js';
-export {codeGraphPersistedEndpointValidationPageStatement} from './store/activation_persistent.js';
-export {persistentFullShardPublicationPlan} from './store/activation_persistent.js';
+export {nextPersistentActivationBatchRows} from './store/activation/core.js';
+export {codeGraphPersistedEndpointValidationPageStatement} from './store/activation/persistent.js';
+export {persistentFullShardPublicationPlan} from './store/activation/persistent.js';
 export {
   codeGraphAnalysisEdgeAggregatePageStatement,
   codeGraphAnalysisSummaryDigest,
   codeGraphAnalysisSymbolAggregatePageStatement,
 } from './store/analysis.js';
-export {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './store/build_core.js';
-export {codeGraphCompactLexicalDeepAuditStatement} from './store/build_preparation.js';
+export {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './store/build/core.js';
+export {codeGraphCompactLexicalDeepAuditStatement} from './store/build/preparation.js';
 export {
   codeGraphMaterializedShardAssociationPageStatement,
   materializedBatchShardDerivationIdentity,
@@ -109,7 +109,7 @@ export {
   codeGraphSymbolsByIdsQueryStatement,
   isCanonicalAbsoluteBazelLabel,
   type CodeGraphSymbolPathClass,
-} from './store/query_core.js';
+} from './store/query/core.js';
 export {
   codeGraphCompleteMaterializedShardDonorStatement,
   codeGraphEffectiveSymbolTermsQueryStatement,
@@ -124,13 +124,13 @@ export {
   codeGraphRemovedViewCleanupAdmissionPageStatement,
   codeGraphRemovedViewCleanupDuePageStatement,
 } from './store/reconciliation.js';
-export {codeGraphWorktreeReconciliationCandidatePageStatement} from './store/reconciliation_core.js';
+export {codeGraphWorktreeReconciliationCandidatePageStatement} from './store/reconciliation/core.js';
 export {
   codeGraphPersistentReferencePageStatement,
   codeGraphPersistedDeltaResolutionPageStatement,
   partitionPersistedReferenceEdges,
   type PersistedReferenceEdgePartition,
-} from './store/resolution_core.js';
+} from './store/resolution/core.js';
 export {
   codeGraphPersistentLookupMatchStatement,
   resolvePersistedReferenceSelections,
@@ -138,8 +138,8 @@ export {
   type PersistedLookupSummary,
   type PersistedReferenceResolutionInput,
   type PersistedReferenceResolutionSelection,
-} from './store/resolution_matching.js';
-export {codeGraphRemovedViewCleanupSchemaAdmission} from './store/schema_migration.js';
+} from './store/resolution/matching.js';
+export {codeGraphRemovedViewCleanupSchemaAdmission} from './store/schema/migration.js';
 export {type CodeGraphPersistentReferencePageLimits} from './store/staging_core.js';
 export {normalizedTerms, sanitizeCodeGraphStoreDiagnostic} from './store/utilities.js';
 export {

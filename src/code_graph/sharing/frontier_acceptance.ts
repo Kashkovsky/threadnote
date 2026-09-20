@@ -1,5 +1,5 @@
 import {Effect, FileSystem, Path, Schema} from 'effect';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {
   parseGraphShareFrontierManifest,
   parseGraphShareSignatureEnvelope,

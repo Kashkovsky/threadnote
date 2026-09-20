@@ -6,7 +6,7 @@ import * as FC from 'fast-check';
 import {SystemInfo} from '../../src/effect/system.js';
 import {generateGraphSharePublisherKey} from '../../src/code_graph/sharing/artifacts.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
-import {makeGraphWorkerSigner, verifyGraphWorkerSignature} from '../../src/code_graph/sharing/worker_signing.js';
+import {makeGraphWorkerSigner, verifyGraphWorkerSignature} from '../../src/code_graph/sharing/worker/signing.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';
 

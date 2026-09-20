@@ -1,5 +1,5 @@
 import {Clock, Effect, FileSystem, Option, Path} from 'effect';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {SystemInfo} from '../../effect/system.js';
 import {withThreadnoteProcessActivity} from '../../process/diagnostics.js';
 import type {CodeGraphBuildOwnerIdentity} from '../build/owner.js';
@@ -59,7 +59,7 @@ import {
   withIncrementalMaterializationStorageTelemetry,
 } from './materialization.js';
 import {type PendingMaterializationBatch, secondaryIndexRestorationReporter} from './materialization_batch.js';
-import {verifyCommittedIndexInput} from './input_verification.js';
+import {verifyCommittedIndexInput} from './input/verification.js';
 import {
   acquireFoldForwardBaseLeases,
   foldForwardCommittedBase,
@@ -209,7 +209,7 @@ export function retiredSnapshotCleanupReporter(onProgress: CodeGraphIndexOptions
 
 export {prepareReadyAnalysisSummary, reuseReadySnapshot};
 
-export {codeGraphBuildRequestKey} from './request_identity.js';
+export {codeGraphBuildRequestKey} from './request/identity.js';
 
 export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(function* (input: {
   readonly buildOwner: CodeGraphBuildOwnerIdentity;

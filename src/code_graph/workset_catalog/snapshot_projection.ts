@@ -1,9 +1,9 @@
 import {Cause, Effect, Option, Predicate, Ref, Result, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store/build_core.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store/build/core.js';
 import {classifyCodeGraphStoreFailure} from '../store/failure.js';
-import {effectiveSnapshotParameters, effectiveSymbolsCte} from '../store/query_core.js';
+import {effectiveSnapshotParameters, effectiveSymbolsCte} from '../store/query/core.js';
 import type {CodeGraphStoreShape} from '../store/shape.js';
 import type {CodeGraphSnapshot} from '../types.js';
 import {readSnapshotWorksetScopeReceipt, worksetScopeReceiptsMatch} from './scope_receipt.js';
@@ -18,7 +18,7 @@ import {
   CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM,
   codeGraphWorksetRoutingProjectionLogicalBytesAppend,
   codeGraphWorksetRoutingProjectionPages,
-} from './projection_storage.js';
+} from './projection/storage.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_LIMITS,
   CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,

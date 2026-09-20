@@ -4,7 +4,7 @@ import {
   applyMaintenanceMetadata,
   previewMaintenanceMetadata,
   renderMaintenanceMetadata,
-} from '../../memory/maintenance_metadata_commands.js';
+} from '../../memory/maintenance/metadata_commands.js';
 import type {RuntimeConfig} from '../../types.js';
 import {argumentError, mcpErrorResult, optionalResourceUri, requiredText} from './common.js';
 

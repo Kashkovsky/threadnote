@@ -1,10 +1,10 @@
 import {Effect, FileSystem} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../crypto/sha256.js';
-import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import type {MemoryCodeCitationV1} from '../memory/code/citation.js';
 import {parseMemoryDocument} from '../memory/document.js';
 import {recallCandidateIsEligible, type RecallEligibilityPolicy} from './eligibility.js';
-import {recallEligibilityPredicate} from './index_eligibility.js';
+import {recallEligibilityPredicate} from './index/eligibility.js';
 import {
   combineRecallSqlPredicates,
   normalizeRecallUriScopes,
@@ -13,8 +13,8 @@ import {
   recallWorkspaceScopeMatches,
   recallWorkspaceScopePredicate,
   type RecallWorkspaceScopeMode,
-} from './index_scope.js';
-import {recallProjectMatches, recallProjectPredicate} from './index_selection.js';
+} from './index/scope.js';
+import {recallProjectMatches, recallProjectPredicate} from './index/selection.js';
 
 export const MAX_RECALL_CODE_LINK_ANCHORS = 8;
 export const MAX_RECALL_CODE_LINK_RESULTS = 24;

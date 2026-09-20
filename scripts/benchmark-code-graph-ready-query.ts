@@ -24,7 +24,7 @@ import {
 } from '../src/code_graph/types.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {sha256Hex} from '../src/effect/digest.js';
-import {withExclusiveFileLock} from '../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../src/effect/file/lock.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {runtimeHostHardwareInfo, SystemInfo} from '../src/effect/system.js';
 import {diagnoseCodeGraphDatabaseReadOnly} from '../src/code_graph/store/health.js';
@@ -63,12 +63,12 @@ import {
   type ReadyQueryStageDisposition,
   type ReadyQueryStageSeriesV1,
   type ReadyQueryTimingSeriesV1,
-} from '../src/evaluation/ready_query_evidence.js';
+} from '../src/evaluation/ready/query_evidence.js';
 import {
   readReadyQueryLinuxHostSample,
   readyQueryHostEvidence,
   type ReadyQueryLinuxHostSample,
-} from '../src/evaluation/ready_query_host.js';
+} from '../src/evaluation/ready/query_host.js';
 import {codeGraphMcpResponse} from '../src/mcp/server/code_graph.js';
 import {
   publicGitHubRepositoryEvidence,

@@ -6,7 +6,7 @@ import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import * as FC from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {codeGraphDiskReservationRoot, codeGraphVectorWriteLockPath} from '../../src/code_graph/layout.js';
 import {codeGraphVectorViewId} from '../../src/code_graph/vector/identity.js';

@@ -1,5 +1,5 @@
 import {Clock, Console, Crypto, DateTime, Effect, Fiber, FileSystem, Option, Path, Schema, Semaphore} from 'effect';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
 import type {RuntimeConfig} from '../types.js';
 import {SystemInfo} from '../effect/system.js';
 import {readLiveStandaloneProcessLeases} from './standalone_lease.js';

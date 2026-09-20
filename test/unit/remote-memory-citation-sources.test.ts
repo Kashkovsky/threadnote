@@ -1,6 +1,6 @@
 import {selectRemoteCanonicalCitations} from '../../src/remote_memory/citation_sources.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
-import {requestFingerprint} from '../../src/remote_memory/remember_fingerprint.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
+import {requestFingerprint} from '../../src/remote_memory/remember/fingerprint.js';
 import type {AuthorizedRemotePrincipal} from '../../src/remote_memory/authorization.js';
 import {describe, expect, it} from 'vitest';
 import * as FC from 'fast-check';

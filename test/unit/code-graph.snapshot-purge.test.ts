@@ -17,7 +17,7 @@ import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {prepareCodeGraphVectorRetirement} from '../../src/code_graph/vector/maintenance.js';
 import {CommandExecutor} from '../../src/effect/command.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);

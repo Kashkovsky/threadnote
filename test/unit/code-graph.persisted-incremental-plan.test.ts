@@ -8,7 +8,7 @@ import {
   persistedIncrementalFileDeletionsStatement,
   persistedIncrementalReexportMismatchStatement,
   persistedIncrementalSymbolDeletionsStatement,
-} from '../../src/code_graph/store/incremental_plan.js';
+} from '../../src/code_graph/store/incremental/plan.js';
 import {type CodeGraphSqlQueryStatement} from '../../src/code_graph/store/visualization_sql.js';
 
 describe('persisted incremental SQLite plans', () => {

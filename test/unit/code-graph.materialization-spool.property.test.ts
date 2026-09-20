@@ -16,7 +16,7 @@ import {
   sealCodeGraphMaterializationSpool,
   sortCodeGraphMaterializationSpoolSurfaces,
 } from '../../src/code_graph/materialization/spool.js';
-import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '../../src/code_graph/materialization/spool_surfaces.js';
+import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '../../src/code_graph/materialization/spool/surfaces.js';
 import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from '../../src/code_graph/sqlite_statement.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 

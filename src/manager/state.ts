@@ -6,7 +6,7 @@ import type {RuntimeConfig} from '../types.js';
 import {currentPackageVersion, fetchLatestVersion, releaseSource} from '../release/index.js';
 import {selectUpdateChannel} from '../release/channel.js';
 import {findExecutable} from '../utils.js';
-import {compareVersions, isDevelopmentBuildVersion} from '../release/version_compare.js';
+import {compareVersions, isDevelopmentBuildVersion} from '../release/version/compare.js';
 import {readAutoUpdateStatus} from '../release/auto_update.js';
 
 export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationAgents')(function* (

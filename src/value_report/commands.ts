@@ -1,5 +1,5 @@
 import {DateTime, Effect, Path, Schema} from 'effect';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
 import {sha256Hex} from '../effect/digest.js';
 import {listCandidateReviews} from '../memory/candidate.js';
 import {readRecallFeedbackEvents} from '../recall/feedback.js';

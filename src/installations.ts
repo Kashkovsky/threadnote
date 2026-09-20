@@ -1,6 +1,6 @@
 import {Console, Crypto, Effect, FileSystem, Path, Predicate, Schema} from 'effect';
-import {syncDirectoryBestEffort, syncWritableFile} from './effect/file_durability.js';
-import {withExclusiveFileLock} from './effect/file_lock.js';
+import {syncDirectoryBestEffort, syncWritableFile} from './effect/file/durability.js';
+import {withExclusiveFileLock} from './effect/file/lock.js';
 import {SystemInfo} from './effect/system.js';
 import {
   installationRoot,

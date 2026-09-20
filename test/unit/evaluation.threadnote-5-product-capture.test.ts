@@ -20,8 +20,8 @@ import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {aggregateValueReportV1} from '../../src/value_report/index.js';
 import {createActivationPlanV1} from '../../src/activation/planner.js';
 import {createActivationReceiptV1} from '../../src/activation/receipt.js';
-import {secondSurfaceChallengeIdV1} from '../../src/activation/second_surface_store.js';
-import {secondSurfaceProofContextHashV1} from '../../src/activation/second_surface.js';
+import {secondSurfaceChallengeIdV1} from '../../src/activation/second/surface_store.js';
+import {secondSurfaceProofContextHashV1} from '../../src/activation/second/surface.js';
 import {createProcedureVerificationReceipt, parseProcedureManifest} from '../../src/procedure/contract.js';
 
 const commit = 'a'.repeat(40);

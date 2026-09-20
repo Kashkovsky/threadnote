@@ -1,7 +1,7 @@
 import {DateTime, Effect, Exit, FileSystem, Path, Schema} from 'effect';
 import {succeedUndefined} from '../../effect/optional.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION,
   codeGraphEvidenceCardId,
@@ -50,7 +50,7 @@ const CATALOG_LOCK_OPTIONS = {
   waitTimeoutMilliseconds: 30_000,
 } as const;
 const PROJECTION_INSERT_BATCH_SIZE = 256;
-export {CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM} from './projection_storage.js';
+export {CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM} from './projection/storage.js';
 const CATALOG_RETIREMENT_LIMIT_MAXIMUM = 1_000;
 const GENERATION_ID = /^cgwg_[0-9a-f]{40}$/u;
 const QUALIFIED_REF = /^cgr_[0-9a-f]{40}$/u;

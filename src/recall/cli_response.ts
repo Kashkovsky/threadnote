@@ -9,7 +9,7 @@ import {
   parseRecallMemoryConnectionInput,
   type ParsedRecallMemoryConnectionInput,
   type RecallMemoryConnectionsResult,
-} from './memory_connections.js';
+} from './memory/connections.js';
 
 export const RECALL_FEEDBACK_CLI_GUIDANCE =
   'Feedback: threadnote recall-feedback <threadnote://uri> --query <original-query> --action useful|wrong|pin|dismiss|applied (pin also requires --project).';

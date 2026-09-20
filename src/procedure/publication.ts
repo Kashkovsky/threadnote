@@ -1,7 +1,7 @@
 import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {withSharedRepositoryLock} from '../effect/share_lock.js';
+import {withSharedRepositoryLock} from '../effect/share/lock.js';
 import {
   assertShareTeamWritable,
   assertSharedWorktreeFileReady,

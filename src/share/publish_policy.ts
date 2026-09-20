@@ -1,7 +1,7 @@
 import {uriSegment} from '../manifest.js';
 import {parseMemoryDocument} from '../memory/document.js';
 import {memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
-import {classifyMemoryIdentityCandidates} from '../recall/memory_identity.js';
+import {classifyMemoryIdentityCandidates} from '../recall/memory/identity.js';
 import {loadRecallMemoryIdentities} from '../recall/index.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import type {ShareRuntime} from '../types.js';

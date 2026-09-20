@@ -1,6 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {fromPromise} from '../../effect/errors.js';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {
   fileSystemModeIsPrivate,
   runtimePlatform,

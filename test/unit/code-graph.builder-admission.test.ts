@@ -4,9 +4,9 @@ import {it as effectIt} from '@effect/vitest';
 import {Clock, Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect} from 'vitest';
-import {withCodeGraphBuilderAdmission} from '../../src/code_graph/builder_admission.js';
+import {withCodeGraphBuilderAdmission} from '../../src/code_graph/builder/admission.js';
 import {codeGraphBuilderAdmissionRoot, codeGraphBuilderAdmissionSlotPath} from '../../src/code_graph/layout.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
 

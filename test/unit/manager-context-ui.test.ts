@@ -14,8 +14,8 @@ import type {
   ManagerContextReadResponse,
   ManagerRecallResponse,
 } from '../../src/manager/context.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
-import {ContextBriefResult, ContextPanel, parseCodeRefs} from '../../src/manager/context_view.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
+import {ContextBriefResult, ContextPanel, parseCodeRefs} from '../../src/manager/context/view.js';
 
 const MEMORY_URI = 'threadnote://memory/tn_manager_context';
 const RELOCATED_URI = 'threadnote://user/tester/memories/durable/projects/product/context-brief.md';

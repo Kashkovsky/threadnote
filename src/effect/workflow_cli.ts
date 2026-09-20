@@ -1,6 +1,6 @@
 import {Schema, type Effect} from 'effect';
 import {Command, Flag} from 'effect/unstable/cli';
-import {withDefaultActionSubcommand} from './cli_help.js';
+import {withDefaultActionSubcommand} from './cli/help.js';
 import {
   argument,
   boolean,
@@ -13,17 +13,17 @@ import {
   repeatedString,
   requiredChoice,
   requiredString,
-} from './cli_flags.js';
+} from './cli/flags.js';
 import {CONTEXT_BRIEF_CWD_OPTION, type runContextBrief} from '../context_brief/commands.js';
 import type {runCompact} from '../memory/commands.js';
 import type {runRecallFeedback} from '../recall/feedback_commands.js';
-import type {runContextHealth} from '../memory/context_health_commands.js';
-import {CONTEXT_HEALTH_FINDING_CATEGORIES, CONTEXT_HEALTH_MEMORY_KINDS} from '../memory/context_health_selector.js';
-import type {runContextHealthAggregate, runContextHealthSchedule} from '../memory/context_health_aggregate_commands.js';
+import type {runContextHealth} from '../memory/context/health_commands.js';
+import {CONTEXT_HEALTH_FINDING_CATEGORIES, CONTEXT_HEALTH_MEMORY_KINDS} from '../memory/context/health_selector.js';
+import type {runContextHealthAggregate, runContextHealthSchedule} from '../memory/context/health_aggregate_commands.js';
 import type {
   runContextHealthRepairApply,
   runContextHealthRepairPreview,
-} from '../memory/context_health_repair_commands.js';
+} from '../memory/context/health_repair_commands.js';
 import type {runContextCheck} from '../context_check/commands.js';
 import type {
   runValueReport,
@@ -32,7 +32,7 @@ import type {
   runValueReportRetention,
 } from '../value_report/commands.js';
 import type {runProcedurePublish, runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
-import type {runPilotCommand} from '../value_report/pilot_commands.js';
+import type {runPilotCommand} from '../value_report/pilot/commands.js';
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,

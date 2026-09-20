@@ -14,13 +14,13 @@ import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
-import {applyMaintenanceMetadata, previewMaintenanceMetadata} from '../../src/memory/maintenance_metadata_commands.js';
+import {applyMaintenanceMetadata, previewMaintenanceMetadata} from '../../src/memory/maintenance/metadata_commands.js';
 import {storeMemory} from '../../src/memory/commands.js';
 import {expireRecallIndexValidation, loadRecallIndexData, recallIndexStatus} from '../../src/recall/index.js';
 import {
   refreshRecallDerivedIndexesFromSelection,
   scheduleMcpRecallBackgroundRefresh,
-} from '../../src/recall/mcp_refresh.js';
+} from '../../src/recall/mcp/refresh.js';
 import {loadMcpRecallSemanticScoresResult} from '../../src/recall/runtime.js';
 import {
   ensureVectorIndex,

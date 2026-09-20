@@ -1,5 +1,5 @@
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../index_scope.js';
-import {codeGraphScopeAuthorityInstalled} from './scope_schema.js';
+import {codeGraphScopeAuthorityInstalled} from './scope/schema.js';
 import {Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {compareCodeUnits} from '../ordering.js';
@@ -56,7 +56,7 @@ import {
   effectiveSnapshotParameters,
   effectiveSymbolsCte,
   selectBaseSnapshotId,
-} from './query_core.js';
+} from './query/core.js';
 
 /** @internal Bounded keyset page retained for admission query-plan and load regressions. */
 

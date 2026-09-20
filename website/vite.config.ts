@@ -1,11 +1,11 @@
 import react from '@vitejs/plugin-react';
 import {defineConfig, type Plugin} from 'vite';
-import {loadWebsiteArticles} from '../scripts/site-articles.ts';
+import {loadWebsiteArticles} from '../scripts/site-articles.js';
 import {
   loadRetainedPerformanceEvidence,
   performanceArtifactRelativePath,
-} from '../scripts/site-performance-evidence.ts';
-import {loadLatestMajorWebsiteReleases} from '../scripts/site-release-notes.ts';
+} from '../scripts/site-performance-evidence.js';
+import {loadLatestMajorWebsiteReleases} from '../scripts/site-release-notes.js';
 
 const repositoryRoot = process.cwd();
 const siteRoot = `${repositoryRoot}/website`;

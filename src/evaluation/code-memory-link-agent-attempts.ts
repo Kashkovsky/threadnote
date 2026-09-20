@@ -1,6 +1,6 @@
 import {Data, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import type {CodeMemoryLinkAgentAbManifestV1, CodeMemoryLinkAgentAbTrialV1} from './code-memory-link-agent-ab.js';
 
 export const CODE_MEMORY_LINK_AGENT_ATTEMPT_VERSION = 1 as const;

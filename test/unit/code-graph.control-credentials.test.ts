@@ -5,7 +5,7 @@ import {TestClock} from 'effect/testing';
 import * as FC from 'fast-check';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {makeGraphControlCredentialLoader} from '../../src/code_graph/sharing/control_credentials.js';
+import {makeGraphControlCredentialLoader} from '../../src/code_graph/sharing/control/credentials.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';

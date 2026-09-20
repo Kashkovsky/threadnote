@@ -12,7 +12,7 @@ import {
   gitIngestProjectsToEnsure,
   gitRemoteUrlsMatch,
   parseGitCanonicalSharePath,
-} from '../../src/remote_memory/git_canonical_store.js';
+} from '../../src/remote_memory/git/canonical_store.js';
 import {cloneGitShareWorktree, createGitShareWorktreeFixture, git} from '../helpers/git-share-worktree.js';
 
 const portableSegment = FC.stringMatching(/^[a-z][a-z0-9-]{0,15}$/u).map(value => `project-${value}`);

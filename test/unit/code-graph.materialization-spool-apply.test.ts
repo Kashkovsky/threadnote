@@ -3,12 +3,12 @@ import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {expect, it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES} from '../../src/code_graph/materialization/spool_apply_surfaces.js';
+import {CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES} from '../../src/code_graph/materialization/spool/apply_surfaces.js';
 import {
   applyCodeGraphMaterializationSpoolSurfacePage,
   assertCodeGraphMaterializationSpoolApplyComplete,
   registerCodeGraphMaterializationSpoolApply,
-} from '../../src/code_graph/store/materialization_spool_apply.js';
+} from '../../src/code_graph/store/materialization/spool_apply.js';
 
 effectIt.effect('commits a main-database page and its exact apply cursor atomically', () =>
   Effect.gen(function* () {

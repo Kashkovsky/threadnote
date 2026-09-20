@@ -1,9 +1,9 @@
 import {Clock, Effect, FileSystem, Path} from 'effect';
-import {MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from '../memory/code/citation.js';
 import {readMemoryRecordsByUri} from '../memory/commands.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../memory/document.js';
 import {loadRecallIndexData} from '../recall/index.js';
-import {retrieveRecallMemoryConnections} from '../recall/memory_connections.js';
+import {retrieveRecallMemoryConnections} from '../recall/memory/connections.js';
 import type {RuntimeConfig} from '../types.js';
 import {
   assertApprovedMemoryConnectionsRetrievalBenchFixture,

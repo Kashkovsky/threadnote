@@ -4,7 +4,7 @@ import {
   buildContextHealthReport,
   type ContextHealthFindingV1,
   type ContextHealthReportV1,
-} from '../../src/memory/context_health.js';
+} from '../../src/memory/context/health.js';
 import type {MemoryRecord} from '../../src/memory/document.js';
 import {contextCheckReadFenceIntact, sameChangedPathSelection} from '../../src/context_check/commands.js';
 import {

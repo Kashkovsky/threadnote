@@ -31,7 +31,7 @@ import type {CodeGraphMonikerV1} from '../cross_repository/types.js';
 import {ensureBoundedCodeGraphFact} from '../fact/budget.js';
 import {decodeStoredCodeGraphFact, encodeStoredCodeGraphFact} from '../fact/storage.js';
 import {materializedFileShardIdentity} from './cache.js';
-import {stagePersistedFullFacts} from './resolution_core.js';
+import {stagePersistedFullFacts} from './resolution/core.js';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../index_scope.js';
 
 interface CheckpointImportRow {

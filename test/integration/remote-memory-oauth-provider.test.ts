@@ -2,7 +2,7 @@ import {generateKeyPair, SignJWT} from 'jose';
 import {describe, expect, it} from 'vitest';
 import {remoteMemoryConfigFromEnvironment} from '../../src/remote_memory/config.js';
 import {createLocalOAuthTokenVerifier} from '../../src/remote_memory/oauth.js';
-import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres_control_plane.js';
+import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres/control_plane.js';
 import {createRemoteMemoryPostgresFixture} from '../helpers/remote-memory-postgres.js';
 
 const TEST_DATABASE_URL = process.env.THREADNOTE_TEST_POSTGRES_URL;

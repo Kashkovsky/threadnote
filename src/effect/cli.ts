@@ -11,11 +11,11 @@ import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookComman
 import {agentsCommandMetadata, makeAgentsCommand} from './agents_cli.js';
 import {makeSetupCommand, setupCommandMetadata} from './setup_cli.js';
 import {guidanceCommandMetadata, makeGuidanceCommand} from './guidance_cli.js';
-import {runCursorHook} from '../cursor_hook_runner.js';
+import {runCursorHook} from '../cursor/hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
-import {makeComposerAttachFlags} from './composer_attach_flags.js';
+import {makeComposerAttachFlags} from './composer/attach_flags.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
 import {
   runDevelopmentInstallRepair,
@@ -60,10 +60,10 @@ import {
 import {runRecallFeedback} from '../recall/feedback_commands.js';
 import {makeCloseoutCommand} from './closeout_cli.js';
 import {makeContextMetadataCommand} from './maintenance_metadata_cli.js';
-import {runContextHealthAggregate, runContextHealthSchedule} from '../memory/context_health_aggregate_commands.js';
-import {runContextHealth} from '../memory/context_health_commands.js';
-import {runContextHealthRepairApply, runContextHealthRepairPreview} from '../memory/context_health_repair_commands.js';
-import {runMaintenanceMetadataApply, runMaintenanceMetadataPreview} from '../memory/maintenance_metadata_commands.js';
+import {runContextHealthAggregate, runContextHealthSchedule} from '../memory/context/health_aggregate_commands.js';
+import {runContextHealth} from '../memory/context/health_commands.js';
+import {runContextHealthRepairApply, runContextHealthRepairPreview} from '../memory/context/health_repair_commands.js';
+import {runMaintenanceMetadataApply, runMaintenanceMetadataPreview} from '../memory/maintenance/metadata_commands.js';
 import {runContextCheck} from '../context_check/commands.js';
 import {runProcedurePublish, runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
 import {runMcpInstall} from '../mcp/index.js';
@@ -110,7 +110,7 @@ import {
 import type {RuntimeConfig} from '../types.js';
 import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate} from '../release/index.js';
 import {errorMessage} from '../utils.js';
-import {runVersion} from '../release/version_command.js';
+import {runVersion} from '../release/version/command.js';
 import {runManage} from '../manager/index.js';
 import {applicationError} from './errors.js';
 import {runHomeMigration} from '../migration/home.js';
@@ -148,7 +148,7 @@ import {
   runCodeGraphCheckpointInspect,
   runCodeGraphCheckpointVerify,
 } from '../code_graph/checkpoint/commands.js';
-import {makeComposerCommands} from './composer_cli.js';
+import {makeComposerCommands} from './composer/cli.js';
 import {makeActivationCommand} from './activation_cli.js';
 import {makeProcedureCommand} from './procedure_cli.js';
 import {makeGraphSharingCommands} from '../code_graph/sharing/cli.js';
@@ -162,9 +162,9 @@ import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import * as valueReportCommands from '../value_report/commands.js';
-import {runPilotCommand, withPilotHome} from '../value_report/pilot_commands.js';
+import {runPilotCommand, withPilotHome} from '../value_report/pilot/commands.js';
 import {runKnowledgeDeltaGitProposalExport, runKnowledgeDeltaGitProposalMaterialize} from '../git_proposal/commands.js';
-import {makeShareMemoryCommands, publishFlags} from './share_memory_cli.js';
+import {makeShareMemoryCommands, publishFlags} from './share/memory_cli.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
   cursorCloudRuntimeConfig,
@@ -184,7 +184,7 @@ import {
   normalizeCliArguments,
   type CliInvocationInspection,
   type ProductionLogMode,
-} from './cli_invocation.js';
+} from './cli/invocation.js';
 import {
   argument,
   boolean,
@@ -201,7 +201,7 @@ import {
   requiredChoice,
   requiredString,
   withValueAlias,
-} from './cli_flags.js';
+} from './cli/flags.js';
 import {
   codeGraphCliBounds as graphBounds,
   codeGraphFreshnessFlag as graphFreshness,

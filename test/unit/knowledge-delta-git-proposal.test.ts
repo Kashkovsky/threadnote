@@ -10,7 +10,7 @@ import {
   verifyKnowledgeDeltaGitProposalV1,
   type ReviewedSharedMemoryMutationV1,
 } from '../../src/git_proposal/knowledge_delta.js';
-import {createMemoryCodeCitation, formatMemoryCodeCitationLines} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation, formatMemoryCodeCitationLines} from '../../src/memory/code/citation.js';
 import {canonicalMemoryDocumentContent} from '../../src/memory/document.js';
 import type {KnowledgeDeltaItemV1, KnowledgeDeltaV1} from '../../src/memory/knowledge_delta.js';
 

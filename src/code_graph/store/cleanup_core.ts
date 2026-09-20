@@ -8,21 +8,21 @@ import {
   type CodeGraphSnapshotPurgeLeaseEvidence,
   type CodeGraphSnapshotPurgeObservationResult,
 } from './models.js';
-import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './removed_view_schema_contracts.js';
-import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './schema_contracts.js';
+import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './removed/view_schema_contracts.js';
+import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './schema/contracts.js';
 import {tableExists} from './session.js';
 import {CodeGraphStoreError} from '../types.js';
-import {CODE_GRAPH_SNAPSHOT_ID} from './reconciliation_core.js';
+import {CODE_GRAPH_SNAPSHOT_ID} from './reconciliation/core.js';
 import {type SnapshotRow} from './internal_models.js';
 import {snapshotFromRow} from './rows.js';
-import {lastStatementChangeCount, nextPersistentActivationBatchRows} from './activation_core.js';
+import {lastStatementChangeCount, nextPersistentActivationBatchRows} from './activation/core.js';
 import {type CodeGraphSqlQueryStatement} from './visualization_sql.js';
 import {
   assertPersistentBuildOwner,
   type CodeGraphWriterGate,
   type CompactLexicalSnapshotKeyRow,
   validatedCompactLexicalCount,
-} from './build_core.js';
+} from './build/core.js';
 
 const CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT = 1_024;
 

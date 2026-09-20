@@ -6,7 +6,7 @@ import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
 import {makeGraphShareSourceVerification} from '../../src/code_graph/sharing/source_verification.js';
 
 const repositoryId = 'a'.repeat(64),

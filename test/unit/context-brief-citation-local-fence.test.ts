@@ -26,7 +26,7 @@ import {
   contextBriefCitationScaleExtractorSet,
   prepareContextBriefCitationScaleRepositories,
 } from '../../src/evaluation/context-brief-citation-scale-fixture.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const systemLayer = SystemInfo.layer;

@@ -5,7 +5,7 @@ import {
   getAuth0M2MGraphCredential,
   parseAuth0M2MGraphCredentialConfig,
   parseAuth0M2MGraphCredentialRequest,
-} from '../../src/code_graph/sharing/auth0_m2m_graph_credential.js';
+} from '../../src/code_graph/sharing/auth0/m2m_graph_credential.js';
 import {createAccessTokenVerifier} from '../../src/oauth/access_token.js';
 
 const now = Math.floor(Date.now() / 1000);

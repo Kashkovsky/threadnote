@@ -5,7 +5,7 @@ import type {
   ContextHealthRepairabilityV1,
   ContextHealthReportV1,
   ContextHealthSeverityV1,
-} from '../memory/context_health.js';
+} from '../memory/context/health.js';
 
 export const CONTEXT_CHECK_REPORT_VERSION = 1 as const;
 export const DEFAULT_CONTEXT_CHECK_FINDING_LIMIT = 100 as const;

@@ -1,6 +1,6 @@
 import {DateTime, Effect, FileSystem, Path} from 'effect';
 import {sha256FileHex} from '../effect/digest.js';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
 import {SystemInfo} from '../effect/system.js';
 import {currentPackageVersion} from '../release/index.js';
 import {parseProcedureManifest, type ProcedureManifest} from './contract.js';

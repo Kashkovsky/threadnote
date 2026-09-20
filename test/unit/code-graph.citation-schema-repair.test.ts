@@ -15,8 +15,8 @@ import {
   CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM,
   CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM,
   nextCodeGraphSqliteSchemaVersion,
-} from '../../src/code_graph/store/schema_receipt.js';
-import {PERSISTENT_EXTENSION_TABLES} from '../../src/code_graph/store/schema_contracts.js';
+} from '../../src/code_graph/store/schema/receipt.js';
+import {PERSISTENT_EXTENSION_TABLES} from '../../src/code_graph/store/schema/contracts.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,

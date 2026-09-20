@@ -6,14 +6,14 @@ import {
   contextHealthRepairProposalRevisionV1,
   previewContextHealthRepairPlanV1,
   type ContextHealthRepairProposalV1,
-} from '../../src/memory/context_health_repair.js';
+} from '../../src/memory/context/health_repair.js';
 import {
   formatMemoryDocument,
   parseMemoryDocument,
   type MemoryMetadata,
   type MemoryRecord,
 } from '../../src/memory/document.js';
-import type {ContextHealthFindingV1, ContextHealthReportV1} from '../../src/memory/context_health.js';
+import type {ContextHealthFindingV1, ContextHealthReportV1} from '../../src/memory/context/health.js';
 
 const PROJECT = 'threadnote';
 const NOW = '2026-09-17T12:00:00.000Z';

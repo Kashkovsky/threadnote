@@ -1,5 +1,5 @@
 import type {RecallConfidence} from './rank.js';
-import type {RecallMemoryConnectionsResult} from './memory_connections.js';
+import type {RecallMemoryConnectionsResult} from './memory/connections.js';
 
 export const EXPLICIT_MEMORY_CONNECTION_CONFIDENCE_BASIS = 'explicit-memory-connection' as const;
 

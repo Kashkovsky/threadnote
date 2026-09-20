@@ -52,7 +52,7 @@ import {
   type GraphRepositoryGroup,
   type GraphQueryVisualization,
 } from '../../src/manager/graph.js';
-import {GraphSummary} from '../../src/manager/graph_panels.js';
+import {GraphSummary} from '../../src/manager/graph/panels.js';
 
 describe('manager graph focus', () => {
   it('carries the complete selected graph identity into administration actions', () => {

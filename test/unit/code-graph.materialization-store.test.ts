@@ -42,7 +42,7 @@ import {
   type CodeGraphStagingProgress,
 } from '../../src/code_graph/store.js';
 import {prepareActivationTables} from '../../src/code_graph/store/staging_core.js';
-import {type CodeGraphWriterGate} from '../../src/code_graph/store/build_core.js';
+import {type CodeGraphWriterGate} from '../../src/code_graph/store/build/core.js';
 import {pruneRetiredSnapshotRows} from '../../src/code_graph/store/retirement.js';
 import {
   CodeGraphStoreError,

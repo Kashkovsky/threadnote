@@ -20,7 +20,7 @@ import {
   RESOLUTION_PAGE_ROWS,
   type ResolvableActivationReferenceRow,
   type SnapshotPromotionCapacityPlan,
-} from './build_core.js';
+} from './build/core.js';
 import {
   adjustPersistedAnalysisResolutionEdges,
   aggregatePersistentReferenceResolutionCapacityBoundaries,
@@ -34,16 +34,16 @@ import {
   persistentFullReferencePageTotal,
   persistentReferenceResolutionCapacityBoundary,
   persistentUnresolvedReferenceCapacityBoundary,
-} from './resolution_core.js';
-import {resolvePersistedFullReferencePage} from './resolution_matching.js';
+} from './resolution/core.js';
+import {resolvePersistedFullReferencePage} from './resolution/matching.js';
 import {expandTransitiveReexportAliases} from './persistent_build.js';
 import {activationEdgeId, chunk, lookupDomain, parseLookupKeys, sqlTextOption} from './utilities.js';
 import {type CodeGraphPersistentReferencePageLimits, snapshotPromotionLeaseCapacity} from './staging_core.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible, markSnapshotLeaseRetirementBaton} from './reconciliation.js';
-import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './reconciliation_core.js';
+import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './reconciliation/core.js';
 import {nextCodeGraphActiveViewActivationTimestamp} from './active_views.js';
 import {CodeGraphPromotionCapacityPlanChanged, type EdgeRow} from './internal_models.js';
-import {lastStatementChangeCount, nextPersistentActivationBatchRows} from './activation_core.js';
+import {lastStatementChangeCount, nextPersistentActivationBatchRows} from './activation/core.js';
 
 export const CODE_GRAPH_RESOLUTION_PASS_MAXIMUM = 32;
 

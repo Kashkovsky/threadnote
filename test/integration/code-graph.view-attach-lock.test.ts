@@ -14,7 +14,7 @@ import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CodeGraphStoreError, type CodeGraphSnapshot, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CommandExecutor} from '../../src/effect/command.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {

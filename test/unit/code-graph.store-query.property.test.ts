@@ -24,7 +24,7 @@ import {
 import {
   CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE_SQL,
   CODE_GRAPH_FILE_BLOB_AUTHORITY_TRIGGER_SQL,
-} from '../../src/code_graph/store/cache_authority.js';
+} from '../../src/code_graph/store/cache/authority.js';
 import {neighborQuery, pathQuery} from '../../src/code_graph/query.js';
 import type {CodeGraphEdge, CodeGraphProvenance} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';

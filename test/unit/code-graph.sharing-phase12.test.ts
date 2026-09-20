@@ -17,7 +17,7 @@ import {
   GRAPH_SHARE_CONTROL_MAX_BODY_BYTES,
   dispatchGraphShareControl,
   emptyGraphShareCoordinatorState,
-} from '../../src/code_graph/sharing/control_protocol.js';
+} from '../../src/code_graph/sharing/control/protocol.js';
 import {
   enqueueGraphShareContribution,
   emptyGraphShareContributionQueue,
@@ -31,8 +31,8 @@ import {graphShareLanguageAndRole, graphShareParseActionKey} from '../../src/cod
 import {
   admitsSharedParseCacheHydrate,
   quarantinedGraphShareActionKeys,
-} from '../../src/code_graph/sharing/parse_cache.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
+} from '../../src/code_graph/sharing/parse/cache.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
 
 describe('graph share deltas, coordinator, contribution, and workers', () => {
   fcEffectProp(

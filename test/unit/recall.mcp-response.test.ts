@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {projectRecallMcpResponse, RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS} from '../../src/recall/mcp_response.js';
+import {projectRecallMcpResponse, RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS} from '../../src/recall/mcp/response.js';
 import {lexicalIndexUnavailableWarning} from '../../src/recall/warning.js';
 import type {RecallHit} from '../../src/utils.js';
 

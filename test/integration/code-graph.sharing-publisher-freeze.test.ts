@@ -7,9 +7,9 @@ import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runGraphShareJoin} from '../../src/code_graph/sharing/client.js';
-import {graphShareControlGetStatus} from '../../src/code_graph/sharing/control_client.js';
-import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_server.js';
-import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
+import {graphShareControlGetStatus} from '../../src/code_graph/sharing/control/client.js';
+import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control/server.js';
+import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher/cycle.js';
 import {
   runGraphPublisherBootstrap,
   runGraphPublisherListen,

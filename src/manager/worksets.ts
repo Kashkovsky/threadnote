@@ -24,17 +24,17 @@ import {continueCodeGraphWorksetQueryV2, queryCodeGraphWorksetV2} from '../code_
 import {CODE_GRAPH_WORKSET_ROUTER_LIMITS} from '../code_graph/workset/router.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {queueCodeGraphScopeRetirements, reconcileCodeGraphScopeRetirements} from '../code_graph/scope/retirement.js';
-import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file/lock.js';
 import type {ApplicationServices} from '../effect/runtime.js';
 import {parseSeedManifest, readSeedManifest} from '../manifest.js';
 import {
   observeManagerManifestProjects,
   validateManagerProjectRoots,
   type ManagerProjectRootValidation,
-} from './project_roots.js';
-import {updateManagerWorksetPrepareProgress} from './workset_progress.js';
-import {managerWorksetCatalogHttp} from './workset_catalog_http.js';
-import {validateManagerConfiguredProjectPath, validateManagerConfiguredProjectUri} from './project_manifest_values.js';
+} from './project/roots.js';
+import {updateManagerWorksetPrepareProgress} from './workset/progress.js';
+import {managerWorksetCatalogHttp} from './workset/catalog_http.js';
+import {validateManagerConfiguredProjectPath, validateManagerConfiguredProjectUri} from './project/manifest_values.js';
 import {validateProjectSeedPatterns} from '../seed_pattern.js';
 import {
   copyManagerProjectGraph,
@@ -46,7 +46,7 @@ import {
   previewConfiguredManagerProjectGraphScope,
   reconcileManagerProjectGraph,
   validateManagerProjectGraphInput,
-} from './project_graph_scope.js';
+} from './project/graph_scope.js';
 import type {ProjectManifest, RuntimeConfig, SeedManifest, WorksetManifest} from '../types.js';
 
 const UTF8 = new TextEncoder();

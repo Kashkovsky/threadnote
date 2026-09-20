@@ -3,18 +3,18 @@ import {
   buildContextHealthReport,
   type ContextHealthReportInputV1,
   type ContextHealthReportV1,
-} from '../memory/context_health.js';
+} from '../memory/context/health.js';
 import {
   applyContextHealthRepairProposalV1,
   contextHealthRepairProposalRevisionV1,
   contextHealthReportRevisionV1,
   previewContextHealthRepairPlanV1,
-} from '../memory/context_health_repair.js';
+} from '../memory/context/health_repair.js';
 import {
   aggregateContextHealthReportsV1,
   buildContextHealthSchedulePlanV1,
   type ContextHealthAggregateSourceV1,
-} from '../memory/context_health_schedule.js';
+} from '../memory/context/health_schedule.js';
 import type {Threadnote5LocalAuthorityEntryV1} from './threadnote-5-release-readiness-authority.js';
 import type {Threadnote5MeasurementV1, Threadnote5ReleaseScenario} from './threadnote-5-release-readiness-contract.js';
 

@@ -1,6 +1,6 @@
 import {Clock, Effect, FileSystem, Path, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
-import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file/lock.js';
 import {codeGraphRepositoryLockPath} from '../layout.js';
 import {
   awaitCodeGraphWorktreeBuilds,

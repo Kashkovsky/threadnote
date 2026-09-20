@@ -1,7 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import * as FC from 'fast-check';
-import {parseGraphShareRegistryTarget} from '../../src/code_graph/sharing/registry_reference.js';
-import {parseGraphShareRegistryUploadLocation} from '../../src/code_graph/sharing/registry_upload.js';
+import {parseGraphShareRegistryTarget} from '../../src/code_graph/sharing/registry/reference.js';
+import {parseGraphShareRegistryUploadLocation} from '../../src/code_graph/sharing/registry/upload.js';
 
 const target = parseGraphShareRegistryTarget('oci://registry.example.test/acme/canonical');
 const path = '/v2/acme/canonical/blobs/uploads/session-123';

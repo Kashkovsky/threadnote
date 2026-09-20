@@ -14,7 +14,7 @@ import {
 } from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {fromPromise, fromPromiseInterruptible} from '../effect/errors.js';
-import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file/lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {
   cachedCodeGraphFactByteUpperBound,

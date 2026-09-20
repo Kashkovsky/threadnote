@@ -1,10 +1,10 @@
 import {Clock, Console, Crypto, DateTime, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import * as yaml from 'js-yaml';
 import {sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {ResourceStore} from '../effect/resource-store.js';
 import {uriSegment} from '../manifest.js';
-import {formatMemoryCodeCitation} from '../memory/code_citation.js';
+import {formatMemoryCodeCitation} from '../memory/code/citation.js';
 import {
   canonicalMemoryDocumentContent,
   isSharedMemoryUri,

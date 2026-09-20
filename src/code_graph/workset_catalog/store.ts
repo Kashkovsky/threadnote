@@ -1,7 +1,7 @@
 import {Clock, Crypto, DateTime, Effect, FileSystem, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {SystemInfo} from '../../effect/system.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION,
@@ -102,7 +102,7 @@ import {
   CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM,
   codeGraphWorksetRoutingProjectionLogicalBytes,
   codeGraphWorksetRoutingProjectionPages,
-} from './projection_storage.js';
+} from './projection/storage.js';
 import {
   codeGraphWorksetCatalogWriteRequiredFreeBytes,
   verifyCodeGraphWorksetCatalogDiskCapacity,
@@ -115,7 +115,7 @@ const CATALOG_LOCK_OPTIONS = {
   staleAfterMilliseconds: 30_000,
   waitTimeoutMilliseconds: 30_000,
 } as const;
-export {CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM} from './projection_storage.js';
+export {CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM} from './projection/storage.js';
 const GENERATION_ID = /^cgwg_[0-9a-f]{40}$/u;
 const QUALIFIED_REF = /^cgr_[0-9a-f]{40}$/u;
 const CONTINUATION_CURSOR = /^cgwc_[0-9a-f]{40}$/u;

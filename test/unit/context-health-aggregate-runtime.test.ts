@@ -11,14 +11,14 @@ import {uriSegment} from '../../src/manifest.js';
 import {
   collectContextHealthAggregate,
   collectContextHealthAggregateSources,
-} from '../../src/memory/context_health_aggregate_commands.js';
-import {aggregateContextHealthReportsV1} from '../../src/memory/context_health_schedule.js';
+} from '../../src/memory/context/health_aggregate_commands.js';
+import {aggregateContextHealthReportsV1} from '../../src/memory/context/health_schedule.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import {
   admitPersonalProjectBytes,
   admitPersonalProjectFileCount,
   readPersonalProjectMemoryRecords,
-} from '../../src/memory/maintenance_records.js';
+} from '../../src/memory/maintenance/records.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

@@ -38,7 +38,7 @@ import {sha256Hex} from '../effect/digest.js';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {requireWorkset} from '../manifest.js';
-import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import type {MemoryCodeCitationV1} from '../memory/code/citation.js';
 import type {ResolvedWorkset, RuntimeConfig} from '../types.js';
 import {expandPath} from '../utils.js';
 import type {

@@ -1,7 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import * as FC from 'fast-check';
 import {formatMemoryDocument} from '../../src/memory/document.js';
-import {classifyGitIngestDocument} from '../../src/remote_memory/git_ingest_document.js';
+import {classifyGitIngestDocument} from '../../src/remote_memory/git/ingest_document.js';
 
 const path = {kind: 'durable' as const, project: 'threadnote', topic: 'contract'};
 const header = 'MEMORY\nkind: durable\nproject: threadnote\ntopic: contract';

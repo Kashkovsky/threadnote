@@ -1,5 +1,5 @@
 import {assertMemoryDocumentSchemaWritable, formatMemoryDocument, parseMemoryDocument} from '../memory/document.js';
-import {memoryCodeCitationSharingBlocker} from '../memory/code_citation_policy.js';
+import {memoryCodeCitationSharingBlocker} from '../memory/code/citation_policy.js';
 import {remoteMemoryError} from './errors.js';
 
 export function assertRemoteBodyReplacementSupported(content: string): void {

@@ -11,7 +11,7 @@ import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect} from 'vitest';
 import {withCodeGraphTargetWorktreeLock} from '../../src/code_graph/maintenance/gate.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {
   CODE_GRAPH_EXTRACTOR_GENERATION,
   CodeGraphStoreBusyError,

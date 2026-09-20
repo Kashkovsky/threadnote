@@ -2,7 +2,7 @@ import {it as effectIt} from '@effect/vitest';
 import {TestError} from '../helpers/test-error.js';
 import {Effect, FileSystem} from 'effect';
 import {describe, expect} from 'vitest';
-import {syncDirectoryBestEffort, syncWritableFile} from '../../src/effect/file_durability.js';
+import {syncDirectoryBestEffort, syncWritableFile} from '../../src/effect/file/durability.js';
 
 describe('file durability', () => {
   effectIt.effect('opens files with a writable handle before syncing', () =>

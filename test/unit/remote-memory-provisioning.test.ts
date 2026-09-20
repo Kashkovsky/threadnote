@@ -4,14 +4,14 @@ import {describe, expect, it} from 'vitest';
 import {
   RemoteMemoryProvisioningInputSchema,
   RemoteMemoryProvisioningRequestSchema,
-} from '../../src/remote_memory/operator_main.js';
+} from '../../src/remote_memory/operator/main.js';
 import {
   decodeStoredSharePolicyDocument,
   requireNoImplicitSharePolicyChange,
   STORED_SHARE_POLICY_MAX_BYTES,
   validateRemoteMemoryProvisioningInput,
   type RemoteMemoryProvisioningInput,
-} from '../../src/remote_memory/postgres_control_plane.js';
+} from '../../src/remote_memory/postgres/control_plane.js';
 
 const validProvisioning: RemoteMemoryProvisioningInput = {
   allowedProjects: ['threadnote'],

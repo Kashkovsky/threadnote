@@ -1,5 +1,5 @@
 import {parseActivationPlanV1, parseActivationReceiptV1} from '../activation/contract.js';
-import {parseSecondSurfaceProofChallengeV1} from '../activation/second_surface_store.js';
+import {parseSecondSurfaceProofChallengeV1} from '../activation/second/surface_store.js';
 import {parseContextBriefRequestV1} from '../context_brief/types.js';
 import {parseContextCheckReportJson} from '../context_check/index.js';
 import {parseGuidanceReceiptV2} from '../guidance/index.js';

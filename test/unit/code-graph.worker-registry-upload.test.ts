@@ -11,15 +11,15 @@ import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {GRAPH_SHARE_OCI_EMPTY_CONFIG_DIGEST} from '../../src/code_graph/sharing/descriptor.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingUnavailable} from '../../src/code_graph/sharing/errors.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
 import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
-import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker_result.js';
+import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker/result.js';
 import {
   graphWorkerRegistryForProfile,
   uploadGraphWorkerArtifactClosure,
   uploadGraphWorkerArtifactToRegistry,
-} from '../../src/code_graph/sharing/worker_registry_upload.js';
-import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
+} from '../../src/code_graph/sharing/worker/registry_upload.js';
+import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker/signing.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';
 

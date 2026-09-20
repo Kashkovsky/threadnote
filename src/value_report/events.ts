@@ -1,5 +1,5 @@
 import {Crypto, Effect, FileSystem, Option, Path, Predicate} from 'effect';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import type {CandidateReview} from '../memory/candidate.js';
 import type {ValueReportCountsInputV1} from './index.js';
 

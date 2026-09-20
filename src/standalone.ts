@@ -1,7 +1,7 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, Layer, Runtime} from 'effect';
-import {withCliOutputConsole} from './effect/cli_output.js';
+import {withCliOutputConsole} from './effect/cli/output.js';
 import {fromPromise, fromPromiseInterruptibleAwaiting} from './effect/errors.js';
 import {
   CODE_GRAPH_COMPACTION_WORKER_ARGUMENT,
@@ -105,7 +105,7 @@ if (
 }
 
 async function oauthM2MGraphCredentialHelperProgram(arguments_: readonly string[]) {
-  const helper = await import('./code_graph/sharing/oauth_m2m_graph_credential.js');
+  const helper = await import('./code_graph/sharing/oauth/m2m_graph_credential.js');
   return fromPromise('run OAuth graph credential helper', () =>
     helper.runOAuthM2MGraphCredentialHelper(arguments_, process.env, oauthM2MHelperIO),
   ).pipe(
@@ -118,7 +118,7 @@ async function oauthM2MGraphCredentialHelperProgram(arguments_: readonly string[
 }
 
 async function oauthM2MRegistryCredentialHelperProgram(arguments_: readonly string[]) {
-  const helper = await import('./code_graph/sharing/oauth_m2m_registry_credential.js');
+  const helper = await import('./code_graph/sharing/oauth/m2m_registry_credential.js');
   return fromPromise('run OAuth registry credential helper', () =>
     helper.runOAuthM2MRegistryCredentialHelper(arguments_, process.env, oauthM2MHelperIO),
   ).pipe(
@@ -131,7 +131,7 @@ async function oauthM2MRegistryCredentialHelperProgram(arguments_: readonly stri
 }
 
 async function oauthM2MPublisherRegistryCredentialHelperProgram(arguments_: readonly string[]) {
-  const helper = await import('./code_graph/sharing/oauth_m2m_registry_credential.js');
+  const helper = await import('./code_graph/sharing/oauth/m2m_registry_credential.js');
   return fromPromise('run OAuth publisher registry credential helper', () =>
     helper.runOAuthM2MPublisherRegistryCredentialHelper(arguments_, process.env, oauthM2MHelperIO),
   ).pipe(
@@ -145,7 +145,7 @@ async function oauthM2MPublisherRegistryCredentialHelperProgram(arguments_: read
 
 async function graphOAuthHelperProgram(arguments_: readonly string[]) {
   const [helper, command, system] = await Promise.all([
-    import('./code_graph/sharing/oauth_user_helper.js'),
+    import('./code_graph/sharing/oauth/user_helper.js'),
     import('./effect/command.js'),
     import('./effect/system.js'),
   ]);
@@ -166,7 +166,7 @@ async function graphOAuthHelperProgram(arguments_: readonly string[]) {
 
 async function oauthUserRegistryCredentialHelperProgram(arguments_: readonly string[]) {
   const [helper, command, system] = await Promise.all([
-    import('./code_graph/sharing/oauth_user_registry_credential.js'),
+    import('./code_graph/sharing/oauth/user_registry_credential.js'),
     import('./effect/command.js'),
     import('./effect/system.js'),
   ]);
@@ -206,7 +206,7 @@ async function windowsDiskCapacityWorkerProgram() {
 }
 
 async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {
-  const operator = await import('./remote_memory/operator_main.js');
+  const operator = await import('./remote_memory/operator/main.js');
   return operator
     .runRemoteMemoryOperator(arguments_, process.env, operator.createRemoteMemoryOperatorRuntime(process.execPath))
     .pipe(
@@ -317,7 +317,7 @@ async function codeGraphDeepDiagnosticsWorkerProgram() {
 
 async function codeGraphAutomaticCompactionWorkerProgram() {
   const [worker, system, processDiagnostics, processLease] = await Promise.all([
-    import('./code_graph/automatic_compaction.js'),
+    import('./code_graph/automatic/compaction.js'),
     import('./effect/system.js'),
     import('./process/diagnostics.js'),
     import('./process/standalone_lease.js'),
@@ -363,7 +363,7 @@ async function codeGraphImpactQueryWorkerProgram() {
 
 async function gitWorktreeRegistrationWorkerProgram() {
   const [worker, system] = await Promise.all([
-    import('./code_graph/git/worktree_registration_worker.js'),
+    import('./code_graph/git/worktree/registration_worker.js'),
     import('./effect/system.js'),
   ]);
   return worker.gitWorktreeRegistrationWorkerProgram.pipe(
@@ -475,7 +475,7 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
   ]);
   const invocation = inspectCliInvocation(arguments_);
   if (invocation.offline === true) {
-    const {withPilotDiagnostics} = await import('./value_report/pilot_commands.js');
+    const {withPilotDiagnostics} = await import('./value_report/pilot/commands.js');
     return Effect.scoped(withCliOutputConsole(withPilotDiagnostics(cliEffect(arguments_)))).pipe(
       Effect.provide(runtime.ApplicationLayer),
     );

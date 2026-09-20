@@ -12,7 +12,7 @@ import {
   optionalString,
   requiredChoice,
   requiredString,
-} from './cli_flags.js';
+} from './cli/flags.js';
 
 export function makeCloseoutCommand<E, R>(config: Effect.Effect<RuntimeConfig, E, R>) {
   const closeoutPreview = Command.make(

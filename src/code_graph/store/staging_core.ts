@@ -11,7 +11,7 @@ import {
 } from '../materialization/rows.js';
 import {compareCodeUnits} from '../ordering.js';
 import {type CodeGraphRetiredSnapshotCleanupProgressCallback} from './models.js';
-import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './schema_contracts.js';
+import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './schema/contracts.js';
 import {CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS, tableExists} from './session.js';
 import {
   type CodeGraphEdge,
@@ -36,14 +36,14 @@ import {
   type PersistedAnalysisBatchReceipt,
   prepareAnalysisResolutionTables,
   validatedCompactLexicalCount,
-} from './build_core.js';
+} from './build/core.js';
 import {chunk, sortedBy, uniqueBy} from './utilities.js';
 import {
   COMPACT_LEXICAL_CLEANUP_SPECS,
   compactLexicalCleanupPageStatement,
   RETIRED_SNAPSHOT_CLEANUP_SPECS,
 } from './cleanup_core.js';
-import {lastStatementChangeCount} from './activation_core.js';
+import {lastStatementChangeCount} from './activation/core.js';
 import {
   boundedSnapshotLeaseProjection,
   type BoundedSnapshotLeaseRow,

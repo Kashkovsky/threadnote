@@ -2,7 +2,7 @@ import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Clock, Context, Crypto, DateTime, Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {LocalModelRuntime, type LocalModelRuntimeShape} from '../effect/ai/local-model-runtime.js';
 import {LocalModelCatalog, type LocalModelCatalogShape, type LocalModelManifest} from '../models/catalog.js';

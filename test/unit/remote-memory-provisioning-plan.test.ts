@@ -19,7 +19,7 @@ import {
 import {
   remoteMemoryProvisioningPolicy,
   remoteMemoryProvisioningSharePolicy,
-} from '../../src/remote_memory/postgres_control_plane.js';
+} from '../../src/remote_memory/postgres/control_plane.js';
 
 const plannedAt = '2026-09-18T00:00:00.000Z';
 const emptyState: RemoteMemoryProvisioningStateV1 = {version: 1};

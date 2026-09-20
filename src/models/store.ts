@@ -6,7 +6,7 @@ import {
   ModelNotInstalled,
 } from '../effect/ai/errors.js';
 import {sha256FileHex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {HttpService, type HttpServiceShape} from '../effect/http.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {extractBundledModelSource, type BundledModelSourceExtractor} from './bundled-model-source.js';

@@ -1,6 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {CODE_GRAPH_PREPARED_SPOOL_BYTES_LIMIT, CODE_GRAPH_PREPARED_SPOOL_COUNT_LIMIT} from './build/resources.js';
 import {codeGraphPreparedSpoolBudgetLockPath, codeGraphPreparedSpoolBudgetRoot} from './layout.js';

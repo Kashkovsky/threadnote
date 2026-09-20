@@ -1,9 +1,0 @@
-export {
-  OAuthM2MRegistryCredentialConfig as Auth0M2MRegistryCredentialConfig,
-  parseOAuthM2MRegistryCredentialConfig as parseAuth0M2MRegistryCredentialConfig,
-  parseOAuthM2MPublisherRegistryCredentialConfig as parseAuth0M2MPublisherRegistryCredentialConfig,
-  getOAuthM2MRegistryCredential as getAuth0M2MRegistryCredential,
-  getOAuthM2MPublisherRegistryCredential as getAuth0M2MPublisherRegistryCredential,
-  runOAuthM2MRegistryCredentialHelper as runAuth0M2MRegistryCredentialHelper,
-  runOAuthM2MPublisherRegistryCredentialHelper as runAuth0M2MPublisherRegistryCredentialHelper,
-} from './oauth_m2m_registry_credential.js';

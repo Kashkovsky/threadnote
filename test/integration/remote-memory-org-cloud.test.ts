@@ -25,10 +25,10 @@ import {
   gitCanonicalSharePath,
   type GitCanonicalCommitInput,
   type GitCanonicalCommitResult,
-} from '../../src/remote_memory/git_canonical_store.js';
+} from '../../src/remote_memory/git/canonical_store.js';
 import {createRemoteMemoryHttpHandler} from '../../src/remote_memory/http_transport.js';
-import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres_control_plane.js';
-import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres_repository.js';
+import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres/control_plane.js';
+import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres/repository.js';
 
 const databaseUrl = process.env.THREADNOTE_TEST_POSTGRES_URL;
 const shareId = 'org-cloud-acceptance';

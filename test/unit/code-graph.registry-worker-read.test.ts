@@ -4,7 +4,7 @@ import {Effect, FileSystem, Layer} from 'effect';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {makeGraphShareRegistryReader} from '../../src/code_graph/sharing/registry_reader.js';
+import {makeGraphShareRegistryReader} from '../../src/code_graph/sharing/registry/reader.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {GRAPH_SHARE_OCI_IMAGE_MANIFEST_MEDIA_TYPE} from '../../src/code_graph/sharing/artifacts.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

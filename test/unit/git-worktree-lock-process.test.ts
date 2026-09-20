@@ -3,7 +3,7 @@ import {readFile, rm} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 import {createGitShareWorktreeFixture, git} from '../helpers/git-share-worktree.js';
 import {testGitWorktreeLock} from '../helpers/git-worktree-lock.js';
-import {GitCanonicalMemoryStore} from '../../src/remote_memory/git_canonical_store.js';
+import {GitCanonicalMemoryStore} from '../../src/remote_memory/git/canonical_store.js';
 
 const path = 'durable/projects/fixture/crash-recovery.md';
 

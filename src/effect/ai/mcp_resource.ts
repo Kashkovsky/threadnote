@@ -10,10 +10,10 @@ import {
   MemoryIdentityResolutionError,
   resolveMemoryIdentityAliases,
   verifyResolvedMemoryIdentity,
-} from '../../recall/memory_identity.js';
+} from '../../recall/memory/identity.js';
 import {uriSegment} from '../../manifest.js';
-import {memoryReadRecoveryForError, memoryReadRecoveryText} from '../../memory/read_recovery.js';
-import {MEMORY_READ_MAXIMUM_CONTENT_BYTES} from '../../memory/read_projection.js';
+import {memoryReadRecoveryForError, memoryReadRecoveryText} from '../../memory/read/recovery.js';
+import {MEMORY_READ_MAXIMUM_CONTENT_BYTES} from '../../memory/read/projection.js';
 import {canonicalResourceUri, parseResourceId, resourceIdIsWithin} from '../../storage/resource-id.js';
 import {ResourceNotFound, ResourceStore} from '../resource-store.js';
 import {

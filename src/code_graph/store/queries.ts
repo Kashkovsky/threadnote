@@ -1,6 +1,6 @@
 import {Clock, Effect, Option} from 'effect';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../index_scope.js';
-import {codeGraphScopeAuthorityInstalled} from './scope_schema.js';
+import {codeGraphScopeAuthorityInstalled} from './scope/schema.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphBlobReuseFile} from '../blob_reuse.js';
 import {codeGraphUtf8ByteLength} from '../disk/capacity.js';
@@ -31,7 +31,7 @@ import {
 } from '../types.js';
 import {type EdgeRow, type FileBlobRow, type SnapshotRow, type SymbolRow} from './internal_models.js';
 import {edgeFromRow, snapshotFromRow, symbolFromRow} from './rows.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './build_core.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './build/core.js';
 import {boundedPageLimit, chunk, normalizedTerms, sqlTextOption, uniqueBy} from './utilities.js';
 import {
   codeGraphAdjacencyQueryStatement,
@@ -50,7 +50,7 @@ import {
   selectFileBlobMetadataBatch,
   selectReusableFileBlobBatch,
   selectReusableFileBlobMetadataBatch,
-} from './query_core.js';
+} from './query/core.js';
 import {materializedFileShardIdentity} from './cache.js';
 import {type CodeGraphSqlQueryStatement} from './visualization_sql.js';
 import {selectSnapshotPackProvenance} from './pack_provenance.js';

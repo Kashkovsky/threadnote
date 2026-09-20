@@ -1,6 +1,6 @@
 import {Crypto, Effect, FileSystem, Path} from 'effect';
 import {sha256Hex} from './digest.js';
-import {withExclusiveFileLock} from './file_lock.js';
+import {withExclusiveFileLock} from './file/lock.js';
 import {SystemInfo} from './system.js';
 
 const MEMORY_LOCK_STALE_MILLISECONDS = 5 * 60 * 1_000;

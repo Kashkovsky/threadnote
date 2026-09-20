@@ -14,7 +14,7 @@ import {
   type VerifiedProcedureSelection,
 } from '../procedure/selection.js';
 import {validateContextBriefMemoryCitations} from './citation_validation.js';
-import {retrieveContextBriefGraphEvidence, unavailableContextBriefGraphEvidence} from './graph_evidence.js';
+import {retrieveContextBriefGraphEvidence, unavailableContextBriefGraphEvidence} from './graph/evidence.js';
 import {
   mergeContextBriefMemoryEvidence,
   retrieveContextBriefCodeLinkedMemoryEvidence,
@@ -524,8 +524,8 @@ function telemetryUnknownReason(
   }
 }
 
-export * from './graph_evidence.js';
-export * from './graph_anchor_evidence.js';
+export * from './graph/evidence.js';
+export * from './graph/anchor_evidence.js';
 export * from './citation_validation.js';
 export * from './memory_evidence.js';
 export * from './planner.js';

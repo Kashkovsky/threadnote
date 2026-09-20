@@ -1,4 +1,4 @@
-import type {PilotInput} from '../../src/value_report/pilot_contract.js';
+import type {PilotInput} from '../../src/value_report/pilot/contract.js';
 
 export function pilotInput(): PilotInput {
   return {

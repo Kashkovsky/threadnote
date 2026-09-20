@@ -17,7 +17,7 @@ import {
   codeGraphRuntimeSchemaRequiresReconnect,
   observeCodeGraphPersistentSchemaRevision,
   planCodeGraphPersistentSchemaUpgrade,
-} from '../../src/code_graph/store/schema_revision.js';
+} from '../../src/code_graph/store/schema/revision.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 

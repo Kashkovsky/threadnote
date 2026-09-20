@@ -1,7 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import type {ValueReportV1} from '../value_report/index.js';
 import type {ValueReportDeletionReceiptV1, ValueReportRetentionReceiptV1} from '../value_report/storage.js';
-import {api, errorMessage} from './ui_support.js';
+import {api, errorMessage} from './ui/support.js';
 
 export function ValuePanel(props: {readonly project?: string}): React.ReactElement {
   const [period, setPeriod] = useState(30);

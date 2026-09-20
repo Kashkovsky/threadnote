@@ -13,7 +13,7 @@ import {
   type CodeGraphSymbolSemanticLocatorV1,
 } from '../citation/primitives.js';
 import {configureConnection} from './session.js';
-import {selectBaseSnapshotId} from './query_core.js';
+import {selectBaseSnapshotId} from './query/core.js';
 import {decodeCodeGraphInventoryReuseReceipt} from '../inventory/reuse.js';
 import type {SymbolRow} from './internal_models.js';
 import {symbolFromRow} from './rows.js';

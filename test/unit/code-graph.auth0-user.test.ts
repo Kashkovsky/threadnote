@@ -8,7 +8,7 @@ import {
   getGraphOAuthUserCredential,
   loginGraphOAuthUser,
   type OAuthUserBackend,
-} from '../../src/code_graph/sharing/oauth_user.js';
+} from '../../src/code_graph/sharing/oauth/user.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingUnavailable} from '../../src/code_graph/sharing/errors.js';
 import {SystemInfo} from '../../src/effect/system.js';

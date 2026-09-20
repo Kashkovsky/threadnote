@@ -19,7 +19,7 @@ import {
   MEMORY_SCHEMA_VERSION,
   UnsupportedMemorySchemaVersionError,
   type MemoryCodeCitationInputV1,
-} from '../../src/memory/code_citation.js';
+} from '../../src/memory/code/citation.js';
 import {migrateMemoryDocumentV4ToV5} from '../../src/memory/migrations.js';
 
 describe('memory document contract', () => {

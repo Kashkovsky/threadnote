@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {useManagerDialogs} from './dialog.js';
 import {orderThreadnoteProcessesByAttention} from '../process/attention.js';
-import {api, errorMessage} from './ui_support.js';
+import {api, errorMessage} from './ui/support.js';
 import type {
   ManageableThreadnoteProcessDiagnostic,
   ManageableThreadnoteProcessDiagnostics,

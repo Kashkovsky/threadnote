@@ -6,8 +6,8 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {putCasBytes, readVerifiedCasBlob} from '../../src/code_graph/sharing/cas.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingCasBlobPath} from '../../src/code_graph/sharing/layout.js';
-import {readTrustedGraphShareOciProfile} from '../../src/code_graph/sharing/profile_client.js';
-import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile_oci_artifact.js';
+import {readTrustedGraphShareOciProfile} from '../../src/code_graph/sharing/profile/client.js';
+import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile/oci_artifact.js';
 import {defaultGraphShareProfile, ociProfilePointer} from '../../src/code_graph/sharing/profile.js';
 import {trustReceiptFromEnrollment} from '../../src/code_graph/sharing/trust.js';
 

@@ -1,5 +1,5 @@
 import {Effect, Option, type FileSystem, type Path} from 'effect';
-import {readExclusiveFileLockOwner} from '../../effect/file_lock.js';
+import {readExclusiveFileLockOwner} from '../../effect/file/lock.js';
 import {codeGraphScopeViewKey} from '../scope/identity.js';
 import type {CodeGraphLayout} from '../layout.js';
 import type {ObservedCodeGraphBuildStatus} from '../build_status.js';

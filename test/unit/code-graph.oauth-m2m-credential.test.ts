@@ -1,11 +1,11 @@
 import {exportJWK, generateKeyPair, SignJWT} from 'jose';
 import {describe, expect, it, vi} from 'vitest';
 import fc from 'fast-check';
-import {getOAuthM2MGraphCredential} from '../../src/code_graph/sharing/oauth_m2m_graph_credential.js';
+import {getOAuthM2MGraphCredential} from '../../src/code_graph/sharing/oauth/m2m_graph_credential.js';
 import {
   getOAuthM2MRegistryCredential,
   getOAuthM2MPublisherRegistryCredential,
-} from '../../src/code_graph/sharing/oauth_m2m_registry_credential.js';
+} from '../../src/code_graph/sharing/oauth/m2m_registry_credential.js';
 import {createAccessTokenVerifier} from '../../src/oauth/access_token.js';
 
 const now = Math.floor(Date.now() / 1000);

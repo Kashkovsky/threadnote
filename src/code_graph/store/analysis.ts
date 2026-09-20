@@ -12,7 +12,7 @@ import {
 } from './models.js';
 import {configureConnection} from './session.js';
 import {type CodeGraphEdge, type CodeGraphProvenance} from '../types.js';
-import {effectiveSnapshotParameters, effectiveSymbolsCte, selectBaseSnapshotId} from './query_core.js';
+import {effectiveSnapshotParameters, effectiveSymbolsCte, selectBaseSnapshotId} from './query/core.js';
 import {type SymbolRow} from './internal_models.js';
 import {boundedAggregatePageLimit, boundedPageLimit} from './utilities.js';
 import {symbolFromRow} from './rows.js';

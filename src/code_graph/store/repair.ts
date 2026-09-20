@@ -5,8 +5,8 @@ import {CodeGraphStoreError} from '../types.js';
 import {diagnoseDatabase} from './diagnostics.js';
 import {pruneRetiredSnapshotRows} from './retirement.js';
 import {pruneUnreferencedFileBlobs} from './cleanup_core.js';
-import {codeGraphPersistentExtensionSchemaCompatible} from './schema_inspection.js';
-import {codeGraphSchemaMigrationPreservesIncompleteSnapshots} from './schema_migration.js';
+import {codeGraphPersistentExtensionSchemaCompatible} from './schema/inspection.js';
+import {codeGraphSchemaMigrationPreservesIncompleteSnapshots} from './schema/migration.js';
 
 /** Exact read-only cleanup admission, including a preparation-proven migration preview. */
 

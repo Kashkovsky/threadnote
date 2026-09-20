@@ -22,7 +22,7 @@ import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
   pendingCandidateQueuePath,
   persistGraphSharePendingSignedCandidates,
-} from '../../src/code_graph/sharing/signed_candidate.js';
+} from '../../src/code_graph/sharing/signed/candidate.js';
 import type {CodeGraphParserPoolShape, CodeGraphParserResult} from '../../src/code_graph/parser_worker.js';
 import type {CodeGraphDirectPersistentCapacityProtector, CodeGraphStoreShape} from '../../src/code_graph/store.js';
 import type {TreeSitterRuntimeShape} from '../../src/code_graph/tree_sitter/runtime.js';

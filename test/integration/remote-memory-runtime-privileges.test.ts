@@ -10,7 +10,7 @@ import {
   assertHostedContextHealthWorkerPrivileges,
   assertRemoteMemoryRuntimePrivileges,
 } from '../../src/remote_memory/runtime_privileges.js';
-import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator_postgres.js';
+import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator/postgres.js';
 
 const databaseUrl = process.env.THREADNOTE_TEST_POSTGRES_URL;
 const postgresDescribe = databaseUrl ? describe : describe.skip;

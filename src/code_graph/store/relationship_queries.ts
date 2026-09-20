@@ -3,7 +3,7 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {compareCodeUnits} from '../ordering.js';
 import {configureConnection} from './session.js';
 import {type CodeGraphEdge, type CodeGraphProvenance, type CodeGraphQueryNode} from '../types.js';
-import {codeGraphAdjacencyQueryStatement, selectBaseSnapshotId} from './query_core.js';
+import {codeGraphAdjacencyQueryStatement, selectBaseSnapshotId} from './query/core.js';
 import {chunk} from './utilities.js';
 import {type EdgeRow, type SymbolRow} from './internal_models.js';
 import {edgeFromRow, symbolFromRow} from './rows.js';

@@ -1,8 +1,8 @@
 import {Crypto, Effect, Exit, FileSystem, Path, Schema} from 'effect';
 import {succeedUndefined} from '../../effect/optional.js';
 import {sha256HexSync} from '../../crypto/sha256.js';
-import {syncDirectoryBestEffort} from '../../effect/file_durability.js';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {syncDirectoryBestEffort} from '../../effect/file/durability.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../../effect/system.js';
 import {
   CODE_GRAPH_DISK_RESERVATION_OPERATIONS,

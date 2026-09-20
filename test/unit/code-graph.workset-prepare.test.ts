@@ -47,7 +47,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/effect/file_lock.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../src/effect/file_lock.js')>()),
+  ...(await importOriginal<typeof import('../../src/effect/file/lock.js')>()),
   withExclusiveFileLock: mocks.worksetLock,
 }));
 

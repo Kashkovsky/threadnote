@@ -1,4 +1,4 @@
-import {recallWorkspaceScopeMatches} from '../recall/index_scope.js';
+import {recallWorkspaceScopeMatches} from '../recall/index/scope.js';
 import {deriveRecallEligibilityPolicy} from '../recall/eligibility.js';
 import {
   deduplicateLogicalRecallCandidates,

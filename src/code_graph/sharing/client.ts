@@ -24,18 +24,18 @@ import {
   writeTemporaryCheckpointPack,
 } from './delta_pack.js';
 import {assertGraphShareCommitChain, graphShareBlobExists, graphShareCommitIsAncestor} from './git.js';
-import {graphShareControlGetFrontier, graphShareControlGetTag, mirrorCoordinatorCasBlob} from './control_client.js';
+import {graphShareControlGetFrontier, graphShareControlGetTag, mirrorCoordinatorCasBlob} from './control/client.js';
 import {graphShareFrontierPointerFromOciDescriptor, parseGraphShareOciDescriptor} from './descriptor.js';
 import {graphShareFrontierDiscoveryTag} from './namespace.js';
-import {discoverGraphShareRegistryFrontier, makeGraphShareRegistryReader} from './registry_reader.js';
-import {fetchGraphShareOciProfile, readTrustedGraphShareOciProfile} from './profile_client.js';
-import {parseGraphShareRegistryTarget} from './registry_reference.js';
+import {discoverGraphShareRegistryFrontier, makeGraphShareRegistryReader} from './registry/reader.js';
+import {fetchGraphShareOciProfile, readTrustedGraphShareOciProfile} from './profile/client.js';
+import {parseGraphShareRegistryTarget} from './registry/reference.js';
 import {
   assertGraphShareApprovalRoot,
   assertGraphShareApprovedProfile,
   loadGraphShareManagedApprovalFile,
-} from './profile_approval.js';
-import {promptGraphShareOciProfileAccess, promptGraphShareOciTrustRoot} from './profile_consent.js';
+} from './profile/approval.js';
+import {promptGraphShareOciProfileAccess, promptGraphShareOciTrustRoot} from './profile/consent.js';
 import {ensureSharedGraphBlob as ensureSharedCasBlob, type GraphShareBlobSource} from './shared_blob.js';
 import {
   GRAPH_SHARE_CONTRIBUTION_MODES,
@@ -44,7 +44,7 @@ import {
   readGraphShareContributionQueue,
   type GraphShareContributionMode,
 } from './contribution.js';
-import {readTrustedGraphShareContributionProfile} from './profile_storage.js';
+import {readTrustedGraphShareContributionProfile} from './profile/storage.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {planGraphWorkerActions, readAdvertisedGraphWorkerActions} from './worker.js';
 import {
@@ -79,7 +79,7 @@ import {
   type GraphShareAccessMode,
   type GraphShareTrustReceiptV1,
 } from './trust.js';
-import {legacyGraphShareContributionMode, resolveGraphShareRepositoryClient} from './client_state.js';
+import {legacyGraphShareContributionMode, resolveGraphShareRepositoryClient} from './client/state.js';
 import {
   acceptGraphShareFrontier,
   assertGraphSharePredecessor,

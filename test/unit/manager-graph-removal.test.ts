@@ -7,7 +7,7 @@ import {
   type ManagerGraphViewRemovalState,
   withoutRemovedGraphCatalogView,
   withoutRemovedGraphDiagnosticsView,
-} from '../../src/manager/graph_removal.js';
+} from '../../src/manager/graph/removal.js';
 import type {CodeGraphLocalDiagnosticsReport} from '../../src/code_graph/diagnostics.js';
 import type {GraphCatalog, GraphRepository, GraphRepositoryGroup} from '../../src/manager/graph.js';
 

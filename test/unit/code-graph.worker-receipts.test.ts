@@ -6,9 +6,9 @@ import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
   admitGraphWorkerAnnouncement,
   emptyGraphWorkerAdmissionStore,
-} from '../../src/code_graph/sharing/worker_admission_state.js';
-import type {GraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
-import {selectGraphWorkerReceiptsForSource} from '../../src/code_graph/sharing/worker_receipts.js';
+} from '../../src/code_graph/sharing/worker/admission_state.js';
+import type {GraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker/announcement.js';
+import {selectGraphWorkerReceiptsForSource} from '../../src/code_graph/sharing/worker/receipts.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';
 
 const repositoryId = 'a'.repeat(64);

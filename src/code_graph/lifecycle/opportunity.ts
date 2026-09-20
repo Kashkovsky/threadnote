@@ -1,7 +1,7 @@
 import {Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
-import {syncDirectoryBestEffort, syncWritableFile} from '../../effect/file_durability.js';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {syncDirectoryBestEffort, syncWritableFile} from '../../effect/file/durability.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {codeGraphDatabaseWriteLockPath, codeGraphLayout} from '../layout.js';
 import {readCodeGraphLocalAssociation} from '../local_provenance.js';
 import {codeGraphDatabasePaths} from '../maintenance.js';

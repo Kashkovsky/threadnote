@@ -6,7 +6,7 @@ import {runCodeGraphLifecycleOpportunity} from './lifecycle/opportunity.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
 import {observeCodeGraphMaintenanceStatus, type CodeGraphMaintenanceStatus} from './maintenance/gate.js';
 import {compareCodeUnits} from './ordering.js';
-import {managerGraphCatalogRevision, type ManagerGraphCatalogRevisionDatabase} from './manager_catalog_revision.js';
+import {managerGraphCatalogRevision, type ManagerGraphCatalogRevisionDatabase} from './manager/catalog_revision.js';
 import {traversalQuery} from './query.js';
 import {
   CodeGraphStore,
@@ -37,9 +37,9 @@ import {
   managerGraphVisualizationLimits,
   type ManagerGraphVisualizationBudget,
   type ManagerGraphVisualizationLimits,
-} from '../manager/graph_limits.js';
+} from '../manager/graph/limits.js';
 
-export {managerGraphBuildCatalog, type ManagerGraphBuildCatalog} from './manager_status.js';
+export {managerGraphBuildCatalog, type ManagerGraphBuildCatalog} from './manager/status.js';
 
 class CodeGraphVisualizationError extends Schema.TaggedError<CodeGraphVisualizationError>()(
   'CodeGraphVisualizationError',

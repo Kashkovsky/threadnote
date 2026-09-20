@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {assertGitMemoryBinding, requireGitMemoryBinding} from '../../src/remote_memory/git_binding.js';
+import {assertGitMemoryBinding, requireGitMemoryBinding} from '../../src/remote_memory/git/binding.js';
 import {remoteMemoryConfigFromEnvironment} from '../../src/remote_memory/config.js';
 
 const id = fc.stringMatching(/^[a-z][a-z0-9-]{0,15}$/u);

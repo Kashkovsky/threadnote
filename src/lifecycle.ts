@@ -1,4 +1,4 @@
-import {hasManagedCursorHooks} from './cursor_hooks.js';
+import {hasManagedCursorHooks} from './cursor/hooks.js';
 import {Console, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {
   repairRegisteredAgentAdapters,
@@ -54,7 +54,7 @@ import {
   type RecallIndexStatus,
 } from './recall/index.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
-import {deferredCodeAnchorDoctorCheck} from './memory/deferred_code_anchor.js';
+import {deferredCodeAnchorDoctorCheck} from './memory/deferred/code_anchor.js';
 import {migrateThreadnoteStorageLayout} from './migration/layout.js';
 import {applyLegacyInstallationCleanup, planLegacyInstallationCleanup} from './migration/legacy-installations.js';
 import {stopVerifiedLegacyLocalAi} from './migration/legacy-runtime.js';

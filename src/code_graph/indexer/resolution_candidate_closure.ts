@@ -27,7 +27,7 @@ import {
   type ProjectResolutionCandidateClosure,
   type ProjectResolutionCandidateScanPlan,
   type ProjectResolutionReexportKeys,
-} from '../store/resolution_candidate_closure.js';
+} from '../store/resolution/candidate_closure.js';
 import type {
   CodeGraphFileFacts,
   CodeGraphEdge,

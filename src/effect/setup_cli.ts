@@ -3,7 +3,7 @@ import {Argument, Command} from 'effect/unstable/cli';
 import {getAgentAdapter} from '../agent_integration/adapters.js';
 import {runSetup, SetupOperationError} from '../setup/index.js';
 import type {RuntimeConfig} from '../types.js';
-import {boolean, optionalChoice, optionalString} from './cli_flags.js';
+import {boolean, optionalChoice, optionalString} from './cli/flags.js';
 
 export const setupCommandMetadata = {productionLog: {mode: 'requires-apply'}} as const;
 

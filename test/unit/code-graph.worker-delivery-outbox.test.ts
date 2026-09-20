@@ -5,7 +5,7 @@ import * as FC from 'fast-check';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
 import {
   graphWorkerDeliveryScope,
   listGraphWorkerDeliveryPrincipalScopes,
@@ -13,10 +13,10 @@ import {
   prepareGraphWorkerDeliveryOutbox,
   readGraphWorkerDeliveryOutbox,
   retireGraphWorkerDeliveryOutbox,
-} from '../../src/code_graph/sharing/worker_delivery_outbox.js';
-import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
-import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker_result.js';
-import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
+} from '../../src/code_graph/sharing/worker/delivery_outbox.js';
+import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker/announcement.js';
+import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker/result.js';
+import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker/signing.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';

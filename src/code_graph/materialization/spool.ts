@@ -6,7 +6,7 @@ import {
   CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES,
   initializeCodeGraphMaterializationSpoolSurfaces,
   sortCodeGraphMaterializationSpoolSurface,
-} from './spool_surfaces.js';
+} from './spool/surfaces.js';
 import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from '../sqlite_statement.js';
 
 export const CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION = 1 as const;

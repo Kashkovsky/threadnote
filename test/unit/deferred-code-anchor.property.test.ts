@@ -11,11 +11,11 @@ import {
   type DeferredCodeAnchorFinalizationRoute,
   type DeferredCodeAnchorIntentV1,
   type DeferredMemoryObservation,
-} from '../../src/memory/deferred_code_anchor.js';
+} from '../../src/memory/deferred/code_anchor.js';
 import {
   selectDeferredCodeAnchorMissingCheckoutIntents,
   selectDeferredCodeAnchorWorkspaceRefreshTargets,
-} from '../../src/memory/deferred_code_anchor_refresh.js';
+} from '../../src/memory/deferred/code_anchor_refresh.js';
 
 const URI = 'threadnote://user/test/memories/durable/projects/threadnote/deferred.md';
 

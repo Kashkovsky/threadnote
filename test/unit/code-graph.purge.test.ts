@@ -6,7 +6,7 @@ import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {codeGraphRepositoryLockPath} from '../../src/code_graph/layout.js';
 import {purgeCodeGraphIndex} from '../../src/code_graph/maintenance.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';

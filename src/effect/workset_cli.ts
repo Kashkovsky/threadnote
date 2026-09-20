@@ -10,7 +10,7 @@ import {
 } from '../manager/worksets.js';
 import {runCodeGraphWorksetPrepare, runCodeGraphWorksetStatus} from '../code_graph/commands.js';
 import type {RuntimeConfig} from '../types.js';
-import {argument, boolean, describeFlag, integerFlag, optional, optionalString, repeatedString} from './cli_flags.js';
+import {argument, boolean, describeFlag, integerFlag, optional, optionalString, repeatedString} from './cli/flags.js';
 
 interface JsonOption {
   readonly json: boolean;

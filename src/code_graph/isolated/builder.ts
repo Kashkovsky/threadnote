@@ -1,6 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Ref, Schema} from 'effect';
 import {fromPromiseInterruptible} from '../../effect/errors.js';
-import {isFileLockTimeout, readExclusiveFileLockOwner, withExclusiveFileLock} from '../../effect/file_lock.js';
+import {isFileLockTimeout, readExclusiveFileLockOwner, withExclusiveFileLock} from '../../effect/file/lock.js';
 import {CommandExecutor} from '../../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../../effect/system.js';
 import {pollUntilEffect} from '../../effect/time.js';
@@ -17,7 +17,7 @@ import {codeGraphLayout, codeGraphWorktreeSpawnLockPath} from '../layout.js';
 import {resolveRepositoryIdentity} from '../repository.js';
 import type {CodeGraphProgress, RepositoryIdentity} from '../types.js';
 import type {ProjectManifest} from '../../types.js';
-import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, type CodeGraphBuilderAdmissionClass} from '../builder_admission.js';
+import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, type CodeGraphBuilderAdmissionClass} from '../builder/admission.js';
 import {CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE, CodeGraphRefreshDemandSuperseded} from '../refresh/demand.js';
 
 class IsolatedBuilderError extends Schema.TaggedError<IsolatedBuilderError>()('IsolatedBuilderError', {

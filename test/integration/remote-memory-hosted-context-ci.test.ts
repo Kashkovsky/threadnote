@@ -1,10 +1,10 @@
 import {assertHostedContextCiWorkerPrivileges} from '../../src/remote_memory/runtime_privileges.js';
-import {controlHostedContextCi} from '../../src/remote_memory/hosted_context_ci_control.js';
+import {controlHostedContextCi} from '../../src/remote_memory/hosted/context_ci_control.js';
 import postgres, {type Sql} from 'postgres';
 import fc from 'fast-check';
 import {afterAll, beforeAll, describe, expect, it, vi} from 'vitest';
 import {randomUuidV4} from '../../src/crypto/uuid.js';
-import {buildHostedContextCiPolicyV1, type HostedContextCiPolicyV1} from '../../src/remote_memory/hosted_context_ci.js';
+import {buildHostedContextCiPolicyV1, type HostedContextCiPolicyV1} from '../../src/remote_memory/hosted/context_ci.js';
 import {
   archiveHostedContextCiJobs,
   initializeHostedContextCiStorage,
@@ -13,12 +13,12 @@ import {
   runHostedContextCiOperator,
   setHostedContextCiEnabled,
   setHostedContextCiOptIn,
-} from '../../src/remote_memory/hosted_context_ci_postgres.js';
+} from '../../src/remote_memory/hosted/context_ci_postgres.js';
 import type {
   HostedContextCiReadIdentityV1,
   HostedContextCiPublicationIdentityV1,
-} from '../../src/remote_memory/hosted_context_ci_operator.js';
-import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres_control_plane.js';
+} from '../../src/remote_memory/hosted/context_ci_operator.js';
+import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres/control_plane.js';
 import {
   createRemoteMemoryPostgresFixture,
   type RemoteMemoryPostgresFixture,

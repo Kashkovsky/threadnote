@@ -11,7 +11,7 @@ import {
   loginGraphOAuthUser,
   logoutGraphOAuthUser,
   type OAuthUserBackend,
-} from '../../src/code_graph/sharing/oauth_user.js';
+} from '../../src/code_graph/sharing/oauth/user.js';
 import {
   runGraphOAuthConfigureCommand,
   runRegistryOAuthConfigureCommand,
@@ -19,7 +19,7 @@ import {
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {createAccessTokenVerifier} from '../../src/oauth/access_token.js';
 import {CommandExecutor} from '../../src/effect/command.js';
-import {CliOutput} from '../../src/effect/cli_output.js';
+import {CliOutput} from '../../src/effect/cli/output.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

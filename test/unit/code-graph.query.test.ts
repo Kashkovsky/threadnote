@@ -13,7 +13,7 @@ import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.
 import {CodeGraphEmbeddingIndex} from '../../src/code_graph/embedding.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {CodeGraphIndexer, extractorSetIdentityFromPackProvenance} from '../../src/code_graph/indexer.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';

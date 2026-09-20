@@ -10,7 +10,7 @@ import {
 import {codeGraphRepositoryLockPath} from '../../src/code_graph/layout.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 

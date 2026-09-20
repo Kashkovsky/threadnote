@@ -7,13 +7,13 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {SystemInfo, runtimePlatform} from '../../src/effect/system.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {defaultGraphShareProfile, ociProfilePointer} from '../../src/code_graph/sharing/profile.js';
-import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile_oci_artifact.js';
+import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile/oci_artifact.js';
 import {
   assertGraphShareApprovalRoot,
   assertGraphShareApprovedProfile,
   loadGraphShareManagedApprovalFile,
   parseGraphShareManagedApproval,
-} from '../../src/code_graph/sharing/profile_approval.js';
+} from '../../src/code_graph/sharing/profile/approval.js';
 
 const registryCanonical = 'oci://registry.example.test/acme/canonical';
 const registryWorker = 'oci://registry.example.test/acme/worker';

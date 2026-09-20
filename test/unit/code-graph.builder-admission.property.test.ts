@@ -6,7 +6,7 @@ import {
   orderCodeGraphBuilderAdmissionQueue as projectQueue,
   orderCodeGraphBuilderAdmissionTickets as order,
   selectCodeGraphBuilderAdmissionTickets as select,
-} from '../../src/code_graph/builder_admission_scheduler.js';
+} from '../../src/code_graph/builder/admission_scheduler.js';
 
 const candidate = fc.record({
   admissionClass: fc.constantFrom('background' as const, 'current-required' as const),

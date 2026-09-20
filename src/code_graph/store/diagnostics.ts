@@ -1,10 +1,10 @@
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphDatabaseHealth} from './models.js';
-import {codeGraphPersistentExtensionSchemaCompatible} from './schema_inspection.js';
+import {codeGraphPersistentExtensionSchemaCompatible} from './schema/inspection.js';
 import {type CodeGraphSnapshot} from '../types.js';
-import {codeGraphPersistentSchemaIsCurrent} from './schema_revision.js';
-import {codeGraphRemovedViewCleanupSchemaAdmission} from './schema_migration.js';
+import {codeGraphPersistentSchemaIsCurrent} from './schema/revision.js';
+import {codeGraphRemovedViewCleanupSchemaAdmission} from './schema/migration.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './reconciliation.js';
 import {codeGraphDatabaseIntegrity} from './health.js';
 import {inspectCodeGraphSnapshotFileCitationSchema} from './file_alias_schema.js';

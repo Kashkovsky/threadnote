@@ -10,7 +10,7 @@ import {
   formatCodeGraphRepairProgressLine,
 } from '../../src/code_graph/cli/progress.js';
 import type {CodeGraphProgress} from '../../src/code_graph/types.js';
-import {graphMaintenanceRemainingMilliseconds} from '../../src/manager/graph_model.js';
+import {graphMaintenanceRemainingMilliseconds} from '../../src/manager/graph/model.js';
 
 describe('code graph compact CLI progress', () => {
   it('never includes a scanning activity path or newline', () => {

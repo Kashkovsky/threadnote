@@ -5,7 +5,7 @@ import {
   projectMemoryRead,
   type MemoryReadMcpResponseFormat,
   type MemoryReadResource,
-} from '../src/memory/read_projection.js';
+} from '../src/memory/read/projection.js';
 
 const responseFormat: MemoryReadMcpResponseFormat = process.argv.includes('--text') ? 'text' : 'dual';
 

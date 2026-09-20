@@ -12,7 +12,7 @@ import {
   reapExpiredSnapshotLeasesPage,
   retireRoutineLeaseCandidates,
 } from './leases.js';
-import {drainCompletedPersistentBuildRowsPage} from './activation_core.js';
+import {drainCompletedPersistentBuildRowsPage} from './activation/core.js';
 import {retireExcessReadySnapshotsPage} from '../snapshot/retention.js';
 
 /** Fresh facts are written before the durable building snapshot owns its inventory. */

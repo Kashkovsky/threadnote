@@ -15,7 +15,7 @@ import {
   type OperationsManifest,
   type OperationsEvidence,
   type OperationsReceipt,
-} from './operations_contract.js';
+} from './operations/contract.js';
 
 export function buildOperationsManifest(raw: unknown): OperationsManifest {
   const draft = parseOperations(OperationsDraftSchema, raw);

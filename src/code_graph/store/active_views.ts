@@ -1,12 +1,12 @@
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphActiveViewFence, type CodeGraphActiveViewIdentity} from './models.js';
-import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './reconciliation_core.js';
-import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './removed_view_schema_contracts.js';
+import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './reconciliation/core.js';
+import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './removed/view_schema_contracts.js';
 import {configureConnection, tableExists} from './session.js';
 import {CodeGraphStoreError} from '../types.js';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../index_scope.js';
-import {codeGraphScopeAuthorityInstalled} from './scope_schema.js';
+import {codeGraphScopeAuthorityInstalled} from './scope/schema.js';
 
 const ACTIVE_VIEW_IDENTITY_LIMIT_MAXIMUM = 64;
 

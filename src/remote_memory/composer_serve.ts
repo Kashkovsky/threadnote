@@ -3,10 +3,10 @@ import {remoteMemoryConfigFromEnvironment, redactedRemoteMemoryConfig} from './c
 import {COMPOSER_OAUTH_SCOPES} from './oauth.js';
 import {createLocalIdp, COMPOSER_OAUTH_CLIENT_ID, LOCAL_COMPOSER_DEFAULT_LISTEN} from './local_idp.js';
 import {remoteMemoryError} from './errors.js';
-import {GitCanonicalMemoryStore, ensureLiveGitShareWorktree} from './git_canonical_store.js';
+import {GitCanonicalMemoryStore, ensureLiveGitShareWorktree} from './git/canonical_store.js';
 import {migrateRemoteMemoryDatabase} from './migrations.js';
-import {createRemoteMemorySql, PostgresRemoteControlPlane} from './postgres_control_plane.js';
-import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
+import {createRemoteMemorySql, PostgresRemoteControlPlane} from './postgres/control_plane.js';
+import {PostgresRemoteMemoryRepository} from './postgres/repository.js';
 import {PostgresRemoteRateLimiter} from './rate_limit.js';
 import {RemoteMemoryIndexer} from './indexer.js';
 import {RemoteHandoffRetentionWorker} from './handoff_retention.js';

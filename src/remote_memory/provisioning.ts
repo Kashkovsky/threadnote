@@ -7,7 +7,7 @@ import {
   remoteMemoryProvisioningSharePolicy,
   validateRemoteMemoryProvisioningInput,
   type RemoteMemoryProvisioningInput,
-} from './postgres_control_plane.js';
+} from './postgres/control_plane.js';
 
 export const REMOTE_MEMORY_PROVISIONING_PLAN_VERSION = 1 as const;
 

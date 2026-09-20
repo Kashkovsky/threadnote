@@ -3,7 +3,7 @@ import {describe, expect, it} from 'vitest';
 import {aggregateValueReportV1} from '../../src/value_report/index.js';
 import {buildValueReportExportV1} from '../../src/value_report/export.js';
 import {buildPilotReport, parsePilotReport, serializePilotReport} from '../../src/value_report/pilot.js';
-import {parsePilotInput, type PilotInput} from '../../src/value_report/pilot_contract.js';
+import {parsePilotInput, type PilotInput} from '../../src/value_report/pilot/contract.js';
 import {pilotInput} from '../helpers/value-pilot-fixture.js';
 
 function pilotSource(windowStart: string, elapsedDays: number, actor: number) {
