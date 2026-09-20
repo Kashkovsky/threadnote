@@ -239,7 +239,10 @@ describe('Effect architecture boundaries', () => {
   it('keeps Manager Context browser paging outside the server runtime graph', async () => {
     const contextView = await readFile(join(sourceRoot, 'manager', 'context', 'view.tsx'), 'utf8');
     const paging = await readFile(join(sourceRoot, 'manager', 'context', 'paging.ts'), 'utf8');
-    const browserRuntimeSource = contextView.replace(/import\s+type\s+[^;]+\s+from\s+['"]\.\.\/context\.js['"];\n?/u, '');
+    const browserRuntimeSource = contextView.replace(
+      /import\s+type\s+[^;]+\s+from\s+['"]\.\.\/context\.js['"];\n?/u,
+      '',
+    );
 
     expect(importedModuleSpecifiers('context/view.tsx', browserRuntimeSource)).not.toContain('../context.js');
     expect(importedModuleSpecifiers('context/paging.ts', paging)).toEqual([]);
