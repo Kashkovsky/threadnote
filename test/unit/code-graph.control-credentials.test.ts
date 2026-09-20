@@ -115,8 +115,11 @@ describe('graph control credential discovery', () => {
             execute: (executable, args, options) =>
               Effect.gen(function* () {
                 expect(executable).toBe(process.execPath);
-                expect(args.at(-2)).toBe(`__graph-${helper}-helper`);
-                expect(args.at(-1)).toBe('get');
+                expect(args).toEqual([
+                  new URL('../../src/standalone.ts', import.meta.url).pathname,
+                  `__graph-${helper}-helper`,
+                  'get',
+                ]);
                 expect(options?.timeoutMs).toBe(25_000);
                 expect(options?.env?.THREADNOTE_HOME).toBe(home);
                 return {

@@ -750,5 +750,5 @@ export function developmentStandaloneScript(system: SystemInfoShape): Option.Opt
   if (candidate && /(?:^|[/\\])(?:standalone\.(?:js|ts)|threadnote\.cjs)$/i.test(candidate)) {
     return Option.some(candidate);
   }
-  return Option.some(Bun.fileURLToPath(new URL('../standalone.ts', import.meta.url)));
+  return Option.some(Bun.fileURLToPath(new URL('../../standalone.ts', import.meta.url)));
 }

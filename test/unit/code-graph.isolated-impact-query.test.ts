@@ -80,6 +80,20 @@ describe('isolated code graph impact query', () => {
       arguments: ['/workspace/src/standalone.ts', '--threadnote-code-graph-impact-query-worker'],
       executable: '/opt/bin/bun',
     });
+    expect(
+      impactQueryWorkerInvocation(
+        systemInfoStub({
+          executablePath: '/opt/bin/bun',
+          processArguments: ['/opt/bin/bun'],
+        }),
+      ),
+    ).toEqual({
+      arguments: [
+        Bun.fileURLToPath(new URL('../../src/standalone.ts', import.meta.url)),
+        '--threadnote-code-graph-impact-query-worker',
+      ],
+      executable: '/opt/bin/bun',
+    });
     expect(JSON.stringify([installed, development, environment])).not.toContain(input.query);
     expect(environment).toEqual({
       HOME: '/bootstrap-home',

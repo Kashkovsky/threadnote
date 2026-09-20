@@ -110,7 +110,7 @@ export const makeGraphControlCredentialLoader = Effect.fn('codeGraph.sharing.con
           ? {executable: system.executablePath, args: [oauthUserArgument, 'get']}
           : {
               executable: system.executablePath,
-              args: [new URL('../../standalone.ts', import.meta.url).pathname, oauthUserArgument, 'get'],
+              args: [new URL('../../../standalone.ts', import.meta.url).pathname, oauthUserArgument, 'get'],
             }
         : {executable: `threadnote-credential-${binding.helper}`, args: ['get']};
       const result = yield* command
