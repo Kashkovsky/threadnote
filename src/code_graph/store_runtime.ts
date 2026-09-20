@@ -20,6 +20,7 @@ import {initializeSchema} from './store_schema_initialization.js';
 import {pruneRoutinePhysicalRowsPage} from './store_routine_cleanup.js';
 import {drainCompletedPersistentBuildRows} from './store_activation_persistent.js';
 import {initializeRoutineMaintenanceSchema} from './store_leases.js';
+import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 
 export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -89,15 +90,28 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
       }),
     );
 
-  const leaseSchemasInitialized = new Set<string>();
+  const leaseSchemaRemovedViewAuthority = new Map<string, boolean>();
 
-  const ensureLeaseSchemaInitialized = (databasePath: string, sql: SqlClient.SqlClient) => {
-    if (leaseSchemasInitialized.has(databasePath)) return Effect.void;
+  const ensureLeaseSchemaInitialized = (
+    databasePath: string,
+    sql: SqlClient.SqlClient,
+    requireRemovedViewAuthority: boolean,
+  ) => {
+    const cachedRemovedViewAuthority = leaseSchemaRemovedViewAuthority.get(databasePath);
+    if (cachedRemovedViewAuthority === true || (cachedRemovedViewAuthority === false && !requireRemovedViewAuthority)) {
+      return Effect.void;
+    }
     return initializeRoutineMaintenanceSchema(sql).pipe(
-      Effect.flatMap(ready => (ready ? Effect.void : initializeSchema(sql))),
+      Effect.flatMap(ready =>
+        ready
+          ? codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false, requireRemovedViewAuthority).pipe(
+              Effect.flatMap(compatible => (compatible ? Effect.void : initializeSchema(sql))),
+            )
+          : initializeSchema(sql),
+      ),
       Effect.tap(() =>
         Effect.sync(() => {
-          leaseSchemasInitialized.add(databasePath);
+          leaseSchemaRemovedViewAuthority.set(databasePath, requireRemovedViewAuthority);
         }),
       ),
     );

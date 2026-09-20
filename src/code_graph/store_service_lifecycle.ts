@@ -272,7 +272,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
                 databasePath,
                 Effect.gen(function* () {
                   const sql = yield* SqlClient.SqlClient;
-                  yield* ensureLeaseSchemaInitialized(databasePath, sql);
+                  yield* ensureLeaseSchemaInitialized(databasePath, sql, false);
                   const acquiredToken = yield* acquireSnapshotLease(
                     snapshotId,
                     durationMilliseconds,
@@ -317,7 +317,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               databasePath,
               Effect.gen(function* () {
                 const sql = yield* SqlClient.SqlClient;
-                yield* ensureLeaseSchemaInitialized(databasePath, sql);
+                yield* ensureLeaseSchemaInitialized(databasePath, sql, true);
                 return yield* retainViewSnapshotLease(
                   sql,
                   worktreeId,
