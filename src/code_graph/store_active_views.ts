@@ -5,6 +5,8 @@ import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './store_reconcili
 import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './store_removed_view_schema_contracts.js';
 import {configureConnection, tableExists} from './store_session.js';
 import {CodeGraphStoreError} from './types.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
+import {codeGraphScopeAuthorityInstalled} from './store_scope_schema.js';
 
 const ACTIVE_VIEW_IDENTITY_LIMIT_MAXIMUM = 64;
 
@@ -32,14 +34,16 @@ export const selectActiveViewIdentities = Effect.fn('codeGraph.selectActiveViewI
     ? Math.max(1, Math.min(ACTIVE_VIEW_IDENTITY_LIMIT_MAXIMUM, limit))
     : ACTIVE_VIEW_IDENTITY_LIMIT_MAXIMUM;
   const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
+  const scoped = yield* codeGraphScopeAuthorityInstalled(sql);
   const rows = yield* sql.unsafe<{
     readonly activated_at: string | null;
     readonly repository_id: string;
     readonly snapshot_id: string;
     readonly worktree_id: string;
+    readonly scope_id?: string;
   }>(
     `SELECT active_snapshots.activated_at, active_snapshots.snapshot_id,
-       active_snapshots.worktree_id, snapshots.repository_id
+       active_snapshots.worktree_id, snapshots.repository_id ${scoped ? ', active_snapshots.scope_id' : ''}
      FROM active_snapshots
      JOIN snapshots ON snapshots.id = active_snapshots.snapshot_id
      WHERE snapshots.state = 'ready'
@@ -48,11 +52,12 @@ export const selectActiveViewIdentities = Effect.fn('codeGraph.selectActiveViewI
            ? `AND NOT EXISTS (
                 SELECT 1 FROM removed_views AS removed
                 WHERE removed.worktree_id = active_snapshots.worktree_id
+                  ${scoped ? 'AND removed.scope_id = active_snapshots.scope_id' : ''}
                   AND removed.expected_snapshot_id = active_snapshots.snapshot_id
               )`
            : ''
        }
-     ORDER BY active_snapshots.activated_at DESC, active_snapshots.worktree_id
+     ORDER BY active_snapshots.activated_at DESC, active_snapshots.worktree_id ${scoped ? ', active_snapshots.scope_id' : ''}
      LIMIT ?`,
     [boundedLimit],
   );
@@ -63,26 +68,34 @@ export const selectActiveViewIdentities = Effect.fn('codeGraph.selectActiveViewI
         repositoryId: row.repository_id,
         snapshotId: row.snapshot_id,
         worktreeId: row.worktree_id,
+        ...(row.scope_id !== undefined && row.scope_id !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY
+          ? {scopeId: row.scope_id}
+          : {}),
       }) satisfies CodeGraphActiveViewIdentity,
   );
 });
 
 /** Read one exact active-pointer generation without opening another database session. */
-export const selectActiveViewFence = Effect.fn('codeGraph.selectActiveViewFence')(function* (worktreeId: string) {
+export const selectActiveViewFence = Effect.fn('codeGraph.selectActiveViewFence')(function* (
+  worktreeId: string,
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
+) {
   if (!/^[0-9a-f]{64}$/u.test(worktreeId)) {
     return yield* CodeGraphStoreError.of('Code graph worktree identity is invalid.');
   }
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
+  const scoped = yield* codeGraphScopeAuthorityInstalled(sql);
+  if (!scoped && scopeId !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) return undefined;
   const rows = yield* sql.unsafe<{
     readonly activated_at: unknown;
     readonly snapshot_id: unknown;
   }>(
     `SELECT activated_at, snapshot_id
      FROM active_snapshots
-     WHERE worktree_id = ?
+     WHERE worktree_id = ? ${scoped ? 'AND scope_id = ?' : ''}
      LIMIT 2`,
-    [worktreeId],
+    scoped ? [worktreeId, scopeId] : [worktreeId],
   );
   if (rows.length === 0) return undefined;
   const activatedAt = rows[0]?.activated_at;
@@ -96,5 +109,10 @@ export const selectActiveViewFence = Effect.fn('codeGraph.selectActiveViewFence'
   ) {
     return yield* CodeGraphStoreError.of('Code graph active view authority is invalid.');
   }
-  return {activatedAt, snapshotId, worktreeId} satisfies CodeGraphActiveViewFence;
+  return {
+    activatedAt,
+    snapshotId,
+    worktreeId,
+    ...(scopeId === CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY ? {} : {scopeId}),
+  } satisfies CodeGraphActiveViewFence;
 });

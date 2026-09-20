@@ -90,6 +90,7 @@ export interface CodeGraphRemovedViewCleanupWorkerDependencies {
     input: CodeGraphRemovedViewCleanupWorkerInput,
     worktreeId: string,
     effect: Effect.Effect<A, E>,
+    scopeId?: string,
   ) => Effect.Effect<A, unknown>;
 }
 
@@ -246,6 +247,7 @@ const runAuthorizedCleanupUnit = Effect.fn('codeGraph.runAuthorizedRemovedViewCl
           ? ('progressed' as const)
           : ('deferred' as const);
     }),
+    entry.scopeId,
   );
 });
 

@@ -11,6 +11,7 @@ import {parseResourceId, validatePortableSegment} from '../storage/resource-id.j
 import type {RuntimeConfig} from '../types.js';
 import {
   captureMemoryCodeCitations,
+  memoryCodeCitationProjectScopeReceipt,
   type MemoryCodeCitationCaptureRecoveryV1,
   normalizeMemoryCodeRefs,
 } from './code_citation_capture.js';
@@ -18,6 +19,15 @@ import {MEMORY_SCHEMA_VERSION, type MemoryCodeCitationV1} from './code_citation.
 import {discardMemoryRelocation} from './relocation.js';
 import {classifyDeferredCodeAnchorCallerCheckoutAdmission} from './deferred_code_anchor_checkout.js';
 import {deferredCodeAnchorCaptureFailureItem} from './deferred_code_anchor_failure.js';
+import {
+  deferredCodeAnchorIntentId,
+  hasDeferredCodeAnchorIntentKeys,
+  isDeferredCodeAnchorFullProjectScope,
+  parseMemoryCodeCitationProjectScopeReceipt,
+  verifyDeferredCodeAnchorProjectScope,
+  type DeferredCodeAnchorIntentV1,
+} from './deferred_code_anchor_scope.js';
+export type {DeferredCodeAnchorIntentV1} from './deferred_code_anchor_scope.js';
 import {scheduleDeferredCodeAnchorWorkspaceRefresh} from './deferred_code_anchor_scheduler.js';
 import {
   deferredCodeAnchorFinalizationVerified,
@@ -88,6 +98,8 @@ export type MemoryCodeCitationPolicy = 'defer' | 'require-current';
 export interface DeferredCodeAnchorWriteRequest {
   readonly callerCwd: string;
   readonly codeRefs: readonly string[];
+  /** Omitted preserves the canonical full/unselected compatibility path. */
+  readonly project?: string;
   readonly recovery: MemoryCodeCitationCaptureRecoveryV1;
 }
 
@@ -99,24 +111,6 @@ export function withDeferredCodeAnchorMutationLocks<A, E, R>(
 ) {
   const scopeKey = `threadnote-internal://deferred-code-anchor-mutations/${encodeURIComponent(config.account)}/${encodeURIComponent(uriSegment(config.user))}`;
   return withMemoryUriLocks(fs, config.agentContextHome, [scopeKey, ...uris], effect);
-}
-
-export interface DeferredCodeAnchorIntentV1 {
-  /** The caller explicitly supplied every locator; graph-readiness deferral may be the private default. */
-  readonly authorization: 'explicit-code-refs';
-  readonly callerCwd: string;
-  readonly codeRefs: readonly string[];
-  readonly createdAt: string;
-  readonly expectedMemoryHash: string;
-  readonly intentId: string;
-  readonly memoryId: string;
-  readonly memoryUri: string;
-  readonly repositoryId: string;
-  readonly recovery: MemoryCodeCitationCaptureRecoveryV1;
-  readonly type: 'threadnote-deferred-code-anchor-intent';
-  readonly version: typeof DEFERRED_CODE_ANCHOR_INTENT_VERSION;
-  readonly visibility: 'private-local';
-  readonly worktreeId: string;
 }
 
 export type DeferredCodeAnchorEligibility =
@@ -257,9 +251,17 @@ export const stageDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.stage')
   }
   const query = yield* CodeGraphQueryService;
   const status = yield* query.status(config.agentContextHome, input.request.callerCwd, {
+    project: input.request.project,
+    manifestPath: config.manifestPath,
     observeWorktree: true,
     requestMaintenance: false,
   });
+  const project = input.request.project === undefined ? undefined : status.projectCoverage?.project;
+  if (input.request.project !== undefined && project === undefined) {
+    return yield* deferredCodeAnchorError('Deferred code anchors require verified selected project graph evidence.');
+  }
+  const projectScope =
+    project === undefined ? undefined : (memoryCodeCitationProjectScopeReceipt(status) ?? {kind: 'full' as const});
   const createdAt = DateTime.formatIso(yield* DateTime.now);
   const expectedMemoryHash = yield* memoryContentHash(input.memoryContent);
   const intentId = yield* deferredCodeAnchorIntentId({
@@ -268,6 +270,8 @@ export const stageDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.stage')
     expectedMemoryHash,
     memoryId: record.metadata.memoryId,
     memoryUri: canonicalUri,
+    ...(project === undefined ? {} : {project}),
+    ...(projectScope === undefined ? {} : {projectScope}),
     repositoryId: status.identity.repositoryId,
     recovery: input.request.recovery,
     worktreeId: status.identity.worktreeId,
@@ -281,6 +285,8 @@ export const stageDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.stage')
     intentId,
     memoryId: record.metadata.memoryId,
     memoryUri: canonicalUri,
+    ...(project === undefined ? {} : {project}),
+    ...(projectScope === undefined ? {} : {projectScope}),
     repositoryId: status.identity.repositoryId,
     recovery: input.request.recovery,
     type: 'threadnote-deferred-code-anchor-intent',
@@ -683,15 +689,23 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
   );
   if (admission.state === 'rejected') return admission.item;
 
-  const captured = yield* captureMemoryCodeCitations(config, {
-    callerCwd: entry.intent.callerCwd,
-    expectedCallerIdentity: {
-      repositoryId: entry.intent.repositoryId,
-      worktreeId: entry.intent.worktreeId,
-    },
-    omitUnresolved: true,
-    refs: entry.intent.codeRefs,
-  }).pipe(Effect.result);
+  const captured = yield* verifyDeferredCodeAnchorProjectScope(config, entry.intent).pipe(
+    Effect.andThen(() =>
+      captureMemoryCodeCitations(config, {
+        callerCwd: entry.intent.callerCwd,
+        ...(entry.intent.project === undefined ? {} : {project: entry.intent.project}),
+        expectedCallerIdentity: {
+          repositoryId: entry.intent.repositoryId,
+          worktreeId: entry.intent.worktreeId,
+        },
+        ...(entry.intent.projectScope === undefined ? {} : {expectedProjectScope: entry.intent.projectScope}),
+        omitUnresolved: true,
+        refs: entry.intent.codeRefs,
+      }),
+    ),
+    Effect.tap(() => verifyDeferredCodeAnchorProjectScope(config, entry.intent)),
+    Effect.result,
+  );
   if (Result.isFailure(captured)) {
     const classified = deferredCodeAnchorCaptureFailureItem(captured.failure, entry.intent.memoryUri);
     if (classified !== undefined) {
@@ -1477,23 +1491,24 @@ function parseDeferredCodeAnchorIntent(content: string): DeferredCodeAnchorInten
   try {
     const value: unknown = JSON.parse(content);
     if (!Predicate.isObject(value)) return undefined;
+    const baseKeys = [
+      'authorization',
+      'callerCwd',
+      'codeRefs',
+      'createdAt',
+      'expectedMemoryHash',
+      'intentId',
+      'memoryId',
+      'memoryUri',
+      'recovery',
+      'repositoryId',
+      'type',
+      'version',
+      'visibility',
+      'worktreeId',
+    ] as const;
     if (
-      !hasExactKeys(value, [
-        'authorization',
-        'callerCwd',
-        'codeRefs',
-        'createdAt',
-        'expectedMemoryHash',
-        'intentId',
-        'memoryId',
-        'memoryUri',
-        'recovery',
-        'repositoryId',
-        'type',
-        'version',
-        'visibility',
-        'worktreeId',
-      ]) ||
+      !hasDeferredCodeAnchorIntentKeys(value, baseKeys) ||
       value.type !== 'threadnote-deferred-code-anchor-intent' ||
       value.version !== DEFERRED_CODE_ANCHOR_INTENT_VERSION ||
       value.authorization !== 'explicit-code-refs' ||
@@ -1520,7 +1535,22 @@ function parseDeferredCodeAnchorIntent(content: string): DeferredCodeAnchorInten
     }
     const codeRefs = normalizeMemoryCodeRefs(value.codeRefs);
     if (codeRefs.length !== value.codeRefs.length) return undefined;
-    return {...value, codeRefs} as unknown as DeferredCodeAnchorIntentV1;
+    const project = value.project;
+    if (project !== undefined && (typeof project !== 'string' || project.length === 0)) return undefined;
+    const projectScope = parseMemoryCodeCitationProjectScopeReceipt(value.projectScope);
+    if (
+      (value.projectScope !== undefined && projectScope === undefined) ||
+      (projectScope !== undefined &&
+        !isDeferredCodeAnchorFullProjectScope(projectScope) &&
+        project !== projectScope.project)
+    )
+      return undefined;
+    return {
+      ...value,
+      codeRefs,
+      ...(project === undefined ? {} : {project}),
+      ...(projectScope === undefined ? {} : {projectScope}),
+    } as unknown as DeferredCodeAnchorIntentV1;
   } catch {
     return undefined;
   }
@@ -1589,43 +1619,14 @@ const storedDeferredCodeAnchorIntentMatchesAddress = Effect.fn('memoryCodeAnchor
       expectedMemoryHash: intent.expectedMemoryHash,
       memoryId: intent.memoryId,
       memoryUri: intent.memoryUri,
+      ...(intent.project === undefined ? {} : {project: intent.project}),
+      ...(intent.projectScope === undefined ? {} : {projectScope: intent.projectScope}),
       repositoryId: intent.repositoryId,
       recovery: intent.recovery,
       worktreeId: intent.worktreeId,
     })) === intent.intentId
   );
 });
-
-function deferredCodeAnchorIntentId(input: {
-  readonly callerCwd: string;
-  readonly codeRefs: readonly string[];
-  readonly expectedMemoryHash: string;
-  readonly memoryId: string;
-  readonly memoryUri: string;
-  readonly repositoryId: string;
-  readonly recovery: MemoryCodeCitationCaptureRecoveryV1;
-  readonly worktreeId: string;
-}) {
-  return sha256Hex(
-    [
-      input.memoryUri,
-      input.memoryId,
-      input.expectedMemoryHash,
-      input.repositoryId,
-      input.worktreeId,
-      input.callerCwd,
-      input.recovery.code,
-      input.recovery.observedGraph.freshness,
-      input.recovery.observedGraph.readySnapshot,
-      String(input.recovery.observedGraph.stale),
-      input.recovery.preparation.action,
-      input.recovery.preparation.target,
-      input.recovery.preparation.command,
-      ...input.recovery.preparation.arguments,
-      ...input.codeRefs,
-    ].join('\n'),
-  ).pipe(Effect.map(digest => `tnca_${digest.slice(0, 32)}`));
-}
 
 function isMemoryCodeCitationRecovery(value: unknown): value is MemoryCodeCitationCaptureRecoveryV1 {
   if (!Predicate.isObject(value) || value.type !== 'memory-code-citation-capture-recovery' || value.version !== 1)

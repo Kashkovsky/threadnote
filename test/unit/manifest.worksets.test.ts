@@ -5,6 +5,7 @@ import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   inferProjectFromQuery as inferProjectFromQueryEffect,
   inferWorksetFromQuery as inferWorksetFromQueryEffect,
+  parseSeedManifest,
   readSeedManifest as readSeedManifestEffect,
   resolveWorkset as resolveWorksetEffect,
 } from '../../src/manifest.js';
@@ -177,5 +178,37 @@ worksets:
     const badPath = join(dir, 'bad.yaml');
     await writeFile(badPath, 'version: 1\nprojects: []\nworksets: [{description: no name}]\n', 'utf8');
     await expect(readSeedManifest(badPath)).rejects.toThrow();
+  });
+
+  it('parses an optional project graph scope and rejects unsafe repository paths', () => {
+    const manifest = parseSeedManifest(
+      [
+        'version: 1',
+        'projects:',
+        '  - name: web',
+        '    path: ~/src/web',
+        '    uri: threadnote://resources/repos/web',
+        '    seed: []',
+        '    graph:',
+        '      roots: [apps/web]',
+        '      closure: dependencies',
+        '      include: [tools/generated]',
+      ].join('\n'),
+      'manifest.yaml',
+    );
+    expect(manifest.projects[0]?.graph).toEqual({
+      closure: 'dependencies',
+      include: ['tools/generated'],
+      roots: ['apps/web'],
+    });
+
+    for (const path of ['/absolute', 'apps/../web', 'apps//web', 'apps\\web', '.']) {
+      expect(() =>
+        parseSeedManifest(
+          `version: 1\nprojects:\n  - name: web\n    path: ~/src/web\n    uri: threadnote://resources/repos/web\n    seed: []\n    graph: {roots: [${JSON.stringify(path)}], closure: dependencies}`,
+          'manifest.yaml',
+        ),
+      ).toThrow();
+    }
   });
 });

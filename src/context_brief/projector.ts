@@ -173,6 +173,7 @@ export const CONTEXT_BRIEF_AGENT_VIEW_COVERAGE_FIELD_POLICY = {
 } as const satisfies Readonly<Record<keyof ContextBriefV1['coverage'], AgentViewFieldDisposition>>;
 
 export const CONTEXT_BRIEF_AGENT_VIEW_SCOPE_FIELD_POLICY = {
+  projectCoverage: 'agent-view',
   freshness: 'agent-view',
   kind: 'audit-only',
   name: 'audit-only',
@@ -364,6 +365,7 @@ export function projectContextBriefAgentView(brief: ContextBriefV1): ContextBrie
     ...(brief.output.truncated ? {output: {omissions: nonZeroOmissions, truncated: true as const}} : {}),
     ...(brief.recommendedFollowUps.length === 0 ? {} : {recommendedFollowUps: brief.recommendedFollowUps}),
     scope: {
+      ...(brief.scope.projectCoverage === undefined ? {} : {projectCoverage: brief.scope.projectCoverage}),
       freshness: brief.scope.freshness,
       readyRepositories: brief.scope.readyRepositories,
       requestedRepositories: brief.scope.requestedRepositories,
@@ -426,7 +428,28 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
   ) {
     throw invalid('agent view is missing required version, mode, scope, or trust fields');
   }
-  assertAgentViewKeys(value.scope, ['freshness', 'readyRepositories', 'requestedRepositories'], 'scope');
+  assertAgentViewKeys(
+    value.scope,
+    ['freshness', 'readyRepositories', 'requestedRepositories', 'projectCoverage'],
+    'scope',
+  );
+  if (value.scope.projectCoverage !== undefined) {
+    const coverage = value.scope.projectCoverage;
+    if (
+      !Predicate.isObject(coverage) ||
+      typeof coverage.project !== 'string' ||
+      !['project', 'full-repository'].includes(String(coverage.kind)) ||
+      !['complete', 'partial'].includes(String(coverage.completeness)) ||
+      !['selected-graph-only', 'unavailable'].includes(String(coverage.negativeProof)) ||
+      !Array.isArray(coverage.configuredRoots) ||
+      !coverage.configuredRoots.every(root => typeof root === 'string') ||
+      !nonNegativeInteger(coverage.rootComponents) ||
+      !nonNegativeInteger(coverage.dependencyComponents) ||
+      typeof coverage.observedWorktreeCommit !== 'string' ||
+      typeof coverage.reusedEquivalentSnapshot !== 'boolean'
+    )
+      throw invalid('scope projectCoverage is invalid');
+  }
   if (value.scope.readyRepositories > value.scope.requestedRepositories) {
     throw invalid('scope readyRepositories cannot exceed requestedRepositories');
   }

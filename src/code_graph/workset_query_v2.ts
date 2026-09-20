@@ -161,6 +161,7 @@ export interface ContinueCodeGraphWorksetV2OptionsV1 {
 }
 
 export interface ResolvedCodeGraphQualifiedRefTargetV1 {
+  readonly project?: string;
   readonly cwd: string;
   readonly nodeId: string;
   readonly ref: string;
@@ -390,6 +391,8 @@ export const executeCodeGraphWorksetV2 = Effect.fn('codeGraphWorksetV2.execute')
             CodeGraphWorksetCatalogError.of('missing', 'The routed repository has no validated ready snapshot.'),
           );
         return queryService.inspect({
+          project: repository.repositoryKey,
+          manifestPath: config.manifestPath,
           cwd: member.cwd,
           depth: options.depth,
           edgeLimit: options.edgeLimit ?? DEFAULT_LOCAL_EDGE_LIMIT,
@@ -480,7 +483,7 @@ export const continueCodeGraphWorksetQueryV2 = Effect.fn('codeGraphWorksetV2.con
  * worktrees remain an explicit ambiguity instead of leaking evidence.
  */
 export const resolveCodeGraphQualifiedRefTargets = Effect.fn('codeGraphWorksetV2.resolveQualifiedRefTargets')(
-  function* (config: RuntimeConfig, refs: readonly string[], callerCwd?: string) {
+  function* (config: RuntimeConfig, refs: readonly string[], callerCwd?: string, callerProject?: string) {
     for (const ref of refs) {
       if (!isCodeGraphQualifiedRefHandle(ref)) throw new Error('Qualified code graph reference is invalid.');
     }
@@ -519,23 +522,25 @@ export const resolveCodeGraphQualifiedRefTargets = Effect.fn('codeGraphWorksetV2
         const project = projectsByKey.get(member.repositoryKey);
         return project === undefined
           ? []
-          : [{path: project.path, route: {kind: 'workset' as const, name: workset.name}}];
+          : [{path: project.path, project: project.name, route: {kind: 'workset' as const, name: workset.name}}];
       });
     });
     const orderedPaths = [
-      ...(caller === undefined ? [] : [{path: caller, route: {kind: 'caller' as const}}]),
+      ...(caller === undefined ? [] : [{path: caller, project: callerProject, route: {kind: 'caller' as const}}]),
       ...publishedPaths,
     ];
     const uniquePaths: {
       readonly cwd: string;
+      readonly project?: string;
       readonly route: {readonly kind: 'caller'} | {readonly kind: 'workset'; readonly name: string};
     }[] = [];
     const seenPaths = new Set<string>();
     for (const candidate of orderedPaths) {
       const cwd = yield* expandPath(candidate.path);
-      if (seenPaths.has(cwd)) continue;
-      seenPaths.add(cwd);
-      uniquePaths.push({cwd, route: candidate.route});
+      const key = `${cwd}\0${candidate.project ?? ''}`;
+      if (seenPaths.has(key)) continue;
+      seenPaths.add(key);
+      uniquePaths.push({cwd, project: candidate.project, route: candidate.route});
     }
     const matches = yield* Effect.forEach(
       uniquePaths,
@@ -543,11 +548,11 @@ export const resolveCodeGraphQualifiedRefTargets = Effect.fn('codeGraphWorksetV2
         Effect.gen(function* () {
           const {cwd} = candidate;
           if (!(yield* fs.exists(cwd))) return undefined;
-          const status = yield* queryService.status(
-            config.agentContextHome,
-            cwd,
-            CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS,
-          );
+          const status = yield* queryService.status(config.agentContextHome, cwd, {
+            ...CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS,
+            project: candidate.project,
+            manifestPath: config.manifestPath,
+          });
           return status.readySnapshot === undefined ? undefined : ({...candidate, status} as const);
         }).pipe(Effect.orElseSucceed(() => undefined)),
       {concurrency: 4},
@@ -564,7 +569,7 @@ export const resolveCodeGraphQualifiedRefTargets = Effect.fn('codeGraphWorksetV2
       const record = recordsByRef.get(ref)!;
       const repositoryMatches = availableByRepository.get(record.repositoryId) ?? [];
       const selected =
-        repositoryMatches.find(candidate => candidate.cwd === caller) ??
+        repositoryMatches.find(candidate => candidate.cwd === caller && candidate.route.kind === 'caller') ??
         (repositoryMatches.length === 1 ? repositoryMatches[0] : undefined);
       if (selected === undefined) {
         throw new Error(
@@ -574,6 +579,7 @@ export const resolveCodeGraphQualifiedRefTargets = Effect.fn('codeGraphWorksetV2
         );
       }
       return {
+        ...(selected.status.projectCoverage === undefined ? {} : {project: selected.status.projectCoverage.project}),
         cwd: selected.cwd,
         nodeId: record.nodeId,
         ref: record.ref,
@@ -619,8 +625,9 @@ export const resolveCodeGraphQualifiedRefTarget = Effect.fn('codeGraphWorksetV2.
   config: RuntimeConfig,
   ref: string,
   callerCwd?: string,
+  project?: string,
 ) {
-  return (yield* resolveCodeGraphQualifiedRefTargets(config, [ref], callerCwd))[0];
+  return (yield* resolveCodeGraphQualifiedRefTargets(config, [ref], callerCwd, project))[0];
 });
 
 interface PreparedCoreInput extends CodeGraphWorksetQueryV2InputV1 {
@@ -735,6 +742,7 @@ function materializeRepositoryReceipts(
         {
           considered,
           deepQueried: attempted.has(member.repositoryKey),
+          ...(member.receipt.projectCoverage === undefined ? {} : {projectCoverage: member.receipt.projectCoverage}),
           repositoryId: member.receipt.repositoryId,
           ...(snapshot === undefined ? {} : {snapshot}),
           state: failed ? 'failed' : member.receipt.state,
@@ -761,7 +769,9 @@ function materializeCoverage(
   const consideredRepositories = receipts.filter(receipt => receipt.considered).length;
   return {
     cataloguedRepositories,
-    complete: cataloguedRepositories === consideredRepositories,
+    complete:
+      cataloguedRepositories === consideredRepositories &&
+      receipts.every(receipt => receipt.projectCoverage?.completeness !== 'partial'),
     consideredRepositories,
     deepQueriedRepositories: receipts.filter(receipt => receipt.deepQueried).length,
     requestedRepositories: receipts.length,
@@ -777,6 +787,12 @@ function worksetWarnings(
   bridgeWarnings: readonly string[],
 ): readonly string[] {
   return [
+    ...(members.some(member => member.receipt.projectCoverage?.kind === 'project')
+      ? ['Workset results cover the configured project graphs; absence does not establish repository-wide absence.']
+      : []),
+    ...(members.some(member => member.receipt.projectCoverage?.completeness === 'partial')
+      ? ['One or more project graphs have partial dependency coverage and cannot provide authoritative negative proof.']
+      : []),
     ...(members.some(member => member.receipt.state !== 'current')
       ? ['One or more workset members are not current in the published generation.']
       : []),
@@ -853,13 +869,13 @@ interface RuntimeQueryStatusService {
   readonly status: (
     threadnoteHome: string,
     cwd: string,
-    options?: {readonly requestMaintenance?: boolean},
+    options?: {readonly requestMaintenance?: boolean; readonly project?: string; readonly manifestPath?: string},
   ) => Effect.Effect<CodeGraphStatus, unknown>;
   readonly statusForPublishedIdentity: (
     threadnoteHome: string,
     cwd: string,
     expected: RepositoryIdentityExpectation,
-    options?: {readonly requestMaintenance?: boolean},
+    options?: {readonly requestMaintenance?: boolean; readonly project?: string; readonly manifestPath?: string},
   ) => Effect.Effect<CodeGraphStatus, unknown>;
 }
 
@@ -944,8 +960,14 @@ function observeRuntimeMember(
       };
     }
     const status = yield* published === undefined
-      ? queryService.status(config.agentContextHome, cwd, {requestMaintenance: false})
+      ? queryService.status(config.agentContextHome, cwd, {
+          requestMaintenance: false,
+          project: project.name,
+          manifestPath: config.manifestPath,
+        })
       : queryService.statusForPublishedIdentity(config.agentContextHome, cwd, published, {
+          project: project.name,
+          manifestPath: config.manifestPath,
           requestMaintenance: false,
         });
     const ready = status.readySnapshot;
@@ -993,6 +1015,7 @@ function observeRuntimeMember(
         published,
         receipt: {
           considered: true,
+          ...(status.projectCoverage === undefined ? {} : {projectCoverage: status.projectCoverage}),
           deepQueried: false,
           repositoryId: published.repositoryId,
           snapshot: {

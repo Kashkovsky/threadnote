@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, FileSystem, Path, PlatformError} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Path, PlatformError, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {fcProp} from '../helpers/fast-check-property.js';
 import fc from 'fast-check';
@@ -7,6 +7,7 @@ import {describe, expect} from 'vitest';
 import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
+import {attachCodeGraphStatusObservation} from '../../src/code_graph/query_contract.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
 import type {CodeGraphInventoryFile, CodeGraphStatus} from '../../src/code_graph/types.js';
@@ -22,6 +23,7 @@ import {
   finalizeDeferredCodeAnchors,
   finalizeDeferredCodeAnchorsForRoute,
   hasDeferredCodeAnchorIntent,
+  listDeferredCodeAnchorIntents,
   stageDeferredCodeAnchorIntent,
   type DeferredCodeAnchorWriteRequest,
   type DeferredCodeAnchorFinalizationRoute,
@@ -33,6 +35,8 @@ import {
   writePrivateDeferredCodeAnchorFile,
 } from '../../src/memory/deferred_code_anchor_private_fs.js';
 import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {MemoryCodeCitationCaptureError} from '../../src/memory/code_citation_capture.js';
+import {deferredCodeAnchorCaptureFailureItem} from '../../src/memory/deferred_code_anchor_failure.js';
 import {finalizedDeferredCodeAnchorUris} from '../../src/memory/deferred_code_anchor_finalization.js';
 import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -42,6 +46,223 @@ const MEMORY_URI = 'threadnote://user/tester/memories/durable/projects/threadnot
 const TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS = 5_000;
 
 describe('deferred code-anchor outbox', () => {
+  effectIt.effect('persists a verified selected project scope while legacy requests remain unselected', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const originalQuery = yield* CodeGraphQueryService;
+        const observed = yield* originalQuery.status(fixture.config.agentContextHome, fixture.repository, {
+          observeWorktree: true,
+          requestMaintenance: false,
+        });
+        const scoped = selectedProjectStatus(observed, 'app-a', 'code-graph-scope:app-a');
+        const selected = yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Selected scope.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: {...deferredRequest(fixture.repository, ['apps/a/index.ts']), project: 'app-a'},
+        }).pipe(
+          Effect.provideService(
+            CodeGraphQueryService,
+            CodeGraphQueryService.of({...originalQuery, status: () => Effect.succeed(scoped)}),
+          ),
+        );
+        expect(selected.project).toBe('app-a');
+        expect(selected.projectScope).toEqual({
+          closureDigest: 'b'.repeat(64),
+          definitionDigest: 'a'.repeat(64),
+          project: 'app-a',
+          scopeKey: 'code-graph-scope:app-a',
+        });
+        const selectedContent = yield* fixture.fs.readFileString((yield* fixtureIntentPaths(fixture))[0]);
+        expect(JSON.parse(selectedContent)).toMatchObject({project: 'app-a', projectScope: selected.projectScope});
+
+        const legacyUri = 'threadnote://user/tester/memories/durable/projects/threadnote/legacy.md';
+        const legacyMetadata = {...fixture.metadata, memoryId: 'tn_deferred_legacy', topic: 'legacy'};
+        const legacy = yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(legacyMetadata, 'Unselected compatibility.'),
+          memoryMetadata: legacyMetadata,
+          memoryUri: legacyUri,
+          request: deferredRequest(fixture.repository, ['src/legacy.ts']),
+        }).pipe(
+          Effect.provideService(
+            CodeGraphQueryService,
+            CodeGraphQueryService.of({...originalQuery, status: () => Effect.succeed(observed)}),
+          ),
+        );
+        expect(legacy.project).toBeUndefined();
+        expect(legacy.projectScope).toBeUndefined();
+        const legacyPath = (yield* fixtureIntentPaths(fixture)).find(path => path.includes(legacy.intentId));
+        const legacyContent = JSON.parse(yield* fixture.fs.readFileString(legacyPath!)) as Record<string, unknown>;
+        expect(legacyContent).not.toHaveProperty('project');
+        expect(legacyContent).not.toHaveProperty('projectScope');
+        const loadedLegacy = (yield* listDeferredCodeAnchorIntents(fixture.config)).find(
+          entry => entry.kind === 'valid' && entry.intent.intentId === legacy.intentId,
+        );
+        expect(loadedLegacy).toMatchObject({intent: {intentId: legacy.intentId}});
+        if (loadedLegacy?.kind === 'valid') {
+          expect(loadedLegacy.intent.project).toBeUndefined();
+          expect(loadedLegacy.intent.projectScope).toBeUndefined();
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('fails closed before citation lookup when a selected sibling scope changes', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const store = yield* ResourceStore;
+        const content = memoryContent(fixture.metadata, 'Scope must not cross-resolve.');
+        yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
+        const originalQuery = yield* CodeGraphQueryService;
+        const observed = yield* originalQuery.status(fixture.config.agentContextHome, fixture.repository, {
+          observeWorktree: true,
+          requestMaintenance: false,
+        });
+        const initial = selectedProjectStatus(observed, 'app-a', 'code-graph-scope:app-a');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: content,
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: {...deferredRequest(fixture.repository, ['apps/a/index.ts']), project: 'app-a'},
+        }).pipe(
+          Effect.provideService(
+            CodeGraphQueryService,
+            CodeGraphQueryService.of({...originalQuery, status: () => Effect.succeed(initial)}),
+          ),
+        );
+
+        const sibling = selectedProjectStatus(observed, 'app-a', 'code-graph-scope:app-a-reconfigured');
+        const receipt = yield* finalizeDeferredCodeAnchors(fixture.config).pipe(
+          Effect.provideService(
+            CodeGraphQueryService,
+            CodeGraphQueryService.of({...originalQuery, status: () => Effect.succeed(sibling)}),
+          ),
+        );
+        expect(receipt.items).toEqual([
+          expect.objectContaining({code: 'citation-capture-failed', memoryUri: MEMORY_URI, state: 'failed'}),
+        ]);
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(true);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('fails closed when a selected project changes between full and scoped graph expectations', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fullFixture = yield* makeFixture();
+        const fullStore = yield* ResourceStore;
+        const fullContent = memoryContent(fullFixture.metadata, 'Full project scope must remain full.');
+        yield* fullStore.write(resourceStoreLocation(fullFixture.config), MEMORY_URI, fullContent, {mode: 'create'});
+        const fullQuery = yield* CodeGraphQueryService;
+        const fullObserved = yield* fullQuery.status(fullFixture.config.agentContextHome, fullFixture.repository, {
+          observeWorktree: true,
+          requestMaintenance: false,
+        });
+        yield* stageDeferredCodeAnchorIntent(fullFixture.config, {
+          memoryContent: fullContent,
+          memoryMetadata: fullFixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: {...deferredRequest(fullFixture.repository, ['apps/a/missing.ts']), project: 'app-a'},
+        }).pipe(
+          Effect.provideService(
+            CodeGraphQueryService,
+            CodeGraphQueryService.of({
+              ...fullQuery,
+              status: () => Effect.succeed(selectedFullProjectStatus(fullObserved, 'app-a')),
+            }),
+          ),
+        );
+        const fullIntent = (yield* listDeferredCodeAnchorIntents(fullFixture.config)).find(
+          entry => entry.kind === 'valid',
+        );
+        expect(fullIntent).toMatchObject({kind: 'valid', intent: {projectScope: {kind: 'full'}}});
+        const graph = yield* exactCurrentCitationGraph(fullFixture, []);
+        if (fullIntent?.kind === 'valid') {
+          expect(graph.status.identity.repositoryId).toBe(fullIntent.intent.repositoryId);
+          expect(graph.status.identity.worktreeId).toBe(fullIntent.intent.worktreeId);
+        }
+        const fullStatus = selectedFullProjectStatus(graph.status, 'app-a');
+        const scopedStatus = selectedProjectStatus(graph.status, 'app-a', 'code-graph-scope:app-a');
+        for (const transitionRead of [3, 4, 5, 6]) {
+          const statusReads = yield* Ref.make(0);
+          const fullToScopedToFull = yield* finalizeDeferredCodeAnchors(fullFixture.config).pipe(
+            Effect.provideService(
+              CodeGraphQueryService,
+              CodeGraphQueryService.of({
+                ...graph.query,
+                status: () =>
+                  Ref.updateAndGet(statusReads, count => count + 1).pipe(
+                    Effect.map(count => (count === transitionRead ? scopedStatus : fullStatus)),
+                  ),
+              }),
+            ),
+            Effect.provideService(CodeGraphStore, graph.store),
+          );
+          expect(fullToScopedToFull.items).toEqual([
+            expect.objectContaining({code: 'citation-capture-failed', memoryUri: MEMORY_URI, state: 'failed'}),
+          ]);
+          expect(yield* Ref.get(statusReads)).toBe(transitionRead);
+          expect(yield* hasDeferredCodeAnchorIntent(fullFixture.config, MEMORY_URI)).toBe(true);
+        }
+
+        const scopedFixture = yield* makeFixture();
+        const scopedStore = yield* ResourceStore;
+        const scopedContent = memoryContent(scopedFixture.metadata, 'Scoped project must remain scoped.');
+        yield* scopedStore.write(resourceStoreLocation(scopedFixture.config), MEMORY_URI, scopedContent, {
+          mode: 'create',
+        });
+        const scopedQuery = yield* CodeGraphQueryService;
+        const scopedObserved = yield* scopedQuery.status(
+          scopedFixture.config.agentContextHome,
+          scopedFixture.repository,
+          {
+            observeWorktree: true,
+            requestMaintenance: false,
+          },
+        );
+        yield* stageDeferredCodeAnchorIntent(scopedFixture.config, {
+          memoryContent: scopedContent,
+          memoryMetadata: scopedFixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: {...deferredRequest(scopedFixture.repository, ['apps/a/index.ts']), project: 'app-a'},
+        }).pipe(
+          Effect.provideService(
+            CodeGraphQueryService,
+            CodeGraphQueryService.of({
+              ...scopedQuery,
+              status: () => Effect.succeed(selectedProjectStatus(scopedObserved, 'app-a', 'code-graph-scope:app-a')),
+            }),
+          ),
+        );
+        const scopedToFull = yield* finalizeDeferredCodeAnchors(scopedFixture.config).pipe(
+          Effect.provideService(
+            CodeGraphQueryService,
+            CodeGraphQueryService.of({
+              ...scopedQuery,
+              status: () => Effect.succeed(selectedFullProjectStatus(scopedObserved, 'app-a')),
+            }),
+          ),
+        );
+        expect(scopedToFull.items).toEqual([
+          expect.objectContaining({code: 'citation-capture-failed', memoryUri: MEMORY_URI, state: 'failed'}),
+        ]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('keeps outside-project-graph failure explicit during deferred finalization', () =>
+    Effect.sync(() => {
+      expect(
+        deferredCodeAnchorCaptureFailureItem(
+          MemoryCodeCitationCaptureError.of('outside', undefined, 'outside-project-graph'),
+          MEMORY_URI,
+        ),
+      ).toMatchObject({code: 'outside-project-graph', recoveryAction: 'replace-memory-code-refs', state: 'failed'});
+    }),
+  );
+
   fcProp(
     effectIt,
     'selects each finalized URI once in receipt order for one derived-index refresh',
@@ -1991,6 +2212,7 @@ const exactCurrentCitationGraph = Effect.fn('deferredCodeAnchorTest.exactCurrent
       ...originalQuery,
       status: () => Effect.succeed(exactStatus),
     }),
+    status: exactStatus,
     store: CodeGraphStore.of({
       acquireSnapshotLease: () => Effect.succeed('fixture-lease'),
       effectiveSnapshotCitationEvidence: (
@@ -2009,3 +2231,60 @@ const exactCurrentCitationGraph = Effect.fn('deferredCodeAnchorTest.exactCurrent
     } as unknown as CodeGraphStoreShape),
   };
 });
+
+function selectedProjectStatus(status: CodeGraphStatus, project: string, scopeKey: string): CodeGraphStatus {
+  return attachCodeGraphStatusObservation(
+    {
+      ...status,
+      projectCoverage: {
+        completeness: 'complete',
+        configuredRoots: ['apps/a'],
+        dependencyComponents: 0,
+        kind: 'project',
+        negativeProof: 'selected-graph-only',
+        observedWorktreeCommit: status.identity.headCommit,
+        project,
+        reusedEquivalentSnapshot: false,
+        rootComponents: 1,
+      },
+    },
+    {
+      identity: status.identity,
+      projectScope: {
+        project: {
+          graph: {closure: 'dependencies', roots: ['apps/a']},
+          name: project,
+          uri: `threadnote://projects/${project}`,
+        },
+        scope: {
+          admittedPrefixes: ['apps/a'],
+          closureDigest: 'b'.repeat(64),
+          completeness: 'complete',
+          controlPaths: [],
+          definitionDigest: 'a'.repeat(64),
+          diagnostics: [],
+          includedProjectIds: ['app-a'],
+          rootProjectIds: ['app-a'],
+          scopeKey,
+        },
+      },
+    },
+  );
+}
+
+function selectedFullProjectStatus(status: CodeGraphStatus, project: string): CodeGraphStatus {
+  return {
+    ...status,
+    projectCoverage: {
+      completeness: 'complete',
+      configuredRoots: [],
+      dependencyComponents: 0,
+      kind: 'full-repository',
+      negativeProof: 'selected-graph-only',
+      observedWorktreeCommit: status.identity.headCommit,
+      project,
+      reusedEquivalentSnapshot: false,
+      rootComponents: 0,
+    },
+  };
+}

@@ -51,6 +51,37 @@ export function parsePorcelainV1Status(output: string): {
   return {added, changed, deleted, untracked};
 }
 
+/** Parses the NUL-delimited source-then-destination records from Git diff --name-status. */
+export function parseNameStatus(output: string): {
+  readonly added: Set<string>;
+  readonly changed: Set<string>;
+  readonly deleted: Set<string>;
+} {
+  const added = new Set<string>();
+  const changed = new Set<string>();
+  const deleted = new Set<string>();
+  const fields = output.split('\0');
+  for (let index = 0; index < fields.length;) {
+    const status = fields[index++];
+    if (!status) continue;
+    const first = normalizeRepositoryPath(fields[index++] ?? '');
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const second = normalizeRepositoryPath(fields[index++] ?? '');
+      if (status.startsWith('R') && first) deleted.add(first);
+      if (second) {
+        added.add(second);
+        changed.add(second);
+      }
+    } else if (status.startsWith('D')) {
+      if (first) deleted.add(first);
+    } else if (first) {
+      changed.add(first);
+      if (status.startsWith('A')) added.add(first);
+    }
+  }
+  return {added, changed, deleted};
+}
+
 function normalizeRepositoryPath(value: string): string {
   return value.replace(/^\.\/+/, '');
 }

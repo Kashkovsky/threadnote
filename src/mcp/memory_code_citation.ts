@@ -6,7 +6,7 @@ import type {RuntimeConfig} from '../types.js';
 
 export function captureMemoryCodeCitationsForMcp(
   config: RuntimeConfig,
-  input: {readonly callerCwd: string; readonly refs: readonly string[]},
+  input: {readonly callerCwd: string; readonly project?: string; readonly refs: readonly string[]},
   operation: string,
 ) {
   if (input.refs.length === 0) {

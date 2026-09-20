@@ -50,6 +50,7 @@ import {
   type MemoryMetadata,
 } from './document.js';
 import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from './code_citation_capture.js';
+import {deferredCodeAnchorStoredMessage} from './code_citation_messages.js';
 import {
   discardDeferredCodeAnchorIntent,
   discardDeferredCodeAnchorIntentsWithin,
@@ -228,6 +229,7 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
   const sharedTarget = replaceUri !== undefined && isInSharedNamespace(config, replaceUri);
   const citationCapture = yield* captureMemoryCodeCitationsForWrite(config, {
     callerCwd,
+    project: options.project,
     defer: yield* attemptSync(() =>
       resolveCliCodeCitationDeferPolicy(options, !sharedTarget && memoryStatus === 'active'),
     ),
@@ -324,13 +326,19 @@ function commonMemoryCodeCitationCommit(citations: readonly {readonly sourceComm
 
 const captureMemoryCodeCitationsForWrite = Effect.fn('memory.captureCodeCitationsForWrite')(function* (
   config: RuntimeConfig,
-  input: {readonly callerCwd: string; readonly defer: boolean; readonly refs?: readonly string[]},
+  input: {
+    readonly callerCwd: string;
+    readonly project?: string;
+    readonly defer: boolean;
+    readonly refs?: readonly string[];
+  },
 ) {
   if (input.defer && (input.refs?.length ?? 0) === 0) {
     return yield* MemoryOperationError.make({message: '--defer-code-refs requires at least one --code-ref.'});
   }
   const captured = yield* captureMemoryCodeCitations(config, {
     callerCwd: input.callerCwd,
+    project: input.project,
     refs: input.refs,
   }).pipe(Effect.result);
   if (Result.isSuccess(captured)) {
@@ -346,6 +354,7 @@ const captureMemoryCodeCitationsForWrite = Effect.fn('memory.captureCodeCitation
       deferred: {
         callerCwd: input.callerCwd,
         codeRefs: input.refs ?? [],
+        ...(input.project === undefined ? {} : {project: input.project}),
         recovery: captured.failure.recovery,
       } satisfies DeferredCodeAnchorWriteRequest,
     };
@@ -362,23 +371,6 @@ function resolveCliCodeCitationDeferPolicy(
   }
   if (options.deferCodeRefs === true) return true;
   return options.requireCurrentCodeRefs !== true && privateTarget && (options.codeRefs?.length ?? 0) > 0;
-}
-
-function deferredCodeAnchorStoredMessage(memoryUri: string, request: DeferredCodeAnchorWriteRequest): string {
-  const preparation = request.recovery.preparation;
-  const prepare =
-    preparation.target === 'callerCwd'
-      ? `Run \`${preparation.command}\` from the cited repository.`
-      : `Run \`${preparation.command} ${preparation.arguments[0]}\`.`;
-  return [
-    `Stored memory without finalized code citations: ${memoryUri}`,
-    `${request.codeRefs.length} code reference(s) are pending in the private local outbox.`,
-    prepare,
-    preparation.target === 'callerCwd'
-      ? 'Threadnote retries automatically after graph indexing and on the next code-linked Context Brief.'
-      : 'Threadnote retries automatically after Workset preparation.',
-    'If the intent remains pending, run `threadnote finalize-code-refs` as a repair fallback.',
-  ].join(' ');
 }
 
 export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig, options: RecallOptions) {
@@ -1102,6 +1094,7 @@ export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConf
   const sharedTarget = replaceUri !== undefined && isInSharedNamespace(config, replaceUri);
   const citationCapture = yield* captureMemoryCodeCitationsForWrite(config, {
     callerCwd: yield* getInvocationCwd(),
+    project: options.project,
     defer: yield* attemptSync(() => resolveCliCodeCitationDeferPolicy(options, !sharedTarget)),
     refs: options.codeRefs,
   });

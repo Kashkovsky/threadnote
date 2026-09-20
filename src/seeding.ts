@@ -584,6 +584,15 @@ export function runInitManifest(config: RuntimeConfig, options: InitManifestOpti
     const outputManifest: Record<string, unknown> = {
       version: 1,
       projects: projects.map(project => ({
+        ...(project.graph === undefined
+          ? {}
+          : {
+              graph: {
+                closure: project.graph.closure,
+                ...(project.graph.include === undefined ? {} : {include: [...project.graph.include]}),
+                roots: [...project.graph.roots],
+              },
+            }),
         name: project.name,
         path: project.path,
         uri: project.uri,

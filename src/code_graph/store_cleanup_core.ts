@@ -59,11 +59,11 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
   const boundedLimit = CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT + 1;
   const [activeRows, childRows, leaseRows, ownerRows, cleanupRows] = yield* Effect.all(
     [
-      sql.unsafe<{readonly worktree_id: unknown}>(
+      sql.unsafe<{readonly worktree_id: unknown; readonly scope_id: string}>(
         `SELECT CASE
            WHEN typeof(worktree_id) = 'text' AND length(CAST(worktree_id AS BLOB)) = 64
              AND worktree_id NOT GLOB '*[^0-9a-f]*'
-           THEN worktree_id ELSE NULL END AS worktree_id
+           THEN worktree_id ELSE NULL END AS worktree_id, scope_id
          FROM active_snapshots WHERE snapshot_id = ? ORDER BY worktree_id LIMIT ?`,
         [snapshotId, boundedLimit],
       ),
@@ -154,7 +154,7 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
     if (typeof row.worktree_id !== 'string' || !/^[0-9a-f]{64}$/u.test(row.worktree_id)) {
       return yield* CodeGraphStoreError.of('Code graph snapshot purge evidence is invalid.');
     }
-    activeViewIds.push(row.worktree_id);
+    activeViewIds.push(row.scope_id === 'full-repository' ? row.worktree_id : `${row.worktree_id}|${row.scope_id}`);
   }
   const childSnapshotIds: string[] = [];
   for (const row of childRows) {

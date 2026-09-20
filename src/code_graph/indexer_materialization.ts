@@ -32,26 +32,22 @@ import {
   codeGraphExtractorSetIdentityFromIdentities,
   codeGraphExtractorSetIdentityFromPackProvenance,
 } from './graph_identity.js';
-import {CodeGraphIndexOperationError, sameOverlayState, WorktreeChangedDuringIndex} from './indexer_shared.js';
+import {CodeGraphIndexOperationError} from './indexer_shared.js';
 import type {CodeGraphIndexResourceGate} from './indexer_types.js';
 import type {DirectPersistentCapacityProtection, IncrementalOverlayAssessment} from './indexer_types.js';
-import {
-  worktreeBuildRequestState,
-  type CodeGraphContentBatchContext,
-  type CodeGraphInventoryOptions,
-} from './inventory.js';
+import {type CodeGraphContentBatchContext, type CodeGraphInventoryOptions} from './inventory.js';
 import {codeGraphInventorySha256Hex} from './inventory_identity.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {codeGraphDiskReservationLockPath, codeGraphDiskReservationRoot, type CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
+import {codeGraphScopeIdentitySuffix, type CodeGraphScopeIdentity} from './scope_identity.js';
 import {budgetParserWorkerFacts, type CodeGraphParserPoolShape, type CodeGraphParserResult} from './parser_worker.js';
 import {
   codeGraphExtractionWorkUnits,
   codeGraphSourceSizeBucket,
   type CodeGraphScanningMetrics,
 } from './progress_telemetry.js';
-import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   type CodeGraphDirectPersistentCapacityProtector,
@@ -99,6 +95,7 @@ export function codeGraphDirectPersistentCapacityProtector(
               .tick({
                 allowIndexPreparation: true,
                 anchorIdentity: input.identity,
+                ...(input.layout.scopeId === undefined ? {} : {anchorScopeId: input.layout.scopeId}),
                 automaticTail: false,
                 checkoutId: input.layout.checkoutId,
                 databasePath: input.layout.databasePath,
@@ -754,30 +751,7 @@ export function codeGraphActiveParserCacheKey(key: string, storedIdentity: strin
   return key.includes(embeddedGeneration) ? key.replace(embeddedGeneration, () => `\0${activeIdentity}\0`) : key;
 }
 
-export const verifyIndexInput = Effect.fn('codeGraph.verifyIndexInput')(function* (
-  identity: RepositoryIdentity,
-  verifyOverlay: boolean,
-  threadnoteHome: string,
-  requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string},
-) {
-  const verifiedIdentity = yield* resolveRepositoryIdentity(identity.repoRoot);
-  if (
-    !repositoryIdentityMatchesExpectation(verifiedIdentity, identity) ||
-    (verifyOverlay && verifiedIdentity.headCommit !== identity.headCommit)
-  ) {
-    return yield* WorktreeChangedDuringIndex.make({});
-  }
-  if (!verifyOverlay) return;
-  if (!requestedOverlay) {
-    return yield* CodeGraphIndexOperationError.make({
-      message: 'Pointer activation requires an exact worktree build request state.',
-    });
-  }
-  const verifiedOverlay = yield* worktreeBuildRequestState(verifiedIdentity, threadnoteHome);
-  if (!sameOverlayState(verifiedOverlay, requestedOverlay)) {
-    return yield* WorktreeChangedDuringIndex.make({});
-  }
-});
+export {verifyIndexInput} from './indexer_input_observation.js';
 
 export function extractorSetIdentity(
   files: readonly {readonly contentHash: string; readonly path: string}[],
@@ -808,11 +782,12 @@ export function snapshotIdentity(
   dirty: boolean,
   extractorSet: string,
   files: readonly {readonly contentHash: string; readonly path: string; readonly source: string}[],
+  scope?: CodeGraphScopeIdentity,
 ): string {
   const prefix =
     `snapshot-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n` +
     `${dirty ? identity.worktreeId : 'shared-commit'}\n${identity.headCommit}\n${dirty ? 'dirty' : 'clean'}\n` +
-    `${extractorSet}\n`;
+    `${extractorSet}\n${codeGraphScopeIdentitySuffix(scope)}`;
   return `cgsn_${codeGraphInventorySha256Hex(
     prefix,
     files,
@@ -833,9 +808,10 @@ export function sparseOverlaySnapshotIdentity(
   baseSnapshotId: string,
   extractorSet: string,
   overlayFingerprint: string,
+  scope?: CodeGraphScopeIdentity,
 ): string {
   return `cgsn_${sha256HexSync(
-    `snapshot-sparse-overlay-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${identity.worktreeId}\n${identity.headCommit}\n${baseSnapshotId}\n${extractorSet}\n${overlayFingerprint}`,
+    `snapshot-sparse-overlay-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${identity.worktreeId}\n${identity.headCommit}\n${baseSnapshotId}\n${extractorSet}\n${overlayFingerprint}${codeGraphScopeIdentitySuffix(scope)}`,
   ).slice(0, 40)}`;
 }
 
@@ -844,9 +820,10 @@ export function sparseOverlayGraphContentIdentity(
   baseGraphContentId: string,
   extractorSet: string,
   overlayFingerprint: string,
+  scope?: CodeGraphScopeIdentity,
 ): string {
   return `cgc_${sha256HexSync(
-    `graph-content-sparse-overlay-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${baseGraphContentId}\n${extractorSet}\n${overlayFingerprint}`,
+    `graph-content-sparse-overlay-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${baseGraphContentId}\n${extractorSet}\n${overlayFingerprint}${codeGraphScopeIdentitySuffix(scope)}`,
   ).slice(0, 40)}`;
 }
 
@@ -863,8 +840,9 @@ export function graphContentIdentity(
     readonly mode?: string;
     readonly path: string;
   }[],
+  scope?: CodeGraphScopeIdentity,
 ): string {
-  return codeGraphContentIdentity(extractorSet, files);
+  return codeGraphContentIdentity(extractorSet, files, scope);
 }
 
 export function selectedDecodedFactBytes(
@@ -933,6 +911,7 @@ export function shouldReuseReadySnapshotForCleanCommit(input: {
 
 export const reusableReadySnapshotForCleanCommit = Effect.fn('codeGraph.reusableReadySnapshotForCleanCommit')(
   function* (input: {
+    readonly scopeId?: string;
     readonly databasePath: string;
     readonly extractorSet: string;
     readonly graphContentId: string;
@@ -945,6 +924,7 @@ export const reusableReadySnapshotForCleanCommit = Effect.fn('codeGraph.reusable
       input.repositoryId,
       input.headCommit,
       input.extractorSet,
+      input.scopeId,
     );
     return shouldReuseReadySnapshotForCleanCommit({
       candidate,

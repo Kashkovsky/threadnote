@@ -1,4 +1,5 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 import {mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
 import {createHash} from '../helpers/node-crypto.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -50,6 +51,9 @@ describe('code graph view removal core', () => {
         const fixture = yield* viewFixture('threadnote-view-schema-');
         yield* Effect.sync(() => {
           const before = new Database(fixture.databasePath);
+          before.transaction(() => {
+            for (const statement of legacyCodeGraphAuthorityStatements) before.exec(statement);
+          })();
           before.exec(`
             DROP TRIGGER removed_views_cleanup_revoke_delete;
             DROP TRIGGER removed_views_cleanup_revoke_insert;
@@ -242,7 +246,7 @@ describe('code graph view removal core', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('never resurrects builder history and suppresses only the same mixed-version pointer', () =>
+  effectIt.effect('never resurrects builder history and suppresses only the same tombstoned pointer', () =>
     TestClock.withLive(
       Effect.gen(function* () {
         const fixture = yield* viewFixture('threadnote-view-catalog-');
@@ -522,7 +526,7 @@ function legacyPromote(databasePath: string, worktreeId: string, snapshotId: str
       .query(
         `INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
          VALUES (?, ?, ?)
-         ON CONFLICT(worktree_id) DO UPDATE SET
+         ON CONFLICT(worktree_id, scope_id) DO UPDATE SET
            snapshot_id = excluded.snapshot_id,
            activated_at = excluded.activated_at`,
       )

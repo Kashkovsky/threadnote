@@ -26,6 +26,7 @@ import {
   type RepositoryIdentity,
 } from '../types.js';
 import {compareCodeUnits} from '../ordering.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../index_scope.js';
 import {codeGraphCheckpointFileFactCacheIdentity} from './file_fact_identity.js';
 import {
   CODE_GRAPH_CHECKPOINT_ATTRIBUTION_CONTENT_BYTES_MAXIMUM,
@@ -405,6 +406,12 @@ function validateProjectionIdentity(identity: RepositoryIdentity): void {
 }
 
 function validateSelectedSnapshot(snapshot: CodeGraphSnapshot, identity: RepositoryIdentity): void {
+  if ((snapshot.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) {
+    throw CodeGraphCheckpointProjectionError.make({
+      message:
+        'Checkpoint v1 export supports only the full repository graph; scoped graph transport requires a verified scope receipt.',
+    });
+  }
   if (
     snapshot.state !== 'ready' ||
     snapshot.dirty ||

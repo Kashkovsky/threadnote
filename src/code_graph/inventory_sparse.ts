@@ -15,6 +15,7 @@ import type {CodeGraphWorkspace} from './languages/types.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphReusableCleanBaseSlice} from './store_models.js';
 import type {CodeGraphInventoryFile, RepositoryIdentity} from './types.js';
+import {codeGraphScopedBaseReusable} from './scope_applicability.js';
 
 /**
  * Changed-path-only dirty admission over a persisted clean base. The complete
@@ -54,6 +55,15 @@ export const inventoryRepositoryFromReusableCleanBaseSlice = Effect.fn(
     return Option.none<CodeGraphReusableOverlayAdmission>();
   }
   const languagePacks = options.languagePacks ?? BUILTIN_LANGUAGE_PACK_REGISTRY;
+  if (options.project?.graph !== undefined && options.scopeObservation?.scope === undefined)
+    return Option.none<CodeGraphReusableOverlayAdmission>();
+  if (
+    !(yield* codeGraphScopedBaseReusable(
+      {inventory: options.scopeObservation ?? {}, identity, languagePacks},
+      {...base, files: options.scopeObservation?.committedFiles ?? base.files},
+    ))
+  )
+    return Option.none<CodeGraphReusableOverlayAdmission>();
   const includeOpaqueCorpusAssets = options.includeOpaqueCorpusAssets !== false;
   if (
     receipt.includeOpaqueCorpusAssets !== includeOpaqueCorpusAssets ||

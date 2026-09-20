@@ -42,6 +42,38 @@ const EFFECT_SOURCE_ANCHORS = [
 ] as const;
 
 describe('Context Brief exact-anchor graph evidence', () => {
+  it('preserves project coverage and partial-scope safety in the public agent view', () => {
+    const projectCoverage = {
+      project: 'app-a',
+      kind: 'project' as const,
+      configuredRoots: ['apps/a'],
+      rootComponents: 1,
+      dependencyComponents: 2,
+      completeness: 'partial' as const,
+      negativeProof: 'unavailable' as const,
+      observedWorktreeCommit: COMMIT,
+      reusedEquivalentSnapshot: false,
+    };
+    const graph = fromRepositoryQuery({...queryResult({edges: [], nodes: [], operation: 'query'}), projectCoverage});
+    expect(graph.coverage.complete).toBe(false);
+    expect(graph.gaps).toContain('graph-project-scope-partial');
+    expect(graph.projectCoverage).toEqual(projectCoverage);
+    const plan = planContextBrief({
+      task: 'Find the selected app',
+      scope: {kind: 'repository', callerCwd: '/workspace/fixture', project: 'app-a'},
+    });
+    const projected = projectContextBrief(
+      assembleContextBriefLogicalResult({
+        graph,
+        plan,
+        memory: emptyMemoryEvidence(),
+        observedAt: '2026-09-20T00:00:00.000Z',
+      }),
+      1_500,
+    );
+    expect(projected.structuredContent.scope.projectCoverage).toEqual(projectCoverage);
+    expect(parseContextBriefAgentViewText(projected.text).scope.projectCoverage).toEqual(projectCoverage);
+  });
   effectIt.effect('traces mixed path and cgs anchors in both directions without task-semantic displacement', () =>
     Effect.gen(function* () {
       const calls: CodeGraphInspectOptions[] = [];
@@ -89,6 +121,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
       );
 
       expect(calls).toHaveLength(3);
+      expect(calls.every(call => call.project === 'effect' && call.manifestPath === CONFIG.manifestPath)).toBe(true);
       expect(calls.find(call => call.operation === 'impact')).toMatchObject({
         depth: 0,
         direction: 'incoming',

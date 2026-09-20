@@ -1,6 +1,13 @@
 import {Effect, FileSystem, Schema} from 'effect';
 import * as yaml from 'js-yaml';
-import type {JsonObject, ProjectManifest, ResolvedWorkset, SeedManifest, WorksetManifest} from './types.js';
+import type {
+  JsonObject,
+  ProjectGraphManifest,
+  ProjectManifest,
+  ResolvedWorkset,
+  SeedManifest,
+  WorksetManifest,
+} from './types.js';
 import {parseResourceId} from './storage/resource-id.js';
 import {escapeRegExp, isJsonObject} from './utils.js';
 
@@ -184,7 +191,9 @@ export function parseSeedManifest(raw: string, path: string): SeedManifest {
       throw ManifestOperationError.make({message: `Manifest project must be an object: ${path}`});
     }
     const seed = readStringArray(projectValue, 'seed');
+    const graph = readProjectGraph(projectValue);
     projects.push({
+      ...(graph === undefined ? {} : {graph}),
       name: readString(projectValue, 'name'),
       path: readString(projectValue, 'path'),
       seed,
@@ -217,6 +226,50 @@ export function parseSeedManifest(raw: string, path: string): SeedManifest {
     });
   }
   return {futureMonorepo, projects, version, worksets};
+}
+
+function readProjectGraph(project: JsonObject): ProjectGraphManifest | undefined {
+  const value = project.graph;
+  if (value === undefined) return undefined;
+  if (!isJsonObject(value)) {
+    throw ManifestOperationError.make({message: 'Expected object for graph'});
+  }
+  const roots = readRepositoryPathArray(value, 'roots');
+  if (roots.length === 0) {
+    throw ManifestOperationError.make({message: 'Project graph roots must not be empty'});
+  }
+  const closure = readString(value, 'closure');
+  if (closure !== 'dependencies') {
+    throw ManifestOperationError.make({message: 'Project graph closure must be dependencies'});
+  }
+  const include = value.include === undefined ? undefined : readRepositoryPathArray(value, 'include');
+  return {...(include === undefined ? {} : {include}), closure, roots};
+}
+
+function readRepositoryPathArray(object: JsonObject, key: string): readonly string[] {
+  const values = readStringArray(object, key);
+  const normalized = values.map(value => normalizeRepositoryPath(value, key));
+  if (new Set(normalized).size !== normalized.length) {
+    throw ManifestOperationError.make({message: `Project graph ${key} must not contain duplicate paths`});
+  }
+  return normalized;
+}
+
+function normalizeRepositoryPath(value: string, key: string): string {
+  if (value.length === 0 || value.startsWith('/') || value.includes('\\') || hasControlCharacter(value)) {
+    throw ManifestOperationError.make({message: `Project graph ${key} contains an invalid repository-relative path`});
+  }
+  if (value.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..')) {
+    throw ManifestOperationError.make({message: `Project graph ${key} contains an invalid repository-relative path`});
+  }
+  return value;
+}
+
+function hasControlCharacter(value: string): boolean {
+  return [...value].some(character => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 31 || code === 127;
+  });
 }
 
 function readOptionalString(object: JsonObject, key: string): string | undefined {

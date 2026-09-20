@@ -1,4 +1,6 @@
 import {Clock, Effect, Option} from 'effect';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
+import {codeGraphScopeAuthorityInstalled} from './store_scope_schema.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphBlobReuseFile} from './blob_reuse.js';
 import {codeGraphUtf8ByteLength} from './disk_capacity.js';
@@ -53,28 +55,35 @@ import {materializedFileShardIdentity} from './store_cache.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
 import {selectSnapshotPackProvenance} from './store_pack_provenance.js';
 
-const selectReadySnapshot = Effect.fn('codeGraph.selectReadySnapshot')(function* (worktreeId: string) {
+const selectReadySnapshot = Effect.fn('codeGraph.selectReadySnapshot')(function* (
+  worktreeId: string,
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
+) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   if (!(yield* tableExists(sql, 'active_snapshots')) || !(yield* tableExists(sql, 'snapshots'))) return undefined;
   const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
+  const scoped = yield* codeGraphScopeAuthorityInstalled(sql);
+  if (!scoped && scopeId !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) return undefined;
   const rows = yield* sql.unsafe<SnapshotRow>(
     `SELECT snapshots.*
      FROM active_snapshots
      JOIN snapshots ON snapshots.id = active_snapshots.snapshot_id
      WHERE active_snapshots.worktree_id = ?
+       ${scoped ? 'AND active_snapshots.scope_id = ?' : ''}
        AND snapshots.state = 'ready'
        ${
          removedViewsAvailable
            ? `AND NOT EXISTS (
                 SELECT 1 FROM removed_views AS removed
                 WHERE removed.worktree_id = active_snapshots.worktree_id
+                  ${scoped ? 'AND removed.scope_id = active_snapshots.scope_id' : ''}
                   AND removed.expected_snapshot_id = active_snapshots.snapshot_id
               )`
            : ''
        }
      LIMIT 1`,
-    [worktreeId],
+    scoped ? [worktreeId, scopeId] : [worktreeId],
   );
   return rows[0] ? snapshotFromRow(rows[0]) : undefined;
 });
@@ -114,17 +123,20 @@ const selectReadySnapshotForCommit = Effect.fn('codeGraph.selectReadySnapshotFor
   repositoryId: string,
   commit: string,
   extractorSet?: string,
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'lexical_storage_formats'))) {
     return undefined;
   }
+  const scopeColumn = sql.unsafe((yield* codeGraphScopeAuthorityInstalled(sql)) ? 'scope_id' : "'full-repository'");
   const rows = yield* sql<SnapshotRow>`
     SELECT *
     FROM snapshots
     WHERE repository_id = ${repositoryId}
       AND commit_id = ${commit}
+      AND ${scopeColumn} = ${scopeId}
       AND dirty = 0
       AND (${extractorSet ?? null} IS NULL OR extractor_set = ${extractorSet ?? null})
       AND state = 'ready'
@@ -140,16 +152,18 @@ const selectReadySnapshotForCommit = Effect.fn('codeGraph.selectReadySnapshotFor
 });
 
 const selectRecentReadySnapshotsForRepository = Effect.fn('codeGraph.selectRecentReadySnapshotsForRepository')(
-  function* (repositoryId: string) {
+  function* (repositoryId: string, scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) {
     const sql = yield* SqlClient.SqlClient;
     yield* configureConnection(sql);
     if (!(yield* tableExists(sql, 'snapshots')) || !(yield* tableExists(sql, 'lexical_storage_formats'))) {
       return [];
     }
+    const scopeColumn = sql.unsafe((yield* codeGraphScopeAuthorityInstalled(sql)) ? 'scope_id' : "'full-repository'");
     const rows = yield* sql<SnapshotRow>`
     SELECT *
     FROM snapshots
     WHERE repository_id = ${repositoryId}
+      AND ${scopeColumn} = ${scopeId}
       AND dirty = 0
       AND state = 'ready'
       AND EXISTS (
@@ -174,17 +188,25 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
   allowExtractorMismatch = false,
   workspaceProjectsJson = '[]',
   excludedSnapshotIds: readonly string[] = [],
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   const excluded = new Set(excludedSnapshotIds);
+  const extractorPredicate = allowExtractorMismatch
+    ? sql.unsafe('1 = 1')
+    : sql`snapshot.extractor_set = ${extractorSet}`;
+  const scopeColumn = sql.unsafe(
+    (yield* codeGraphScopeAuthorityInstalled(sql)) ? 'snapshot.scope_id' : "'full-repository'",
+  );
   if (graphContentId !== undefined && !allowExtractorMismatch) {
     const exactCandidates = yield* sql<SnapshotRow>`
       SELECT snapshot.*
       FROM snapshots AS snapshot
       JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
       WHERE snapshot.repository_id = ${repositoryId}
-        AND (${allowExtractorMismatch ? 1 : 0} = 1 OR snapshot.extractor_set = ${extractorSet})
+        AND ${scopeColumn} = ${scopeId}
+        AND ${extractorPredicate}
         AND snapshot.state = 'ready'
         AND snapshot.dirty = 0
         AND snapshot.base_snapshot_id IS NULL
@@ -225,7 +247,8 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
       FROM snapshots AS snapshot
       JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
       WHERE snapshot.repository_id = ${repositoryId}
-        AND (${allowExtractorMismatch ? 1 : 0} = 1 OR snapshot.extractor_set = ${extractorSet})
+        AND ${scopeColumn} = ${scopeId}
+        AND ${extractorPredicate}
         AND snapshot.state = 'ready'
         AND snapshot.dirty = 0
         AND snapshot.base_snapshot_id IS NULL
@@ -245,7 +268,8 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
         FROM snapshots AS snapshot
         JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
         WHERE snapshot.repository_id = ${repositoryId}
-          AND (${allowExtractorMismatch ? 1 : 0} = 1 OR snapshot.extractor_set = ${extractorSet})
+        AND ${scopeColumn} = ${scopeId}
+          AND ${extractorPredicate}
           AND snapshot.state = 'ready'
           AND snapshot.dirty = 0
           AND snapshot.base_snapshot_id IS NULL
@@ -270,7 +294,8 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
     FROM snapshots AS snapshot
     JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
     WHERE snapshot.repository_id = ${repositoryId}
-      AND (${allowExtractorMismatch ? 1 : 0} = 1 OR snapshot.extractor_set = ${extractorSet})
+        AND ${scopeColumn} = ${scopeId}
+      AND ${extractorPredicate}
       AND snapshot.state = 'ready'
       AND snapshot.dirty = 0
       AND snapshot.base_snapshot_id IS NULL
@@ -295,15 +320,20 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
 const selectReusableCleanBaseForCommit = Effect.fn('codeGraph.selectReusableCleanBaseForCommit')(function* (
   repositoryId: string,
   commit: string,
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
+  const scopeColumn = sql.unsafe(
+    (yield* codeGraphScopeAuthorityInstalled(sql)) ? 'snapshot.scope_id' : "'full-repository'",
+  );
   const candidates = yield* sql<SnapshotRow>`
     SELECT snapshot.*
     FROM snapshots AS snapshot
     JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
     WHERE snapshot.repository_id = ${repositoryId}
       AND snapshot.commit_id = ${commit}
+      AND ${scopeColumn} = ${scopeId}
       AND snapshot.state = 'ready'
       AND snapshot.dirty = 0
       AND snapshot.base_snapshot_id IS NULL
@@ -342,17 +372,22 @@ const selectReusableCleanBaseForCommitPaths = Effect.fn('codeGraph.selectReusabl
   repositoryId: string,
   commit: string,
   paths: readonly string[],
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
   const requestedPaths = reusableCleanBaseSlicePaths(paths);
   if (requestedPaths === undefined) return undefined;
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
+  const scopeColumn = sql.unsafe(
+    (yield* codeGraphScopeAuthorityInstalled(sql)) ? 'snapshot.scope_id' : "'full-repository'",
+  );
   const candidates = yield* sql<SnapshotRow>`
       SELECT snapshot.*
       FROM snapshots AS snapshot
       JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
       WHERE snapshot.repository_id = ${repositoryId}
         AND snapshot.commit_id = ${commit}
+      AND ${scopeColumn} = ${scopeId}
         AND snapshot.state = 'ready'
         AND snapshot.dirty = 0
         AND snapshot.base_snapshot_id IS NULL

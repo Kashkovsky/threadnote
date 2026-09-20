@@ -71,6 +71,11 @@ function projectCodeGraphMcpResult(
       repositoryId: result.repository.repositoryId,
     },
     snapshot: result.snapshot,
+    ...(result.projectCoverage === undefined ? {} : {projectCoverage: result.projectCoverage}),
+    ...(result.outsideProjectGraph === undefined ? {} : {outsideProjectGraph: result.outsideProjectGraph}),
+    ...(result.outsideScopeChangedPaths === undefined
+      ? {}
+      : {outsideScopeChangedPaths: result.outsideScopeChangedPaths}),
     ...(result.scope ? {scope: result.scope} : {}),
     ...(result.searchCoverage ? {searchCoverage: result.searchCoverage} : {}),
     sourceVersion: result.version,

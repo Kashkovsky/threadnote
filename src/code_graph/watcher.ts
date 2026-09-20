@@ -19,7 +19,7 @@ import {
 } from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from './indexer.js';
 import {observeCodeGraphAdmissionEnvironment} from './admission_freshness.js';
-import {worktreeBuildRequestState, worktreeOverlayState} from './inventory.js';
+import {inventoryRepository, worktreeBuildRequestState} from './inventory.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult, type CodeGraphStoreShape} from './store.js';
 import {CommandExecutor, runCommandEffect, type CommandOptions} from '../effect/command.js';
@@ -32,6 +32,7 @@ import type {
   CodeGraphStoreRecovery,
   RepositoryIdentity,
 } from './types.js';
+import type {ProjectManifest} from '../types.js';
 import {CodeGraphRuntimeReconnectRequiredError} from './types.js';
 import {
   currentCodeGraphBuildStatus,
@@ -89,18 +90,23 @@ export interface CodeGraphWatchOptions {
   readonly refreshDemandToken?: string;
   /** @internal A single-use durable registration bound to its observed target. */
   readonly refreshDemandPrepared?: CodeGraphPreparedRefreshDemand;
+  /** Optional configured graph view. Omission preserves the full-repository watch contract. */
+  readonly project?: Pick<ProjectManifest, 'graph' | 'uri'>;
   readonly threadnoteHome: string;
 }
 
 interface CodeGraphBackgroundTarget {
   readonly demandIdentity: {
     readonly checkoutId: string;
+    readonly scopeId?: string;
     readonly threadnoteHome: string;
     readonly worktreeId: string;
   };
   readonly identity: RepositoryIdentity;
   readonly layout: ReturnType<typeof codeGraphLayout>;
+  readonly overlay: {readonly dirty: boolean; readonly fingerprint?: string};
   readonly requestKey: string;
+  readonly scopeId?: string;
 }
 
 /** @internal Never serialize a registration separately from the target it claimed. */
@@ -180,7 +186,7 @@ export interface CodeGraphWatcherShape {
   readonly request: (options: CodeGraphWatchOptions) => Effect.Effect<CodeGraphRefreshRequestReceipt, unknown>;
   readonly status: (
     key: string,
-    target?: Pick<CodeGraphWatchOptions, 'cwd' | 'threadnoteHome'>,
+    target?: Pick<CodeGraphWatchOptions, 'cwd' | 'project' | 'threadnoteHome'>,
   ) => Effect.Effect<Option.Option<CodeGraphRefreshStatus>, unknown>;
   readonly watch: (options: CodeGraphWatchOptions) => Effect.Effect<void, unknown>;
 }
@@ -525,7 +531,22 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             Effect.provideService(Path.Path, path),
             Effect.provideService(SystemInfo, systemInfo),
           );
-          const overlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome).pipe(
+          const scopedObservation =
+            options.project?.graph === undefined
+              ? undefined
+              : yield* inventoryRepository(identity, {
+                  includeOverlay: false,
+                  languagePacks,
+                  project: options.project,
+                  scopeObservationOnly: true,
+                }).pipe(
+                  Effect.provideService(CommandExecutor, commandExecutor),
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(Path.Path, path),
+                  Effect.provideService(SystemInfo, systemInfo),
+                );
+          const scope = scopedObservation?.scope;
+          const overlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome, scope).pipe(
             Effect.provideService(CommandExecutor, commandExecutor),
             Effect.provideService(Crypto.Crypto, crypto),
             Effect.provideService(FileSystem.FileSystem, fs),
@@ -541,12 +562,21 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
           return {
             demandIdentity: {
               checkoutId: identity.checkoutId,
+              ...(scope === undefined ? {} : {scopeId: scope.scopeKey}),
               threadnoteHome: options.threadnoteHome,
               worktreeId: identity.worktreeId,
             },
             identity,
-            layout: codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId),
-            requestKey: codeGraphBuildRequestKey(identity, overlay, languagePacks, undefined, false, admission),
+            layout: codeGraphLayout(
+              path,
+              options.threadnoteHome,
+              identity.checkoutId,
+              identity.worktreeId,
+              scope?.scopeKey,
+            ),
+            overlay,
+            requestKey: codeGraphBuildRequestKey(identity, overlay, languagePacks, undefined, false, admission, scope),
+            ...(scope === undefined ? {} : {scopeId: scope.scopeKey}),
           };
         });
       const provideDemandServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -579,8 +609,10 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
               assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
               cwd: options.cwd,
               onProgress: options.onProgress,
+              ...(options.project === undefined ? {} : {project: options.project}),
               refreshDemandToken: token,
               requestKey: target.requestKey,
+              ...(target.scopeId === undefined ? {} : {scopeId: target.scopeId}),
               threadnoteHome: options.threadnoteHome,
             }).pipe(
               Effect.provideService(CommandExecutor, commandExecutor),
@@ -630,6 +662,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
                     options.threadnoteHome,
                     target.identity.checkoutId,
                     target.identity.worktreeId,
+                    target.scopeId,
                   ),
                 ),
               );
@@ -658,7 +691,9 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
                     assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
                     cwd: options.cwd,
                     onProgress: options.onProgress,
+                    ...(options.project === undefined ? {} : {project: options.project}),
                     requestKey: target.requestKey,
+                    ...(target.scopeId === undefined ? {} : {scopeId: target.scopeId}),
                     threadnoteHome: options.threadnoteHome,
                   }),
                 ),
@@ -678,17 +713,20 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, systemInfo),
         );
-      const requestWatchMaintenance = (options: CodeGraphWatchOptions, identity: RepositoryIdentity) => {
-        const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
-        return maintenance.request({
-          allowIndexPreparation: true,
-          anchorIdentity: identity,
-          checkoutId: layout.checkoutId,
-          databasePath: layout.databasePath,
-          threadnoteHome: options.threadnoteHome,
-          writerLockPath: layout.databaseWriteLockPath,
-        });
-      };
+      const requestWatchMaintenance = (options: CodeGraphWatchOptions) =>
+        observeTarget(options).pipe(
+          Effect.flatMap(target =>
+            maintenance.request({
+              allowIndexPreparation: true,
+              anchorIdentity: target.identity,
+              ...(target.scopeId === undefined ? {} : {anchorScopeId: target.scopeId}),
+              checkoutId: target.layout.checkoutId,
+              databasePath: target.layout.databasePath,
+              threadnoteHome: options.threadnoteHome,
+              writerLockPath: target.layout.databaseWriteLockPath,
+            }),
+          ),
+        );
       const watchReconciliationHooks = (options: CodeGraphWatchOptions): CodeGraphWatchReconciliationHooks => ({
         watchIgnorePolicy: resolveRecoveryIdentity(options.cwd).pipe(
           Effect.flatMap(identity =>
@@ -699,11 +737,14 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
           ),
         ),
         changeRefreshRequired: Effect.gen(function* () {
-          const identity = yield* resolveRecoveryIdentity(options.cwd);
-          const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
-          const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+          const target = yield* observeTarget(options);
+          const ready = yield* store.readySnapshot(
+            target.layout.databasePath,
+            target.identity.worktreeId,
+            target.scopeId,
+          );
           if (ready === undefined) return true;
-          const statuses = yield* readCodeGraphBuildStatuses(layout);
+          const statuses = yield* readCodeGraphBuildStatuses(target.layout);
           return codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh(ready.id, statuses);
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
@@ -711,28 +752,23 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
           Effect.provideService(SystemInfo, systemInfo),
         ),
         periodicRefreshRequired: Effect.gen(function* () {
-          const identity = yield* resolveRecoveryIdentity(options.cwd);
-          yield* requestWatchMaintenance(options, identity);
-          const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
-          const ready = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
-          if (ready === undefined) return true;
-          const statuses = yield* readCodeGraphBuildStatuses(layout);
-          if (!codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh(ready.id, statuses)) return false;
-          const overlay = yield* worktreeOverlayState(identity).pipe(
-            Effect.provideService(CommandExecutor, commandExecutor),
-            Effect.provideService(FileSystem.FileSystem, fs),
-            Effect.provideService(Path.Path, path),
-            Effect.provideService(SystemInfo, systemInfo),
+          const target = yield* observeTarget(options);
+          yield* requestWatchMaintenance(options);
+          const ready = yield* store.readySnapshot(
+            target.layout.databasePath,
+            target.identity.worktreeId,
+            target.scopeId,
           );
-          return codeGraphWatcherSnapshotStale(ready, identity, overlay);
+          if (ready === undefined) return true;
+          const statuses = yield* readCodeGraphBuildStatuses(target.layout);
+          if (!codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh(ready.id, statuses)) return false;
+          return codeGraphWatcherSnapshotStale(ready, target.identity, target.overlay);
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, systemInfo),
         ),
-        requestAfterChange: resolveRecoveryIdentity(options.cwd).pipe(
-          Effect.flatMap(identity => requestWatchMaintenance(options, identity)),
-        ),
+        requestAfterChange: requestWatchMaintenance(options),
       });
       const run = (
         options: CodeGraphWatchOptions,
@@ -744,28 +780,26 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
           {
             coordinator: automaticRecovery,
             resolveIdentity: resolveRecoveryIdentity,
-            routineMaintenance: (recoveryOptions, identity) => {
-              const layout = codeGraphLayout(
-                path,
-                recoveryOptions.threadnoteHome,
-                identity.checkoutId,
-                identity.worktreeId,
-              );
-              return runCodeGraphLifecycleOpportunity({
-                maintenance,
-                opportunity: 'critical-error',
-                targets: [
-                  {
-                    // This production dependency is wired directly to
-                    // resolveRepositoryIdentity above; test seams may retain
-                    // the intentionally smaller recovery identity shape.
-                    anchorIdentity: identity as RepositoryIdentity,
-                    checkoutId: layout.checkoutId,
-                    databasePath: layout.databasePath,
-                  },
-                ],
-                threadnoteHome: recoveryOptions.threadnoteHome,
-              }).pipe(
+            routineMaintenance: (recoveryOptions, identity) =>
+              observeTarget(recoveryOptions).pipe(
+                Effect.flatMap(target =>
+                  runCodeGraphLifecycleOpportunity({
+                    maintenance,
+                    opportunity: 'critical-error',
+                    targets: [
+                      {
+                        // This production dependency is wired directly to
+                        // resolveRepositoryIdentity above; test seams may retain
+                        // the intentionally smaller recovery identity shape.
+                        anchorIdentity: identity as RepositoryIdentity,
+                        ...(target.scopeId === undefined ? {} : {anchorScopeId: target.scopeId}),
+                        checkoutId: target.layout.checkoutId,
+                        databasePath: target.layout.databasePath,
+                      },
+                    ],
+                    threadnoteHome: recoveryOptions.threadnoteHome,
+                  }),
+                ),
                 Effect.map(result =>
                   result.state === 'completed'
                     ? result.result
@@ -776,8 +810,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
                 Effect.provideService(FileSystem.FileSystem, fs),
                 Effect.provideService(Path.Path, path),
                 Effect.provideService(SystemInfo, systemInfo),
-              );
-            },
+              ),
           },
           options,
           failure,
@@ -816,6 +849,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
                   options.threadnoteHome,
                   target.identity.checkoutId,
                   target.identity.worktreeId,
+                  target.scopeId,
                 ),
               ),
             );
@@ -860,15 +894,14 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             );
           }),
         status: (key, target) =>
-          watcher.status(key).pipe(
+          watcher.status(target?.project?.graph === undefined ? key : `${key}\0${target.project.uri}`).pipe(
             Effect.filterOrElse(
               current => Option.isSome(current) || target === undefined,
               () =>
                 Effect.gen(function* () {
                   if (target === undefined) return Option.none();
-                  const identity = yield* resolveRepositoryIdentity(target.cwd);
-                  const layout = codeGraphLayout(path, target.threadnoteHome, identity.checkoutId, identity.worktreeId);
-                  const persisted = yield* currentCodeGraphBuildStatus(layout, identity.worktreeId);
+                  const observed = yield* observeTarget({...target, key});
+                  const persisted = yield* currentCodeGraphBuildStatus(observed.layout, observed.identity.worktreeId);
                   return persisted ? Option.some(persistedRefreshStatus(persisted)) : Option.none();
                 }).pipe(
                   Effect.provideService(FileSystem.FileSystem, fs),
@@ -880,17 +913,14 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             Effect.flatMap(current =>
               Effect.suspend(() => {
                 if (target === undefined) return Effect.succeed(current);
-                return resolveRepositoryIdentity(target.cwd).pipe(
-                  Effect.provideService(CommandExecutor, commandExecutor),
-                  Effect.provideService(FileSystem.FileSystem, fs),
-                  Effect.provideService(Path.Path, path),
-                  Effect.provideService(SystemInfo, systemInfo),
-                  Effect.flatMap(identity =>
+                return observeTarget({...target, key}).pipe(
+                  Effect.flatMap(observed =>
                     provideDemandServices(
                       observeCodeGraphBackgroundDemand({
-                        checkoutId: identity.checkoutId,
+                        checkoutId: observed.identity.checkoutId,
+                        ...(observed.scopeId === undefined ? {} : {scopeId: observed.scopeId}),
                         threadnoteHome: target.threadnoteHome,
-                        worktreeId: identity.worktreeId,
+                        worktreeId: observed.identity.worktreeId,
                       }),
                     ).pipe(
                       Effect.map(refresh =>
@@ -1270,7 +1300,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
   );
 
   return CodeGraphWatcher.of({
-    ensure: startSessionWatch,
+    ensure: options => startSessionWatch(withCodeGraphWatcherScopeKey(options)),
     metrics: Effect.gen(function* () {
       const watches = yield* SynchronizedRef.get(activeWatches);
       const refreshes = yield* SynchronizedRef.get(activeRefreshes);
@@ -1292,19 +1322,22 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
         retainedStatuses: statuses.size,
       };
     }),
-    refresh: options =>
-      Effect.gen(function* () {
-        yield* touchWatch(options.key);
+    refresh: options => {
+      const routed = withCodeGraphWatcherScopeKey(options);
+      return Effect.gen(function* () {
+        yield* touchWatch(routed.key);
         return yield* scheduleRefresh(
-          {...options, admissionClass: options.admissionClass ?? 'current-required'},
+          {...routed, admissionClass: routed.admissionClass ?? 'current-required'},
           false,
         ).pipe(Effect.map(decision => decision.start));
-      }),
-    request: options =>
+      });
+    },
+    request: options => {
+      const routed = withCodeGraphWatcherScopeKey(options);
       // Generic/test watchers have no durable sidecar.  Preserve the legacy
       // scheduling contract while exposing the same receipt shape.
-      Effect.gen(function* () {
-        const started = yield* scheduleRefresh({...options, admissionClass: 'background'}, false).pipe(
+      return Effect.gen(function* () {
+        const started = yield* scheduleRefresh({...routed, admissionClass: 'background'}, false).pipe(
           Effect.map(decision => decision.start),
         );
         return {
@@ -1315,7 +1348,8 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
             state: started ? ('active' as const) : ('queued' as const),
           },
         };
-      }),
+      });
+    },
     status: key =>
       Effect.gen(function* () {
         yield* touchWatch(key);
@@ -1324,13 +1358,20 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
         const now = yield* Clock.currentTimeMillis;
         return Option.some(refreshStatusAt(current, now));
       }),
-    watch: options =>
-      requestRefreshAndWait({...options, admissionClass: 'current-required'}).pipe(
-        Effect.andThen(run(options, true, () => requestBackgroundRefresh(options, true).pipe(Effect.asVoid))),
-        Effect.ensuring(removeStatuses([options.key])),
-      ),
+    watch: options => {
+      const routed = withCodeGraphWatcherScopeKey(options);
+      return requestRefreshAndWait({...routed, admissionClass: 'current-required'}).pipe(
+        Effect.andThen(run(routed, true, () => requestBackgroundRefresh(routed, true).pipe(Effect.asVoid))),
+        Effect.ensuring(removeStatuses([routed.key])),
+      );
+    },
   });
 });
+
+/** Preserve historical keys for full graphs while preventing sibling scoped views from coalescing. */
+function withCodeGraphWatcherScopeKey(options: CodeGraphWatchOptions): CodeGraphWatchOptions {
+  return options.project?.graph === undefined ? options : {...options, key: `${options.key}\0${options.project.uri}`};
+}
 
 /** @internal Keep identity resolution inside the already-detached failure hook. */
 export const requestCodeGraphAutomaticRecovery = Effect.fn('codeGraph.requestAutomaticRecovery')(function* (
@@ -1518,7 +1559,7 @@ export function prewarmCandidatesFromRefOutput(output: string, currentCommit: st
   ].slice(0, limit);
 }
 
-const prewarmLikelyCleanSnapshots = Effect.fn('codeGraph.prewarmLikelyCleanSnapshots')(function* (input: {
+export const prewarmLikelyCleanSnapshots = Effect.fn('codeGraph.prewarmLikelyCleanSnapshots')(function* (input: {
   readonly commandExecutor: {
     readonly execute: (
       executable: string,
@@ -1533,6 +1574,7 @@ const prewarmLikelyCleanSnapshots = Effect.fn('codeGraph.prewarmLikelyCleanSnaps
   readonly prewarmSemaphore: Semaphore.Semaphore;
   readonly store: CodeGraphStoreShape;
 }) {
+  if (input.options.project?.graph !== undefined) return;
   const identity = yield* resolveRepositoryIdentity(input.options.cwd);
   const refs = yield* input.commandExecutor.execute(
     'git',
@@ -1599,6 +1641,7 @@ export function codeGraphWatcherRefreshIndexRequest(options: CodeGraphWatchOptio
   readonly cwd: string;
   readonly ensureVectors: false;
   readonly onProgress: CodeGraphWatchOptions['onProgress'];
+  readonly project?: CodeGraphWatchOptions['project'];
   readonly refreshDemandToken?: string;
   readonly threadnoteHome: string;
 } {
@@ -1607,6 +1650,7 @@ export function codeGraphWatcherRefreshIndexRequest(options: CodeGraphWatchOptio
     cwd: options.cwd,
     ensureVectors: false,
     onProgress: options.onProgress,
+    ...(options.project === undefined ? {} : {project: options.project}),
     ...(options.refreshDemandToken === undefined ? {} : {refreshDemandToken: options.refreshDemandToken}),
     threadnoteHome: options.threadnoteHome,
   };

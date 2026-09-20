@@ -21,6 +21,9 @@ import {tableExists} from './store_session.js';
 import {CodeGraphStoreError} from './types.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
+import {codeGraphScopeCursorParameters} from './store_scope_cursor.js';
+import {codeGraphScopeAuthorityInstalled} from './store_scope_schema.js';
 
 const validateViewRemovalTarget = Effect.fn('codeGraph.validateViewRemovalTarget')(function* (
   worktreeId: string,
@@ -38,16 +41,20 @@ const observeActiveView = Effect.fn('codeGraph.observeActiveView')(function* (
   sql: SqlClient.SqlClient,
   worktreeId: string,
   expectedSnapshotId: string,
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
   const activeViewsAvailable = yield* tableExists(sql, 'active_snapshots');
   const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
+  const scoped = yield* codeGraphScopeAuthorityInstalled(sql);
+  if (!scoped && scopeId !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY)
+    return {expectedSnapshotId, state: 'not-found'} as const;
   const active = activeViewsAvailable
     ? yield* sql.unsafe<{readonly snapshot_id: unknown}>(
         `SELECT CASE
            WHEN typeof(snapshot_id) = 'text' AND length(CAST(snapshot_id AS BLOB)) BETWEEN 45 AND 67
            THEN snapshot_id ELSE NULL END AS snapshot_id
-         FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
-        [worktreeId],
+         FROM active_snapshots WHERE worktree_id = ? ${scoped ? 'AND scope_id = ?' : ''} LIMIT 2`,
+        scoped ? [worktreeId, scopeId] : [worktreeId],
       )
     : [];
   const removed = removedViewsAvailable
@@ -56,8 +63,8 @@ const observeActiveView = Effect.fn('codeGraph.observeActiveView')(function* (
            WHEN typeof(expected_snapshot_id) = 'text'
                 AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
            THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id
-         FROM removed_views WHERE worktree_id = ? LIMIT 2`,
-        [worktreeId],
+         FROM removed_views WHERE worktree_id = ? ${scoped ? 'AND scope_id = ?' : ''} LIMIT 2`,
+        scoped ? [worktreeId, scopeId] : [worktreeId],
       )
     : [];
   const activeSnapshotId = active[0]?.snapshot_id;
@@ -110,14 +117,18 @@ export function codeGraphWorktreeReconciliationCandidatePageStatement(
 ): CodeGraphSqlQueryStatement {
   const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(32, requestedLimit)) : 32;
   const cursorPredicate =
-    cursor === undefined ? '' : boundary === 'after' ? 'WHERE worktree_id > ?' : 'WHERE worktree_id <= ?';
+    cursor === undefined
+      ? ''
+      : boundary === 'after'
+        ? 'WHERE (worktree_id, scope_id) > (?, ?)'
+        : 'WHERE (worktree_id, scope_id) <= (?, ?)';
   return {
-    parameters: cursor === undefined ? [limit] : [cursor, limit],
+    parameters: cursor === undefined ? [limit] : [...codeGraphScopeCursorParameters(cursor), limit],
     text: `WITH raw_page AS MATERIALIZED (
-        SELECT worktree_id, snapshot_id
+        SELECT worktree_id, scope_id, snapshot_id
         FROM active_snapshots
         ${cursorPredicate}
-        ORDER BY worktree_id
+        ORDER BY worktree_id, scope_id
         LIMIT ?
       )
       SELECT
@@ -125,13 +136,14 @@ export function codeGraphWorktreeReconciliationCandidatePageStatement(
         raw_page.snapshot_id,
         snapshots.state AS snapshot_state,
         CASE WHEN removed.worktree_id IS NULL THEN 0 ELSE 1 END AS tombstoned,
-        raw_page.worktree_id
+        raw_page.worktree_id, raw_page.scope_id
       FROM raw_page
       LEFT JOIN snapshots ON snapshots.id = raw_page.snapshot_id
       LEFT JOIN removed_views AS removed
         ON removed.worktree_id = raw_page.worktree_id
+       AND removed.scope_id = raw_page.scope_id
        AND removed.expected_snapshot_id = raw_page.snapshot_id
-      ORDER BY raw_page.worktree_id`,
+      ORDER BY raw_page.worktree_id, raw_page.scope_id`,
   };
 }
 
@@ -412,6 +424,7 @@ const ensureInitialReconciliationIndexes = Effect.fn('codeGraph.ensureInitialRec
 });
 
 interface RemovedViewCleanupRow {
+  readonly scope_id?: unknown;
   readonly attempts: unknown;
   readonly blocked_code: unknown;
   readonly cursor_token: unknown;
@@ -429,6 +442,8 @@ interface RemovedViewCleanupRow {
 }
 
 const REMOVED_VIEW_CLEANUP_BOUNDED_ROW_PROJECTION = `
+  CASE WHEN typeof(scope_id) = 'text' AND length(CAST(scope_id AS BLOB)) BETWEEN 1 AND 81
+    THEN scope_id ELSE NULL END AS scope_id,
   CASE WHEN typeof(worktree_id) = 'text' AND length(CAST(worktree_id AS BLOB)) = 64
     THEN worktree_id ELSE NULL END AS worktree_id,
   CASE WHEN typeof(expected_snapshot_id) = 'text'
@@ -498,6 +513,9 @@ function validRemovedViewCleanupEvidence(evidence: CodeGraphRemovedViewCleanupEv
 
 function decodeRemovedViewCleanupRow(row: RemovedViewCleanupRow): CodeGraphRemovedViewCleanupEntry | undefined {
   if (
+    (row.scope_id !== undefined &&
+      row.scope_id !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY &&
+      (typeof row.scope_id !== 'string' || !/^code-graph-scope:[0-9a-f]{64}$/u.test(row.scope_id))) ||
     typeof row.worktree_id !== 'string' ||
     !/^[0-9a-f]{64}$/u.test(row.worktree_id) ||
     typeof row.expected_snapshot_id !== 'string' ||
@@ -544,6 +562,9 @@ function decodeRemovedViewCleanupRow(row: RemovedViewCleanupRow): CodeGraphRemov
     return undefined;
   }
   return {
+    ...(typeof row.scope_id === 'string' && row.scope_id !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY
+      ? {scopeId: row.scope_id}
+      : {}),
     attempts: row.attempts,
     ...(typeof row.blocked_code === 'string' ? {blockedCode: row.blocked_code} : {}),
     ...(typeof row.cursor_token === 'string' ? {cursorToken: row.cursor_token} : {}),
@@ -569,6 +590,8 @@ function sameRemovedViewCleanupEntry(
 ): boolean {
   return (
     left.worktreeId === right.worktreeId &&
+    (left.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) ===
+      (right.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) &&
     left.expectedSnapshotId === right.expectedSnapshotId &&
     left.removedAt === right.removedAt &&
     left.epoch === right.epoch &&
@@ -589,13 +612,14 @@ const selectRemovedViewCleanupEntry = Effect.fn('codeGraph.selectRemovedViewClea
   sql: SqlClient.SqlClient,
   worktreeId: string,
   expectedSnapshotId: string,
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
   const rows = yield* sql.unsafe<RemovedViewCleanupRow>(
     `SELECT ${REMOVED_VIEW_CLEANUP_BOUNDED_ROW_PROJECTION}
      FROM removed_view_cleanup
-     WHERE worktree_id = ? AND expected_snapshot_id = ?
+     WHERE worktree_id = ? AND scope_id = ? AND expected_snapshot_id = ?
      LIMIT 1`,
-    [worktreeId, expectedSnapshotId],
+    [worktreeId, scopeId, expectedSnapshotId],
   );
   if (rows.length === 0) return undefined;
   const entry = decodeRemovedViewCleanupRow(rows[0]);
@@ -673,6 +697,7 @@ const allocateRemovedViewCleanupEpoch = Effect.fn('codeGraph.allocateRemovedView
 
 function validRemovedViewCleanupEntry(entry: CodeGraphRemovedViewCleanupEntry): boolean {
   const decoded = decodeRemovedViewCleanupRow({
+    scope_id: entry.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
     attempts: entry.attempts,
     blocked_code: entry.blockedCode ?? null,
     cursor_token: entry.cursorToken ?? null,
@@ -692,6 +717,7 @@ function validRemovedViewCleanupEntry(entry: CodeGraphRemovedViewCleanupEntry): 
 }
 
 const REMOVED_VIEW_CLEANUP_FULL_ENTRY_PREDICATE = `worktree_id = ?
+  AND scope_id = ?
   AND expected_snapshot_id = ?
   AND removed_at = ?
   AND epoch = ?
@@ -709,6 +735,7 @@ const REMOVED_VIEW_CLEANUP_FULL_ENTRY_PREDICATE = `worktree_id = ?
 function removedViewCleanupEntryCasParameters(entry: CodeGraphRemovedViewCleanupEntry): readonly unknown[] {
   return [
     entry.worktreeId,
+    entry.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
     entry.expectedSnapshotId,
     entry.removedAt,
     entry.epoch,
@@ -752,8 +779,8 @@ const observeRemovedViewCleanupAuthority = Effect.fn('codeGraph.observeRemovedVi
          THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id,
        CASE WHEN typeof(removed_at) = 'text' AND length(CAST(removed_at AS BLOB)) = 24
          THEN removed_at ELSE NULL END AS removed_at
-     FROM removed_views WHERE worktree_id = ? LIMIT 2`,
-    [entry.worktreeId],
+     FROM removed_views WHERE worktree_id = ? AND scope_id = ? LIMIT 2`,
+    [entry.worktreeId, entry.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY],
   );
   if (removed.length === 0) return {state: 'stale'} as const;
   if (
@@ -783,8 +810,8 @@ const observeRemovedViewCleanupAuthority = Effect.fn('codeGraph.observeRemovedVi
     `SELECT CASE
        WHEN typeof(snapshot_id) = 'text' AND length(CAST(snapshot_id AS BLOB)) BETWEEN 45 AND 67
        THEN snapshot_id ELSE NULL END AS snapshot_id
-     FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
-    [entry.worktreeId],
+     FROM active_snapshots WHERE worktree_id = ? AND scope_id = ? LIMIT 2`,
+    [entry.worktreeId, entry.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY],
   );
   const activeSnapshotId = active[0]?.snapshot_id;
   if (
@@ -808,6 +835,7 @@ const removeMatchingLegacyCleanupPointer = Effect.fn('codeGraph.removeMatchingLe
     yield* sql`
       DELETE FROM active_snapshots
       WHERE worktree_id = ${entry.worktreeId} AND snapshot_id = ${entry.expectedSnapshotId}
+        AND scope_id = ${entry.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY}
     `;
     if ((yield* lastStatementChangeCount(sql)) !== 1) {
       return yield* CodeGraphStoreError.of('Code graph active view pointer changed.');

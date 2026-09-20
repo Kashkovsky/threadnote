@@ -1,4 +1,5 @@
 import {TestError} from '../helpers/test-error.js';
+import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
@@ -1212,7 +1213,12 @@ describe('code graph persistent schema migration', () => {
         onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
       });
       const healed = yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath));
-      expect(phases).toEqual(['added-removed-view-cleanup', 'migrated-query-indexes', 'recorded-revision']);
+      expect(phases).toEqual([
+        'added-removed-view-cleanup',
+        'migrated-query-indexes',
+        'added-graph-scope-authority',
+        'recorded-revision',
+      ]);
       expect(healed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
       expect(healed.sequence).toEqual({value: '0'});
       expect(healed.queueRows).toEqual({count: 0});
@@ -1270,7 +1276,12 @@ describe('code graph persistent schema migration', () => {
         onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
       });
       const healed = yield* Effect.sync(() => readRemovedViewCleanupMigrationSurface(fixture.databasePath));
-      expect(phases).toEqual(['added-removed-view-cleanup', 'migrated-query-indexes', 'recorded-revision']);
+      expect(phases).toEqual([
+        'added-removed-view-cleanup',
+        'migrated-query-indexes',
+        'added-graph-scope-authority',
+        'recorded-revision',
+      ]);
       expect(healed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
       expect(healed.sequence).toEqual({value: '0'});
       expect(healed.queueRows).toEqual({count: 0});
@@ -1998,6 +2009,9 @@ function downgradeReferencePayloadToRevision13(databasePath: string, interrupted
 }
 
 function removeRemovedViewCleanupRevision8(database: Database): void {
+  if (database.query("SELECT 1 FROM pragma_table_xinfo('snapshots') WHERE name = 'scope_id'").get() !== null) {
+    for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
+  }
   database.exec(`
     DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
     DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;

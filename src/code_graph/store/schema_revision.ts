@@ -12,7 +12,7 @@ export const CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION = {
   citationAliasPredecessor: 2,
   foldForwardPredecessor: 3,
   endpointIndexPredecessor: 4,
-  current: 6,
+  current: 8,
 } as const;
 export const CODE_GRAPH_SCHEMA_INITIALIZATION_CITATION_PREDECESSOR_CONTRACT_REVISION =
   CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION.citationAliasPredecessor;
@@ -56,6 +56,7 @@ export const CODE_GRAPH_PERSISTENT_SCHEMA_CAPABILITIES = [
   'checkpoint-import',
   'direct-current-contract-adoption',
   'explicit-cleanup-preparation',
+  'graph-scope-authority',
 ] as const;
 
 export type CodeGraphPersistentSchemaCapability = (typeof CODE_GRAPH_PERSISTENT_SCHEMA_CAPABILITIES)[number];
@@ -76,13 +77,15 @@ export type CodeGraphPersistentSchemaRevisionKey =
   | 'transient-spool'
   | 'sorted-spool-citation-predecessor'
   | 'citation-alias-checkpoint-predecessor'
-  | 'checkpoint-import';
+  | 'checkpoint-import'
+  | 'graph-scope-authority';
 
 export type CodeGraphPersistentSchemaUpgradeRoute =
   | 'adopt-current-contract'
   | 'bridge-build-owner-instance'
   | 'current'
   | 'extend-checkpoint-import'
+  | 'extend-graph-scope-authority'
   | 'retire-legacy-references-and-rebuild'
   | 'rebuild-extensions';
 
@@ -187,9 +190,23 @@ export const CODE_GRAPH_PERSISTENT_SCHEMA_REVISIONS = [
   profile(
     17,
     'checkpoint-import',
-    'current',
-    'current',
+    'background-readable',
+    'extend-graph-scope-authority',
     [...citationColumn, 'checkpoint-import', 'direct-current-contract-adoption', 'explicit-cleanup-preparation'],
+    'current',
+  ),
+  profile(
+    18,
+    'graph-scope-authority',
+    'current',
+    'current',
+    [
+      ...citationColumn,
+      'checkpoint-import',
+      'direct-current-contract-adoption',
+      'explicit-cleanup-preparation',
+      'graph-scope-authority',
+    ],
     'current',
   ),
 ] as const satisfies readonly CodeGraphPersistentSchemaRevisionProfile[];
@@ -209,7 +226,7 @@ function requiredProfile<const Key extends CodeGraphPersistentSchemaRevisionKey>
   return value;
 }
 
-export const CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT = requiredProfile('checkpoint-import');
+export const CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT = requiredProfile('graph-scope-authority');
 export const CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR = requiredProfile('sorted-spool-citation-predecessor');
 export const CODE_GRAPH_PERSISTENT_SCHEMA_CHECKPOINT_PREDECESSOR = requiredProfile(
   'citation-alias-checkpoint-predecessor',

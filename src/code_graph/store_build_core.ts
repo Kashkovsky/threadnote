@@ -31,6 +31,7 @@ import {persistedIncrementalSurfaceMatches} from './store_incremental_surface.js
 
 function persistentSnapshotBuildIdentityMatches(current: CodeGraphSnapshot, requested: CodeGraphSnapshot): boolean {
   return (
+    (current.scopeId ?? 'full-repository') === (requested.scopeId ?? 'full-repository') &&
     current.repositoryId === requested.repositoryId &&
     current.commit === requested.commit &&
     (current.graphContentId ?? current.id) === (requested.graphContentId ?? requested.id) &&

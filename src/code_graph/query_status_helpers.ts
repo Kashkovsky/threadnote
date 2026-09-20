@@ -1,4 +1,6 @@
 import {Effect, Option} from 'effect';
+import {runCommandEffect} from '../effect/command.js';
+import {worktreeOverlayState} from './inventory.js';
 import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {
   resolveRepositoryIdentityForExpectation,
@@ -9,6 +11,46 @@ import type {CodeGraphLanguagePackStatus, RepositoryIdentity, RepositoryIdentity
 export function repositoryIdentityObservation(identity: RepositoryIdentity) {
   return {identity, worktreeChanged: undefined as boolean | undefined};
 }
+
+const observePostPromotionOnce = Effect.fn('codeGraph.observePostPromotionOnce')(function* (
+  identity: RepositoryIdentity,
+) {
+  // Porcelain v2 reports the exact HEAD and the clean/changed bit in one
+  // bounded process. Only a changed worktree pays for the policy-aware overlay
+  // observation that distinguishes admitted source from excluded files.
+  const result = yield* runCommandEffect(
+    'git',
+    ['-C', identity.repoRoot, 'status', '--porcelain=v2', '-z', '--branch', '--untracked-files=normal'],
+    {maxOutputBytes: 1_048_576, timeoutMs: 5_000},
+  ).pipe(Effect.option);
+  if (Option.isNone(result) || !result.value.stdout.endsWith('\0')) {
+    return {headCommit: undefined, overlay: undefined};
+  }
+  const records = result.value.stdout.slice(0, -1).split('\0');
+  const headRecords = records.filter(record => record.startsWith('# branch.oid '));
+  const headCommit = headRecords.length === 1 ? headRecords[0].slice('# branch.oid '.length) : undefined;
+  const expectedLength = identity.objectFormat === 'sha256' ? 64 : 40;
+  if (headCommit === undefined || !new RegExp(`^[0-9a-f]{${expectedLength}}$`).test(headCommit)) {
+    return {headCommit: undefined, overlay: undefined};
+  }
+  if (records.every(record => record.startsWith('# '))) {
+    return {headCommit, overlay: {dirty: false, fingerprint: undefined}};
+  }
+  const overlay = yield* worktreeOverlayState(identity).pipe(Effect.option);
+  return {headCommit, overlay: Option.getOrUndefined(overlay)};
+});
+
+export const postPromotionObservation = Effect.fn('codeGraph.postPromotionObservation')(function* (
+  identity: RepositoryIdentity,
+) {
+  const first = yield* observePostPromotionOnce(identity);
+  if (first.headCommit !== undefined && first.overlay !== undefined) return first;
+  // A process spawn, bounded output read, or policy-aware overlay observation
+  // may fail transiently under host contention. Retry once, then preserve the
+  // existing fail-closed result if publication still cannot be proved.
+  yield* Effect.yieldNow;
+  return yield* observePostPromotionOnce(identity);
+});
 
 export function resolvePublishedRepositoryIdentityObservation(
   cwd: string,

@@ -600,6 +600,7 @@ export interface CodeGraphVisualizationCatalog {
   };
   readonly snapshot: CodeGraphSnapshot;
   readonly viewWorktreeId: string;
+  readonly viewScopeId?: string;
   readonly workspaceCount: number;
   readonly workspaces: readonly CodeGraphVisualizationWorkspace[];
   readonly workspacesTruncated: boolean;
@@ -607,6 +608,7 @@ export interface CodeGraphVisualizationCatalog {
 
 /** Bounded active-pointer identity used by cheap cross-process catalog invalidation. */
 export interface CodeGraphActiveViewIdentity {
+  readonly scopeId?: string;
   readonly activatedAt?: string;
   readonly repositoryId: string;
   readonly snapshotId: string;
@@ -615,6 +617,7 @@ export interface CodeGraphActiveViewIdentity {
 
 /** Exact active-pointer generation used to fence a read across external work. */
 export interface CodeGraphActiveViewFence {
+  readonly scopeId?: string;
   readonly activatedAt: string;
   readonly snapshotId: string;
   readonly worktreeId: string;
@@ -649,6 +652,7 @@ export interface CodeGraphVisualizationEdgePage {
 }
 
 export interface CodeGraphVisualizationCatalogOptions {
+  readonly scopeId?: string;
   readonly includeDependencies?: boolean;
   readonly projectOffset?: number;
   readonly projectId?: Option.Option<string>;
@@ -688,6 +692,7 @@ export interface CodeGraphSnapshotLeaseAcquireOptions extends CodeGraphSnapshotL
 }
 
 export interface CodeGraphViewSnapshotLeaseRetainOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  readonly scopeId?: string;
   /** Existing process-owned lease token to validate or renew under the same writer gate as the view observation. */
   readonly existingToken?: string;
   /** Minimum remaining lifetime required before an existing token may be reused without renewal. */
@@ -711,6 +716,7 @@ export type CodeGraphViewSnapshotLeaseValidationResult =
   {readonly expiresAt: number; readonly state: 'valid'} | {readonly state: 'invalid'};
 
 export interface CodeGraphViewRemovalStoreOptions extends CodeGraphSnapshotLeaseWriterOptions {
+  readonly scopeId?: string;
   /** Final containment proof run while the checkout writer gate is held and immediately before SQLite is opened. */
   readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
   /** Exact path-free provenance evidence captured before the core removal CAS. */
@@ -732,6 +738,7 @@ export interface CodeGraphWorktreeReconciliationPreparationOptions extends CodeG
 }
 
 export interface CodeGraphWorktreeReconciliationCandidate {
+  readonly scopeId?: string;
   readonly repositoryId: string;
   readonly snapshotId: string;
   readonly worktreeId: string;
@@ -777,6 +784,7 @@ export interface CodeGraphRemovedViewCleanupEvidence {
 
 /** Path-free durable cleanup epoch selected from one immutable tombstone. */
 export interface CodeGraphRemovedViewCleanupEntry {
+  readonly scopeId?: string;
   readonly attempts: number;
   readonly blockedCode?: CodeGraphRemovedViewCleanupBlockedCode;
   readonly cursorToken?: string;

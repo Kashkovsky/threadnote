@@ -38,6 +38,7 @@ import {
 } from '../types.js';
 import {stageCodeGraphWorksetRoutingProjectionScoped} from './projection_builder.js';
 import {codeGraphWorksetCatalogLayout} from './layout.js';
+import {normalizeWorksetScopeReceipt} from './scope_receipt.js';
 import {renderCodeGraphWorksetPrepareProgress} from './progress_render.js';
 import {
   maintainCodeGraphWorksetCatalogPreparationPage,
@@ -53,6 +54,7 @@ import type {
   CodeGraphWorksetCatalogGenerationReceiptV1,
   CodeGraphWorksetCatalogPublishedGenerationV1,
   CodeGraphWorksetCatalogPublishedMemberV1,
+  CodeGraphWorksetScopeReceiptV1,
 } from './types.js';
 
 export const CODE_GRAPH_WORKSET_PREPARE_CONCURRENCY_DEFAULT = 2;
@@ -148,6 +150,7 @@ export type CodeGraphWorksetStatusMemberStateV1 =
   'current' | 'deferred' | 'excluded' | 'failed' | 'missing' | 'stale' | 'uncatalogued';
 
 export interface CodeGraphWorksetStatusMemberV1 {
+  readonly projectCoverage?: CodeGraphStatus['projectCoverage'];
   readonly detail?: {
     readonly code: CodeGraphStoreFailureCode | 'repository';
     readonly recovery?: CodeGraphStoreRecovery;
@@ -163,6 +166,7 @@ export interface CodeGraphWorksetStatusMemberV1 {
     | 'no-ready-snapshot'
     | 'not-in-published-generation'
     | 'snapshot-drift'
+    | 'scope-drift'
     | 'status-corrupt'
     | 'status-failed'
     | 'status-incompatible'
@@ -254,7 +258,23 @@ interface CodeGraphWorksetPrepareProgressInputV1 {
 
 export function codeGraphWorksetManifestDigest(workset: ResolvedWorkset): string {
   const projects = workset.projects
-    .map(project => [project.name, project.path, project.uri] as const)
+    .map(
+      project =>
+        [
+          project.name,
+          project.path,
+          project.uri,
+          ...(project.graph === undefined
+            ? []
+            : [
+                JSON.stringify({
+                  closure: project.graph.closure,
+                  roots: [...new Set(project.graph.roots)].sort(compareText),
+                  include: [...new Set(project.graph.include ?? [])].sort(compareText),
+                }),
+              ]),
+        ] as const,
+    )
     .sort(compareProjectDigestEntry);
   const unresolved = [...workset.unresolvedProjects].sort(compareText);
   return sha256HexSync(
@@ -601,6 +621,7 @@ function prepareConfiguredSnapshot(
       attempt: number,
     ): Effect.Effect<Pick<CodeGraphIndexSummary, 'identity' | 'snapshot'>, unknown, IsolatedIndexRequirements> => {
       const indexOptions = {
+        project,
         cwd,
         ensureVectors: false,
         onProgress: (progress: CodeGraphProgress) =>
@@ -673,6 +694,7 @@ function stageConfiguredMember(
     const outcome = yield* Effect.result(
       stageCodeGraphWorksetRoutingProjectionScoped({
         identity: member.indexed.identity,
+        scopeId: member.indexed.snapshot.scopeId,
         snapshotId: member.indexed.snapshot.id,
         threadnoteHome: config.agentContextHome,
       }),
@@ -684,6 +706,7 @@ function stageConfiguredMember(
     }
     const built = outcome.success;
     const ready = {
+      scope: normalizeWorksetScopeReceipt(built.receipt),
       assertLease: built.assertLease,
       identity: member.indexed.identity,
       project: member.project,
@@ -707,7 +730,7 @@ function inspectConfiguredMember(
     readonly status: (
       threadnoteHome: string,
       cwd: string,
-      options?: {readonly requestMaintenance?: boolean},
+      options?: {readonly requestMaintenance?: boolean; readonly project?: string; readonly manifestPath?: string},
     ) => Effect.Effect<CodeGraphStatus, unknown>;
   },
 ) {
@@ -716,7 +739,11 @@ function inspectConfiguredMember(
     if (!(yield* fs.exists(cwd))) {
       return {project: safeLabel(project.name), reason: 'missing-path', state: 'missing'} as const;
     }
-    const status = yield* query.status(config.agentContextHome, cwd, {requestMaintenance: false});
+    const status = yield* query.status(config.agentContextHome, cwd, {
+      requestMaintenance: false,
+      project: project.name,
+      manifestPath: config.manifestPath,
+    });
     return classifyCodeGraphWorksetStatusMember(project.name, status, published);
   }).pipe(Effect.catch(error => Effect.succeed(classifyCodeGraphWorksetStatusFailure(project.name, error))));
 }
@@ -757,10 +784,11 @@ export function classifyCodeGraphWorksetStatusFailure(project: string, error: un
 
 export function classifyCodeGraphWorksetStatusMember(
   project: string,
-  status: Pick<CodeGraphStatus, 'identity' | 'readySnapshot' | 'stale'>,
+  status: Pick<CodeGraphStatus, 'identity' | 'readySnapshot' | 'stale' | 'projectCoverage'>,
   published: CodeGraphWorksetCatalogPublishedMemberV1 | undefined,
 ): CodeGraphWorksetStatusMemberV1 {
   const common = {
+    ...(status.projectCoverage === undefined ? {} : {projectCoverage: status.projectCoverage}),
     project: safeLabel(project),
     repositoryId: status.identity.repositoryId,
     ...(status.readySnapshot === undefined ? {} : {snapshotId: status.readySnapshot.id}),
@@ -772,6 +800,13 @@ export function classifyCodeGraphWorksetStatusMember(
   if (published.checkoutId !== status.identity.checkoutId) return {...common, reason: 'checkout-drift', state: 'stale'};
   if (published.worktreeId !== status.identity.worktreeId) return {...common, reason: 'worktree-drift', state: 'stale'};
   if (published.snapshotId !== status.readySnapshot.id) return {...common, reason: 'snapshot-drift', state: 'stale'};
+  try {
+    if (normalizeWorksetScopeReceipt(published).scopeId !== (status.readySnapshot.scopeId ?? 'full-repository')) {
+      return {...common, reason: 'scope-drift', state: 'stale'};
+    }
+  } catch {
+    return {...common, reason: 'scope-drift', state: 'stale'};
+  }
   if (status.stale) return {...common, reason: 'worktree-stale', state: 'stale'};
   return {...common, state: 'current'};
 }
@@ -790,11 +825,21 @@ export function codeGraphWorksetCatalogGenerationMatches(
   const expected = new Set(workset.projects.map(project => safeLabel(project.name)));
   const actual = published.members.map(member => member.repositoryKey);
   if (actual.length === 0 || new Set(actual).size !== actual.length) return false;
-  return actual.every(repositoryKey => expected.has(repositoryKey));
+  return published.members.every(member => {
+    if (!expected.has(member.repositoryKey)) return false;
+    const project = workset.projects.find(candidate => safeLabel(candidate.name) === member.repositoryKey)!;
+    const scopeId = project.graph === undefined ? 'full-repository' : `code-graph-scope:${sha256HexSync(project.uri)}`;
+    try {
+      return normalizeWorksetScopeReceipt(member).scopeId === scopeId;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function preparedGenerationMember(member: PreparedReadyMember): CodeGraphWorksetCatalogGenerationDigestMemberV1 {
   return {
+    ...member.scope,
     projectionDigest: member.projectionDigest,
     repositoryId: member.repositoryId,
     repositoryKey: member.project,
@@ -803,6 +848,7 @@ function preparedGenerationMember(member: PreparedReadyMember): CodeGraphWorkset
 }
 
 type PreparedReadyMember = Extract<CodeGraphWorksetPrepareMemberV1, {readonly state: 'ready'}> & {
+  readonly scope: CodeGraphWorksetScopeReceiptV1;
   readonly assertLease: Effect.Effect<void, unknown>;
   readonly identity: Pick<RepositoryIdentity, 'checkoutId' | 'repositoryId' | 'worktreeId'>;
 };
@@ -944,7 +990,7 @@ function prepareResult(
 
 function publicPrepareMember(member: PreparedMemberWithProjection): CodeGraphWorksetPrepareMemberV1 {
   if (member.state !== 'ready') return member;
-  const {assertLease: _assertLease, identity: _identity, ...receipt} = member;
+  const {assertLease: _assertLease, identity: _identity, scope: _scope, ...receipt} = member;
   return receipt;
 }
 
@@ -1148,8 +1194,8 @@ function safeLabel(value: string): string {
 }
 
 function compareProjectDigestEntry(
-  left: readonly [string, string, string],
-  right: readonly [string, string, string],
+  left: readonly [string, string, string, ...string[]],
+  right: readonly [string, string, string, ...string[]],
 ): number {
   return compareText(left[0], right[0]) || compareText(left[1], right[1]) || compareText(left[2], right[2]);
 }

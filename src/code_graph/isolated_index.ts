@@ -3,7 +3,7 @@ import {observeCodeGraphAdmissionEnvironment} from './admission_freshness.js';
 import {codeGraphBuildRequestKey} from './indexer_build.js';
 import {codeGraphIndexEnsuresVectors, type CodeGraphIndexOptions} from './indexer_types.js';
 import {CodeGraphIndexOperationError, WorktreeChangedDuringIndex} from './indexer_shared.js';
-import {worktreeBuildRequestState} from './inventory.js';
+import {inventoryRepository, worktreeBuildRequestState} from './inventory.js';
 import {runIsolatedCodeGraphIndex, type CodeGraphIsolatedBuilderResult} from './isolated_builder.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {codeGraphLayout} from './layout.js';
@@ -85,7 +85,17 @@ export const runIsolatedCodeGraphIndexSnapshot = Effect.fn('codeGraph.isolatedIn
       message: 'Repository identity does not match the requested graph target.',
     });
   }
-  const requestedOverlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome);
+  const scopedObservation =
+    options.project?.graph === undefined
+      ? undefined
+      : yield* inventoryRepository(identity, {
+          includeOverlay: false,
+          languagePacks,
+          project: options.project,
+          scopeObservationOnly: true,
+        });
+  const scope = scopedObservation?.scope;
+  const requestedOverlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome, scope);
   const admissionEnvironment = yield* observeCodeGraphAdmissionEnvironment(identity);
   const ensureVectors = codeGraphIndexEnsuresVectors(options);
   const requestKey = options.force
@@ -97,17 +107,20 @@ export const runIsolatedCodeGraphIndexSnapshot = Effect.fn('codeGraph.isolatedIn
         options.incrementalOverlay,
         ensureVectors,
         admissionEnvironment,
+        scope,
       );
   const startedAt = yield* Clock.currentTimeMillis;
   const result = yield* runIsolatedCodeGraphIndex({
     admissionClass: options.admissionClass,
     assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
-    cwd: identity.repoRoot,
+    cwd: options.cwd,
     full: options.force === true,
     noVectors: !ensureVectors,
     onProgress: options.onProgress,
+    ...(options.project === undefined ? {} : {project: options.project}),
     requestKey,
     resolveIdentity: () => Effect.succeed(identity),
+    ...(scope === undefined ? {} : {scopeId: scope.scopeKey}),
     threadnoteHome: options.threadnoteHome,
   });
   const completedIdentity = yield* resolveRepositoryIdentity(options.cwd);
@@ -120,13 +133,20 @@ export const runIsolatedCodeGraphIndexSnapshot = Effect.fn('codeGraph.isolatedIn
       ? undefined
       : codeGraphBuildRequestKey(
           completedIdentity,
-          yield* worktreeBuildRequestState(completedIdentity, options.threadnoteHome),
+          yield* worktreeBuildRequestState(completedIdentity, options.threadnoteHome, scope),
           languagePacks,
           options.incrementalOverlay,
           ensureVectors,
           completedEnvironment,
+          scope,
         );
-  const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
+  const layout = codeGraphLayout(
+    path,
+    options.threadnoteHome,
+    identity.checkoutId,
+    identity.worktreeId,
+    scope?.scopeKey,
+  );
   const recovered = yield* recoverIsolatedCodeGraphIndexSnapshot({
     completedIdentity,
     ...(completedRequestKey === undefined ? {} : {currentRequestKey: completedRequestKey}),

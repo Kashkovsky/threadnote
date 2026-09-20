@@ -19,6 +19,7 @@ function parseCodeGraphSpan(value: string, label: string): CodeGraphSymbol['span
 
 function snapshotFromRow(row: SnapshotRow): CodeGraphSnapshot {
   return {
+    ...(row.scope_id === undefined || row.scope_id === 'full-repository' ? {} : {scopeId: row.scope_id}),
     baseSnapshotId: Option.getOrUndefined(sqlTextOption(row.base_snapshot_id)),
     commit: row.commit_id,
     completedAt: Option.getOrUndefined(sqlTextOption(row.completed_at)),

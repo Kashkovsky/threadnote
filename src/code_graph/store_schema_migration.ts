@@ -57,12 +57,19 @@ import {
   codeGraphSnapshotFileCitationSchemaMigrationPreserves,
   ensureCodeGraphSnapshotFileCitationSchema,
 } from './store_file_alias_schema.js';
-import {CODE_GRAPH_QUERY_INDEX_DEFINITIONS, ensureCodeGraphQueryIndexes} from './store_query_indexes.js';
 import {
+  CODE_GRAPH_QUERY_INDEX_DEFINITIONS,
+  ensureCodeGraphQueryIndexes,
+  ensureCodeGraphScopeQueryIndexes,
+} from './store_query_indexes.js';
+import {
+  CODE_GRAPH_SCOPED_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL,
   codeGraphRemovedViewCleanupBaseSchemaAdmission,
   type CodeGraphRemovedViewCleanupSchemaAdmission,
   removedViewCleanupSchemaCurrent,
 } from './store_schema_core.js';
+import {codeGraphScopeAuthorityInstalled, migrateCodeGraphScopeAuthority} from './store_scope_schema.js';
+import {CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES, CODE_GRAPH_SCOPE_CURSOR_PATTERN} from './store_scope_cursor.js';
 
 /** Additive revisions 16 and 17 preserve incomplete resumable-build rows. */
 export function codeGraphSchemaMigrationPreservesIncompleteSnapshots(
@@ -90,6 +97,12 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
   }
   const revision = yield* removedViewCleanupRecordedRevision(sql);
   const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
+  if (
+    codeGraphPersistentSchemaSupports(recordedRevision, 'graph-scope-authority') &&
+    !(yield* codeGraphScopeAuthorityInstalled(sql))
+  ) {
+    return yield* CodeGraphStoreError.of('Code graph scope authority schema is unavailable.');
+  }
   const revisionObservation = observeCodeGraphPersistentSchemaRevision(recordedRevision);
   if (revisionObservation.state === 'newer') {
     return yield* CodeGraphStoreError.of(
@@ -126,7 +139,11 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
     ? yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY, 16)
     : ({state: 'missing'} as const);
   const admissionCursor = metadataPresent
-    ? yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY, 64)
+    ? yield* inspectBoundedSchemaMetadataValue(
+        sql,
+        REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY,
+        CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES,
+      )
     : ({state: 'missing'} as const);
   const epochSequenceCurrent =
     epochSequence.state === 'recorded' &&
@@ -134,7 +151,7 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
     Number.isSafeInteger(Number(epochSequence.value));
   const cursorCurrent =
     admissionCursor.state === 'missing' ||
-    (admissionCursor.state === 'recorded' && /^[0-9a-f]{64}$/u.test(admissionCursor.value));
+    (admissionCursor.state === 'recorded' && CODE_GRAPH_SCOPE_CURSOR_PATTERN.test(admissionCursor.value));
   const ownerInstanceMarkerObjects =
     schema === 'absent' && revision.state === 'missing'
       ? yield* sql.unsafe(
@@ -199,6 +216,7 @@ const ensureRemovedViewCleanupSchema = Effect.fn('codeGraph.ensureRemovedViewCle
   sql: SqlClient.SqlClient,
 ) {
   yield* preflightRemovedViewCleanupSchema(sql);
+  if (yield* codeGraphScopeAuthorityInstalled(sql)) return;
   yield* sql.unsafe(REMOVED_VIEW_CLEANUP_TABLE_SQL);
   yield* sql.unsafe(REMOVED_VIEW_CLEANUP_DUE_INDEX_SQL);
   for (const trigger of REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS) yield* sql.unsafe(trigger.sql);
@@ -354,6 +372,12 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         codeGraphPersistentSchemaSupports(recordedRevision, 'direct-current-contract-adoption') &&
         extensionSchemaCompatible
       ) {
+        yield* migrateCodeGraphScopeAuthority(sql);
+        yield* ensureCodeGraphScopeQueryIndexes(sql);
+        yield* sql.unsafe('DROP TRIGGER IF EXISTS active_snapshots_require_current_extractor');
+        yield* sql.unsafe(CODE_GRAPH_SCOPED_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL);
+        if (!codeGraphPersistentSchemaSupports(recordedRevision, 'graph-scope-authority'))
+          yield* observe?.('added-graph-scope-authority') ?? Effect.void;
         if (!codeGraphPersistentSchemaIsCurrent(recordedRevision)) {
           yield* sql`
             INSERT INTO schema_metadata (key, value)
@@ -472,6 +496,12 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       yield* observe?.('dropped-obsolete-indexes') ?? Effect.void;
       yield* validatePersistentExtensionTables(sql);
       yield* observe?.('validated') ?? Effect.void;
+      yield* migrateCodeGraphScopeAuthority(sql);
+      yield* ensureCodeGraphScopeQueryIndexes(sql);
+      yield* sql.unsafe('DROP TRIGGER IF EXISTS active_snapshots_require_current_extractor');
+      yield* sql.unsafe(CODE_GRAPH_SCOPED_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL);
+      if (!codeGraphPersistentSchemaSupports(recordedRevision, 'graph-scope-authority'))
+        yield* observe?.('added-graph-scope-authority') ?? Effect.void;
       yield* sql`
         INSERT INTO schema_metadata (key, value)
         VALUES ('persistent_extension_schema_revision', ${String(CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION)})

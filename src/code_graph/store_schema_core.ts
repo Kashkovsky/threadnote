@@ -18,6 +18,7 @@ import {
 } from './store_schema_metadata.js';
 import {tableExists} from './store_session.js';
 import {codeGraphPersistentSchemaIsCurrent} from './store/schema_revision.js';
+import {CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES, CODE_GRAPH_SCOPE_CURSOR_PATTERN} from './store_scope_cursor.js';
 
 const removedViewCleanupSchemaCurrent = Effect.fn('codeGraph.removedViewCleanupSchemaCurrent')(function* (
   sql: SqlClient.SqlClient,
@@ -33,11 +34,11 @@ const inspectRemovedViewCleanupAdmissionCursor = Effect.fn('codeGraph.inspectRem
     const inspection = yield* inspectBoundedSchemaMetadataValue(
       sql,
       REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY,
-      64,
+      CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES,
       maximumMetadataRows,
     );
     if (inspection.state === 'missing') return {current: true, cursor: undefined} as const;
-    if (inspection.state === 'invalid' || !/^[0-9a-f]{64}$/u.test(inspection.value)) {
+    if (inspection.state === 'invalid' || !CODE_GRAPH_SCOPE_CURSOR_PATTERN.test(inspection.value)) {
       return {current: false, cursor: undefined} as const;
     }
     return {current: true, cursor: inspection.value} as const;
@@ -174,6 +175,15 @@ const CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL = `CREATE TRIGGER active_
     SELECT RAISE(ABORT, 'Code graph snapshot was built by an older extractor generation.');
   END`;
 
+const CODE_GRAPH_SCOPED_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL =
+  CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL.replace(
+    'FROM snapshot_extractor_generations AS generation',
+    'FROM snapshot_extractor_generations AS generation JOIN snapshots AS snapshot ON snapshot.id = generation.snapshot_id',
+  ).replace(
+    'WHERE generation.snapshot_id = NEW.snapshot_id',
+    'WHERE generation.snapshot_id = NEW.snapshot_id AND snapshot.scope_id = NEW.scope_id',
+  );
+
 const ensureColumn = Effect.fn('codeGraph.ensureColumn')(function* (
   sql: SqlClient.SqlClient,
   table: string,
@@ -191,6 +201,7 @@ export {
   inspectRemovedViewCleanupAdmissionCursor,
   CodeGraphRemovedViewCleanupSchemaAdmission,
   CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL,
+  CODE_GRAPH_SCOPED_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL,
   ensureColumn,
   ensureSnapshotLeaseSchema,
   removedViewCleanupEpochSequenceCurrent,

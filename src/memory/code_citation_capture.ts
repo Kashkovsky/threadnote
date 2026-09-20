@@ -5,7 +5,8 @@ import {
 } from '../code_graph/citation_primitives.js';
 import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_graph/citation_source.js';
 import {decodeUtf8} from '../code_graph/inventory_content.js';
-import {CodeGraphQueryService} from '../code_graph/query.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../code_graph/query.js';
+import {codeGraphScopeAdmitsPath} from '../code_graph/scope_applicability.js';
 import {CodeGraphStore} from '../code_graph/store.js';
 import {type CodeGraphStatus, type CodeGraphSymbol, isCodeGraphStoreError} from '../code_graph/types.js';
 import {
@@ -29,7 +30,7 @@ export const MEMORY_CODE_CITATION_GRAPH_PREPARATION_COMMAND = 'threadnote graph 
 export const MEMORY_CODE_CITATION_WORKSET_PREPARATION_COMMAND = 'threadnote workset prepare' as const;
 
 export type MemoryCodeCitationCaptureRecoveryCode = 'exact-current-evidence-unavailable' | 'ready-graph-unavailable';
-export type MemoryCodeCitationCaptureFailureCode = 'code-reference-unresolved';
+export type MemoryCodeCitationCaptureFailureCode = 'code-reference-unresolved' | 'outside-project-graph';
 
 export type MemoryCodeCitationGraphPreparationV1 =
   | {
@@ -66,10 +67,48 @@ export interface ExpectedMemoryCodeCitationCallerIdentity {
   readonly worktreeId: string;
 }
 
+/** Private proof that a deferred capture still targets its original project graph. */
+export interface MemoryCodeCitationProjectScopeReceiptV1 {
+  readonly closureDigest: string;
+  readonly definitionDigest: string;
+  readonly project: string;
+  readonly scopeKey: string;
+}
+
+export type MemoryCodeCitationProjectScopeExpectationV1 =
+  MemoryCodeCitationProjectScopeReceiptV1 | {readonly kind: 'full'};
+
+export function memoryCodeCitationProjectScopeReceipt(
+  status: CodeGraphStatus,
+): MemoryCodeCitationProjectScopeReceiptV1 | undefined {
+  const selection = observationFromCodeGraphStatus(status)?.projectScope;
+  if (selection?.scope === undefined) return undefined;
+  return {
+    closureDigest: selection.scope.closureDigest,
+    definitionDigest: selection.scope.definitionDigest,
+    project: selection.project.name,
+    scopeKey: selection.scope.scopeKey,
+  };
+}
+
+export function memoryCodeCitationProjectScopeMatches(
+  status: CodeGraphStatus,
+  expected: MemoryCodeCitationProjectScopeExpectationV1,
+): boolean {
+  const actual = memoryCodeCitationProjectScopeReceipt(status);
+  return 'kind' in expected
+    ? actual === undefined
+    : actual !== undefined &&
+        actual.project === expected.project &&
+        actual.scopeKey === expected.scopeKey &&
+        actual.definitionDigest === expected.definitionDigest &&
+        actual.closureDigest === expected.closureDigest;
+}
+
 export class MemoryCodeCitationCaptureError extends Schema.TaggedError<MemoryCodeCitationCaptureError>()(
   'MemoryCodeCitationCaptureError',
   {
-    failureCode: Schema.optionalKey(Schema.Literal('code-reference-unresolved')),
+    failureCode: Schema.optionalKey(Schema.Literals(['code-reference-unresolved', 'outside-project-graph'])),
     message: Schema.String,
     recovery: Schema.optionalKey(Schema.Any),
     retryable: Schema.Boolean,
@@ -91,6 +130,7 @@ export class MemoryCodeCitationCaptureError extends Schema.TaggedError<MemoryCod
 }
 
 interface CaptureTarget {
+  readonly project?: string;
   readonly cwd: string;
   readonly index: number;
   readonly preparation: MemoryCodeCitationGraphPreparationV1;
@@ -106,7 +146,9 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   config: RuntimeConfig,
   input: {
     readonly callerCwd: string;
+    readonly project?: string;
     readonly expectedCallerIdentity?: ExpectedMemoryCodeCitationCallerIdentity;
+    readonly expectedProjectScope?: MemoryCodeCitationProjectScopeExpectationV1;
     readonly omitUnresolved?: boolean;
     readonly refs?: readonly string[];
   },
@@ -122,14 +164,17 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   }
 
   const query = yield* CodeGraphQueryService;
-  if (input.expectedCallerIdentity) {
+  if (input.expectedCallerIdentity || input.expectedProjectScope) {
     const callerBefore = yield* query
       .status(config.agentContextHome, input.callerCwd, {
+        project: input.project,
+        manifestPath: config.manifestPath,
         observeWorktree: true,
         requestMaintenance: false,
       })
       .pipe(Effect.mapError(error => captureError('caller repository identity', error)));
-    yield* requireExpectedCallerIdentity(callerBefore, input.expectedCallerIdentity);
+    if (input.expectedCallerIdentity) yield* requireExpectedCallerIdentity(callerBefore, input.expectedCallerIdentity);
+    if (input.expectedProjectScope) yield* requireExpectedProjectScope(callerBefore, input.expectedProjectScope);
   }
 
   const invalidQualifiedRef = refs.find(ref => ref.startsWith('cgr_') && !QUALIFIED_SYMBOL_REF.test(ref));
@@ -137,39 +182,48 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
     return yield* MemoryCodeCitationCaptureError.of(`Invalid qualified code graph reference: ${invalidQualifiedRef}.`);
   }
   const qualifiedRefs = refs.filter(ref => QUALIFIED_SYMBOL_REF.test(ref));
-  const qualifiedTargets = yield* resolveCodeGraphQualifiedRefTargets(config, qualifiedRefs, input.callerCwd).pipe(
-    Effect.mapError(error => captureError('qualified code references', error)),
-  );
+  const qualifiedTargets = yield* resolveCodeGraphQualifiedRefTargets(
+    config,
+    qualifiedRefs,
+    input.callerCwd,
+    input.project,
+  ).pipe(Effect.mapError(error => captureError('qualified code references', error)));
   const qualifiedByRef = new Map(qualifiedTargets.map(target => [target.ref, target]));
   const targets = yield* Effect.forEach(refs, (ref, index) =>
-    resolveCaptureTarget(input.callerCwd, ref, index, qualifiedByRef),
+    resolveCaptureTarget(input.callerCwd, ref, index, qualifiedByRef, input.project),
   );
   const groups = new Map<string, CaptureTarget[]>();
   for (const target of targets) {
-    const group = groups.get(target.cwd) ?? [];
+    const key = `${target.cwd}\0${target.project ?? ''}`;
+    const group = groups.get(key) ?? [];
     group.push(target);
-    groups.set(target.cwd, group);
+    groups.set(key, group);
   }
   const capturedGroups = yield* Effect.forEach(
     [...groups.entries()],
-    ([cwd, group]) =>
+    ([, group]) =>
       captureRepositoryGroup(
         config,
-        cwd,
+        group[0].cwd,
         group,
-        cwd === input.callerCwd ? input.expectedCallerIdentity : undefined,
+        group[0].cwd === input.callerCwd ? input.expectedCallerIdentity : undefined,
+        group[0].cwd === input.callerCwd ? input.expectedProjectScope : undefined,
         input.omitUnresolved === true,
+        group[0].project,
       ),
     {concurrency: 4},
   );
-  if (input.expectedCallerIdentity) {
+  if (input.expectedCallerIdentity || input.expectedProjectScope) {
     const callerAfter = yield* query
       .status(config.agentContextHome, input.callerCwd, {
+        project: input.project,
+        manifestPath: config.manifestPath,
         observeWorktree: true,
         requestMaintenance: false,
       })
       .pipe(Effect.mapError(error => captureError('caller repository identity', error)));
-    yield* requireExpectedCallerIdentity(callerAfter, input.expectedCallerIdentity);
+    if (input.expectedCallerIdentity) yield* requireExpectedCallerIdentity(callerAfter, input.expectedCallerIdentity);
+    if (input.expectedProjectScope) yield* requireExpectedProjectScope(callerAfter, input.expectedProjectScope);
   }
   const ordered = capturedGroups.flat().sort((left, right) => left.index - right.index);
   const seen = new Set<string>();
@@ -187,6 +241,7 @@ function resolveCaptureTarget(
   ref: string,
   index: number,
   qualifiedByRef: ReadonlyMap<string, ResolvedCodeGraphQualifiedRefTargetV1>,
+  project?: string,
 ) {
   return Effect.gen(function* () {
     if (QUALIFIED_SYMBOL_REF.test(ref)) {
@@ -199,6 +254,7 @@ function resolveCaptureTarget(
         );
       }
       return {
+        project: target.project,
         cwd: target.cwd,
         index,
         preparation:
@@ -209,6 +265,7 @@ function resolveCaptureTarget(
     }
     if (LOCAL_SYMBOL_REF.test(ref)) {
       return {
+        project,
         cwd: callerCwd,
         index,
         preparation: callerGraphPreparation(),
@@ -220,6 +277,7 @@ function resolveCaptureTarget(
       return yield* MemoryCodeCitationCaptureError.of(`Invalid local code graph reference: ${ref}.`);
     }
     return {
+      project,
       cwd: callerCwd,
       index,
       preparation: callerGraphPreparation(),
@@ -234,18 +292,23 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
   cwd: string,
   targets: readonly CaptureTarget[],
   expectedCallerIdentity?: ExpectedMemoryCodeCitationCallerIdentity,
+  expectedProjectScope?: MemoryCodeCitationProjectScopeExpectationV1,
   omitUnresolved = false,
+  project?: string,
 ) {
   const query = yield* CodeGraphQueryService;
   const store = yield* CodeGraphStore;
   const fs = yield* FileSystem.FileSystem;
   const before = yield* query
     .status(config.agentContextHome, cwd, {
+      project,
+      manifestPath: config.manifestPath,
       observeWorktree: true,
       requestMaintenance: false,
     })
     .pipe(Effect.mapError(error => captureError(cwd, error)));
   if (expectedCallerIdentity) yield* requireExpectedCallerIdentity(before, expectedCallerIdentity);
+  if (expectedProjectScope) yield* requireExpectedProjectScope(before, expectedProjectScope);
   const snapshot = yield* Effect.try({
     try: () => requireExactCurrentSnapshot(before, captureGroupPreparation(targets)),
     catch: cause => captureError(cwd, cause),
@@ -361,6 +424,18 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
             if (target.target.kind === 'file') {
               const file = fileByPath.get(target.target.path);
               if (!file) {
+                if (
+                  !codeGraphScopeAdmitsPath(
+                    observationFromCodeGraphStatus(before)?.projectScope?.scope,
+                    target.target.path,
+                  )
+                ) {
+                  return yield* MemoryCodeCitationCaptureError.of(
+                    `Code citation path is outside the selected project graph: ${target.target.path}. Select a project that includes this path or a full-repository graph.`,
+                    undefined,
+                    'outside-project-graph',
+                  );
+                }
                 if (omitUnresolved) return undefined;
                 return yield* MemoryCodeCitationCaptureError.of(
                   `Code citation path is not present in the exact current graph: ${target.target.path}. Use a graph-indexed repository-relative path.`,
@@ -392,6 +467,8 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
 
       const after = yield* query
         .status(config.agentContextHome, cwd, {
+          project,
+          manifestPath: config.manifestPath,
           observeWorktree: true,
           requestMaintenance: false,
         })
@@ -402,6 +479,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
         );
       }
       if (expectedCallerIdentity) yield* requireExpectedCallerIdentity(after, expectedCallerIdentity);
+      if (expectedProjectScope) yield* requireExpectedProjectScope(after, expectedProjectScope);
       return capturedTargets;
     }),
   );
@@ -413,6 +491,17 @@ const requireExpectedCallerIdentity = Effect.fn('memoryCodeCitation.requireExpec
 ) {
   if (status.identity.repositoryId !== expected.repositoryId || status.identity.worktreeId !== expected.worktreeId) {
     return yield* MemoryCodeCitationCaptureError.of('Code citation caller repository identity changed during capture.');
+  }
+});
+
+const requireExpectedProjectScope = Effect.fn('memoryCodeCitation.requireExpectedProjectScope')(function* (
+  status: CodeGraphStatus,
+  expected: MemoryCodeCitationProjectScopeExpectationV1,
+) {
+  if (!memoryCodeCitationProjectScopeMatches(status, expected)) {
+    return yield* MemoryCodeCitationCaptureError.of(
+      'The selected project graph changed since deferred code citation capture; replace the memory with current code references.',
+    );
   }
 });
 

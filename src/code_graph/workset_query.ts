@@ -73,6 +73,8 @@ export const inspectCodeGraphWorkset = Effect.fn('codeGraph.inspectWorkset')(fun
           return unavailable(project.name, 'missing-path');
         }
         let status = yield* service.status(config.agentContextHome, cwd, {
+          project: project.name,
+          manifestPath: config.manifestPath,
           requestMaintenance: options.requestMaintenance,
         });
         if (status.stale || !status.readySnapshot) {
@@ -85,6 +87,8 @@ export const inspectCodeGraphWorkset = Effect.fn('codeGraph.inspectWorkset')(fun
         }
         const graph = yield* service.inspect({
           ...options,
+          project: project.name,
+          manifestPath: config.manifestPath,
           cwd,
           edgeLimit: edgeBudgets[index],
           nodeLimit: nodeBudgets[index],

@@ -338,7 +338,7 @@ describe('Manager Worksets interaction fencing', () => {
     await waitForText('Add your first manifest project');
     await clickButton('Add first project');
 
-    const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input:not([type="checkbox"])')];
     expect(inputs).toHaveLength(3);
     await changeInput(inputs[0], 'checkout');
     await changeInput(inputs[1], '~/src/checkout');
@@ -359,6 +359,25 @@ describe('Manager Worksets interaction fencing', () => {
     await clickButtonStartingWith('Worksets');
     await waitForText('No workset selected');
     expect(findButton('Create workset')?.disabled).toBe(false);
+  });
+
+  it('saves optional graph roots and includes from the project editor', async () => {
+    await renderWorksets();
+    await clickButtonStartingWith('Projects');
+    await waitForButtonEnabled('Edit project');
+    await clickButton('Edit project');
+    const enabled = await waitForElement<HTMLInputElement>('.project-editor input[type="checkbox"]');
+    await changeCheckbox(enabled, true);
+    const fields = [...document.querySelectorAll<HTMLTextAreaElement>('.project-editor textarea')];
+    await changeTextArea(fields[1], 'apps/web\npackages/core');
+    await changeTextArea(fields[2], 'tools/generated');
+    await clickButton('Save project');
+    await waitForText('Manifest project saved.');
+    expect(projectMutationBodies[0]).toMatchObject({
+      graph: {closure: 'dependencies', include: ['tools/generated'], roots: ['apps/web', 'packages/core']},
+      operation: 'update',
+      project: 'alpha',
+    });
   });
 
   it('keeps the deletion receipt visible after removing the final project', async () => {
@@ -383,14 +402,16 @@ describe('Manager Worksets interaction fencing', () => {
     await clickButtonStartingWith('Projects');
     await waitForButtonEnabled('Edit project');
     await clickButton('Edit project');
-    const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input:not([type="checkbox"])')];
     await changeInput(inputs[0], 'alpha-renamed');
     await changeInput(inputs[1], '/workspace/alpha-renamed');
     projectRevisionConflictOnce = true;
     await clickButton('Save project');
     await waitForText('your draft is preserved');
     expect(document.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain('your draft is preserved');
-    expect(document.querySelector<HTMLInputElement>('.project-editor input')?.value).toBe('alpha-renamed');
+    expect(document.querySelector<HTMLInputElement>('.project-editor input:not([type="checkbox"])')?.value).toBe(
+      'alpha-renamed',
+    );
 
     await clickButton('Save project');
     await waitForText('Manifest project saved.');
@@ -439,7 +460,7 @@ describe('Manager Worksets interaction fencing', () => {
     await clickButtonStartingWith('Projects');
     await waitForButtonEnabled('Edit project');
     await clickButton('Edit project');
-    const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input:not([type="checkbox"])')];
     await changeInput(inputs[0], 'gamma');
     await clickButton('Save project');
     await waitForText('Manifest project saved.');
@@ -452,7 +473,9 @@ describe('Manager Worksets interaction fencing', () => {
 
     await waitForButtonEnabled('Edit project');
     await clickButton('Edit project');
-    const updatedInputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
+    const updatedInputs = [
+      ...document.querySelectorAll<HTMLInputElement>('.project-editor input:not([type="checkbox"])'),
+    ];
     await changeInput(updatedInputs[1], '/workspace/gamma');
     await clickButton('Save project');
     await waitForText('Manifest project saved.');
@@ -564,6 +587,13 @@ async function changeInput(input: HTMLInputElement, value: string): Promise<void
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
     input.dispatchEvent(new Event('input', {bubbles: true}));
+  });
+  await flush();
+}
+
+async function changeCheckbox(input: HTMLInputElement, checked: boolean): Promise<void> {
+  await act(async () => {
+    if (input.checked !== checked) input.click();
   });
   await flush();
 }

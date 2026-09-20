@@ -22,6 +22,27 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 const authorityLayer = Layer.mergeAll(BunFileSystem.layer, BunPath.layer);
 
 describe('code graph checkpoint authority', () => {
+  effectIt.effect('rejects a scoped graph content identity replayed in a legacy full checkpoint', () =>
+    Effect.gen(function* () {
+      const records = [fileRecord('src/value.ts')];
+      const header = headerFor(records);
+      const scoped = {
+        ...header,
+        source: {
+          ...header.source,
+          graphContentId: codeGraphContentIdentity(header.source.extractorSet, records, {
+            scopeKey: `code-graph-scope:${'a'.repeat(64)}`,
+            definitionDigest: 'b'.repeat(64),
+            closureDigest: 'c'.repeat(64),
+          }),
+        },
+      };
+      const error = yield* withCodeGraphCheckpointAuthorityVerification(scoped, accept => accept(records)).pipe(
+        Effect.flip,
+      );
+      expect(String(error)).toContain('graph content identity does not match');
+    }).pipe(provideTestLayer(authorityLayer)),
+  );
   effectIt.effect('orders the private SQLite spool canonically across its Unicode keyset boundary', () =>
     Effect.gen(function* () {
       const paths = [

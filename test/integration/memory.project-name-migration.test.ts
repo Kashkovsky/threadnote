@@ -57,6 +57,10 @@ describe('project-name memory migration', () => {
         `    path: ${repoRoot}`,
         '    uri: threadnote://resources/repos/easy-to-type',
         '    seed: [README.md]',
+        '    graph:',
+        '      roots: [apps/easy]',
+        '      closure: dependencies',
+        '      include: [tools/generated]',
         'worksets:',
         '  - name: local',
         '    projects: [easy-to-type]',
@@ -110,6 +114,9 @@ describe('project-name memory migration', () => {
     expect(output).toContain('- threadnote');
     expect(output).toContain('future_monorepo:');
     expect(output).toContain('path_candidates:');
+    expect(output).toContain('graph:');
+    expect(output).toContain('roots:');
+    expect(output).toContain('apps/easy');
     expect(output).not.toContain('futureMonorepo');
     expect(output).not.toContain('pathCandidates');
     expect(output).toContain(

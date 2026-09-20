@@ -845,9 +845,10 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
       const candidate = yield* sql<{
         readonly generation: number | null;
         readonly id: string;
+        readonly scope_id: string;
         readonly minimum_generation: number;
       }>`
-        SELECT snapshot.id, generation.generation,
+        SELECT snapshot.id, snapshot.scope_id, generation.generation,
           CAST(minimum.value AS INTEGER) AS minimum_generation
         FROM snapshots AS snapshot
         JOIN schema_metadata AS minimum ON minimum.key = 'minimum_extractor_generation'
@@ -858,6 +859,7 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
       if (!candidate[0]) {
         return yield* CodeGraphStoreError.of(`Ready snapshot ${snapshotId} cannot be promoted.`);
       }
+      const scopeId = candidate[0].scope_id;
       if (
         candidate[0].generation === null ||
         Number(candidate[0].generation) < Number(candidate[0].minimum_generation)
@@ -872,8 +874,8 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
            THEN snapshot_id ELSE NULL END AS snapshot_id,
            CASE WHEN typeof(activated_at) = 'text' AND length(CAST(activated_at AS BLOB)) = 24
              THEN activated_at ELSE NULL END AS activated_at
-         FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
-        [identity.worktreeId],
+         FROM active_snapshots WHERE worktree_id = ? AND scope_id = ? LIMIT 2`,
+        [identity.worktreeId, scopeId],
       );
       const displacedSnapshotId = active[0]?.snapshot_id;
       const displacedActivatedAt = active[0]?.activated_at;
@@ -897,8 +899,8 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
              THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id,
            CASE WHEN typeof(removed_at) = 'text' AND length(CAST(removed_at AS BLOB)) = 24
              THEN removed_at ELSE NULL END AS removed_at
-         FROM removed_views WHERE worktree_id = ? LIMIT 2`,
-        [identity.worktreeId],
+         FROM removed_views WHERE worktree_id = ? AND scope_id = ? LIMIT 2`,
+        [identity.worktreeId, scopeId],
       );
       const removedSnapshotId = removed[0]?.expected_snapshot_id;
       const removedAt = removed[0]?.removed_at;
@@ -932,12 +934,14 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
       }
       const now = yield* Clock.currentTimeMillis;
       yield* sql`
-        INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
-        VALUES (${identity.worktreeId}, ${snapshotId}, ${activatedAt})
-        ON CONFLICT(worktree_id) DO UPDATE SET
+        INSERT INTO active_snapshots (worktree_id, scope_id, snapshot_id, activated_at)
+        VALUES (${identity.worktreeId}, ${scopeId}, ${snapshotId}, ${activatedAt})
+        ON CONFLICT(worktree_id, scope_id) DO UPDATE SET
           snapshot_id = excluded.snapshot_id,
           activated_at = excluded.activated_at
       `;
+      yield* sql`DELETE FROM scope_applicability WHERE worktree_id = ${identity.worktreeId} AND scope_id = ${scopeId}
+        AND active_snapshot_id <> ${snapshotId}`;
       // Only a current promotion contract may make this worktree visible
       // again. Mixed-version writers can still publish active_snapshots, but
       // the durable tombstone keeps those pointers hidden until this delete.
@@ -948,12 +952,14 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
         yield* sql`
           DELETE FROM removed_view_cleanup
           WHERE worktree_id = ${identity.worktreeId}
+            AND scope_id = ${scopeId}
             AND expected_snapshot_id = ${removedSnapshotId}
             AND removed_at = ${removedAt}
         `;
         yield* sql`
           DELETE FROM removed_views
           WHERE worktree_id = ${identity.worktreeId}
+            AND scope_id = ${scopeId}
             AND expected_snapshot_id = ${removedSnapshotId}
             AND removed_at = ${removedAt}
         `;

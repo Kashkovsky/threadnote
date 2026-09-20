@@ -29,6 +29,7 @@ import {
   sparseOverlayGraphContentIdentity,
   sparseOverlaySnapshotIdentity,
   withIncrementalMaterializationStorageTelemetry,
+  verifyIndexInput,
   type CodeGraphCacheContentCoalescer,
 } from './indexer_materialization.js';
 import type {
@@ -71,6 +72,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly observation: CodeGraphOverlayObservation;
+  readonly scopeObservation?: CodeGraphInventory;
   /** Checked immediately before a sparse route can alter ready/build authority. */
   readonly beforePublication?: Effect.Effect<void, unknown>;
   readonly onInvalidBaseCache: Effect.Effect<void>;
@@ -97,6 +99,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
     input.identity.repositoryId,
     input.identity.headCommit,
     changedPaths,
+    input.scopeObservation?.scope?.scopeKey,
   );
   if (base === undefined || base.receipt.inventory === undefined) return Option.none<CodeGraphIndexSummary>();
   const packProvenance = currentBasePackProvenance(base.receipt.packProvenance, input.languagePacks);
@@ -146,6 +149,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
   );
   const admitted = yield* inventoryRepositoryFromReusableCleanBaseSlice(input.identity, base, {
     ...input.options,
+    scopeObservation: input.scopeObservation,
     cachedCommittedFileKeys: targetedCachedFileKeys,
     includeOpaqueCorpusAssets: input.ensureVectors,
     languagePacks: input.languagePacks,
@@ -158,6 +162,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
   const admission = admitted.value;
   const extractedFiles = yield* input.cacheCoalescer.sparseExtractedFiles;
   const inventory: CodeGraphInventory = {
+    ...input.scopeObservation,
     committedFiles: base.files,
     committedParsedFiles: 0,
     diagnostics: admission.diagnostics,
@@ -180,13 +185,19 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
     base.snapshot.id,
     base.snapshot.extractorSet,
     admission.overlayFingerprint,
+    input.scopeObservation?.scope,
   );
-  const existing = yield* input.store.readySnapshot(input.layout.databasePath, input.identity.worktreeId);
+  const existing = yield* input.store.readySnapshot(
+    input.layout.databasePath,
+    input.identity.worktreeId,
+    input.scopeObservation?.scope?.scopeKey,
+  );
   const reusableReady = yield* input.store.currentLexicalReadySnapshotById(
     input.layout.databasePath,
     logicalSnapshotId,
   );
   if (reusableReady !== undefined) {
+    yield* verifyIndexInput(input.identity, true, input.options.threadnoteHome, input.requestedOverlay, inventory);
     if (existing?.id !== reusableReady.id) {
       yield* input.beforePublication ?? Effect.void;
       yield* promoteReadySnapshotWithCapacity(
@@ -262,10 +273,12 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
           base.snapshot.graphContentId ?? base.snapshot.id,
           base.snapshot.extractorSet,
           admission.overlayFingerprint,
+          input.scopeObservation?.scope,
         ),
         id: logicalSnapshotId,
         overlayFingerprint: admission.overlayFingerprint,
         repositoryId: input.identity.repositoryId,
+        scopeId: input.scopeObservation?.scope?.scopeKey,
         state: 'building' as const,
         symbolCount: 0,
         worktreeId: input.identity.worktreeId,
@@ -293,7 +306,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
         input.identity.worktreeId,
         new Set([logicalSnapshotId]),
         retiredSnapshotCleanupReporter(input.options.onProgress),
-        {cleanupMode: 'required'},
+        {cleanupMode: 'required', scopeId: input.scopeObservation?.scope?.scopeKey},
       );
       yield* input.options.onProgress?.({
         completed: 0,

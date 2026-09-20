@@ -21,10 +21,17 @@ export interface RuntimeConfig {
 }
 
 export interface ProjectManifest {
+  readonly graph?: ProjectGraphManifest;
   readonly name: string;
   readonly path: string;
   readonly seed: readonly string[];
   readonly uri: string;
+}
+
+export interface ProjectGraphManifest {
+  readonly closure: 'dependencies';
+  readonly include?: readonly string[];
+  readonly roots: readonly string[];
 }
 
 export interface WorksetManifest {

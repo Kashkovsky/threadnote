@@ -15,6 +15,7 @@ import {CodeGraphStoreError} from './types.js';
 import {
   codeGraphPersistentSchemaIsCurrentOrNewer,
   codeGraphPersistentSchemaMigrationPending,
+  observeCodeGraphPersistentSchemaRevision,
 } from './store/schema_revision.js';
 import {
   boundedSnapshotLeaseProjection,
@@ -36,6 +37,7 @@ import {ensureSnapshotLeaseSchema} from './store_schema_core.js';
 import {type PersistentBuildOwnerCandidate} from './store_internal_models.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
+import {codeGraphScopeAuthorityInstalled} from './store_scope_schema.js';
 import {retireReadySnapshotsIfUnused} from './store_cleanup_core.js';
 import {
   CODE_GRAPH_DETACHED_READY_COUNT_MAXIMUM,
@@ -69,6 +71,7 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
   const revision = yield* removedViewCleanupRecordedRevision(sql);
   if (revision.state === 'invalid') return false;
   const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
+  if (observeCodeGraphPersistentSchemaRevision(recordedRevision).state === 'newer') return false;
   const removedViewAuthority = yield* removedViewAuthorityTableState(sql);
   if (removedViewAuthority === 'incompatible') return false;
   if (removedViewAuthority === 'absent' && recordedRevision !== undefined) {
@@ -455,7 +458,7 @@ const retainViewSnapshotLease = Effect.fn('codeGraph.retainViewSnapshotLease')(f
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
         return yield* CodeGraphStoreError.of('Code graph snapshot lease authority schema is invalid.');
       }
-      const observation = yield* observeActiveView(sql, worktreeId, snapshotId);
+      const observation = yield* observeActiveView(sql, worktreeId, snapshotId, options?.scopeId);
       yield* options?.afterViewObserved?.() ?? Effect.void;
       if (observation.state !== 'ready') {
         return {observation, state: 'view-unavailable'} satisfies CodeGraphViewSnapshotLeaseRetainResult;
@@ -548,10 +551,12 @@ const validateViewSnapshotLease = Effect.fn('codeGraph.validateViewSnapshotLease
          AND lease.snapshot_id = active.snapshot_id
         WHERE active.worktree_id = ${worktreeId}
           AND active.snapshot_id = ${snapshotId}
+          ${sql.unsafe((yield* codeGraphScopeAuthorityInstalled(sql)) ? 'AND active.scope_id = snapshot.scope_id' : '')}
           AND lease.expires_at > ${now + minimumRemainingMilliseconds}
           AND NOT EXISTS (
             SELECT 1 FROM removed_views AS removed
             WHERE removed.worktree_id = active.worktree_id
+              ${sql.unsafe((yield* codeGraphScopeAuthorityInstalled(sql)) ? 'AND removed.scope_id = active.scope_id' : '')}
               AND removed.expected_snapshot_id = active.snapshot_id
           )
         LIMIT 1

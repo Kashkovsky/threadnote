@@ -851,6 +851,10 @@ describe('init-manifest', () => {
             `    path: ${existingRepo}`,
             '    uri: threadnote://resources/repos/existing-repo',
             '    seed: [README.md]',
+            '    graph:',
+            '      roots: [apps/existing]',
+            '      closure: dependencies',
+            '      include: [tools/generated]',
             'worksets:',
             '  - name: platform',
             '    description: existing grouped repos',
@@ -873,6 +877,11 @@ describe('init-manifest', () => {
       const manifest = yield* run(readSeedManifest(manifestPath));
       expect(manifest.projects).toHaveLength(2);
       expect(manifest.projects[0]?.name).toBe('existing-repo');
+      expect(manifest.projects[0]?.graph).toEqual({
+        closure: 'dependencies',
+        include: ['tools/generated'],
+        roots: ['apps/existing'],
+      });
       expect(manifest.projects[1]?.path).toContain('threadnote-new-repo-');
       expect(manifest.worksets).toEqual([
         {

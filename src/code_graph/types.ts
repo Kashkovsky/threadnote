@@ -163,6 +163,8 @@ export interface CodeGraphReference {
 }
 
 export interface CodeGraphSnapshot {
+  /** Missing scope denotes the canonical full-repository graph. */
+  readonly scopeId?: string;
   readonly baseSnapshotId?: string;
   readonly commit: string;
   readonly completedAt?: string;
@@ -634,6 +636,13 @@ export interface CodeGraphQueryNode extends CodeGraphSymbol {
 }
 
 export interface CodeGraphQueryResult {
+  readonly projectCoverage?: CodeGraphProjectCoverage;
+  readonly outsideProjectGraph?: {
+    readonly state: 'outside-project-graph';
+    readonly paths: readonly string[];
+    readonly suggestedActions: readonly string[];
+  };
+  readonly outsideScopeChangedPaths?: number;
   readonly edges: readonly CodeGraphEdge[];
   readonly freshness: 'current' | 'deferred' | 'stale';
   readonly nodes: readonly CodeGraphQueryNode[];
@@ -678,6 +687,9 @@ export interface CodeGraphQueryResult {
 }
 
 export interface CodeGraphQueryOptions {
+  readonly project?: string;
+  /** Manifest used to resolve the project selector; defaults to the home seed manifest. */
+  readonly manifestPath?: string;
   readonly cwd: string;
   readonly depth?: number;
   readonly direction?: 'both' | 'incoming' | 'outgoing';
@@ -695,6 +707,7 @@ export interface CodeGraphQueryOptions {
 }
 
 export interface CodeGraphStatus {
+  readonly projectCoverage?: CodeGraphProjectCoverage;
   readonly databasePath: string;
   readonly freshness: 'current' | 'deferred' | 'stale';
   readonly identity: RepositoryIdentity;
@@ -702,6 +715,33 @@ export interface CodeGraphStatus {
   readonly readySnapshot?: CodeGraphSnapshot;
   readonly stale: boolean;
 }
+
+/** Public coverage, deliberately excluding internal scope identities and digests. */
+export interface CodeGraphProjectCoverage {
+  readonly project: string;
+  readonly kind: 'project' | 'full-repository';
+  readonly configuredRoots: readonly string[];
+  readonly rootComponents: number;
+  readonly dependencyComponents: number;
+  readonly completeness: 'complete' | 'partial';
+  readonly negativeProof: 'selected-graph-only' | 'unavailable';
+  readonly snapshotSourceCommit?: string;
+  readonly observedWorktreeCommit: string;
+  readonly reusedEquivalentSnapshot: boolean;
+}
+
+export const CodeGraphProjectCoverageSchema = Schema.Struct({
+  project: Schema.String,
+  kind: Schema.Literals(['project', 'full-repository']),
+  configuredRoots: Schema.Array(Schema.String),
+  rootComponents: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  dependencyComponents: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  completeness: Schema.Literals(['complete', 'partial']),
+  negativeProof: Schema.Literals(['selected-graph-only', 'unavailable']),
+  snapshotSourceCommit: Schema.optionalKey(Schema.String),
+  observedWorktreeCommit: Schema.String,
+  reusedEquivalentSnapshot: Schema.Boolean,
+});
 
 export interface CodeGraphLanguagePackStatus {
   readonly assetCount: number;

@@ -180,6 +180,7 @@ export function assembleContextBriefLogicalResult(input: {
     stalenessAndConflicts: issues,
     mode: input.plan.mode,
     scope: {
+      ...(input.graph.projectCoverage === undefined ? {} : {projectCoverage: input.graph.projectCoverage}),
       freshness,
       kind: input.plan.scope.kind,
       name: input.plan.scope.kind === 'workset' ? input.plan.scope.name : 'current-repository',

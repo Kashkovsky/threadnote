@@ -2,9 +2,16 @@ import {Clock, Context, Crypto, Effect, Exit, FileSystem, Layer, Option, Path, S
 import * as HttpClient from 'effect/unstable/http/HttpClient';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CommandExecutor} from '../effect/command.js';
+import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {getThreadnoteVersion} from '../release/runtime_version.js';
-import {observeCodeGraphAdmissionEnvironment, recordCodeGraphSnapshotAdmission} from './admission_freshness.js';
+import {
+  codeGraphSnapshotAdmissionCurrent,
+  observeCodeGraphAdmissionEnvironment,
+  recordCodeGraphSnapshotAdmission,
+} from './admission_freshness.js';
+import {assessCodeGraphScopeApplicability, codeGraphScopeAdmissionEvidence} from './scope_applicability.js';
+import {codeGraphScopeIdentityCompatible} from './scope_identity.js';
 import {makeCodeGraphBuildReporter, type CodeGraphBuildReporter} from './build_status.js';
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, withCodeGraphBuilderAdmission} from './builder_admission.js';
 import type {CodeGraphBuilderAdmissionQueue} from './builder_admission_scheduler.js';
@@ -30,6 +37,7 @@ import {assessIncrementalOverlay, assessIncrementalOverlayCompatibility} from '.
 import {attemptSparseReusableOverlay} from './indexer_sparse.js';
 import {
   cacheContentBatch,
+  CODE_GRAPH_LOCK_OPTIONS,
   cachedFileKeys,
   codeGraphDirectPersistentCapacityProtector,
   directFullSnapshotIdentity,
@@ -42,6 +50,7 @@ import {
   reusableReadySnapshotForCleanCommit,
   snapshotIdentity,
   sparseOverlayGraphContentIdentity,
+  verifyIndexInput,
 } from './indexer_materialization.js';
 import {
   CachedCodeGraphFactUnavailableDuringIndex,
@@ -67,8 +76,10 @@ import type {BoundedCodeGraphFact} from './fact_budget.js';
 import {
   type CodeGraphInventory,
   type CodeGraphOverlayObservation,
+  codeGraphInventoryScopeEvidence,
   inventoryRepository,
   inventoryRepositoryFromReusableCleanBase,
+  observeCodeGraphIndexScope,
   worktreeBuildRequestObservation,
 } from './inventory.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
@@ -253,6 +264,27 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               releaseIdentity,
             };
             const admissionEnvironment = yield* observeCodeGraphAdmissionEnvironment(initialIdentity);
+            const ensureVectors = codeGraphIndexEnsuresVectors(request);
+            const scopedObservation =
+              request.project?.graph === undefined
+                ? undefined
+                : yield* inventoryRepository(initialIdentity, {
+                    project: request.project,
+                    includeOverlay: request.includeOverlay,
+                    includeOpaqueCorpusAssets: ensureVectors,
+                    languagePacks,
+                    scopeObservationOnly: true,
+                  });
+            const scope = scopedObservation?.scope;
+            const scopeEvidence =
+              scopedObservation === undefined
+                ? undefined
+                : codeGraphInventoryScopeEvidence(
+                    scopedObservation,
+                    initialIdentity,
+                    extractorSetIdentity(scopedObservation.files, languagePacks),
+                    admissionEnvironment,
+                  );
             if (
               request.expectedIdentity &&
               !repositoryIdentityMatchesExpectation(initialIdentity, request.expectedIdentity)
@@ -266,10 +298,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               request.threadnoteHome,
               initialIdentity.checkoutId,
               initialIdentity.worktreeId,
+              scope?.scopeKey,
             );
             const requestedBuildRequest = yield* worktreeBuildRequestObservation(
               initialIdentity,
               request.threadnoteHome,
+              scope,
             ).pipe(Effect.provideService(Crypto.Crypto, crypto));
             const requestedOverlay = requestedBuildRequest.state;
             if (
@@ -284,7 +318,79 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               });
             }
             yield* anonymousTelemetry.observeOverlay(requestedOverlay.dirty);
-            const ensureVectors = codeGraphIndexEnsuresVectors(request);
+            // Equivalent scoped observations update only applicability authority: no reporter, builder slot, or fact build.
+            if (
+              !request.force &&
+              scopeEvidence !== undefined &&
+              scope !== undefined &&
+              (yield* fs.exists(layout.databasePath))
+            ) {
+              const reused = yield* withExclusiveFileLock(
+                fs,
+                layout.lockPath,
+                CODE_GRAPH_LOCK_OPTIONS,
+                Effect.gen(function* () {
+                  const active = yield* store.loadScopeApplicability(
+                    layout.databasePath,
+                    initialIdentity.worktreeId,
+                    scope.scopeKey,
+                  );
+                  if (assessCodeGraphScopeApplicability(active, scopeEvidence).buildRequired || active === undefined)
+                    return undefined;
+                  const ready = yield* store.readySnapshot(
+                    layout.databasePath,
+                    initialIdentity.worktreeId,
+                    scope.scopeKey,
+                  );
+                  if (
+                    ready === undefined ||
+                    ready.id !== active.snapshotId ||
+                    !(yield* codeGraphSnapshotAdmissionCurrent(
+                      layout,
+                      ready,
+                      admissionEnvironment,
+                      languagePacks,
+                      false,
+                      codeGraphScopeAdmissionEvidence(active),
+                    ))
+                  )
+                    return undefined;
+                  yield* verifyIndexInput(
+                    initialIdentity,
+                    true,
+                    request.threadnoteHome,
+                    requestedOverlay,
+                    scopedObservation,
+                  );
+                  if ((yield* observeCodeGraphAdmissionEnvironment(initialIdentity)) !== admissionEnvironment)
+                    return undefined;
+                  yield* store.recordScopeApplicability(layout.databasePath, ready.id, scopeEvidence, scope);
+                  yield* recordCodeGraphSnapshotAdmission(
+                    layout,
+                    ready,
+                    admissionEnvironment,
+                    languagePacks,
+                    ensureVectors,
+                    {scope: codeGraphScopeAdmissionEvidence(scopeEvidence)},
+                  );
+                  return yield* reuseReadySnapshot({
+                    embedding,
+                    ensureVectors,
+                    identity: initialIdentity,
+                    layout,
+                    onProgress: request.onProgress,
+                    reusedFiles: ready.fileCount,
+                    skippedFiles: scopedObservation?.skipped ?? 0,
+                    snapshot: ready,
+                    startedAt: yield* Clock.currentTimeMillis,
+                    store,
+                    threadnoteHome: request.threadnoteHome,
+                    totalFiles: ready.fileCount,
+                  });
+                }),
+              );
+              if (reused !== undefined) return reused;
+            }
             const requestKey = request.force
               ? undefined
               : codeGraphBuildRequestKey(
@@ -294,12 +400,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   request.incrementalOverlay,
                   ensureVectors,
                   admissionEnvironment,
+                  scope,
                 );
             // A demand token is carried only by an isolated background child.
             // It must adopt the exact observed target before any retry can use it.
             const refreshDemandToken =
               request.refreshDemandToken ?? codeGraphRefreshDemandFromEnvironment(system.environment());
             const refreshDemandIdentity = {
+              scopeId: scope?.scopeKey,
               checkoutId: initialIdentity.checkoutId,
               threadnoteHome: request.threadnoteHome,
               worktreeId: initialIdentity.worktreeId,
@@ -472,6 +580,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         const currentBuildRequest = yield* worktreeBuildRequestObservation(
                           identity,
                           options.threadnoteHome,
+                          scope,
                         ).pipe(Effect.provideService(Crypto.Crypto, crypto));
                         const currentOverlay = currentBuildRequest.state;
                         if (!sameOverlayState(currentOverlay, requestedOverlay)) {
@@ -487,7 +596,26 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             requestKey,
                             options.incrementalOverlay === false,
                           );
-                          if (completedByOwner) {
+                          if (
+                            completedByOwner &&
+                            (scopeEvidence === undefined ||
+                              (completedByOwner.scopeId === scope?.scopeKey &&
+                                (yield* codeGraphSnapshotAdmissionCurrent(
+                                  layout,
+                                  completedByOwner,
+                                  admissionEnvironment,
+                                  languagePacks,
+                                  false,
+                                  codeGraphScopeAdmissionEvidence(scopeEvidence),
+                                ))))
+                          ) {
+                            yield* verifyIndexInput(
+                              identity,
+                              true,
+                              options.threadnoteHome,
+                              requestedOverlay,
+                              scopedObservation,
+                            );
                             // Completed-concurrent promotion changes the ready authority.
                             yield* beginDemandPublication();
                             // An isolated builder exits as soon as it returns this shared result.
@@ -499,7 +627,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                               identity.worktreeId,
                               new Set(),
                               retiredSnapshotCleanupReporter(options.onProgress),
-                              {cleanupMode: 'required'},
+                              {cleanupMode: 'required', scopeId: scope?.scopeKey},
                             );
                             yield* promoteReadySnapshotWithCapacity(
                               {
@@ -571,6 +699,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                                 languagePacks,
                                 layout,
                                 observation: inventoryOverlayObservation,
+                                scopeObservation: scopedObservation,
                                 beforePublication: beginDemandPublication().pipe(
                                   Effect.provideService(Crypto.Crypto, crypto),
                                   Effect.provideService(FileSystem.FileSystem, fs),
@@ -610,6 +739,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                                 layout.databasePath,
                                 identity.repositoryId,
                                 identity.headCommit,
+                                scope?.scopeKey,
                               )
                             : undefined;
                         if (reusableInventoryBase !== undefined) {
@@ -625,6 +755,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             reusableInventoryBase,
                             {
                               ...options,
+                              scopeObservation: scopedObservation,
                               cachedCommittedFileKeys: targetedCachedFileKeys,
                               includeOpaqueCorpusAssets: ensureVectors,
                               languagePacks,
@@ -652,6 +783,13 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         Effect.tap(() => cacheCoalescer.flush),
                         Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
                       );
+                      if (
+                        !codeGraphScopeIdentityCompatible(scope, rawInventory.scope) ||
+                        (scopedObservation !== undefined &&
+                          scopedObservation.scopeInventoryFingerprint !== rawInventory.scopeInventoryFingerprint)
+                      ) {
+                        return yield* WorktreeChangedDuringIndex.make({});
+                      }
                       if (rawInventory.dirty) {
                         const capturedHashes = new Map(
                           inventoryOverlayObservation.files.map(file => [file.path, file.contentHash]),
@@ -659,6 +797,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         const currentRequest = yield* worktreeBuildRequestObservation(
                           identity,
                           options.threadnoteHome,
+                          scope,
                         ).pipe(Effect.provideService(Crypto.Crypto, crypto));
                         if (
                           !sameOverlayState(currentRequest.state, requestedOverlay) ||
@@ -693,16 +832,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       const graphContentId =
                         inventory.dirty && inventory.overlayFingerprint !== undefined
                           ? sparseOverlayGraphContentIdentity(
-                              graphContentIdentity(extractorSet, inventory.committedFiles),
+                              graphContentIdentity(extractorSet, inventory.committedFiles, scope),
                               extractorSet,
                               inventory.overlayFingerprint,
+                              scope,
                             )
-                          : graphContentIdentity(extractorSet, inventory.files);
+                          : graphContentIdentity(extractorSet, inventory.files, scope);
                       const logicalSnapshotId = snapshotIdentity(
                         identity,
                         inventory.dirty,
                         extractorSet,
                         inventory.files,
+                        scope,
                       );
                       const forceGeneration = options.force
                         ? (yield* crypto.randomUUIDv4).replaceAll('-', '').slice(0, 16)
@@ -718,7 +859,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           ? [directSnapshotId]
                           : [logicalSnapshotId, directSnapshotId]
                         : [logicalSnapshotId];
-                      const existing = yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+                      const existing = yield* store.readySnapshot(
+                        layout.databasePath,
+                        identity.worktreeId,
+                        scope?.scopeKey,
+                      );
                       const reusableExisting = existing
                         ? yield* store.currentLexicalReadySnapshotById(layout.databasePath, existing.id)
                         : undefined;
@@ -734,6 +879,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         reusableReadyById ??
                         (!options.force && !inventory.dirty
                           ? yield* reusableReadySnapshotForCleanCommit({
+                              scopeId: scope?.scopeKey,
                               databasePath: layout.databasePath,
                               extractorSet,
                               graphContentId,
@@ -765,7 +911,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         identity.worktreeId,
                         retainedSnapshotIds,
                         retiredSnapshotCleanupReporter(options.onProgress),
-                        {cleanupMode: 'required'},
+                        {cleanupMode: 'required', scopeId: scope?.scopeKey},
                       );
                       if (reusableReady) {
                         if (existing?.id !== reusableReady.id) {
@@ -825,8 +971,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           threadnoteHome: options.threadnoteHome,
                         });
                       }
+                      const scopeResolutionChanged =
+                        scope !== undefined &&
+                        [...inventoryOverlayObservation.changedPaths, ...inventoryOverlayObservation.deletedPaths].some(
+                          relative => languagePacks.isResolutionContext(relative),
+                        );
                       const canAttemptIncrementalOverlay =
-                        inventory.dirty && options.incrementalOverlay !== false && options.force !== true;
+                        inventory.dirty &&
+                        options.incrementalOverlay !== false &&
+                        options.force !== true &&
+                        !scopeResolutionChanged;
                       const resumableDirectBuild =
                         inventory.dirty && !options.force
                           ? yield* store.resumableBuildById(layout.databasePath, directSnapshotId)
@@ -870,6 +1024,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           graphContentId,
                           id: logicalSnapshotId,
                           repositoryId: identity.repositoryId,
+                          scopeId: scope?.scopeKey,
                           state: 'building',
                           symbolCount: 0,
                           worktreeId: identity.worktreeId,
@@ -891,13 +1046,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           id: options.force ? forcedSnapshotId : directSnapshotId,
                           overlayFingerprint: inventory.overlayFingerprint,
                           repositoryId: identity.repositoryId,
+                          scopeId: scope?.scopeKey,
                           state: 'building',
                           symbolCount: 0,
                           worktreeId: identity.worktreeId,
                         };
                         incrementalAssessment = {
                           mode: 'fallback',
-                          reason: options.force ? 'forced-full-rebuild' : 'disabled',
+                          reason: options.force
+                            ? 'forced-full-rebuild'
+                            : scopeResolutionChanged
+                              ? 'workspace-changed'
+                              : 'disabled',
                         };
                         persistentOwnerToken = yield* store.claimPersistentBuild(
                           layout.databasePath,
@@ -968,7 +1128,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                               admissionEnvironment,
                               languagePacks,
                               ensureVectors,
-                              {cleanOnly: true},
+                              {
+                                cleanOnly: true,
+                                ...(scopeEvidence === undefined
+                                  ? {}
+                                  : {
+                                      scope: {
+                                        ...codeGraphScopeAdmissionEvidence(scopeEvidence),
+                                        inventoryFingerprint: inventory.scopeCommittedInventoryFingerprint!,
+                                        scopedOverlayFingerprint: undefined,
+                                      },
+                                    }),
+                              },
                             );
                           }
                         }
@@ -986,6 +1157,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             id: logicalSnapshotId,
                             overlayFingerprint: inventory.overlayFingerprint,
                             repositoryId: identity.repositoryId,
+                            scopeId: scope?.scopeKey,
                             state: 'building',
                             symbolCount: 0,
                             worktreeId: identity.worktreeId,
@@ -1095,6 +1267,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             id: directSnapshotId,
                             overlayFingerprint: inventory.overlayFingerprint,
                             repositoryId: identity.repositoryId,
+                            scopeId: scope?.scopeKey,
                             state: 'building',
                             symbolCount: 0,
                             worktreeId: identity.worktreeId,
@@ -1190,7 +1363,18 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           admissionEnvironment,
                           languagePacks,
                           ensureVectors,
+                          scopeEvidence === undefined
+                            ? undefined
+                            : {scope: codeGraphScopeAdmissionEvidence(scopeEvidence)},
                         );
+                        if (scopeEvidence !== undefined) {
+                          yield* store.recordScopeApplicability(
+                            layout.databasePath,
+                            summary.snapshot.id,
+                            scopeEvidence,
+                            scope,
+                          );
+                        }
                       }),
                     ),
                     Effect.tap(summary => reporter.complete(summary)),
@@ -1209,7 +1393,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   maintenance,
                   opportunity: 'index-completion',
                   targets: [
-                    {anchorIdentity: initialIdentity, checkoutId: layout.checkoutId, databasePath: layout.databasePath},
+                    {
+                      anchorIdentity: initialIdentity,
+                      ...(layout.scopeId === undefined ? {} : {anchorScopeId: layout.scopeId}),
+                      checkoutId: layout.checkoutId,
+                      databasePath: layout.databasePath,
+                    },
                   ],
                   threadnoteHome: request.threadnoteHome,
                 }).pipe(Effect.ignore),
@@ -1282,6 +1471,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
+            const commitScope =
+              request.project?.graph === undefined
+                ? undefined
+                : (yield* observeCodeGraphIndexScope(
+                    {...initialIdentity, headCommit: request.commit},
+                    request.project,
+                    {includeOverlay: false, languagePacks},
+                  )).scope;
             const producer = {
               platform: {
                 architecture: system.architecture === 'aarch64' ? 'arm64' : system.architecture,
@@ -1302,6 +1499,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               request.threadnoteHome,
               initialIdentity.checkoutId,
               initialIdentity.worktreeId,
+              commitScope?.scopeKey,
             );
             const reporter = yield* withCodeGraphMaintenanceRegistration(
               request.threadnoteHome,
@@ -1516,7 +1714,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                   maintenance,
                   opportunity: 'index-completion',
                   targets: [
-                    {anchorIdentity: initialIdentity, checkoutId: layout.checkoutId, databasePath: layout.databasePath},
+                    {
+                      anchorIdentity: initialIdentity,
+                      ...(layout.scopeId === undefined ? {} : {anchorScopeId: layout.scopeId}),
+                      checkoutId: layout.checkoutId,
+                      databasePath: layout.databasePath,
+                    },
                   ],
                   threadnoteHome: request.threadnoteHome,
                 }).pipe(Effect.ignore),

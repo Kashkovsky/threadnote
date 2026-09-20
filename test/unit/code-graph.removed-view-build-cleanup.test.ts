@@ -15,6 +15,7 @@ import {
   codeGraphRemovedViewBuildStatusInventory,
   type CodeGraphRemovedViewBuildCleanupOptions,
 } from '../../src/code_graph/removed_view_build_cleanup.js';
+import {codeGraphScopeViewKey} from '../../src/code_graph/scope_identity.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
 const REPOSITORY_ID = 'b'.repeat(64);
@@ -23,6 +24,7 @@ const SNAPSHOT_A = `cgsn_${'1'.repeat(40)}`;
 const SNAPSHOT_B = `cgsn_${'2'.repeat(40)}`;
 const BUILD_A = '11111111-1111-1111';
 const BUILD_B = '22222222-2222-2222';
+const SCOPE_ID = `code-graph-scope:${'d'.repeat(64)}`;
 const TestLayer = BunServices.layer;
 
 describe('removed view build-status cleanup', () => {
@@ -65,6 +67,37 @@ describe('removed view build-status cleanup', () => {
               verification.cursorToken,
             ),
           ).toEqual({state: 'complete'});
+        }),
+      ),
+    );
+
+    it.effect('cleans only the selected scoped build-status sidecar', () =>
+      withFixture(({fs, home, statusDirectory}) =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const scopedDirectory = path.join(
+            path.dirname(statusDirectory),
+            codeGraphScopeViewKey(WORKTREE_ID, SCOPE_ID),
+          );
+          yield* fs.makeDirectory(scopedDirectory, {recursive: true, mode: 0o700});
+          const base = buildStatus(BUILD_A, 'completed', SNAPSHOT_A);
+          const scoped = {...base, identity: {...base.identity, scopeId: SCOPE_ID}};
+          const full = buildStatus(BUILD_A, 'completed', SNAPSHOT_A);
+          yield* writeStatus(fs, scopedDirectory, scoped);
+          yield* writeStatus(fs, statusDirectory, full);
+
+          const result = yield* cleanupCodeGraphRemovedViewBuildStatusUnit(
+            home,
+            CHECKOUT_ID,
+            WORKTREE_ID,
+            SNAPSHOT_A,
+            undefined,
+            {scopeId: SCOPE_ID},
+          );
+
+          expect(result).toEqual({cursorToken: expect.stringMatching(/^bs1:/u), state: 'progress'});
+          expect(yield* fs.exists(join(scopedDirectory, `${BUILD_A}.json`))).toBe(false);
+          expect(yield* fs.exists(join(statusDirectory, `${BUILD_A}.json`))).toBe(true);
         }),
       ),
     );

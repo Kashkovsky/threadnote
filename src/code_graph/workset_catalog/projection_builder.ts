@@ -14,6 +14,7 @@ import {
 import {CodeGraphWorksetCatalogError} from './types.js';
 
 export interface CodeGraphWorksetRoutingProjectionRequestV1 {
+  readonly scopeId?: string;
   readonly identity: Pick<RepositoryIdentity, 'checkoutId' | 'repositoryId' | 'worktreeId'>;
   readonly leaseDurationMilliseconds?: number;
   readonly pageSize?: number;
@@ -37,6 +38,7 @@ export const buildCodeGraphWorksetRoutingProjectionScoped = Effect.fn(
       CodeGraphWorksetCatalogError.of('invalid-input', 'Workset routing projection identity is invalid.', {cause}),
   });
   return yield* buildCodeGraphReadySnapshotRoutingProjectionScoped(store, {
+    scopeId: request.scopeId,
     checkoutId: request.identity.checkoutId,
     databasePath: layout.databasePath,
     ...(request.leaseDurationMilliseconds === undefined
@@ -67,6 +69,7 @@ export const stageCodeGraphWorksetRoutingProjectionScoped = Effect.fn(
   return yield* streamCodeGraphReadySnapshotRoutingProjectionScoped(
     store,
     {
+      scopeId: request.scopeId,
       checkoutId: request.identity.checkoutId,
       databasePath: layout.databasePath,
       ...(request.leaseDurationMilliseconds === undefined

@@ -29,6 +29,7 @@ import {
 } from './store_reconciliation.js';
 import {type CompactLexicalSnapshotKeyRow, validatedCompactLexicalCount} from './store_build_core.js';
 import {nextCodeGraphActiveViewActivationTimestamp} from './store_active_views.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
 
 /** @internal Bounded keyset page retained for admission query-plan and load regressions. */
 
@@ -101,6 +102,7 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
   expectedSnapshotId: string,
   requireReconciliationSchema = false,
   cleanupEvidence?: CodeGraphRemovedViewCleanupEvidence,
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
   yield* validateViewRemovalTarget(worktreeId, expectedSnapshotId);
   if (cleanupEvidence !== undefined && !validRemovedViewCleanupEvidence(cleanupEvidence)) {
@@ -121,8 +123,8 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
            THEN snapshot_id ELSE NULL END AS snapshot_id,
            CASE WHEN typeof(activated_at) = 'text' AND length(CAST(activated_at AS BLOB)) = 24
              THEN activated_at ELSE NULL END AS activated_at
-         FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
-        [worktreeId],
+         FROM active_snapshots WHERE worktree_id = ? AND scope_id = ? LIMIT 2`,
+        [worktreeId, scopeId],
       );
       const removed = yield* sql.unsafe<{
         readonly expected_snapshot_id: unknown;
@@ -134,8 +136,8 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
              THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id,
            CASE WHEN typeof(removed_at) = 'text' AND length(CAST(removed_at AS BLOB)) = 24
              THEN removed_at ELSE NULL END AS removed_at
-         FROM removed_views WHERE worktree_id = ? LIMIT 2`,
-        [worktreeId],
+         FROM removed_views WHERE worktree_id = ? AND scope_id = ? LIMIT 2`,
+        [worktreeId, scopeId],
       );
       const activeSnapshotId = active[0]?.snapshot_id;
       const activeActivatedAt = active[0]?.activated_at;
@@ -180,6 +182,7 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
             false,
             cleanupEvidence,
             requireReconciliationSchema,
+            scopeId,
           );
           return {
             expectedSnapshotId,
@@ -216,19 +219,21 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
         return yield* CodeGraphStoreError.of('Code graph removed view generation is invalid.');
       }
       yield* sql`
-        INSERT INTO removed_views (worktree_id, expected_snapshot_id, removed_at)
-        VALUES (${worktreeId}, ${expectedSnapshotId}, ${removedAt})
-        ON CONFLICT(worktree_id) DO UPDATE SET
+        INSERT INTO removed_views (worktree_id, scope_id, expected_snapshot_id, removed_at)
+        VALUES (${worktreeId}, ${scopeId}, ${expectedSnapshotId}, ${removedAt})
+        ON CONFLICT(worktree_id, scope_id) DO UPDATE SET
           expected_snapshot_id = excluded.expected_snapshot_id,
           removed_at = excluded.removed_at
       `;
       yield* sql`
         DELETE FROM active_snapshots
-        WHERE worktree_id = ${worktreeId} AND snapshot_id = ${expectedSnapshotId}
+        WHERE worktree_id = ${worktreeId} AND scope_id = ${scopeId} AND snapshot_id = ${expectedSnapshotId}
       `;
       if ((yield* lastStatementChangeCount(sql)) !== 1) {
         return yield* CodeGraphStoreError.of('Code graph view pointer changed during removal.');
       }
+      yield* sql`DELETE FROM scope_applicability WHERE worktree_id = ${worktreeId} AND scope_id = ${scopeId}
+        AND active_snapshot_id = ${expectedSnapshotId}`;
       yield* ensureRemovedViewCleanupEpoch(
         sql,
         worktreeId,
@@ -237,6 +242,7 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
         !alreadyRemoved,
         cleanupEvidence,
         requireReconciliationSchema,
+        scopeId,
       );
       const retiredSnapshots = yield* Clock.currentTimeMillis.pipe(
         Effect.flatMap(now => retireReadySnapshotsIfUnused(sql, [expectedSnapshotId], now)),

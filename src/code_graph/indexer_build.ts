@@ -1,5 +1,4 @@
 import {Clock, Effect, FileSystem, Option, Path} from 'effect';
-import {sha256HexSync} from '../crypto/sha256.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process/diagnostics.js';
@@ -17,6 +16,7 @@ import {
   currentSnapshotReusableBaseReceipt,
   overlayFallbackDescription,
   reusableBaseFileSetFingerprint,
+  reusableBaseComponentRankingJson,
 } from './indexer_incremental.js';
 import {
   CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
@@ -94,21 +94,21 @@ import type {
 } from './indexer_types.js';
 import {preferredIncrementalBaseCommitGroups} from './incremental_base_selection.js';
 import type {CodeGraphInventory} from './inventory.js';
+import {committedCodeGraphInventory} from './inventory_scope.js';
+import {codeGraphScopedBaseReusable} from './scope_applicability.js';
 import {makeCodeGraphMaterializedShardWriteQueue} from './indexer_materialized_shard_writes.js';
 import {
   codeGraphMaterializedShardCacheBatchPlan,
   codeGraphMaterializedShardCacheWriteAdmission,
 } from './materialized_shard_cache_admission.js';
 import {assessCodeGraphLanguagePackDelta} from './languages/provenance.js';
-import {packDerivationIdentity, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
+import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 import {assessCodeGraphWorkspaceCompatibility} from './workspace_compatibility.js';
 import {codeGraphSnapshotBuildLockPath, type CodeGraphLayout} from './layout.js';
-import {compareCodeUnits} from './ordering.js';
 import {MaterializationSubphaseTiming} from './materialization_subphase_timing.js';
 import {codeGraphMaterializationSpoolPath} from './materialization_spool.js';
 import {
-  CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   materializedBatchShardDerivationIdentity,
   materializedFileShardIdentity,
   materializedShardRepositorySemanticEnvelope,
@@ -121,7 +121,6 @@ import {
   type CodeGraphStoreShape,
 } from './store.js';
 import {
-  CODE_GRAPH_EXTRACTOR_SET_VERSION,
   type CodeGraphIndexSummary,
   type CodeGraphMaterializationActivity,
   type CodeGraphMaterializationMetrics,
@@ -133,12 +132,6 @@ import {
 } from './types.js';
 
 export const CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY = 'Code graph build was interrupted before completion.';
-const REUSABLE_BASE_COMPONENT_RANKING_LIMIT = 256;
-
-function reusableBaseComponentRankingJson(workspace: CodeGraphWorkspace): string {
-  return JSON.stringify(workspace.projects.slice(0, REUSABLE_BASE_COMPONENT_RANKING_LIMIT));
-}
-
 export function settleInterruptedCodeGraphBuild(
   store: CodeGraphStoreShape,
   databasePath: string,
@@ -216,35 +209,7 @@ export function retiredSnapshotCleanupReporter(onProgress: CodeGraphIndexOptions
 
 export {prepareReadyAnalysisSummary, reuseReadySnapshot};
 
-export function codeGraphBuildRequestKey(
-  identity: Pick<RepositoryIdentity, 'checkoutId' | 'headCommit' | 'repositoryId' | 'worktreeId'>,
-  overlay: {readonly dirty: boolean; readonly fingerprint?: string},
-  languagePacks: CodeGraphLanguagePackRegistryShape,
-  incrementalOverlay: boolean | undefined,
-  ensureVectors: boolean,
-  environmentFingerprint: string,
-): string {
-  const parserIdentities = languagePacks.cacheIdentities.join('\n');
-  const derivationIdentities = languagePacks.packs.map(packDerivationIdentity).sort(compareCodeUnits).join('\n');
-  return sha256HexSync(
-    [
-      'code-graph-build-request-v5',
-      CODE_GRAPH_EXTRACTOR_SET_VERSION,
-      `lexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}`,
-      identity.repositoryId,
-      identity.checkoutId,
-      overlay.dirty ? identity.worktreeId : 'shared-commit',
-      identity.headCommit,
-      overlay.dirty ? (overlay.fingerprint ?? 'dirty-without-fingerprint') : 'clean',
-      overlay.dirty && incrementalOverlay === false ? 'direct-full' : 'default',
-      ensureVectors ? 'vectors:required' : 'vectors:structural-only',
-      'ignore-policy:3',
-      environmentFingerprint,
-      parserIdentities,
-      derivationIdentities,
-    ].join('\n'),
-  );
-}
+export {codeGraphBuildRequestKey} from './indexer_request_identity.js';
 
 export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnapshot')(function* (input: {
   readonly buildOwner: CodeGraphBuildOwnerIdentity;
@@ -311,8 +276,9 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
           });
         }
         const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
-        const graphContentId = graphContentIdentity(extractorSet, input.inventory.files);
+        const graphContentId = graphContentIdentity(extractorSet, input.inventory.files, input.inventory.scope);
         const commitReady = yield* reusableReadySnapshotForCleanCommit({
+          scopeId: input.inventory.scope?.scopeKey,
           databasePath: input.layout.databasePath,
           extractorSet,
           graphContentId,
@@ -360,12 +326,14 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
         graphContentId: graphContentIdentity(
           extractorSetIdentity(input.inventory.files, input.languagePacks),
           input.inventory.files,
+          input.inventory.scope,
         ),
         id: input.fallbackSnapshotId,
         repositoryId: input.identity.repositoryId,
         state: 'building',
         symbolCount: 0,
         worktreeId: input.identity.worktreeId,
+        scopeId: input.inventory.scope?.scopeKey,
       };
       const ownerToken = yield* input.store.claimPersistentBuild(input.layout.databasePath, input.identity, building, {
         logicalSnapshotId: input.logicalSnapshotId,
@@ -400,6 +368,7 @@ const attemptReusableCleanCandidate = Effect.fn('codeGraph.attemptReusableCleanC
   extractorSet: string,
 ) {
   if (candidate.snapshot.id === input.logicalSnapshotId) return Option.none<ReusableCleanSnapshotAttempt>();
+  if (!(yield* codeGraphScopedBaseReusable(input, candidate))) return Option.none<ReusableCleanSnapshotAttempt>();
   const baseByPath = new Map(candidate.files.map(file => [file.path, file]));
   if (input.inventory.files.some(file => file.source !== 'commit')) {
     return Option.none<ReusableCleanSnapshotAttempt>();
@@ -462,16 +431,17 @@ const attemptReusableCleanCandidate = Effect.fn('codeGraph.attemptReusableCleanC
             edgeCount: candidate.snapshot.edgeCount,
             extractorSet,
             fileCount: candidate.snapshot.fileCount,
-            graphContentId: graphContentIdentity(extractorSet, input.inventory.files),
+            graphContentId: graphContentIdentity(extractorSet, input.inventory.files, input.inventory.scope),
             id: input.logicalSnapshotId,
             repositoryId: input.identity.repositoryId,
+            scopeId: input.inventory.scope?.scopeKey,
             state: 'ready',
             symbolCount: candidate.snapshot.symbolCount,
             worktreeId: input.identity.worktreeId,
           };
           yield* input.onProgress?.({phase: 'activating', snapshotId: alias.id, subphase: 'validating-input'}) ??
             Effect.void;
-          yield* verifyIndexInput(input.identity, true, input.threadnoteHome, input.requestedOverlay);
+          yield* verifyIndexInput(input.identity, true, input.threadnoteHome, input.requestedOverlay, input.inventory);
           yield* input.store.activateCleanSnapshotAlias!(
             input.layout.databasePath,
             input.identity,
@@ -487,6 +457,7 @@ const attemptReusableCleanCandidate = Effect.fn('codeGraph.attemptReusableCleanC
           yield* verifyCommittedIndexInput({
             databasePath: input.layout.databasePath,
             identity: input.identity,
+            scopeInventory: input.inventory,
             physicalSnapshotId: candidate.snapshot.id,
             requestedOverlay: input.requestedOverlay,
             snapshotId: alias.id,
@@ -498,6 +469,7 @@ const attemptReusableCleanCandidate = Effect.fn('codeGraph.attemptReusableCleanC
           yield* verifyCommittedIndexInput({
             databasePath: input.layout.databasePath,
             identity: input.identity,
+            scopeInventory: input.inventory,
             physicalSnapshotId: candidate.snapshot.id,
             requestedOverlay: input.requestedOverlay,
             snapshotId: alias.id,
@@ -551,9 +523,10 @@ const attemptReusableCleanCandidate = Effect.fn('codeGraph.attemptReusableCleanC
           edgeCount: 0,
           extractorSet,
           fileCount: 0,
-          graphContentId: graphContentIdentity(extractorSet, input.inventory.files),
+          graphContentId: graphContentIdentity(extractorSet, input.inventory.files, input.inventory.scope),
           id: input.logicalSnapshotId,
           repositoryId: input.identity.repositoryId,
+          scopeId: input.inventory.scope?.scopeKey,
           state: 'building',
           symbolCount: 0,
           worktreeId: input.identity.worktreeId,
@@ -657,7 +630,10 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
   if (!input.store.activateCleanSnapshotAlias) {
     return Option.none<ReusableCleanSnapshotAttempt>();
   }
-  const committedDirtyRoot = yield* attemptCommittedDirtyRootAlias(input, workspace);
+  const committedDirtyRoot =
+    input.inventory.scope === undefined
+      ? yield* attemptCommittedDirtyRootAlias(input, workspace)
+      : Option.none<ReusableCleanSnapshotAttempt>();
   if (Option.isSome(committedDirtyRoot)) return committedDirtyRoot;
   if (!input.store.reusableCleanBase) return Option.none<ReusableCleanSnapshotAttempt>();
   const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
@@ -674,11 +650,12 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
       extractorSet,
       workspace.fingerprint,
       reusableBaseFileSetFingerprint(input.inventory.files),
-      graphContentIdentity(extractorSet, input.inventory.files),
+      graphContentIdentity(extractorSet, input.inventory.files, input.inventory.scope),
       attempt === 0 ? preferredCommitGroups : undefined,
       true,
       reusableBaseComponentRankingJson(workspace),
       excludedSnapshotIds,
+      input.inventory.scope?.scopeKey,
     );
     if (!candidate) break;
     excludedSnapshotIds.push(candidate.snapshot.id);
@@ -710,7 +687,7 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     }>();
   }
   const retainedOverlayCandidate =
-    input.inventory.overlayFingerprint && input.store.reusableOverlayBase
+    input.inventory.scope === undefined && input.inventory.overlayFingerprint && input.store.reusableOverlayBase
       ? yield* input.store.reusableOverlayBase(
           input.layout.databasePath,
           input.identity.repositoryId,
@@ -724,6 +701,7 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     false,
     committedExtractorSet,
     input.inventory.committedFiles,
+    input.inventory.scope,
   );
   const exactCommittedSnapshot = yield* input.store.currentLexicalReadySnapshotById(
     input.layout.databasePath,
@@ -732,7 +710,11 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
   if (!retainedOverlayCandidate && exactCommittedSnapshot && exactCommittedSnapshot.baseSnapshotId === undefined)
     return Option.none();
   const committedFileSetFingerprint = reusableBaseFileSetFingerprint(input.inventory.committedFiles);
-  const committedGraphContentId = graphContentIdentity(committedExtractorSet, input.inventory.committedFiles);
+  const committedGraphContentId = graphContentIdentity(
+    committedExtractorSet,
+    input.inventory.committedFiles,
+    input.inventory.scope,
+  );
   const exactCommittedDirtyRoot = exactCommittedSnapshot?.baseSnapshotId
     ? yield* input.store.currentLexicalReadySnapshotById(
         input.layout.databasePath,
@@ -777,6 +759,7 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     input.identity.repositoryId,
     input.identity.headCommit,
     committedExtractorSet,
+    input.inventory.scope?.scopeKey,
   );
   const commitReceipt = commitReady
     ? yield* input.store.reusableBaseReceipt(input.layout.databasePath, commitReady.id)
@@ -809,13 +792,16 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
       input.extractorSet,
       workspace.fingerprint,
       reusableBaseFileSetFingerprint(input.inventory.files),
-      graphContentIdentity(input.extractorSet, input.inventory.files),
+      graphContentIdentity(input.extractorSet, input.inventory.files, input.inventory.scope),
       preferredCommitGroups,
       true,
       reusableBaseComponentRankingJson(workspace),
+      undefined,
+      input.inventory.scope?.scopeKey,
     );
   }
   if (!candidate) return Option.none();
+  if (!(yield* codeGraphScopedBaseReusable(input, candidate))) return Option.none();
   const physicalSnapshot =
     exactCommittedDirtyAlias?.rootSnapshot ?? foldForwardBase?.rootSnapshot ?? candidate.snapshot;
   const leaseTokens = yield* acquireFoldForwardBaseLeases(
@@ -891,17 +877,16 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
 }) {
-  const cleanInventory: CodeGraphInventory = {
-    committedFiles: input.inventory.committedFiles,
-    committedParsedFiles: input.inventory.committedParsedFiles,
-    dirty: false,
-    files: input.inventory.committedFiles,
-    parsedFiles: input.inventory.committedParsedFiles,
-    skipped: input.inventory.skipped,
-  };
+  const cleanInventory = committedCodeGraphInventory(input.inventory);
   const extractorSet = extractorSetIdentity(cleanInventory.files, input.languagePacks);
-  const graphContentId = graphContentIdentity(extractorSet, cleanInventory.files);
-  const logicalSnapshotId = snapshotIdentity(input.identity, false, extractorSet, cleanInventory.files);
+  const graphContentId = graphContentIdentity(extractorSet, cleanInventory.files, cleanInventory.scope);
+  const logicalSnapshotId = snapshotIdentity(
+    input.identity,
+    false,
+    extractorSet,
+    cleanInventory.files,
+    cleanInventory.scope,
+  );
   const snapshotId = forcedSnapshotIdentity(logicalSnapshotId, input.forceGeneration);
   const existingExact = yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, snapshotId);
   const existing =
@@ -909,6 +894,7 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
     (input.force
       ? undefined
       : yield* reusableReadySnapshotForCleanCommit({
+          scopeId: input.inventory.scope?.scopeKey,
           databasePath: input.layout.databasePath,
           extractorSet,
           graphContentId,
@@ -960,6 +946,7 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
         const ready =
           (yield* input.store.currentLexicalReadySnapshotById(input.layout.databasePath, logicalSnapshotId)) ??
           (yield* reusableReadySnapshotForCleanCommit({
+            scopeId: input.inventory.scope?.scopeKey,
             databasePath: input.layout.databasePath,
             extractorSet,
             graphContentId,
@@ -991,6 +978,7 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
         graphContentId,
         id: snapshotId,
         repositoryId: input.identity.repositoryId,
+        scopeId: input.inventory.scope?.scopeKey,
         state: 'building',
         symbolCount: 0,
         worktreeId: input.identity.worktreeId,
@@ -1137,7 +1125,11 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
   }
   if (!incrementalApplied) {
     const attributeFacts = createCachedCodeGraphFactsAttributor(input.inventory.files, workspace);
-    const currentGraphContentId = graphContentIdentity(input.building.extractorSet, input.inventory.files);
+    const currentGraphContentId = graphContentIdentity(
+      input.building.extractorSet,
+      input.inventory.files,
+      input.inventory.scope,
+    );
     const repositorySemanticEnvelope = materializedShardRepositorySemanticEnvelope(input.inventory.files);
     const donorSnapshotIds = shardDonorIds(input.building.id, input.committedBase?.snapshot.id, input.existing?.id);
     const sourceBytesTotal = input.inventory.files.reduce((total, file) => total + file.size, 0);
@@ -1786,9 +1778,10 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
   yield* input.onProgress?.({phase: 'activating', snapshotId: ready.id, subphase: 'validating-input'}) ?? Effect.void;
   yield* verifyIndexInput(
     input.identity,
-    input.activatePointer && !input.building.dirty,
+    input.activatePointer && !input.building.dirty && input.inventory.scope === undefined,
     input.threadnoteHome,
     input.requestedOverlay,
+    input.inventory,
   );
   yield* input.onProgress?.({
     phase: 'activating',
@@ -1831,12 +1824,13 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
     yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ?? Effect.void;
     // A completed dirty target can become stale while progress callbacks run. Promote its coherent
     // snapshot before the post-promotion fence requests a retry; clean targets still require exact input.
-    if (input.building.dirty) {
+    if (input.building.dirty && input.inventory.scope === undefined) {
       yield* verifyIndexInput(input.identity, false, input.threadnoteHome, input.requestedOverlay);
     } else {
       yield* verifyCommittedIndexInput({
         databasePath: input.layout.databasePath,
         identity: input.identity,
+        scopeInventory: input.inventory,
         requestedOverlay: input.requestedOverlay,
         snapshotId: activated.id,
         store: input.store,
@@ -1851,6 +1845,7 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
     yield* verifyCommittedIndexInput({
       databasePath: input.layout.databasePath,
       identity: input.identity,
+      scopeInventory: input.inventory,
       requestedOverlay: input.requestedOverlay,
       snapshotId: activated.id,
       store: input.store,

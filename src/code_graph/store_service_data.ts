@@ -1,3 +1,5 @@
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
+import {selectScopeApplicability, recordScopeApplicability} from './store_scope_applicability.js';
 import {DateTime, Effect} from 'effect';
 import {succeedUndefined} from '../effect/optional.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
@@ -139,6 +141,8 @@ type CodeGraphStoreDataMethods = Pick<
   | 'retireIncompleteWorktreeSnapshots'
   | 'markFailed'
   | 'readySnapshot'
+  | 'loadScopeApplicability'
+  | 'recordScopeApplicability'
   | 'readySnapshotById'
   | 'currentLexicalReadySnapshotById'
   | 'readySnapshotForCommit'
@@ -542,10 +546,10 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('load active code graph view identities', cause)),
       ),
-    loadActiveViewFence: (databasePath, worktreeId) =>
+    loadActiveViewFence: (databasePath, worktreeId, scopeId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists ? useReadOnlyDatabase(databasePath, selectActiveViewFence(worktreeId)) : succeedUndefined,
+          exists ? useReadOnlyDatabase(databasePath, selectActiveViewFence(worktreeId, scopeId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load active code graph view fence', cause)),
       ),
@@ -600,10 +604,10 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                 yield* upsertRepository(sql, identity);
                 const registered = yield* sql<{readonly id: string}>`
                           INSERT INTO snapshots (
-                            id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
+                            id, repository_id, worktree_id, scope_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
                             dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at
                           ) VALUES (
-                            ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
+                            ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY}, ${snapshot.commit},
                             ${snapshot.graphContentId ?? snapshot.id}, ${snapshot.baseSnapshotId ?? null},
                             ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
                             ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${DateTime.formatIso(yield* DateTime.now)}
@@ -619,6 +623,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                             failure_summary = NULL
                           WHERE snapshots.repository_id = excluded.repository_id
                             AND snapshots.worktree_id = excluded.worktree_id
+                            AND snapshots.scope_id = excluded.scope_id
                             AND snapshots.commit_id = excluded.commit_id
                             AND snapshots.graph_content_id = excluded.graph_content_id
                             AND snapshots.base_snapshot_id IS excluded.base_snapshot_id
@@ -695,6 +700,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             effect => withWriterGate(databasePath, effect),
             onProgress,
             options?.cleanupMode,
+            options?.scopeId,
           ),
         );
         for (const snapshotId of result.spoolCleanupSnapshotIds) {
@@ -721,10 +727,22 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('fail code graph snapshot', cause)),
       ),
-    readySnapshot: (databasePath, worktreeId) =>
+    loadScopeApplicability: (databasePath, worktreeId, scopeId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists ? useReadOnlyDatabase(databasePath, selectReadySnapshot(worktreeId)) : succeedUndefined,
+          exists ? useReadOnlyDatabase(databasePath, selectScopeApplicability(worktreeId, scopeId)) : succeedUndefined,
+        ),
+        Effect.mapError(cause => storeError('load code graph scope applicability', cause)),
+      ),
+    recordScopeApplicability: (databasePath, snapshotId, evidence, scope) =>
+      withWriterGate(
+        databasePath,
+        useDatabase(databasePath, recordScopeApplicability(snapshotId, evidence, scope)),
+      ).pipe(Effect.mapError(cause => storeError('record code graph scope applicability', cause))),
+    readySnapshot: (databasePath, worktreeId, scopeId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists ? useReadOnlyDatabase(databasePath, selectReadySnapshot(worktreeId, scopeId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load ready code graph snapshot', cause)),
       ),
@@ -744,20 +762,23 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('load current-format ready code graph snapshot by identity', cause)),
       ),
-    readySnapshotForCommit: (databasePath, repositoryId, commit, extractorSet) =>
+    readySnapshotForCommit: (databasePath, repositoryId, commit, extractorSet, scopeId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
           exists
-            ? useReadOnlyDatabase(databasePath, selectReadySnapshotForCommit(repositoryId, commit, extractorSet))
+            ? useReadOnlyDatabase(
+                databasePath,
+                selectReadySnapshotForCommit(repositoryId, commit, extractorSet, scopeId),
+              )
             : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load ready code graph snapshot for commit', cause)),
       ),
-    recentReadySnapshotsForRepository: (databasePath, repositoryId) =>
+    recentReadySnapshotsForRepository: (databasePath, repositoryId, scopeId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
           exists
-            ? useReadOnlyDatabase(databasePath, selectRecentReadySnapshotsForRepository(repositoryId))
+            ? useReadOnlyDatabase(databasePath, selectRecentReadySnapshotsForRepository(repositoryId, scopeId))
             : Effect.succeed([]),
         ),
         Effect.mapError(cause => storeError('load recent ready code graph snapshots for repository', cause)),
@@ -796,6 +817,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
       allowExtractorMismatch,
       workspaceProjectsJson,
       excludedSnapshotIds,
+      scopeId,
     ) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
@@ -812,26 +834,30 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                   allowExtractorMismatch,
                   workspaceProjectsJson,
                   excludedSnapshotIds,
+                  scopeId,
                 ),
               )
             : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base', cause)),
       ),
-    reusableCleanBaseForCommit: (databasePath, repositoryId, commit) =>
+    reusableCleanBaseForCommit: (databasePath, repositoryId, commit, scopeId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
           exists
-            ? useReadOnlyDatabase(databasePath, selectReusableCleanBaseForCommit(repositoryId, commit))
+            ? useReadOnlyDatabase(databasePath, selectReusableCleanBaseForCommit(repositoryId, commit, scopeId))
             : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base for commit', cause)),
       ),
-    reusableCleanBaseForCommitPaths: (databasePath, repositoryId, commit, paths) =>
+    reusableCleanBaseForCommitPaths: (databasePath, repositoryId, commit, paths, scopeId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
           exists
-            ? useReadOnlyDatabase(databasePath, selectReusableCleanBaseForCommitPaths(repositoryId, commit, paths))
+            ? useReadOnlyDatabase(
+                databasePath,
+                selectReusableCleanBaseForCommitPaths(repositoryId, commit, paths, scopeId),
+              )
             : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base paths for commit', cause)),

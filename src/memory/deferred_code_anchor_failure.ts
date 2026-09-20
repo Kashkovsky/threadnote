@@ -18,6 +18,17 @@ export function deferredCodeAnchorCaptureFailureItem(
       state: 'pending',
     };
   }
+  if (error.failureCode === 'outside-project-graph') {
+    return {
+      code: error.failureCode,
+      memoryUri,
+      reason:
+        'At least one requested code reference is outside the selected project graph; replace this memory with code references admitted by that graph.',
+      recoveryAction: 'replace-memory-code-refs',
+      retryable: false,
+      state: 'failed',
+    };
+  }
   if (error.failureCode !== 'code-reference-unresolved') return undefined;
   return {
     code: error.failureCode,

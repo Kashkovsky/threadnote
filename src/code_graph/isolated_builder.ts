@@ -16,6 +16,7 @@ import {
 import {codeGraphLayout, codeGraphWorktreeSpawnLockPath} from './layout.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import type {CodeGraphProgress, RepositoryIdentity} from './types.js';
+import type {ProjectManifest} from '../types.js';
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, type CodeGraphBuilderAdmissionClass} from './builder_admission.js';
 import {CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE, CodeGraphRefreshDemandSuperseded} from './refresh_demand.js';
 
@@ -70,12 +71,16 @@ export interface CodeGraphIsolatedBuilderOptions {
   /** Preserve MCP/workset structural-only indexing unless the caller explicitly enables vectors. */
   readonly noVectors?: boolean;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
+  /** Carries the configured view through the pre-spawn status/lock routing. */
+  readonly project?: Pick<ProjectManifest, 'graph' | 'uri'>;
   /** @internal Deterministic shared-sidecar seam for cross-host spawn tests. */
   readonly readStatus?: Effect.Effect<ObservedCodeGraphBuildStatus | undefined, unknown>;
   /** Privacy-safe build request identity used for exact completed-result reuse. */
   readonly requestKey?: string;
   /** Opaque private coordination claim. Never included in build-status or MCP output. */
   readonly refreshDemandToken?: string;
+  /** Resolved opaque view key; absent retains historical full-view sidecars. */
+  readonly scopeId?: string;
   /** @internal Deterministic identity seam for pre-spawn compatibility tests. */
   readonly resolveIdentity?: (cwd: string) => Effect.Effect<RepositoryIdentity, unknown>;
   readonly spawn?: CodeGraphIsolatedBuilderSpawner;
@@ -309,11 +314,19 @@ export const runIsolatedCodeGraphIndex: (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const identity = yield* options.resolveIdentity?.(options.cwd) ?? resolveRepositoryIdentity(options.cwd);
-  const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
+  // The child command receives the caller cwd, so command routing can select
+  // the same configured view without serializing manifest details into IPC.
+  const layout = codeGraphLayout(
+    path,
+    options.threadnoteHome,
+    identity.checkoutId,
+    identity.worktreeId,
+    options.scopeId,
+  );
   yield* options.assertRuntimeSchemaCompatible(layout.databasePath);
   const plan = (options.spawnPlan ?? codeGraphIsolatedBuilderSpawnPlan)(system, {
     admissionClass: options.admissionClass,
-    cwd: identity.repoRoot,
+    cwd: options.cwd,
     full: options.full,
     noVectors: options.noVectors,
     refreshDemandToken: options.refreshDemandToken,
@@ -328,6 +341,7 @@ export const runIsolatedCodeGraphIndex: (
     options.threadnoteHome,
     identity.checkoutId,
     identity.worktreeId,
+    options.scopeId,
   );
   const admission = yield* withExclusiveFileLock(
     fs,

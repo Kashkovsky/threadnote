@@ -676,7 +676,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
         // reclaims at most one physical table page per acquisition.
         yield* scheduleRoutinePhysicalCleanup(databasePath);
       }).pipe(Effect.mapError(cause => storeError('promote code graph snapshot', cause))),
-    observeView: (databasePath, worktreeId, expectedSnapshotId) =>
+    observeView: (databasePath, worktreeId, expectedSnapshotId, scopeId) =>
       Effect.gen(function* () {
         yield* validateViewRemovalTarget(worktreeId, expectedSnapshotId);
         if (!(yield* fs.exists(databasePath))) {
@@ -693,7 +693,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
             yield* sql.unsafe('PRAGMA busy_timeout = 0');
-            return yield* sql.withTransaction(observeActiveView(sql, worktreeId, expectedSnapshotId));
+            return yield* sql.withTransaction(observeActiveView(sql, worktreeId, expectedSnapshotId, scopeId));
           }),
         );
       }).pipe(Effect.mapError(cause => storeError('observe code graph view', cause))),
@@ -852,6 +852,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               expectedSnapshotId,
               options?.requireReconciliationSchema === true,
               options?.cleanupEvidence,
+              options?.scopeId,
             );
           });
           const result = yield* options?.requireReconciliationSchema === true

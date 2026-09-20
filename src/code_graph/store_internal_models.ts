@@ -8,6 +8,7 @@ import {
 } from './languages/types.js';
 
 interface SnapshotRow {
+  readonly scope_id?: string;
   readonly base_snapshot_id: unknown;
   readonly commit_id: string;
   readonly completed_at: unknown;

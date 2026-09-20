@@ -5,6 +5,7 @@ export type PersistentExtensionGroup = 'analysis' | 'build' | 'checkpoint' | 'cr
 export type CodeGraphPersistentSchemaMigrationPhase =
   | 'added-build-owner-instance'
   | 'added-checkpoint-import'
+  | 'added-graph-scope-authority'
   | 'added-materialization-plan'
   | 'added-removed-view-cleanup'
   | 'created-extensions'

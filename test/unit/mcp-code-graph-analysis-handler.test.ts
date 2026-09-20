@@ -22,6 +22,15 @@ import {analysisSnapshot, pagedAnalysisStore} from '../helpers/code-graph-analys
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('registered analyze_code_graph snapshot resolution', () => {
+  effectIt.effect('propagates the explicit project selector to graph status', () => {
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});
+    return Effect.gen(function* () {
+      const result = yield* harness.invoke({callerCwd: ready.identity.repoRoot, operation: 'stats', project: 'app-a'});
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(harness.observation.statusOptions[0]).toMatchObject({project: 'app-a'});
+    }).pipe(provideTestLayer(harness.layer));
+  });
   effectIt.effect('rejects missing operation at the adapter boundary for both code-graph tools', () => {
     const ready = codeGraphStatus({ready: true, stale: false});
     const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});

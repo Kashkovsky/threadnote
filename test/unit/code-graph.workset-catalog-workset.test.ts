@@ -17,6 +17,25 @@ import {
 import type {ResolvedWorkset} from '../../src/types.js';
 
 describe('code graph workset preparation and status', () => {
+  it('binds graph definition drift while canonicalizing root and include order', () => {
+    const base = resolvedWorkset(['app'], []);
+    const scoped: ResolvedWorkset = {
+      ...base,
+      projects: base.projects.map(project => ({
+        ...project,
+        graph: {closure: 'dependencies', roots: ['apps/a', 'apps/b'], include: ['scripts', 'shared']},
+      })),
+    };
+    const reordered: ResolvedWorkset = {
+      ...scoped,
+      projects: scoped.projects.map(project => ({
+        ...project,
+        graph: {...project.graph!, roots: ['apps/b', 'apps/a'], include: ['shared', 'scripts']},
+      })),
+    };
+    expect(codeGraphWorksetManifestDigest(scoped)).not.toBe(codeGraphWorksetManifestDigest(base));
+    expect(codeGraphWorksetManifestDigest(scoped)).toBe(codeGraphWorksetManifestDigest(reordered));
+  });
   it('classifies exact publication, snapshot drift, identity drift, and missing catalog receipts', () => {
     const identity = repositoryIdentity('repository-a');
     const snapshot = readySnapshot(identity, 'snapshot-a');

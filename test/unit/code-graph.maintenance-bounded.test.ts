@@ -30,6 +30,7 @@ import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
@@ -1319,6 +1320,7 @@ function makeRecoverableInterruptedExtension(databasePath: string): void {
     database.run('PRAGMA foreign_keys = OFF');
     database.run('BEGIN IMMEDIATE');
     try {
+      for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
       database.exec(`
         DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
         DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;
@@ -1350,6 +1352,7 @@ function makePreReconciliationIndexRevision7(databasePath: string): void {
   try {
     database.run('BEGIN IMMEDIATE');
     try {
+      for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
       database.exec(`
         DROP TRIGGER removed_views_cleanup_revoke_delete;
         DROP TRIGGER removed_views_cleanup_revoke_insert;
@@ -1380,6 +1383,7 @@ function downgradeToReleasedRevision6(databasePath: string): void {
     database.run('PRAGMA foreign_keys = OFF');
     database.run('BEGIN IMMEDIATE');
     try {
+      for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
       database.exec(`
         DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
         DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;

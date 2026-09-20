@@ -961,14 +961,23 @@ const prepareSnapshotPromotionCapacity = Effect.fn('codeGraph.prepareSnapshotPro
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   const now = yield* Clock.currentTimeMillis;
-  const removedSnapshotId = yield* promotionRemovedSnapshotId(sql, identity.worktreeId);
+  const snapshot = yield* sql<{
+    readonly scope_id: string;
+  }>`SELECT scope_id FROM snapshots WHERE id = ${snapshotId} LIMIT 1`;
+  const removedSnapshotId = yield* promotionRemovedSnapshotId(sql, identity.worktreeId, snapshot[0]?.scope_id);
   const leaseCapacity = yield* snapshotPromotionLeaseCapacity(
     sql,
     removedSnapshotId === undefined ? [snapshotId] : [snapshotId, removedSnapshotId],
     now,
   );
   const activatedAt = DateTime.formatIso(yield* DateTime.now);
-  const fixedFactBytes = persistentBoundTextBytes(0, [identity.worktreeId, snapshotId, activatedAt, 'retired']);
+  const fixedFactBytes = persistentBoundTextBytes(0, [
+    identity.worktreeId,
+    snapshot[0]?.scope_id ?? 'full-repository',
+    snapshotId,
+    activatedAt,
+    'retired',
+  ]);
   return {
     activatedAt,
     boundary: {
@@ -980,7 +989,7 @@ const prepareSnapshotPromotionCapacity = Effect.fn('codeGraph.prepareSnapshotPro
       // displaced-leaf retirement.
       // Non-leaf history remains routine maintenance because proving a whole
       // descendant closure is not transaction-bounded.
-      rowCount: saturatingCapacityAdd(leaseCapacity.rows, 4),
+      rowCount: saturatingCapacityAdd(leaseCapacity.rows, 5),
     },
     maximumLeaseFactBytes: leaseCapacity.factBytes,
     maximumLeaseRows: leaseCapacity.rows,

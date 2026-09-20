@@ -2,6 +2,19 @@ import {Effect} from 'effect';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import type {CodeGraphStatus, RepositoryIdentity} from './types.js';
 import {worktreeOverlayState} from './inventory.js';
+import type {CodeGraphQueryScope} from './query_scope.js';
+
+export function sameCodeGraphRepositoryIdentity(left: RepositoryIdentity, right: RepositoryIdentity): boolean {
+  return (
+    left.repoRoot === right.repoRoot &&
+    left.gitCommonDirectory === right.gitCommonDirectory &&
+    left.checkoutId === right.checkoutId &&
+    left.worktreeId === right.worktreeId &&
+    left.repositoryId === right.repositoryId &&
+    left.headCommit === right.headCommit &&
+    left.objectFormat === right.objectFormat
+  );
+}
 
 export function codeGraphSnapshotMatchesWorktree(
   snapshot: {readonly commit: string; readonly dirty: boolean; readonly overlayFingerprint?: string},
@@ -16,8 +29,13 @@ export function codeGraphSnapshotMatchesWorktree(
 }
 
 export interface CodeGraphStatusOptions {
+  readonly project?: string;
+  readonly manifestPath?: string;
   /** @internal Run after the owned identity resolution and before reading graph status. */
-  readonly afterIdentityObserved?: (identity: RepositoryIdentity) => Effect.Effect<void, unknown>;
+  readonly afterIdentityObserved?: (
+    identity: RepositoryIdentity,
+    project?: CodeGraphQueryScope['project'],
+  ) => Effect.Effect<void, unknown>;
   readonly observeWorktree?: boolean;
   /** @internal Evidence harnesses can isolate status work from the detached maintenance lane. */
   readonly requestMaintenance?: boolean;
@@ -70,6 +88,8 @@ export interface CodeGraphTraversalTimeBudgets {
 }
 
 export interface CodeGraphStatusObservation {
+  readonly manifestPath?: string;
+  readonly projectScope?: CodeGraphQueryScope;
   /** Read-only shared evidence selected without changing this worktree's active pointer. */
   readonly borrowedSnapshotId?: string;
   readonly identity: RepositoryIdentity;

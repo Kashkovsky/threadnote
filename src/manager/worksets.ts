@@ -23,6 +23,7 @@ import {
 import {continueCodeGraphWorksetQueryV2, queryCodeGraphWorksetV2} from '../code_graph/workset_query_v2.js';
 import {CODE_GRAPH_WORKSET_ROUTER_LIMITS} from '../code_graph/workset_router.js';
 import {sha256HexSync} from '../crypto/sha256.js';
+import {queueCodeGraphScopeRetirements, reconcileCodeGraphScopeRetirements} from '../code_graph/scope_retirement.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import type {ApplicationServices} from '../effect/runtime.js';
 import {parseSeedManifest, readSeedManifest} from '../manifest.js';
@@ -33,8 +34,19 @@ import {
 } from './project_roots.js';
 import {updateManagerWorksetPrepareProgress} from './workset_progress.js';
 import {managerWorksetCatalogHttp} from './workset_catalog_http.js';
+import {validateManagerConfiguredProjectPath, validateManagerConfiguredProjectUri} from './project_manifest_values.js';
 import {validateProjectSeedPatterns} from '../seed_pattern.js';
-import {parseResourceId} from '../storage/resource-id.js';
+import {
+  copyManagerProjectGraph,
+  managerProjectGraphsEqual,
+  managerProjectGraphIdentityEqual,
+  managerProjectsEqual,
+  managerProjectSeedsEqual,
+  managerProjectYamlDocumentSupported,
+  previewConfiguredManagerProjectGraphScope,
+  reconcileManagerProjectGraph,
+  validateManagerProjectGraphInput,
+} from './project_graph_scope.js';
 import type {ProjectManifest, RuntimeConfig, SeedManifest, WorksetManifest} from '../types.js';
 
 const UTF8 = new TextEncoder();
@@ -79,6 +91,7 @@ export interface ManagerWorksetProjectSummary {
 }
 
 export interface ManagerManifestProject {
+  readonly graph?: ProjectManifest['graph'];
   readonly name: string;
   readonly path: string;
   readonly seed: readonly string[];
@@ -151,6 +164,7 @@ export interface ManagerWorksetDefinitionMutationResult {
 export type ManagerManifestProjectMutation =
   | {
       readonly expectedRevision: string;
+      readonly graph?: ProjectManifest['graph'];
       readonly name: string;
       readonly operation: 'create';
       readonly path: string;
@@ -158,7 +172,9 @@ export type ManagerManifestProjectMutation =
       readonly uri: string;
     }
   | {
+      readonly clearGraph?: true;
       readonly expectedRevision: string;
+      readonly graph?: ProjectManifest['graph'];
       readonly name: string;
       readonly operation: 'update';
       readonly path: string;
@@ -259,7 +275,10 @@ const JOB_REGISTRIES = new WeakMap<object, ManagerWorksetJobRegistry>();
 export function managerWorksetRequestAllowedDuringMaintenance(method: string, pathname: string): boolean {
   return (
     pathname === '/api/worksets' ||
-    (method === 'GET' && (pathname === '/api/worksets/definition' || pathname === '/api/worksets/project')) ||
+    (method === 'GET' &&
+      (pathname === '/api/worksets/definition' ||
+        pathname === '/api/worksets/project' ||
+        pathname === '/api/worksets/project-graph-preview')) ||
     (method === 'GET' && (pathname === '/api/worksets/jobs' || pathname.startsWith('/api/worksets/jobs/'))) ||
     pathname === '/api/worksets/definitions' ||
     pathname === '/api/worksets/projects' ||
@@ -380,11 +399,22 @@ export const readManagerManifestProject = Effect.fn('managerWorksets.readProject
       })[0]
     : undefined;
   return {
+    ...(project.graph === undefined ? {} : {graph: project.graph}),
     name: project.name,
     path: project.path,
     seed: project.seed,
     uri: rawUri ?? project.uri,
   } satisfies ManagerManifestProject;
+});
+
+/** Read-only preview for a configured project's optional graph definition. */
+export const previewManagerManifestProjectGraphScope = Effect.fn('managerWorksets.previewProjectGraphScope')(function* (
+  config: RuntimeConfig,
+  projectName: string,
+) {
+  return yield* previewConfiguredManagerProjectGraphScope(config, projectName).pipe(
+    Effect.mapError(cause => ManagerWorksetApiError.of(cause.code, cause.message, cause.status)),
+  );
 });
 
 export const readManagerWorksetDefinition = Effect.fn('managerWorksets.readDefinition')(function* (
@@ -526,6 +556,7 @@ function mutateManagerManifest<Operation extends string>(
               changed: false,
               operation,
               retirementTargets: [],
+              scopeRetirementTargets: [],
               warnings: change.warnings,
             };
           }
@@ -545,10 +576,12 @@ function mutateManagerManifest<Operation extends string>(
               changed: false,
               operation,
               retirementTargets: [],
+              scopeRetirementTargets: [],
               warnings: change.warnings,
             };
           }
           const parsedCandidate = yield* parseManifestForMutation(candidate, config.manifestPath);
+          const scopeRetirementTargets = yield* queueCodeGraphScopeRetirements(config, manifest, parsedCandidate);
           const candidateCatalog = yield* managerWorksetValidation(() =>
             managerWorksetCatalogFromManifest(parsedCandidate, sha256HexSync(candidate)),
           );
@@ -618,6 +651,7 @@ function mutateManagerManifest<Operation extends string>(
             catalog: candidateCatalog,
             changed: true,
             operation,
+            scopeRetirementTargets,
             retirementTargets: retirementCaptures.flatMap(capture =>
               capture.target === undefined ? [] : [capture.target],
             ),
@@ -639,6 +673,11 @@ function mutateManagerManifest<Operation extends string>(
             )
           : cause,
       ),
+    );
+    yield* Effect.forEach(
+      promoted.scopeRetirementTargets,
+      target => reconcileCodeGraphScopeRetirements(target).pipe(Effect.ignore),
+      {concurrency: 1},
     );
     const retirementWarnings = yield* Effect.forEach(
       promoted.retirementTargets,
@@ -690,6 +729,9 @@ function routeManagerWorksetRequest(request: ManagerWorksetApiRequest) {
     }
     if (method === 'GET' && url.pathname === '/api/worksets/project') {
       return response(200, yield* readManagerManifestProject(config, requiredQuery(url, 'project')));
+    }
+    if (method === 'GET' && url.pathname === '/api/worksets/project-graph-preview') {
+      return response(200, yield* previewManagerManifestProjectGraphScope(config, requiredQuery(url, 'project')));
     }
     if (method === 'GET' && url.pathname === '/api/worksets/jobs') {
       const jobs = [...registryFor(request.contextKey).jobs.values()]
@@ -1026,8 +1068,12 @@ function definitionMutationFromBody(body: Record<string, unknown>): ManagerWorks
 function projectMutationFromBody(body: Record<string, unknown>): ManagerManifestProjectMutation {
   const expectedRevision = requiredText(body.expectedRevision, 'expectedRevision', 64);
   if (body.operation === 'create' || body.operation === 'update') {
+    if (body.clearGraph === true && body.graph !== undefined) {
+      throw ManagerWorksetApiError.of('invalid-input', 'Specify either graph or clearGraph, not both.', 400);
+    }
     const common = {
       expectedRevision,
+      ...(body.graph === undefined ? {} : {graph: validateManagerProjectGraph(body.graph)}),
       name: requiredText(body.name, 'name', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
       path: requiredLiteralText(body.path, 'path', MANAGER_PROJECT_VALUE_BYTES_MAXIMUM),
       seed: projectSeedPatterns(body.seed),
@@ -1037,6 +1083,7 @@ function projectMutationFromBody(body: Record<string, unknown>): ManagerManifest
       ? {...common, operation: 'create'}
       : {
           ...common,
+          ...(body.clearGraph === true ? {clearGraph: true as const} : {}),
           operation: 'update',
           project: requiredText(body.project, 'project', MANAGER_WORKSET_NAME_BYTES_MAXIMUM),
         };
@@ -1106,7 +1153,7 @@ function applyProjectMutation(
   const configuredUri = map.get('uri');
   if (typeof configuredUri !== 'string') throw unsupportedProjectYaml();
   const configuredUriChanged = mutation.uri !== configuredUri;
-  if (projectsEqual(current, value) && !configuredUriChanged) {
+  if (managerProjectsEqual(current, value) && !configuredUriChanged) {
     return {changed: false, retireWorksets: [], warnings: []};
   }
   const renamed = current.name !== value.name;
@@ -1120,8 +1167,9 @@ function applyProjectMutation(
   }
   if (current.path !== value.path) setManagerYamlString(map, 'path', value.path);
   if (configuredUriChanged) setManagerYamlString(map, 'uri', value.uri);
-  if (!textArraysEqual(current.seed, value.seed)) reconcileSeedSequence(map, value.seed);
-  const graphIdentityChanged = renamed || current.path !== value.path || current.uri !== value.uri;
+  if (!managerProjectSeedsEqual(current.seed, value.seed)) reconcileSeedSequence(map, value.seed);
+  if (!managerProjectGraphsEqual(current.graph, value.graph)) reconcileManagerProjectGraph(map, value.graph);
+  const graphIdentityChanged = !managerProjectGraphIdentityEqual(current, value);
   const retireWorksets = renamed
     ? uniqueCaseInsensitive([...affected, ...affectedWorksets(manifest, value.name)])
     : affected;
@@ -1182,29 +1230,37 @@ function validatedProject(
   const duplicateUri = manifest.projects.some(project => project !== current && project.uri === uri);
   if (duplicateUri)
     throw ManagerWorksetApiError.of('uri-conflict', 'Another manifest project already owns that resource URI.', 409);
-  return {name, path, seed, uri};
+  const graph =
+    input.graph !== undefined
+      ? copyManagerProjectGraph(input.graph)
+      : 'clearGraph' in input && input.clearGraph === true
+        ? undefined
+        : current?.graph;
+  return {...(graph === undefined ? {} : {graph: copyManagerProjectGraph(graph)}), name, path, seed, uri};
 }
 
-function validateManagerProjectPath(value: string): string {
-  if (
-    value.length === 0 ||
-    UTF8.encode(value).byteLength > MANAGER_PROJECT_VALUE_BYTES_MAXIMUM ||
-    hasLiteralControlCharacter(value)
-  ) {
+export function validateManagerProjectGraph(value: unknown): NonNullable<ProjectManifest['graph']> {
+  try {
+    return validateManagerProjectGraphInput(value, MANAGER_WORKSET_MEMBER_MAXIMUM);
+  } catch (cause) {
     throw ManagerWorksetApiError.of(
       'invalid-input',
-      'Project path must be bounded text without control characters.',
+      cause instanceof Error ? cause.message : 'Project graph configuration is invalid.',
       400,
     );
   }
-  if (!isAbsoluteManagerProjectPath(value)) {
-    throw ManagerWorksetApiError.of('invalid-input', 'Project path must be absolute or start with ~/.', 400);
+}
+
+function validateManagerProjectPath(value: string): string {
+  try {
+    return validateManagerConfiguredProjectPath(value, MANAGER_PROJECT_VALUE_BYTES_MAXIMUM);
+  } catch (cause) {
+    throw ManagerWorksetApiError.of(
+      'invalid-input',
+      cause instanceof Error ? cause.message : 'Project path is invalid.',
+      400,
+    );
   }
-  const normalized = value.replaceAll('\\', '/');
-  if (normalized.split('/').includes('..')) {
-    throw ManagerWorksetApiError.of('invalid-input', 'Project path must not contain parent traversal segments.', 400);
-  }
-  return value;
 }
 
 function validateManagerProjectRootMutation(
@@ -1236,36 +1292,13 @@ function validateManagerProjectRootMutation(
       );
 }
 
-function isAbsoluteManagerProjectPath(value: string): boolean {
-  return (
-    value.startsWith('/') ||
-    value === '~' ||
-    value.startsWith('~/') ||
-    value.startsWith('~\\') ||
-    /^[a-z]:[\\/]/iu.test(value) ||
-    /^\\\\/u.test(value)
-  );
-}
-
 function validateManagerProjectUri(value: string, retainedCanonicalUri?: string): string {
   try {
-    const parsed = parseResourceId(value);
-    if (
-      parsed.anchor !== undefined ||
-      parsed.namespace !== 'resources' ||
-      parsed.segments[0] !== 'repos' ||
-      parsed.segments.length < 2
-    ) {
-      throw new Error('unsupported project resource root');
-    }
-    if (parsed.canonicalUri !== value && parsed.canonicalUri !== retainedCanonicalUri) {
-      throw new Error('noncanonical project resource root');
-    }
-    return parsed.canonicalUri;
-  } catch {
+    return validateManagerConfiguredProjectUri(value, retainedCanonicalUri);
+  } catch (cause) {
     throw ManagerWorksetApiError.of(
       'invalid-input',
-      'Project URI must be a canonical anchorless threadnote://resources/repos/... root.',
+      cause instanceof Error ? cause.message : 'Project URI is invalid.',
       400,
     );
   }
@@ -1458,25 +1491,7 @@ function managerProjectYamlSupported(document: ReturnType<typeof parseDocument>)
 }
 
 function assertSupportedManagerProjectYaml(document: ReturnType<typeof parseDocument>): void {
-  const projects = document.get('projects', true);
-  if (!isSeq(projects) || hasYamlAnchor(projects)) throw unsupportedProjectYaml();
-  for (const item of projects.items) {
-    if (!isMap(item) || hasYamlAnchor(item)) throw unsupportedProjectYaml();
-    for (const field of ['name', 'path', 'uri'] as const) {
-      const value = item.get(field, true);
-      if (!isScalar(value) || typeof value.value !== 'string' || hasYamlAnchor(value)) {
-        throw unsupportedProjectYaml();
-      }
-    }
-    const seed = item.get('seed', true);
-    if (
-      !isSeq(seed) ||
-      hasYamlAnchor(seed) ||
-      seed.items.some(pattern => !isScalar(pattern) || typeof pattern.value !== 'string' || hasYamlAnchor(pattern))
-    ) {
-      throw unsupportedProjectYaml();
-    }
-  }
+  if (!managerProjectYamlDocumentSupported(document)) throw unsupportedProjectYaml();
 }
 
 function assertSupportedManagerWorksetYaml(document: ReturnType<typeof parseDocument>): void {
@@ -1756,9 +1771,8 @@ function contextBriefMode(value: unknown): ContextBrief.ContextBriefMode {
 function validateExpectedRevision(value: string): void {
   if (!SHA256.test(value)) throw ManagerWorksetApiError.of('invalid-input', 'expectedRevision is invalid.', 400);
 }
-function findWorksetNodeIndex(sequence: YAMLSeq, name: string): number {
-  return findWorksetNodeIndexes(sequence, name)[0] ?? -1;
-}
+const findWorksetNodeIndex = (sequence: YAMLSeq, name: string): number =>
+  findWorksetNodeIndexes(sequence, name)[0] ?? -1;
 function findWorksetNodeIndexes(sequence: YAMLSeq, name: string): readonly number[] {
   return findNamedMapIndexes(sequence, name);
 }
@@ -1769,19 +1783,6 @@ function findNamedMapIndexes(sequence: YAMLSeq, name: string): readonly number[]
     const value = item.get('name');
     return typeof value === 'string' && value.toLowerCase() === target ? [index] : [];
   });
-}
-
-function projectsEqual(left: ProjectManifest, right: ProjectManifest): boolean {
-  return (
-    left.name === right.name &&
-    left.path === right.path &&
-    left.uri === right.uri &&
-    textArraysEqual(left.seed, right.seed)
-  );
-}
-
-function textArraysEqual(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function definitionsEqual(left: WorksetManifest, right: WorksetManifest): boolean {

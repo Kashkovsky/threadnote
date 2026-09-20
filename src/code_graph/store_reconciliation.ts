@@ -65,6 +65,7 @@ import {
 } from './store_reconciliation_core.js';
 import {
   CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL,
+  CODE_GRAPH_SCOPED_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL,
   codeGraphRemovedViewCleanupBaseSchemaAdmission,
   inspectRemovedViewCleanupAdmissionCursor,
 } from './store_schema_core.js';
@@ -75,9 +76,21 @@ import {
 } from './store_maintenance_core.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
+import {codeGraphScopeAuthorityInstalled, codeGraphScopeAuthoritySchemaCompatible} from './store_scope_schema.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
+import {
+  SCOPED_REMOVED_VIEW_CLEANUP_COLUMNS,
+  SCOPED_REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS,
+} from './store_scope_schema_contracts.js';
+import {
+  CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES,
+  CODE_GRAPH_SCOPE_CURSOR_PATTERN,
+  codeGraphScopeCursor,
+  codeGraphScopeCursorParameters,
+} from './store_scope_cursor.js';
 
 const WORKTREE_RECONCILIATION_CURSOR_KEY = 'worktree_reconciliation_cursor';
-const WORKTREE_RECONCILIATION_CURSOR_PATTERN = /^[0-9a-f]{64}$/u;
+const WORKTREE_RECONCILIATION_CURSOR_PATTERN = CODE_GRAPH_SCOPE_CURSOR_PATTERN;
 const WORKTREE_RECONCILIATION_CURSOR_OPERATION = 'claim code graph reconciliation candidates';
 const WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS = 67 satisfies SchemaMetadataMaximumRows;
 const ORPHAN_PROVENANCE_CURSOR_KEY = 'orphan_provenance_cursor';
@@ -138,7 +151,7 @@ const admitOrRecoverWorktreeReconciliationSchema = Effect.fn('codeGraph.admitOrR
     const cursor = yield* inspectBoundedSchemaMetadataValue(
       sql,
       WORKTREE_RECONCILIATION_CURSOR_KEY,
-      64,
+      CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES,
       WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS,
     );
     if (cursor.state === 'invalid') {
@@ -153,7 +166,11 @@ const admitOrRecoverWorktreeReconciliationSchema = Effect.fn('codeGraph.admitOrR
 const inspectWorktreeReconciliationCursor = Effect.fn('codeGraph.inspectWorktreeReconciliationCursor')(function* (
   sql: SqlClient.SqlClient,
 ) {
-  const inspection = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
+  const inspection = yield* inspectBoundedSchemaMetadataValue(
+    sql,
+    WORKTREE_RECONCILIATION_CURSOR_KEY,
+    CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES,
+  );
   if (inspection.state === 'invalid') {
     return yield* worktreeReconciliationCursorStructuralError();
   }
@@ -180,7 +197,11 @@ const clearWorktreeReconciliationCursor = Effect.fn('codeGraph.clearWorktreeReco
   if ((yield* lastStatementChangeCount(sql)) !== 1) {
     return yield* worktreeReconciliationCursorChangedError();
   }
-  const clearedCursor = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
+  const clearedCursor = yield* inspectBoundedSchemaMetadataValue(
+    sql,
+    WORKTREE_RECONCILIATION_CURSOR_KEY,
+    CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES,
+  );
   if (clearedCursor.state !== 'missing') {
     return yield* worktreeReconciliationCursorChangedError();
   }
@@ -218,7 +239,11 @@ const recordWorktreeReconciliationCursor = Effect.fn('codeGraph.recordWorktreeRe
   if ((yield* lastStatementChangeCount(sql)) !== 1) {
     return yield* worktreeReconciliationCursorChangedError();
   }
-  const advancedCursor = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
+  const advancedCursor = yield* inspectBoundedSchemaMetadataValue(
+    sql,
+    WORKTREE_RECONCILIATION_CURSOR_KEY,
+    CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES,
+  );
   if (advancedCursor.state !== 'recorded' || advancedCursor.value !== nextCursor) {
     return yield* worktreeReconciliationCursorChangedError();
   }
@@ -244,6 +269,7 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
           readonly snapshot_state: string;
           readonly tombstoned: number;
           readonly worktree_id: string;
+          readonly scope_id: string;
         }>(statement.text, statement.parameters);
       };
       const after = yield* selectPage('after', limit);
@@ -251,7 +277,9 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
         cursor === undefined || after.length >= limit
           ? after
           : [...after, ...(yield* selectPage('through', limit - after.length))];
-      const nextCursor = rows.at(-1)?.worktree_id;
+      const lastRow = rows.at(-1);
+      const nextCursor =
+        lastRow === undefined ? undefined : codeGraphScopeCursor(lastRow.worktree_id, lastRow.scope_id);
       if (
         rows.some(
           row =>
@@ -274,6 +302,7 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
           repositoryId: row.repository_id!,
           snapshotId: row.snapshot_id,
           worktreeId: row.worktree_id,
+          ...(row.scope_id === CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY ? {} : {scopeId: row.scope_id}),
         })) satisfies readonly CodeGraphWorktreeReconciliationCandidate[];
     }),
   );
@@ -434,7 +463,7 @@ const observeOrphanProvenanceView = Effect.fn('codeGraph.observeOrphanProvenance
         return yield* CodeGraphStoreError.of('Code graph reconciliation schema is unavailable.');
       }
       const rows = yield* sql.unsafe<{readonly snapshot_id: unknown}>(
-        `SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
+        `SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ? ORDER BY scope_id LIMIT 1`,
         [worktreeId],
       );
       const snapshotId = rows[0]?.snapshot_id;
@@ -472,11 +501,30 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
   ) {
     const extensionRevision = yield* removedViewCleanupRecordedRevision(sql);
     if (extensionRevision.state === 'invalid') return false;
+    const scoped = yield* codeGraphScopeAuthorityInstalled(sql);
+    if (scoped && !(yield* codeGraphScopeAuthoritySchemaCompatible(sql))) return false;
+    const cleanupTriggerDefinitions = scoped
+      ? SCOPED_REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS
+      : REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS;
     for (const tableName of Object.keys(CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS)) {
       if (!isCodeGraphReconciliationTable(tableName)) return false;
       const table = tableName;
       if (table === 'removed_view_cleanup' && !requireCleanup) continue;
       if (table === 'removed_views' && !requireRemovedViewAuthority) continue;
+      const scopedColumn = {
+        name: 'scope_id',
+        notNull: true,
+        primaryKeyPosition: table === 'snapshots' ? 0 : 2,
+        type: 'TEXT',
+        defaultValue: `'${CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY}'`,
+      };
+      const expectedColumns = !scoped
+        ? CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS[table]
+        : table === 'removed_view_cleanup'
+          ? SCOPED_REMOVED_VIEW_CLEANUP_COLUMNS
+          : table === 'active_snapshots' || table === 'removed_views' || table === 'snapshots'
+            ? [...CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS[table], scopedColumn]
+            : CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS[table];
       const columns = yield* sql.unsafe<{
         readonly dflt_value: unknown;
         readonly hidden: number;
@@ -486,7 +534,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
         readonly type: string;
       }>(
         `SELECT * FROM pragma_table_xinfo('${table}')
-         LIMIT ${CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS[table].length + 1}`,
+         LIMIT ${expectedColumns.length + 1}`,
       );
       const observed = columns
         .map(column => ({
@@ -498,9 +546,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
           type: column.type.toUpperCase(),
         }))
         .sort((left, right) => left.name.localeCompare(right.name));
-      const expected = [...CODE_GRAPH_RECONCILIATION_TABLE_COLUMNS[table]].sort((left, right) =>
-        left.name.localeCompare(right.name),
-      );
+      const expected = [...expectedColumns].sort((left, right) => left.name.localeCompare(right.name));
       if (
         observed.length !== expected.length ||
         observed.some((column, index) => {
@@ -520,7 +566,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
       }
     }
     if (
-      !(yield* authorityPrimaryKeyBinary(sql, 'active_snapshots', 'worktree_id')) ||
+      (!scoped && !(yield* authorityPrimaryKeyBinary(sql, 'active_snapshots', 'worktree_id'))) ||
       !(yield* authorityPrimaryKeyBinary(sql, 'snapshot_leases', 'token')) ||
       !(yield* authorityPrimaryKeyBinary(sql, 'snapshots', 'id')) ||
       (requireLeaseExpiryIndex &&
@@ -641,7 +687,7 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
       trigger => trigger.name === 'active_snapshots_require_current_extractor',
     );
     const cleanupTriggers = verifiedTriggers.filter(trigger =>
-      REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.some(expected => expected.name === trigger.name),
+      cleanupTriggerDefinitions.some(expected => expected.name === trigger.name),
     );
     const expectedTriggerCount = 1 + cleanupTriggers.length;
     if (
@@ -649,11 +695,15 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
       activeTrigger.length !== 1 ||
       activeTrigger[0]?.tbl_name !== 'active_snapshots' ||
       normalizeSchemaDefinition(activeTrigger[0]?.bounded_sql ?? '') !==
-        normalizeSchemaDefinition(CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL) ||
-      (cleanupTriggers.length !== 0 && cleanupTriggers.length !== REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.length) ||
-      (requireCleanup && cleanupTriggers.length !== REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.length) ||
+        normalizeSchemaDefinition(
+          scoped
+            ? CODE_GRAPH_SCOPED_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL
+            : CODE_GRAPH_ACTIVE_SNAPSHOT_EXTRACTOR_TRIGGER_SQL,
+        ) ||
+      (cleanupTriggers.length !== 0 && cleanupTriggers.length !== cleanupTriggerDefinitions.length) ||
+      (requireCleanup && cleanupTriggers.length !== cleanupTriggerDefinitions.length) ||
       cleanupTriggers.some(trigger => {
-        const expected = REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.find(candidate => candidate.name === trigger.name);
+        const expected = cleanupTriggerDefinitions.find(candidate => candidate.name === trigger.name);
         return (
           expected === undefined ||
           trigger.tbl_name !== 'removed_views' ||
@@ -718,13 +768,15 @@ const ensureRemovedViewCleanupEpoch = Effect.fn('codeGraph.ensureRemovedViewClea
   bindNewEpochEvidence: boolean,
   evidence?: CodeGraphRemovedViewCleanupEvidence,
   requireExistingEvidenceMatch = false,
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
-  const existing = yield* selectRemovedViewCleanupEntry(sql, worktreeId, expectedSnapshotId);
+  const existing = yield* selectRemovedViewCleanupEntry(sql, worktreeId, expectedSnapshotId, scopeId);
   if (existing !== undefined) {
     if (existing.removedAt !== updatedAt) {
       yield* sql`
         DELETE FROM removed_view_cleanup
         WHERE worktree_id = ${worktreeId}
+          AND scope_id = ${scopeId}
           AND expected_snapshot_id = ${expectedSnapshotId}
           AND removed_at = ${existing.removedAt}
           AND epoch = ${existing.epoch}
@@ -757,12 +809,12 @@ const ensureRemovedViewCleanupEpoch = Effect.fn('codeGraph.ensureRemovedViewClea
   const epoch = yield* allocateRemovedViewCleanupEpoch(sql);
   yield* sql`
     INSERT INTO removed_view_cleanup (
-      worktree_id, expected_snapshot_id, removed_at, epoch, repository_id,
+      worktree_id, scope_id, expected_snapshot_id, removed_at, epoch, repository_id,
       provenance_record_digest, provenance_record_identity,
       phase, cursor_token, revision, attempts, next_attempt_at,
       blocked_code, updated_at
     ) VALUES (
-      ${worktreeId}, ${expectedSnapshotId}, ${updatedAt}, ${epoch}, ${boundEvidence?.repositoryId ?? null},
+      ${worktreeId}, ${scopeId}, ${expectedSnapshotId}, ${updatedAt}, ${epoch}, ${boundEvidence?.repositoryId ?? null},
       ${boundEvidence?.recordDigest ?? null}, ${boundEvidence?.recordIdentity ?? null},
       'vector-pointers', NULL, 0, 0, 0, NULL, ${updatedAt}
     )
@@ -826,11 +878,12 @@ export function codeGraphRemovedViewCleanupAdmissionPageStatement(
     cursor === undefined
       ? ''
       : boundary === 'after'
-        ? 'WHERE removed.worktree_id > ?'
-        : 'WHERE removed.worktree_id <= ?';
+        ? 'WHERE (removed.worktree_id, removed.scope_id) > (?, ?)'
+        : 'WHERE (removed.worktree_id, removed.scope_id) <= (?, ?)';
   return {
-    parameters: cursor === undefined ? [limit] : [cursor, limit],
+    parameters: cursor === undefined ? [limit] : [...codeGraphScopeCursorParameters(cursor), limit],
     text: `SELECT
+        scope_id,
         CASE WHEN typeof(worktree_id) = 'text' AND length(CAST(worktree_id AS BLOB)) = 64
           THEN worktree_id ELSE NULL END AS worktree_id,
         CASE WHEN typeof(expected_snapshot_id) = 'text'
@@ -840,7 +893,7 @@ export function codeGraphRemovedViewCleanupAdmissionPageStatement(
           THEN removed_at ELSE NULL END AS removed_at
       FROM removed_views AS removed
       ${predicate}
-      ORDER BY removed.worktree_id
+      ORDER BY removed.worktree_id, removed.scope_id
       LIMIT ?`,
   };
 }
@@ -858,7 +911,7 @@ export function codeGraphRemovedViewCleanupDuePageStatement(
     text: `SELECT ${REMOVED_VIEW_CLEANUP_BOUNDED_ROW_PROJECTION}
       FROM removed_view_cleanup AS cleanup INDEXED BY removed_view_cleanup_due
       WHERE cleanup.phase <> 'complete' AND cleanup.next_attempt_at <= ?
-      ORDER BY cleanup.next_attempt_at, cleanup.worktree_id, cleanup.expected_snapshot_id
+      ORDER BY cleanup.next_attempt_at, cleanup.worktree_id, cleanup.scope_id, cleanup.expected_snapshot_id
       LIMIT ?`,
   };
 }
@@ -877,6 +930,7 @@ const admitRemovedViewCleanupEpoch = Effect.fn('codeGraph.admitRemovedViewCleanu
       readonly expected_snapshot_id: unknown;
       readonly removed_at: unknown;
       readonly worktree_id: unknown;
+      readonly scope_id: string;
     }>(statement.text, statement.parameters);
   };
   const after = yield* selectPage('after', CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS);
@@ -888,6 +942,7 @@ const admitRemovedViewCleanupEpoch = Effect.fn('codeGraph.admitRemovedViewCleanu
     readonly expectedSnapshotId: string;
     readonly removedAt: string;
     readonly worktreeId: string;
+    readonly scopeId: string;
   }> = [];
   for (const row of rows) {
     if (
@@ -904,12 +959,20 @@ const admitRemovedViewCleanupEpoch = Effect.fn('codeGraph.admitRemovedViewCleanu
       expectedSnapshotId: row.expected_snapshot_id,
       removedAt: row.removed_at,
       worktreeId: row.worktree_id,
+      scopeId: row.scope_id,
     });
   }
 
-  let nextCursor = tombstones.at(-1)?.worktreeId;
+  const lastTombstone = tombstones.at(-1);
+  let nextCursor =
+    lastTombstone === undefined ? undefined : codeGraphScopeCursor(lastTombstone.worktreeId, lastTombstone.scopeId);
   for (const tombstone of tombstones) {
-    const existing = yield* selectRemovedViewCleanupEntry(sql, tombstone.worktreeId, tombstone.expectedSnapshotId);
+    const existing = yield* selectRemovedViewCleanupEntry(
+      sql,
+      tombstone.worktreeId,
+      tombstone.expectedSnapshotId,
+      tombstone.scopeId,
+    );
     if (existing !== undefined && existing.removedAt === tombstone.removedAt) continue;
     yield* validateRemovedViewSnapshotAuthority(sql, tombstone.expectedSnapshotId, false);
     yield* ensureRemovedViewCleanupEpoch(
@@ -918,8 +981,11 @@ const admitRemovedViewCleanupEpoch = Effect.fn('codeGraph.admitRemovedViewCleanu
       tombstone.expectedSnapshotId,
       tombstone.removedAt,
       false,
+      undefined,
+      false,
+      tombstone.scopeId,
     );
-    nextCursor = tombstone.worktreeId;
+    nextCursor = codeGraphScopeCursor(tombstone.worktreeId, tombstone.scopeId);
     break;
   }
   if (nextCursor !== undefined) {
@@ -995,7 +1061,12 @@ const authorizeRemovedViewCleanup = Effect.fn('codeGraph.authorizeRemovedViewCle
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
         return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is unavailable.');
       }
-      const current = yield* selectRemovedViewCleanupEntry(sql, entry.worktreeId, entry.expectedSnapshotId);
+      const current = yield* selectRemovedViewCleanupEntry(
+        sql,
+        entry.worktreeId,
+        entry.expectedSnapshotId,
+        entry.scopeId,
+      );
       if (current === undefined || !sameRemovedViewCleanupEntry(current, entry)) return {state: 'stale'} as const;
       const authority = yield* observeRemovedViewCleanupAuthority(sql, entry);
       if (authority.state === 'stale') {
@@ -1004,6 +1075,12 @@ const authorizeRemovedViewCleanup = Effect.fn('codeGraph.authorizeRemovedViewCle
       }
       if (authority.state !== 'authorized') return authority;
       yield* removeMatchingLegacyCleanupPointer(sql, entry, authority.matchingActivePointer);
+      if (entry.phase === 'provenance') {
+        const view = yield* observeOrphanProvenanceView(sql, entry.worktreeId);
+        if (view.state === 'active') {
+          return {observedSnapshotId: view.snapshotId, state: 'active-pointer-changed'} as const;
+        }
+      }
       return {entry, state: 'authorized'} as const;
     }),
   );
@@ -1022,7 +1099,12 @@ const updateRemovedViewCleanup = Effect.fn('codeGraph.updateRemovedViewCleanup')
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
         return yield* CodeGraphStoreError.of('Code graph removed view cleanup schema is unavailable.');
       }
-      const current = yield* selectRemovedViewCleanupEntry(sql, entry.worktreeId, entry.expectedSnapshotId);
+      const current = yield* selectRemovedViewCleanupEntry(
+        sql,
+        entry.worktreeId,
+        entry.expectedSnapshotId,
+        entry.scopeId,
+      );
       if (current === undefined || !sameRemovedViewCleanupEntry(current, entry)) return {state: 'stale'} as const;
       const authority = yield* observeRemovedViewCleanupAuthority(sql, entry);
       if (authority.state === 'stale') {

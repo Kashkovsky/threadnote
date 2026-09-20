@@ -1,3 +1,4 @@
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
 import {DateTime, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {codeGraphContentIdentity} from './graph_identity.js';
@@ -209,10 +210,10 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
       yield* sql`DELETE FROM snapshots WHERE id = ${snapshot.id}`;
       yield* sql`
         INSERT INTO snapshots (
-          id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
+          id, repository_id, worktree_id, scope_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
           dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at, completed_at
         ) VALUES (
-          ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
+          ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY}, ${snapshot.commit},
           ${snapshot.graphContentId ?? snapshot.id}, NULL, ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
           ${snapshot.overlayFingerprint ?? null},
           'building', ${snapshot.fileCount}, ${snapshot.symbolCount}, ${snapshot.edgeCount}, ${startedAt}, NULL
@@ -912,11 +913,11 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
       yield* sql`DELETE FROM snapshots WHERE id = ${snapshot.id}`;
       yield* sql`
         INSERT INTO snapshots (
-          id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
+          id, repository_id, worktree_id, scope_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
           dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count,
           started_at, completed_at
         ) VALUES (
-          ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
+          ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY}, ${snapshot.commit},
           ${snapshot.graphContentId ?? baseGraphContentId}, ${baseSnapshotId}, ${snapshot.extractorSet},
           0, NULL, 'ready', ${snapshot.fileCount},
           ${snapshot.symbolCount}, ${snapshot.edgeCount}, ${completedAt}, ${completedAt}

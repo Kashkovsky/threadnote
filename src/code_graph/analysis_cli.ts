@@ -100,12 +100,17 @@ export function resolveCodeGraphAnalysisSnapshot<RefreshError, RefreshRequiremen
   refresh: () => Effect.Effect<unknown, RefreshError, RefreshRequirements>,
   options: {
     readonly operation: CodeGraphCliAnalysisState['operation'];
+    readonly project?: string;
     readonly readTimeoutMilliseconds?: number;
   },
 ) {
   return Effect.gen(function* () {
     const query = yield* CodeGraphQueryService;
-    let status = yield* query.status(config.agentContextHome, cwd, {requestMaintenance: false});
+    const statusOptions =
+      options.project === undefined
+        ? {requestMaintenance: false}
+        : {manifestPath: config.manifestPath, project: options.project, requestMaintenance: false};
+    let status = yield* query.status(config.agentContextHome, cwd, statusOptions);
     const identity = status.identity;
     if (status.stale || !status.readySnapshot) {
       status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
@@ -141,7 +146,7 @@ export function resolveCodeGraphAnalysisSnapshot<RefreshError, RefreshRequiremen
           ),
         };
       }
-      status = yield* query.status(config.agentContextHome, cwd, {requestMaintenance: false});
+      status = yield* query.status(config.agentContextHome, cwd, statusOptions);
     }
     if (freshnessPolicy === 'current' && (status.stale || status.freshness !== 'current')) {
       return yield* CodeGraphAnalysisCommandError.make({

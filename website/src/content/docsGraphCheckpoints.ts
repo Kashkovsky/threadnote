@@ -4,6 +4,9 @@ export const graphCliCommand: CliCommandReference = {
   command: 'graph',
   summary: 'Build, inspect, analyze, report on, and export the current snapshot-aware polyglot code graph.',
   examples: [
+    'threadnote graph scope set storefront --root apps/storefront --include tools/storefront-generated',
+    'threadnote graph scope preview storefront',
+    'threadnote graph scope clear storefront --confirm',
     'threadnote graph query --query "session refresh"',
     'threadnote graph query --workset commerce --query "checkout contract" --budget-tokens 1250',
     'threadnote graph query --workset commerce --cursor cgwc_…',
@@ -77,6 +80,10 @@ threadnote graph checkpoint import \\
     {
       type: 'note',
       text: 'No Workset is required. Portable checkpoints touch only disposable native graph storage; schema-v1 memories, uncited legacy memories, stable threadnote:// URIs, and ordinary recall remain available after upgrade.',
+    },
+    {
+      type: 'warning',
+      text: 'Checkpoint v1 exports only full-repository graphs. A scoped project graph is rejected because v1 cannot yet carry the verified scope receipt needed to prove what the artifact covers. Rebuild the scoped graph locally, or clear the project scope and export a full graph when portable transfer is required.',
     },
     {
       type: 'warning',

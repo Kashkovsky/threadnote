@@ -55,6 +55,8 @@ const CODE_GRAPH_MAINTENANCE_TRAILING = Symbol('codeGraphMaintenanceTrailing');
 export interface CodeGraphRoutineMaintenanceTick {
   readonly allowIndexPreparation?: true;
   readonly anchorIdentity?: RepositoryIdentity;
+  /** Scoped callers retain build-history sidecars for the selected graph view only. */
+  readonly anchorScopeId?: string;
   /** Trusted local path resolved only after a missing-view candidate is observed. */
   readonly anchorPath?: string;
   /** One-shot foreground work can suppress the detached automatic tail. Defaults to true. */
@@ -196,7 +198,13 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
         if (identity === undefined || identity.checkoutId !== input.checkoutId) {
           return Effect.succeed(emptyMaintenanceResult());
         }
-        const layout = codeGraphLayout(path, input.threadnoteHome, input.checkoutId, identity.worktreeId);
+        const layout = codeGraphLayout(
+          path,
+          input.threadnoteHome,
+          input.checkoutId,
+          identity.worktreeId,
+          input.anchorScopeId,
+        );
         if (layout.databasePath !== input.databasePath) return Effect.succeed(emptyMaintenanceResult());
         return maintainCodeGraphBuildHistoryUnit(layout, identity.worktreeId).pipe(
           Effect.map(result => {
@@ -251,6 +259,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
             entry.worktreeId,
             entry.expectedSnapshotId,
             entry.cursorToken,
+            ...(entry.scopeId === undefined ? [] : [{scopeId: entry.scopeId}]),
           ).pipe(
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(Path.Path, path),
@@ -305,8 +314,8 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
                   state: 'deferred',
                 }),
               ),
-        withTargetLock: (input, worktreeId, effect) =>
-          withCodeGraphTargetWorktreeLock(input.threadnoteHome, input.checkoutId, worktreeId, effect).pipe(
+        withTargetLock: (input, worktreeId, effect, scopeId) =>
+          withCodeGraphTargetWorktreeLock(input.threadnoteHome, input.checkoutId, worktreeId, effect, scopeId).pipe(
             Effect.provideService(Crypto.Crypto, crypto),
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(Path.Path, path),
@@ -369,9 +378,6 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
           }),
         );
       const runReconciliationOrPreparationWithoutHistory: CodeGraphRoutineMaintenanceRun = input => {
-        if (input.anchorIdentity === undefined && input.anchorPath === undefined) {
-          return Effect.succeed(emptyMaintenanceResult());
-        }
         if (input.allowIndexPreparation !== true) return runReconciliation(input);
         return store
           .prepareWorktreeReconciliationIndexes(input.databasePath, {
@@ -978,6 +984,7 @@ function mergeMaintenanceTick(
     allowIndexPreparation:
       incoming.allowIndexPreparation === true || existing.allowIndexPreparation === true ? true : undefined,
     anchorIdentity: incoming.anchorIdentity ?? existing.anchorIdentity,
+    anchorScopeId: incoming.anchorScopeId ?? existing.anchorScopeId,
     anchorPath: incoming.anchorPath ?? existing.anchorPath,
     pressure: strongestStoragePressure(existing.pressure, incoming.pressure),
   };

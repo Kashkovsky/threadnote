@@ -1,3 +1,5 @@
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
+import {codeGraphScopeAuthorityInstalled} from './store_scope_schema.js';
 import {Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {compareCodeUnits} from './ordering.js';
@@ -102,6 +104,7 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
   const requestedProjectId = Option.getOrUndefined(options.projectId ?? Option.none());
   const requestedSnapshotId = Option.getOrUndefined(options.snapshotId ?? Option.none());
   const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
+  const scoped = yield* codeGraphScopeAuthorityInstalled(sql);
   const rows = yield* sql.unsafe<
     SnapshotRow & {readonly activated_at: unknown; readonly display_name: string; readonly view_worktree_id: string}
   >(
@@ -113,18 +116,26 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
      WHERE snapshots.state = 'ready'
        AND (? IS NULL OR snapshots.id = ?)
        AND (? IS NULL OR active_snapshots.worktree_id = ?)
+       ${scoped && options.scopeId !== undefined ? 'AND active_snapshots.scope_id = ?' : ''}
        ${
          removedViewsAvailable
            ? `AND NOT EXISTS (
                 SELECT 1 FROM removed_views AS removed
                 WHERE removed.worktree_id = active_snapshots.worktree_id
+                  ${scoped ? 'AND removed.scope_id = active_snapshots.scope_id' : ''}
                   AND removed.expected_snapshot_id = active_snapshots.snapshot_id
               )`
            : ''
        }
      ORDER BY active_snapshots.activated_at DESC, snapshots.completed_at DESC, snapshots.id
      LIMIT 1`,
-    [requestedSnapshotId ?? null, requestedSnapshotId ?? null, viewWorktreeId ?? null, viewWorktreeId ?? null],
+    [
+      requestedSnapshotId ?? null,
+      requestedSnapshotId ?? null,
+      viewWorktreeId ?? null,
+      viewWorktreeId ?? null,
+      ...(scoped && options.scopeId !== undefined ? [options.scopeId] : []),
+    ],
   );
   const row = rows[0];
   if (!row) return undefined;
@@ -282,6 +293,9 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
         repository: {displayName: row.display_name, repositoryId: row.repository_id},
         snapshot: snapshotFromRow(row),
         viewWorktreeId: row.view_worktree_id,
+        ...(row.scope_id !== undefined && row.scope_id !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY
+          ? {viewScopeId: row.scope_id}
+          : {}),
         workspaceCount,
         workspaces: workspaces.map(workspace => ({
           buildSystem: workspace.build_system,
@@ -326,6 +340,9 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       repository: {displayName: row.display_name, repositoryId: row.repository_id},
       snapshot: snapshotFromRow(row),
       viewWorktreeId: row.view_worktree_id,
+      ...(row.scope_id !== undefined && row.scope_id !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY
+        ? {viewScopeId: row.scope_id}
+        : {}),
       workspaceCount: 0,
       workspaces: [],
       workspacesTruncated: false,
@@ -490,6 +507,9 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
       repository: {displayName: row.display_name, repositoryId: row.repository_id},
       snapshot: snapshotFromRow(row),
       viewWorktreeId: row.view_worktree_id,
+      ...(row.scope_id !== undefined && row.scope_id !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY
+        ? {viewScopeId: row.scope_id}
+        : {}),
       workspaceCount: workspaces.length,
       workspaces: workspaces.map(workspace => ({
         buildSystem: workspace.build_system,
@@ -559,6 +579,9 @@ const selectVisualizationCatalog = Effect.fn('codeGraph.selectVisualizationCatal
     },
     snapshot: snapshotFromRow(row),
     viewWorktreeId: row.view_worktree_id,
+    ...(row.scope_id !== undefined && row.scope_id !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY
+      ? {viewScopeId: row.scope_id}
+      : {}),
     workspaceCount: 0,
     workspaces: [],
     workspacesTruncated: false,
@@ -575,8 +598,9 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
   const viewOffset = boundedVisualizationCatalogOffset(options.viewOffset);
   const viewQuery = boundedVisualizationCatalogQuery(options.viewQuery);
   const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
-  const worktrees = yield* sql.unsafe<{readonly worktree_id: string}>(
-    `SELECT active_snapshots.worktree_id
+  const scoped = yield* codeGraphScopeAuthorityInstalled(sql);
+  const worktrees = yield* sql.unsafe<{readonly worktree_id: string; readonly scope_id?: string}>(
+    `SELECT active_snapshots.worktree_id ${scoped ? ', active_snapshots.scope_id' : ''}
      FROM active_snapshots
      JOIN snapshots ON snapshots.id = active_snapshots.snapshot_id
      JOIN repositories ON repositories.id = snapshots.repository_id
@@ -586,10 +610,12 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
            ? `AND NOT EXISTS (
                 SELECT 1 FROM removed_views AS removed
                 WHERE removed.worktree_id = active_snapshots.worktree_id
+                  ${scoped ? 'AND removed.scope_id = active_snapshots.scope_id' : ''}
                   AND removed.expected_snapshot_id = active_snapshots.snapshot_id
               )`
            : ''
        }
+       ${scoped && options.scopeId !== undefined ? 'AND active_snapshots.scope_id = ?' : ''}
        ${
          viewQuery.length === 0
            ? ''
@@ -597,11 +623,20 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
        }
      ORDER BY active_snapshots.activated_at DESC, active_snapshots.worktree_id
      LIMIT ? OFFSET ?`,
-    [...(viewQuery.length === 0 ? [] : [viewQuery]), viewLimit, viewOffset],
+    [
+      ...(scoped && options.scopeId !== undefined ? [options.scopeId] : []),
+      ...(viewQuery.length === 0 ? [] : [viewQuery]),
+      viewLimit,
+      viewOffset,
+    ],
   );
-  return (yield* Effect.forEach(worktrees, row => selectVisualizationCatalog(row.worktree_id, metrics, options), {
-    concurrency: 1,
-  })).flatMap(catalog => (catalog ? [catalog] : []));
+  return (yield* Effect.forEach(
+    worktrees,
+    row => selectVisualizationCatalog(row.worktree_id, metrics, {...options, scopeId: row.scope_id}),
+    {
+      concurrency: 1,
+    },
+  )).flatMap(catalog => (catalog ? [catalog] : []));
 });
 
 const selectVisualizationScopeEdges = Effect.fn('codeGraph.selectVisualizationScopeEdges')(function* (

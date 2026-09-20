@@ -4,11 +4,11 @@ import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_loc
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {parseCodeGraphBuildStatus} from './build_status_codec.js';
+import {sameProcessOwner} from './build_status_coordination.js';
 import {
-  annotateBuildCoordination,
-  groupBuildStatusesByWorktree,
-  sameProcessOwner,
-} from './build_status_coordination.js';
+  annotateBuildCoordinationByWorktree,
+  annotateCheckoutBuildCoordination,
+} from './build_status_coordination_reader.js';
 import {codeGraphProgressTimings} from './build_status_timings.js';
 import {
   accountCodeGraphBuildScheduling,
@@ -26,7 +26,8 @@ import {
   isBuildStatusText as isText,
 } from './build_status_validation.js';
 import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle_classification.js';
-import {codeGraphRepositoriesRoot, codeGraphWorktreeLockPath, type CodeGraphLayout} from './layout.js';
+import {codeGraphRepositoriesRoot, type CodeGraphLayout} from './layout.js';
+import {codeGraphScopeViewKey} from './scope_identity.js';
 import {
   codeGraphEtaMeasurement,
   estimateCodeGraphEta,
@@ -155,6 +156,8 @@ export interface CodeGraphBuildStatus {
     readonly commit: string;
     readonly displayName?: string;
     readonly repositoryId: string;
+    /** Opaque configured-view key; absent is the legacy complete repository view. */
+    readonly scopeId?: string;
     readonly worktreeId: string;
   };
   readonly materialization?: CodeGraphBuildMaterialization;
@@ -320,6 +323,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         commit: identity.headCommit.slice(0, 12),
         displayName: boundedText(identity.displayName, 256),
         repositoryId: identity.repositoryId,
+        ...(layout.scopeId === undefined ? {} : {scopeId: layout.scopeId}),
         worktreeId: identity.worktreeId,
       },
       owner: {
@@ -578,7 +582,14 @@ export const readCodeGraphBuildStatuses = Effect.fn('codeGraph.buildStatus.readC
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const statuses = yield* readBuildStatusesBelow(fs, path, path.join(layout.repositoryRoot, STATUS_DIRECTORY));
+  const statuses =
+    layout.scopeId === undefined
+      ? yield* readBuildStatusesBelow(fs, path, path.join(layout.repositoryRoot, STATUS_DIRECTORY))
+      : yield* readWorktreeStatuses(
+          fs,
+          path,
+          path.join(layout.repositoryRoot, STATUS_DIRECTORY, codeGraphScopeViewKey(layout.worktreeId, layout.scopeId)),
+        );
   return yield* annotateCheckoutBuildCoordination(fs, path, layout, statuses);
 });
 
@@ -605,6 +616,7 @@ export const corroborateCodeGraphBuildOwnerStatus = Effect.fn('codeGraph.buildSt
   if (parsed === undefined) return 'mismatch' as const;
   return parsed.buildId === owner.buildId &&
     parsed.identity.checkoutId === layout.checkoutId &&
+    parsed.identity.scopeId === layout.scopeId &&
     parsed.identity.worktreeId === worktreeId &&
     parsed.owner.processId === owner.processId &&
     parsed.owner.processStartIdentity === owner.processStartIdentity
@@ -1047,7 +1059,12 @@ function codeGraphBuildStatusPath(
 ): string {
   if (!HASH_ID.test(worktreeId) || !BUILD_ID.test(buildId))
     throw CodeGraphBuildStatusError.make({message: 'Code graph build identity is invalid.'});
-  return path.join(layout.repositoryRoot, STATUS_DIRECTORY, worktreeId, `${buildId}.json`);
+  return path.join(
+    layout.repositoryRoot,
+    STATUS_DIRECTORY,
+    codeGraphScopeViewKey(worktreeId, layout.scopeId),
+    `${buildId}.json`,
+  );
 }
 
 function writeCodeGraphBuildStatus(
@@ -1527,9 +1544,10 @@ const inspectBuildHistoryDirectory = Effect.fn('codeGraph.buildStatus.inspectHis
   if (statusRoot.canonicalPath !== path.join(repositoryRoot.canonicalPath, STATUS_DIRECTORY)) {
     return yield* InvalidBuildHistorySidecarError.make({message: 'Build history status root escaped containment.'});
   }
-  const directory = yield* freezeBuildHistoryDirectory(fs, path.join(statusRoot.path, worktreeId));
+  const viewKey = codeGraphScopeViewKey(worktreeId, layout.scopeId);
+  const directory = yield* freezeBuildHistoryDirectory(fs, path.join(statusRoot.path, viewKey));
   if (directory === undefined) return undefined;
-  if (directory.canonicalPath !== path.join(statusRoot.canonicalPath, worktreeId)) {
+  if (directory.canonicalPath !== path.join(statusRoot.canonicalPath, viewKey)) {
     return yield* InvalidBuildHistorySidecarError.make({message: 'Build history worktree escaped containment.'});
   }
   return {directory, repositoryRoot, statusRoot} satisfies BuildHistoryDirectoryAuthority;
@@ -1944,39 +1962,6 @@ export function selectCodeGraphBuildStatuses(
     builds: builds.sort(compareObservedBuildStatus),
     waiters: waiters.sort(compareObservedBuildStatus),
   };
-}
-
-function annotateCheckoutBuildCoordination(
-  fs: FileSystem.FileSystem,
-  path: Path.Path,
-  layout: CodeGraphLayout,
-  statuses: readonly ObservedCodeGraphBuildStatus[],
-) {
-  return Effect.forEach(
-    groupBuildStatusesByWorktree(statuses),
-    ([worktreeId, worktreeStatuses]) =>
-      readExclusiveFileLockOwner(fs, path.join(layout.worktreeLockRoot, `${worktreeId}.lock`)).pipe(
-        Effect.map(lockOwner => annotateBuildCoordination(worktreeStatuses, Option.getOrUndefined(lockOwner))),
-      ),
-    {concurrency: 8},
-  ).pipe(Effect.map(groups => groups.flat().sort(compareObservedBuildStatus)));
-}
-
-function annotateBuildCoordinationByWorktree(
-  fs: FileSystem.FileSystem,
-  path: Path.Path,
-  threadnoteHome: string,
-  checkoutId: string,
-  statuses: readonly ObservedCodeGraphBuildStatus[],
-) {
-  return Effect.forEach(
-    groupBuildStatusesByWorktree(statuses),
-    ([worktreeId, worktreeStatuses]) =>
-      readExclusiveFileLockOwner(fs, codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId)).pipe(
-        Effect.map(lockOwner => annotateBuildCoordination(worktreeStatuses, Option.getOrUndefined(lockOwner))),
-      ),
-    {concurrency: 8},
-  ).pipe(Effect.map(groups => groups.flat().sort(compareObservedBuildStatus)));
 }
 
 function privacySafeError(cause: unknown): string {

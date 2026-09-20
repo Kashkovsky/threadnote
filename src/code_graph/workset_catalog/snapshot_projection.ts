@@ -6,6 +6,7 @@ import {classifyCodeGraphStoreFailure} from '../store_failure.js';
 import {effectiveSnapshotParameters, effectiveSymbolsCte} from '../store_query_core.js';
 import type {CodeGraphStoreShape} from '../store_shape.js';
 import type {CodeGraphSnapshot} from '../types.js';
+import {readSnapshotWorksetScopeReceipt, worksetScopeReceiptsMatch} from './scope_receipt.js';
 import {
   codeGraphWorksetRoutingProjectionDigestAppendCanonical,
   codeGraphWorksetRoutingProjectionDigestComplete,
@@ -27,6 +28,7 @@ import {
   type CodeGraphWorksetRoutingProjectionReceiptV1,
   type CodeGraphWorksetRoutingSymbolV1,
   type CodeGraphWorksetRoutingTermV1,
+  type CodeGraphWorksetScopeReceiptV1,
 } from './types.js';
 
 const DEFAULT_PAGE_SIZE = 256;
@@ -132,6 +134,7 @@ ON CONFLICT(symbol_id, term) DO UPDATE
 SET weight = MAX(${PROJECTION_TERMS_TABLE}.weight, excluded.weight)`;
 
 export interface CodeGraphReadySnapshotRoutingProjectionInputV1 {
+  readonly scopeId?: string;
   readonly checkoutId: string;
   readonly databasePath: string;
   readonly leaseDurationMilliseconds?: number;
@@ -187,6 +190,7 @@ export interface CodeGraphReadySnapshotRoutingProjectionSinkV1<E, R> {
 }
 
 interface SnapshotProjectionRow {
+  readonly scope: CodeGraphWorksetScopeReceiptV1;
   readonly base_snapshot_id: unknown;
   readonly commit_id: unknown;
   readonly dirty: unknown;
@@ -276,7 +280,7 @@ export const buildCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
 )(function* (store: CodeGraphStoreShape, input: CodeGraphReadySnapshotRoutingProjectionInputV1) {
   const normalized = yield* normalizeInput(input);
   const selected = yield* store
-    .readySnapshot(normalized.databasePath, normalized.worktreeId)
+    .readySnapshot(normalized.databasePath, normalized.worktreeId, normalized.scopeId)
     .pipe(Effect.mapError(cause => storage('Unable to select a ready code graph snapshot.', cause)));
   if (!selected) {
     return yield* missing('No active ready code graph snapshot exists for this worktree.');
@@ -327,7 +331,7 @@ export const buildCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
     ),
     Effect.andThen(
       store
-        .readySnapshot(normalized.databasePath, normalized.worktreeId)
+        .readySnapshot(normalized.databasePath, normalized.worktreeId, normalized.scopeId)
         .pipe(Effect.mapError(cause => storage('Unable to revalidate the routing projection snapshot.', cause))),
     ),
     Effect.flatMap(active =>
@@ -349,7 +353,7 @@ export const streamCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
 ) {
   const normalized = yield* normalizeInput(input);
   const selected = yield* store
-    .readySnapshot(normalized.databasePath, normalized.worktreeId)
+    .readySnapshot(normalized.databasePath, normalized.worktreeId, normalized.scopeId)
     .pipe(Effect.mapError(cause => storage('Unable to select a ready code graph snapshot.', cause)));
   if (!selected) return yield* missing('No active ready code graph snapshot exists for this worktree.');
   if (normalized.snapshotId !== undefined && selected.id !== normalized.snapshotId) {
@@ -395,7 +399,7 @@ export const streamCodeGraphReadySnapshotRoutingProjectionScoped = Effect.fn(
     ),
     Effect.andThen(
       store
-        .readySnapshot(normalized.databasePath, normalized.worktreeId)
+        .readySnapshot(normalized.databasePath, normalized.worktreeId, normalized.scopeId)
         .pipe(Effect.mapError(cause => storage('Unable to revalidate the routing projection snapshot.', cause))),
     ),
     Effect.flatMap(active =>
@@ -422,7 +426,13 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* configureProjectionTemporaryStorage(sql);
-    const before = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
+    const before = yield* selectProjectionSnapshot(
+      sql,
+      selected.id,
+      input.repositoryId,
+      input.worktreeId,
+      input.scopeId,
+    );
     validateSelectedSnapshot(before, selected);
     const baseSnapshotId = optionalText(before.base_snapshot_id, 'base snapshot identity');
     const extractorGeneration = yield* selectExtractorGeneration(sql, selected.id);
@@ -509,7 +519,13 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
       return yield* corrupt('The effective routing symbol count does not match the ready snapshot receipt.');
     }
 
-    const after = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
+    const after = yield* selectProjectionSnapshot(
+      sql,
+      selected.id,
+      input.repositoryId,
+      input.worktreeId,
+      input.scopeId,
+    );
     if (!sameSnapshotProjectionRow(before, after)) {
       return yield* corrupt('The active ready snapshot changed while its routing projection was read.');
     }
@@ -532,6 +548,7 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
     const projection = yield* Effect.try({
       try: () =>
         createCodeGraphWorksetRoutingProjection({
+          ...before.scope,
           checkoutId: input.checkoutId,
           commitId: requiredText(before.commit_id, 'snapshot commit identity'),
           componentCount,
@@ -568,7 +585,13 @@ function readProjectionStreamed<E, R>(
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* configureProjectionTemporaryStorage(sql);
-    const before = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
+    const before = yield* selectProjectionSnapshot(
+      sql,
+      selected.id,
+      input.repositoryId,
+      input.worktreeId,
+      input.scopeId,
+    );
     validateSelectedSnapshot(before, selected);
     const baseSnapshotId = optionalText(before.base_snapshot_id, 'base snapshot identity');
     const extractorGeneration = yield* selectExtractorGeneration(sql, selected.id);
@@ -632,6 +655,7 @@ function readProjectionStreamed<E, R>(
       termsObserved: stats.termsObserved,
     });
     const header = {
+      ...before.scope,
       checkoutId: input.checkoutId,
       commitId: requiredText(before.commit_id, 'snapshot commit identity'),
       componentCount,
@@ -775,7 +799,13 @@ function validateProjectionSnapshotUnchanged(
   before: SnapshotProjectionRow,
 ) {
   return Effect.gen(function* () {
-    const after = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
+    const after = yield* selectProjectionSnapshot(
+      sql,
+      selected.id,
+      input.repositoryId,
+      input.worktreeId,
+      input.scopeId,
+    );
     if (!sameSnapshotProjectionRow(before, after)) {
       return yield* corrupt('The active ready snapshot changed while its routing projection was read.');
     }
@@ -783,6 +813,7 @@ function validateProjectionSnapshotUnchanged(
 }
 
 interface NormalizedProjectionInput {
+  readonly scopeId?: string;
   readonly checkoutId: string;
   readonly databasePath: string;
   readonly leaseDurationMilliseconds: number;
@@ -824,6 +855,7 @@ function normalizeInput(
         'lease duration',
       );
       return {
+        scopeId: input.scopeId,
         checkoutId: input.checkoutId,
         databasePath: input.databasePath,
         leaseDurationMilliseconds,
@@ -849,9 +881,10 @@ function selectProjectionSnapshot(
   snapshotId: string,
   repositoryId: string,
   worktreeId: string,
+  scopeId = 'full-repository',
 ) {
   return Effect.gen(function* () {
-    const rows = yield* sql.unsafe<SnapshotProjectionRow>(
+    const rows = yield* sql.unsafe<Omit<SnapshotProjectionRow, 'scope'>>(
       `SELECT snapshot.id AS snapshot_id, snapshot.repository_id, snapshot.commit_id,
               snapshot.graph_content_id, snapshot.base_snapshot_id, snapshot.extractor_set,
               snapshot.dirty, snapshot.overlay_fingerprint, snapshot.symbol_count,
@@ -859,27 +892,32 @@ function selectProjectionSnapshot(
        FROM active_snapshots AS active
        JOIN snapshots AS snapshot ON snapshot.id = active.snapshot_id
        WHERE active.worktree_id = ?
+         AND active.scope_id = ?
          AND active.snapshot_id = ?
          AND snapshot.repository_id = ?
+         AND snapshot.scope_id = active.scope_id
          AND snapshot.state = 'ready'
          AND NOT EXISTS (
            SELECT 1 FROM removed_views AS removed
            WHERE removed.worktree_id = active.worktree_id
+             AND removed.scope_id = active.scope_id
              AND removed.expected_snapshot_id = active.snapshot_id
          )
        LIMIT 2`,
-      [worktreeId, snapshotId, repositoryId],
+      [worktreeId, scopeId, snapshotId, repositoryId],
     );
     if (rows.length !== 1) {
       return yield* missing('The selected snapshot is no longer an active ready worktree view.');
     }
-    return rows[0];
+    const scope = yield* readSnapshotWorksetScopeReceipt(sql, snapshotId, scopeId);
+    return {...rows[0], scope};
   });
 }
 
 function validateSelectedSnapshot(row: SnapshotProjectionRow, selected: CodeGraphSnapshot): void {
   if (
     requiredText(row.snapshot_id, 'snapshot identity') !== selected.id ||
+    row.scope.scopeId !== (selected.scopeId ?? 'full-repository') ||
     requiredText(row.repository_id, 'repository identity') !== selected.repositoryId ||
     requiredText(row.commit_id, 'snapshot commit identity') !== selected.commit ||
     safeCount(row.symbol_count, 'snapshot symbol count') !== selected.symbolCount ||
@@ -1377,6 +1415,7 @@ function readySnapshotProjectionDigest(input: {
 
 function sameSnapshotProjectionRow(left: SnapshotProjectionRow, right: SnapshotProjectionRow): boolean {
   return (
+    worksetScopeReceiptsMatch(left.scope, right.scope) &&
     left.snapshot_id === right.snapshot_id &&
     left.repository_id === right.repository_id &&
     left.commit_id === right.commit_id &&

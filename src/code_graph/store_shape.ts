@@ -1,4 +1,7 @@
 import type {Effect, Option} from 'effect';
+import type {ResolvedCodeGraphIndexScope} from './index_scope.js';
+import type {CodeGraphScopeApplicabilityEvidence} from './scope_applicability.js';
+import type {StoredCodeGraphScopeApplicability} from './store_scope_applicability.js';
 import type * as SqlClient from 'effect/unstable/sql/SqlClient';
 import type {CodeGraphBlobReuseFile} from './blob_reuse.js';
 import type {CodeGraphCacheFactInput} from './fact_budget.js';
@@ -233,6 +236,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     worktreeId: string,
     expectedSnapshotId: string,
+    scopeId?: string,
   ) => Effect.Effect<CodeGraphViewObservationResult, CodeGraphStoreFailure>;
   readonly claimWorktreeReconciliationCandidates: (
     databasePath: string,
@@ -434,6 +438,7 @@ export interface CodeGraphStoreShape {
   readonly loadActiveViewFence: (
     databasePath: string,
     worktreeId: string,
+    scopeId?: string,
   ) => Effect.Effect<CodeGraphActiveViewFence | undefined, CodeGraphStoreFailure>;
   readonly loadVisualizationCatalogs: (
     databasePath: string,
@@ -523,7 +528,7 @@ export interface CodeGraphStoreShape {
     worktreeId: string,
     retainedSnapshotIds: ReadonlySet<string>,
     onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
-    options?: {readonly cleanupMode?: 'deferred' | 'required'},
+    options?: {readonly cleanupMode?: 'deferred' | 'required'; readonly scopeId?: string},
   ) => Effect.Effect<number, CodeGraphStoreFailure>;
   readonly markFailed: (
     databasePath: string,
@@ -534,7 +539,19 @@ export interface CodeGraphStoreShape {
   readonly readySnapshot: (
     databasePath: string,
     worktreeId: string,
+    scopeId?: string,
   ) => Effect.Effect<CodeGraphSnapshot | undefined, CodeGraphStoreFailure>;
+  readonly loadScopeApplicability: (
+    databasePath: string,
+    worktreeId: string,
+    scopeId?: string,
+  ) => Effect.Effect<StoredCodeGraphScopeApplicability | undefined, CodeGraphStoreFailure>;
+  readonly recordScopeApplicability: (
+    databasePath: string,
+    snapshotId: string,
+    evidence: CodeGraphScopeApplicabilityEvidence,
+    scope?: ResolvedCodeGraphIndexScope,
+  ) => Effect.Effect<void, CodeGraphStoreFailure>;
   readonly readySnapshotById: (
     databasePath: string,
     snapshotId: string,
@@ -548,10 +565,12 @@ export interface CodeGraphStoreShape {
     repositoryId: string,
     commit: string,
     extractorSet?: string,
+    scopeId?: string,
   ) => Effect.Effect<CodeGraphSnapshot | undefined, CodeGraphStoreFailure>;
   readonly recentReadySnapshotsForRepository: (
     databasePath: string,
     repositoryId: string,
+    scopeId?: string,
   ) => Effect.Effect<readonly CodeGraphSnapshot[], CodeGraphStoreFailure>;
   readonly reusableBaseReceipt: (
     databasePath: string,
@@ -578,17 +597,20 @@ export interface CodeGraphStoreShape {
     allowExtractorMismatch?: boolean,
     workspaceProjectsJson?: string,
     excludedSnapshotIds?: readonly string[],
+    scopeId?: string,
   ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreFailure>;
   readonly reusableCleanBaseForCommit: (
     databasePath: string,
     repositoryId: string,
     commit: string,
+    scopeId?: string,
   ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreFailure>;
   readonly reusableCleanBaseForCommitPaths?: (
     databasePath: string,
     repositoryId: string,
     commit: string,
     paths: readonly string[],
+    scopeId?: string,
   ) => Effect.Effect<CodeGraphReusableCleanBaseSlice | undefined, CodeGraphStoreFailure>;
   readonly existingSnapshotFilePaths?: (
     databasePath: string,

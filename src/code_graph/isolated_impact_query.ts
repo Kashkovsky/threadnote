@@ -15,6 +15,8 @@ const GIT_OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 export const CODE_GRAPH_IMPACT_QUERY_TIMEOUT_MILLISECONDS = 20_000;
 
 interface CodeGraphImpactQueryRequest {
+  readonly project?: string;
+  readonly manifestPath?: string;
   readonly baseCommit?: string;
   readonly cwd: string;
   readonly depth?: number;
@@ -39,6 +41,8 @@ type CodeGraphImpactQueryResponse =
   | {readonly ok: false; readonly protocol: typeof CODE_GRAPH_IMPACT_QUERY_PROTOCOL};
 
 export interface IsolatedCodeGraphImpactQueryInput {
+  readonly project?: string;
+  readonly manifestPath?: string;
   readonly baseCommit?: string;
   readonly cwd: string;
   readonly depth?: number;
@@ -139,6 +143,8 @@ export function impactQueryWorkerInspectOptions(
   threadnoteHome: string,
 ): CodeGraphInspectOptions {
   return {
+    project: request.project,
+    manifestPath: request.manifestPath,
     ...(request.baseCommit === undefined ? {} : {baseCommit: request.baseCommit}),
     baseCommitPolicy: 'ready-only',
     cwd: request.cwd,
@@ -161,6 +167,8 @@ export function impactQueryWorkerInspectOptions(
 function encodeImpactQueryRequest(input: IsolatedCodeGraphImpactQueryInput): Uint8Array {
   const seedQueries = input.seedQueries?.slice(0, CODE_GRAPH_IMPACT_QUERY_SEED_LIMIT);
   const request = {
+    ...(input.project === undefined ? {} : {project: input.project}),
+    ...(input.manifestPath === undefined ? {} : {manifestPath: input.manifestPath}),
     ...(input.baseCommit === undefined ? {} : {baseCommit: input.baseCommit}),
     cwd: input.cwd,
     ...(input.depth === undefined ? {} : {depth: input.depth}),
@@ -235,6 +243,8 @@ function validImpactQueryRequest(value: unknown): value is CodeGraphImpactQueryR
     !validProtocolText(record.cwd) ||
     !validProtocolText(record.threadnoteHome) ||
     !validProtocolText(record.query, true) ||
+    (record.project !== undefined && !validProtocolText(record.project)) ||
+    (record.manifestPath !== undefined && !validProtocolText(record.manifestPath)) ||
     !boundedInteger(record.nodeLimit, 1, 200) ||
     !boundedInteger(record.edgeLimit, 1, 500) ||
     (record.depth !== undefined && !boundedInteger(record.depth, 0, 8)) ||

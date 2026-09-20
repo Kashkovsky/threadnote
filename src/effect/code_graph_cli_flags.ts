@@ -45,6 +45,10 @@ export const codeGraphCliBounds = {
     'limit',
     'other',
   ),
+  project: optionalString(
+    'project',
+    'Configured project graph to use; selects a scoped graph or preserves a named full-repository project',
+  ),
   readTimeoutMilliseconds: optional(
     describeFlag(
       integerFlag('read-timeout-ms').pipe(
@@ -100,4 +104,5 @@ export const codeGraphStatusFlags = {
   cwd: codeGraphCliBounds.cwd,
   json: codeGraphCliBounds.json,
   languagePackLimit: codeGraphStatusLanguagePackLimitFlag,
+  project: codeGraphCliBounds.project,
 } as const;

@@ -69,7 +69,7 @@ export interface CodeGraphStatusActivityProjectionV5 {
 
 export type CodeGraphStatusJsonDetailsV5 = Pick<
   CodeGraphStatus,
-  'databasePath' | 'identity' | 'languagePacks' | 'stale'
+  'databasePath' | 'identity' | 'languagePacks' | 'projectCoverage' | 'stale'
 > & {
   readonly locks?: {
     readonly databaseWriter?: CodeGraphStatusObservedLock;

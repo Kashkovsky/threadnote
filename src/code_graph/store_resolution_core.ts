@@ -919,6 +919,7 @@ const identifyChangedSymbols = Effect.fn('codeGraph.identifyChangedSymbols')(fun
 const promotionRemovedSnapshotId = Effect.fn('codeGraph.promotionRemovedSnapshotId')(function* (
   sql: SqlClient.SqlClient,
   worktreeId: string,
+  scopeId = 'full-repository',
 ) {
   const rows = yield* sql.unsafe<{readonly expected_snapshot_id: unknown}>(
     `SELECT CASE
@@ -926,9 +927,9 @@ const promotionRemovedSnapshotId = Effect.fn('codeGraph.promotionRemovedSnapshot
             AND length(CAST(expected_snapshot_id AS BLOB)) BETWEEN 45 AND 67
        THEN expected_snapshot_id ELSE NULL END AS expected_snapshot_id
      FROM removed_views
-     WHERE worktree_id = ?
+     WHERE worktree_id = ? AND scope_id = ?
      LIMIT 2`,
-    [worktreeId],
+    [worktreeId, scopeId],
   );
   if (rows.length === 0) return undefined;
   if (

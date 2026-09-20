@@ -1302,22 +1302,79 @@ threadnote graph export --format svg --output code-graph.svg`,
       {
         id: 'graph-monorepos',
         title: 'Monorepos and nested workspaces',
-        summary:
-          'One checkout is one graph scope; nested projects disambiguate resolution rather than partitioning the graph.',
+        summary: 'Keep a dependency-closed app graph small in a monorepo, while retaining the full-repository default.',
+        keywords: [
+          'monorepo graph scope',
+          'dependency closure',
+          'graph scope preview',
+          'outside project graph',
+          'worktree graph scope',
+        ],
         body: [
           {
             type: 'paragraph',
-            text: 'Symbols are assigned to the deepest containing project or source root. A nested app can remain its own workspace and also be an integrated module of an outer monorepo. It can cross into outer libs or inner modules only through declared project dependencies.',
+            text: 'Use a project graph scope when one agent works on one app in a large monorepo and needs that app plus the workspace libraries it depends on. It is a positive selection: choose repository-relative app roots, Threadnote follows declared forward dependencies, and you can add exceptional repository-relative include paths. A project without a graph block continues to index and query the full repository.',
+          },
+          {
+            type: 'table',
+            headers: ['Need', 'Use'],
+            rows: [
+              [
+                'One app and its declared workspace dependencies',
+                'A project graph scope. It keeps unrelated apps out of that project graph without turning them into ignored files.',
+              ],
+              [
+                'Generated, private, or otherwise unwanted files everywhere',
+                'Ignore rules. They are traversal policy, not a dependency-aware partition of a monorepo.',
+              ],
+              [
+                'A bounded task across configured repositories or projects',
+                'A Workset. It composes member project graphs; it does not define their roots or dependency closure.',
+              ],
+            ],
+          },
+          {
+            type: 'heading',
+            text: 'Configure, preview, then use the normal graph commands',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `# "storefront" is an existing manifest project for this monorepo.
+threadnote graph scope set storefront \\
+  --root apps/storefront \\
+  --include tools/storefront-generated
+threadnote graph scope preview storefront
+
+# From a cwd that resolves to this one configured project:
+threadnote graph index
+threadnote graph query --query "checkout session"`,
+          },
+          {
+            type: 'paragraph',
+            text: 'The preview is read-only. It lists the resolved root and dependency components, explicit includes, required control files, included and excluded file/byte counts, completeness, and diagnostics. Review it before indexing, especially after changing workspace manifests. Manager exposes the same roots, dependency-closure explanation, includes, coverage state, and preview-before-save flow. Remove the block with `threadnote graph scope clear storefront --confirm` to return that project to full-repository behavior.',
+          },
+          {
+            type: 'paragraph',
+            text: 'A scoped result always says which project, roots, component counts, completeness, source commit, observed worktree commit, and any equivalent-snapshot reuse it covers. A direct path outside the selected graph returns `outside-project-graph`, rather than claiming the path is absent; choose a project that includes it or use a full-repository project. Textual misses are likewise only evidence about the selected graph. If dependency discovery is partial, Threadnote makes that explicit and never treats a negative result as authoritative.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Commands select a scoped project automatically only when the current directory belongs to exactly one configured graph project. If more than one applies, Threadnote reports the available project names instead of silently choosing a partial graph. Keep the same manifest definition with linked worktrees: compatible graph-equivalent commit content can be reused, but dirty overlays, active views, and observations remain worktree-local so uncommitted changes do not cross branches.',
           },
           {
             type: 'list',
             items: [
-              'Java and Kotlin share the JVM resolution domain.',
-              'Ambiguous and dynamic dependencies remain syntactic instead of becoming false resolved edges.',
+              'Forward dependencies are included; reverse dependents and unrelated workspace packages are not pulled in merely because they share a repository.',
+              'An edit or newly discovered package outside the selected graph does not make that scoped graph stale or take an indexing builder slot. An in-scope dependency or control-file change does.',
               'Nested Git repositories and submodules keep separate graph identities and are not traversed from the parent checkout.',
-              'Linked worktrees share graph-equivalent commit content and compatible full anchors, but every dirty overlay and active pointer is worktree-scoped so concurrent agents cannot leak uncommitted source state across branches.',
-              'Independent clones of the same remote keep separate operational stores.',
+              'Worksets preserve each member project’s graph definition and detect scope drift when a member definition changes.',
+              'Scoped graphs are local-only in this release. They are not an organization-hosted scope feature.',
             ],
+          },
+          {
+            type: 'warning',
+            text: 'Portable checkpoint v1 exports only a full-repository graph. Exporting a scoped graph fails closed until checkpoint transport carries a verified scope receipt. To move a graph today, clear the scope and create a full graph checkpoint, or rebuild the scoped graph locally on the receiving checkout.',
           },
           {
             type: 'paragraph',

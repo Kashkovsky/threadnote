@@ -30,6 +30,53 @@ interface ProjectionCapture {
 
 describe('code graph checkpoint projection', () => {
   effectIt.effect(
+    'rejects a clean scoped snapshot before emitting checkpoint metadata or records',
+    () =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => createRepository()),
+        fixture =>
+          Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            const path = yield* Path.Path;
+            const indexed = yield* indexer.index({
+              cwd: fixture.repository,
+              threadnoteHome: fixture.home,
+              ensureVectors: false,
+              project: {
+                uri: 'threadnote://resources/repos/checkpoint-scoped',
+                graph: {roots: ['src'], closure: 'dependencies'},
+              },
+            });
+            const layout = codeGraphLayout(
+              path,
+              fixture.home,
+              indexed.identity.checkoutId,
+              indexed.identity.worktreeId,
+              indexed.snapshot.scopeId,
+            );
+            let writes = 0;
+            const error = yield* projectCodeGraphCheckpointV1({
+              abi: codeGraphCheckpointAbiInputV1([]),
+              databasePath: layout.databasePath,
+              identity: indexed.identity,
+              snapshotId: indexed.snapshot.id,
+              writeMetadata: () =>
+                Effect.sync(() => {
+                  writes += 1;
+                }),
+              writeRecords: () =>
+                Effect.sync(() => {
+                  writes += 1;
+                }),
+            }).pipe(Effect.flip);
+            expect(String(error)).toContain('only the full repository graph');
+            expect(writes).toBe(0);
+          }),
+        fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    60_000,
+  );
+  effectIt.effect(
     'projects one clean ready snapshot deterministically across page boundaries',
     () => {
       let fixtureRoot: string | undefined;

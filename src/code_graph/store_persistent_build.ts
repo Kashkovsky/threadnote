@@ -1,3 +1,4 @@
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
 import {Clock, DateTime, Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {saturatingCapacityAdd} from './disk_capacity.js';
@@ -138,10 +139,10 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
           } else {
             yield* sql`
           INSERT INTO snapshots (
-            id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
+            id, repository_id, worktree_id, scope_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
             dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at
           ) VALUES (
-            ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.commit},
+            ${snapshot.id}, ${snapshot.repositoryId}, ${snapshot.worktreeId}, ${snapshot.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY}, ${snapshot.commit},
             ${snapshot.graphContentId ?? snapshot.id}, ${snapshot.baseSnapshotId ?? null},
             ${snapshot.extractorSet}, ${snapshot.dirty ? 1 : 0},
             ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${DateTime.formatIso(yield* DateTime.now)}
@@ -182,6 +183,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
   writerGate?: CodeGraphWriterGate,
   onProgress?: CodeGraphRetiredSnapshotCleanupProgressCallback,
   cleanupMode: 'deferred' | 'required' = 'required',
+  scopeId: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
@@ -198,6 +200,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
                 SET state = 'retired', completed_at = COALESCE(completed_at, ${new Date().toISOString()})
                 WHERE repository_id = ${repositoryId}
                   AND worktree_id = ${worktreeId}
+                  AND scope_id = ${scopeId}
                   AND state IN ('building', 'failed')
                   AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
                   AND id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})
@@ -218,6 +221,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
                 SET state = 'retired', completed_at = COALESCE(completed_at, ${new Date().toISOString()})
                 WHERE repository_id = ${repositoryId}
                   AND worktree_id = ${worktreeId}
+                  AND scope_id = ${scopeId}
                   AND state IN ('building', 'failed')
                   AND NOT (${sql.in('id', retained)})
                   AND id NOT IN (SELECT snapshot_id FROM active_snapshots)
@@ -243,6 +247,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
           SELECT id
           FROM snapshots AS candidate
           WHERE candidate.repository_id = ${repositoryId}
+            AND candidate.scope_id = ${scopeId}
             AND candidate.state = 'retired'
             AND candidate.id NOT IN (SELECT snapshot_id FROM active_snapshots)
             AND candidate.id NOT IN (SELECT snapshot_id FROM snapshot_leases WHERE expires_at > ${now})

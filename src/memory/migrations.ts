@@ -732,6 +732,15 @@ const seedManifestProjectNameMigration = Effect.fn('memory.seedManifestProjectNa
       {
         version: manifest.value.version,
         projects: projects.map(project => ({
+          ...(project.graph === undefined
+            ? {}
+            : {
+                graph: {
+                  closure: project.graph.closure,
+                  ...(project.graph.include === undefined ? {} : {include: [...project.graph.include]}),
+                  roots: [...project.graph.roots],
+                },
+              }),
           name: project.name,
           path: project.path,
           uri: project.uri,

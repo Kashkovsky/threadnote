@@ -1,6 +1,7 @@
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION} from './layout.js';
+import {migrateWorksetScopeReceipts} from './scope_receipt.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_LIMITS,
   CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
@@ -74,6 +75,7 @@ export const initializeCodeGraphWorksetCatalogSchema = Effect.fn('codeGraphWorks
     );
   }
   yield* createCodeGraphWorksetCatalogTables(sql);
+  yield* migrateWorksetScopeReceipts(sql);
   yield* sql.unsafe(`PRAGMA user_version = ${CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION}`);
 });
 

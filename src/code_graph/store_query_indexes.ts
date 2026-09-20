@@ -6,8 +6,51 @@ import {CodeGraphStoreError} from './types.js';
 export interface CodeGraphQueryIndexDefinition {
   readonly createSql: string;
   readonly name: string;
-  readonly table: 'edges' | 'symbols';
+  readonly table: 'edges' | 'symbols' | 'snapshots';
 }
+
+export const CODE_GRAPH_SCOPE_QUERY_INDEX_DEFINITIONS = [
+  {
+    name: 'snapshots_scope_recent_ready',
+    table: 'snapshots',
+    createSql: `CREATE INDEX IF NOT EXISTS snapshots_scope_recent_ready
+      ON snapshots(repository_id, scope_id, completed_at DESC, id) WHERE state = 'ready' AND dirty = 0`,
+  },
+  {
+    name: 'snapshots_scope_commit_ready',
+    table: 'snapshots',
+    createSql: `CREATE INDEX IF NOT EXISTS snapshots_scope_commit_ready
+      ON snapshots(repository_id, scope_id, commit_id, completed_at DESC, id) WHERE state = 'ready' AND dirty = 0`,
+  },
+  {
+    name: 'snapshots_scope_reusable',
+    table: 'snapshots',
+    createSql: `CREATE INDEX IF NOT EXISTS snapshots_scope_reusable
+      ON snapshots(repository_id, scope_id, extractor_set, completed_at DESC, id)
+      WHERE state = 'ready' AND dirty = 0 AND base_snapshot_id IS NULL`,
+  },
+  {
+    name: 'snapshots_scope_reusable_content',
+    table: 'snapshots',
+    createSql: `CREATE INDEX IF NOT EXISTS snapshots_scope_reusable_content
+      ON snapshots(repository_id, scope_id, graph_content_id, extractor_set, completed_at DESC, id)
+      WHERE state = 'ready' AND dirty = 0 AND base_snapshot_id IS NULL`,
+  },
+  {
+    name: 'snapshots_scope_reusable_commit',
+    table: 'snapshots',
+    createSql: `CREATE INDEX IF NOT EXISTS snapshots_scope_reusable_commit
+      ON snapshots(repository_id, scope_id, commit_id, completed_at DESC, id)
+      WHERE state = 'ready' AND dirty = 0 AND base_snapshot_id IS NULL`,
+  },
+] as const satisfies readonly CodeGraphQueryIndexDefinition[];
+
+export const ensureCodeGraphScopeQueryIndexes = Effect.fn('codeGraph.ensureScopeQueryIndexes')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const inspection = yield* inspectCodeGraphQueryIndexes(sql, CODE_GRAPH_SCOPE_QUERY_INDEX_DEFINITIONS);
+  yield* ensureCodeGraphQueryIndexes(sql, inspection.missing);
+});
 
 const visualizationKindOrder = `CASE kind
   WHEN 'package' THEN 0 WHEN 'module' THEN 1 WHEN 'class' THEN 2 WHEN 'interface' THEN 3

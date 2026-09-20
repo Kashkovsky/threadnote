@@ -302,12 +302,13 @@ export const withCodeGraphTargetWorktreeLock = Effect.fn('codeGraph.withTargetWo
   checkoutId: string,
   worktreeId: string,
   effect: Effect.Effect<A, E, R>,
+  scopeId?: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   return yield* withExclusiveFileLock(
     fs,
-    codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId),
+    codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId, scopeId),
     {...CODE_GRAPH_GATE_LOCK_OPTIONS, retryIntervalMilliseconds: 1, waitTimeoutMilliseconds: 0},
     effect,
   ).pipe(
@@ -333,7 +334,7 @@ function codeGraphWorktreeLockFiles(
       return yield* CodeGraphMaintenanceGateError.make({message: 'Code graph worktree lock root is not a directory.'});
     }
     return (yield* fs.readDirectory(root))
-      .filter(name => /^[0-9a-f]{64}\.lock$/.test(name))
+      .filter(name => /^[0-9a-f]{64}(?:\.scope-[0-9a-f]{64})?\.lock$/u.test(name))
       .sort()
       .map(name => path.join(root, name));
   });

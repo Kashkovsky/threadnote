@@ -8,8 +8,13 @@ import type {
   ManagerWorksetCatalog,
   ManagerWorksetProjectSummary,
 } from './worksets.js';
+import type {CodeGraphProjectScopePreview} from '../code_graph/scope_preview.js';
 
 interface ProjectDraft {
+  readonly graphEnabled: boolean;
+  readonly graphIncludeText: string;
+  readonly graphRootsText: string;
+  readonly graphWasConfigured: boolean;
   readonly mode: 'create' | 'edit';
   readonly name: string;
   readonly originalName?: string;
@@ -35,6 +40,7 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState('');
   const [detailError, setDetailError] = useState('');
+  const [scopePreview, setScopePreview] = useState<CodeGraphProjectScopePreview>();
   const detailRequestRef = useRef<AbortController | undefined>(undefined);
   const detailSequenceRef = useRef(0);
 
@@ -88,7 +94,17 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
 
   function openCreate(): void {
     setNotice('');
-    setDraft({mode: 'create', name: '', path: '', seedText: '', uri: ''});
+    setDraft({
+      graphEnabled: false,
+      graphIncludeText: '',
+      graphRootsText: '',
+      graphWasConfigured: false,
+      mode: 'create',
+      name: '',
+      path: '',
+      seedText: '',
+      uri: '',
+    });
   }
 
   function openEdit(): void {
@@ -96,6 +112,10 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
     setNotice('');
     setDraft({
       mode: 'edit',
+      graphEnabled: selectedProject.graph !== undefined,
+      graphIncludeText: selectedProject.graph?.include?.join('\n') ?? '',
+      graphRootsText: selectedProject.graph?.roots.join('\n') ?? '',
+      graphWasConfigured: selectedProject.graph !== undefined,
       name: selectedProject.name,
       originalName: selectedProject.name,
       path: selectedProject.path,
@@ -111,6 +131,17 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
     try {
       const result = await api<ManagerManifestProjectMutationResult>('/api/worksets/projects', {
         expectedRevision: props.catalog.revision,
+        ...(draft.graphEnabled
+          ? {
+              graph: {
+                closure: 'dependencies',
+                include: seedLines(draft.graphIncludeText),
+                roots: seedLines(draft.graphRootsText),
+              },
+            }
+          : draft.mode === 'edit' && draft.graphWasConfigured
+            ? {clearGraph: true}
+            : {}),
         name: draft.name,
         operation: draft.mode === 'create' ? 'create' : 'update',
         path: draft.path,
@@ -133,6 +164,22 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
       } else {
         setNotice(errorMessage(cause));
       }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewScope(): Promise<void> {
+    if (!selectedProject) return;
+    setBusy(true);
+    setNotice('');
+    try {
+      const preview = await api<CodeGraphProjectScopePreview>(
+        `/api/worksets/project-graph-preview?project=${encodeURIComponent(selectedProject.name)}`,
+      );
+      setScopePreview(preview);
+    } catch (cause) {
+      setNotice(errorMessage(cause));
     } finally {
       setBusy(false);
     }
@@ -254,6 +301,9 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
                 <button disabled={projectsReadOnly || !selectedProject || busy} onClick={openEdit} type="button">
                   Edit project
                 </button>
+                <button disabled={!selectedProject || busy} onClick={() => void previewScope()} type="button">
+                  Preview graph scope
+                </button>
                 <button
                   className="danger"
                   disabled={projectsReadOnly || busy}
@@ -291,7 +341,22 @@ export function ManifestProjectsPanel(props: ManifestProjectsPanelProps): React.
                     <dt>Seed patterns</dt>
                     <dd>{selectedProject.seed.length > 0 ? selectedProject.seed.join(', ') : 'No seed patterns'}</dd>
                   </div>
+                  <div>
+                    <dt>Graph scope</dt>
+                    <dd>
+                      {selectedProject.graph === undefined
+                        ? 'Full repository (no optional scope configured)'
+                        : `${selectedProject.graph.roots.join(', ')} · dependency closure`}
+                    </dd>
+                  </div>
                 </dl>
+              ) : null}
+              {scopePreview ? (
+                <p className="worksets-muted">
+                  Scope preview: {scopePreview.inventory.included.files} included /{' '}
+                  {scopePreview.inventory.excluded.files} excluded files · {scopePreview.scope.completeness}. Preview
+                  only; scoped indexing is not enabled yet.
+                </p>
               ) : null}
             </section>
           </>
@@ -439,6 +504,40 @@ function ProjectEditor(props: {
             value={props.draft.seedText}
           />
         </label>
+        <label>
+          <input
+            checked={props.draft.graphEnabled}
+            disabled={props.busy}
+            onChange={event => update({graphEnabled: event.target.checked})}
+            type="checkbox"
+          />{' '}
+          Limit the code graph to selected components and their dependencies
+        </label>
+        {props.draft.graphEnabled ? (
+          <>
+            <label>
+              Graph roots <span className="worksets-muted">One repository-relative component root per line</span>
+              <textarea
+                disabled={props.busy}
+                onChange={event => update({graphRootsText: event.target.value})}
+                placeholder={'apps/web\npackages/core'}
+                rows={4}
+                value={props.draft.graphRootsText}
+              />
+            </label>
+            <label>
+              Additional graph includes{' '}
+              <span className="worksets-muted">Optional repository-relative paths, one per line</span>
+              <textarea
+                disabled={props.busy}
+                onChange={event => update({graphIncludeText: event.target.value})}
+                placeholder="tools/generated"
+                rows={3}
+                value={props.draft.graphIncludeText}
+              />
+            </label>
+          </>
+        ) : null}
         {props.notice ? (
           <p className="worksets-error" role="alert">
             {props.notice}
@@ -449,7 +548,13 @@ function ProjectEditor(props: {
             Cancel
           </button>
           <button
-            disabled={props.busy || !props.draft.name.trim() || !props.draft.path.trim() || !props.draft.uri.trim()}
+            disabled={
+              props.busy ||
+              !props.draft.name.trim() ||
+              !props.draft.path.trim() ||
+              !props.draft.uri.trim() ||
+              (props.draft.graphEnabled && seedLines(props.draft.graphRootsText).length === 0)
+            }
             onClick={props.onSave}
             type="button"
           >

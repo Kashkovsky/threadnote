@@ -88,6 +88,7 @@ import {
 import {getRuntimeConfig} from '../runtime.js';
 import {runInitManifest, runSeed, runSeedSkills} from '../seeding.js';
 import {makeWorksetCommand} from './workset_cli.js';
+import {makeCodeGraphScopeCommand} from './graph_scope_cli.js';
 import {
   runShareConflictResolve,
   runShareConflicts,
@@ -641,6 +642,7 @@ const graphInventory = Command.make(
   {
     cwd: graphBounds.cwd,
     json: graphBounds.json,
+    project: graphBounds.project,
   },
   options => withRuntimeEffect(config => runCodeGraphInventory(config, options)),
 ).pipe(Command.withDescription('Preview aggregate graph eligibility by language, role, classifier, and policy reason'));
@@ -678,9 +680,15 @@ const graphIndex = Command.make(
       'no-vectors',
       'Skip embedding materialization; matches watcher-driven refresh (ensureVectors: false)',
     ),
+    project: graphBounds.project,
   },
   options => withRuntimeEffect(config => runCodeGraphIndex(config, options)),
 ).pipe(Command.withDescription('Build and atomically activate a current native code graph snapshot'));
+
+const withScopedRuntime = withRuntimeEffect as <E, R>(
+  effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
+) => Effect.Effect<void, E, R>;
+const graphScope = makeCodeGraphScopeCommand(withScopedRuntime, graphBounds.json);
 
 const graphQuery = Command.make(
   'query',
@@ -720,6 +728,7 @@ const graphNode = Command.make(
     freshness: graphFreshness('ready'),
     json: graphBounds.json,
     nodeId: requiredString('node-id', 'Exact local cgs_ ID or repository-qualified cgr_ handle'),
+    project: graphBounds.project,
     readTimeoutMilliseconds: graphBounds.readTimeoutMilliseconds,
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'node'})),
@@ -772,6 +781,7 @@ const graphImpact = Command.make(
     edgeLimit: graphBounds.edgeLimit,
     json: graphBounds.json,
     nodeLimit: graphBounds.nodeLimit,
+    project: graphBounds.project,
     query: optionalString('query', 'Local selector, or cgr_ / repository:cgp_ endpoint with --workset'),
     workset: optionalString('workset', 'Trace reverse impact across a prepared workset generation'),
   },
@@ -800,6 +810,7 @@ const graphAnalysisBounds = {
   includeHeuristic: graphBounds.includeHeuristic,
   includeModelAssociations: graphBounds.includeModelAssociations,
   json: graphBounds.json,
+  project: graphBounds.project,
   readTimeoutMilliseconds: graphBounds.readTimeoutMilliseconds,
 } as const;
 
@@ -876,7 +887,7 @@ const graphReport = Command.make(
   options => withRuntimeEffect(config => runCodeGraphReport(config, options)),
 ).pipe(Command.withDescription('Write a deterministic architecture report with suggested graph questions'));
 
-const graphWatch = Command.make('watch', {cwd: graphBounds.cwd}, options =>
+const graphWatch = Command.make('watch', {cwd: graphBounds.cwd, project: graphBounds.project}, options =>
   withRuntimeEffect(config => runCodeGraphWatch(config, options)),
 ).pipe(Command.withDescription('Keep one worktree graph current in the foreground'));
 
@@ -947,9 +958,6 @@ const graphCheckpoint = Command.make('checkpoint').pipe(
   ]),
 );
 
-const withScopedRuntime = withRuntimeEffect as <E, R>(
-  effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
-) => Effect.Effect<void, E, R>;
 const {graphAuth, graphContribute, graphPublisher, graphShare, graphWorker} =
   makeGraphSharingCommands(withScopedRuntime);
 
@@ -1000,6 +1008,7 @@ const graphCommand = Command.make('graph').pipe(
     graphDiagnostics,
     graphRepair,
     graphIndex,
+    graphScope,
     graphQuery,
     graphNode,
     graphNeighbors,

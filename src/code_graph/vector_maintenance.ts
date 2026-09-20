@@ -40,6 +40,7 @@ import {
   type CodeGraphVectorSnapshotUsage,
 } from './vector_retirement.js';
 import {CodeGraphStoreBusyError} from './types.js';
+import {codeGraphVectorViewId} from './vector_identity.js';
 
 export {
   type CodeGraphVectorRetirementCapacityProtector,
@@ -163,6 +164,7 @@ export interface CodeGraphRemovedViewVectorUnitEntry {
   readonly cursorToken?: string;
   readonly expectedSnapshotId: string;
   readonly phase: 'vector-pointers';
+  readonly scopeId?: string;
   readonly worktreeId: string;
 }
 
@@ -241,7 +243,11 @@ export const withPreparedCodeGraphRemovedViewVectorUnit = Effect.fn('codeGraph.w
   ) {
     const useBeforeDeadline = (commit: Effect.Effect<CodeGraphRemovedViewVectorUnitResult, unknown>) =>
       ensureVectorUnitDeadline(preparation).pipe(Effect.andThen(Effect.suspend(() => use(commit))));
+    const vectorViewId = yield* Effect.try(() => codeGraphVectorViewId(entry.worktreeId, entry.scopeId)).pipe(
+      Effect.orElseSucceed(() => undefined),
+    );
     if (
+      vectorViewId === undefined ||
       !HASH_ID.test(input.checkoutId) ||
       !HASH_ID.test(entry.worktreeId) ||
       !validSnapshotId(entry.expectedSnapshotId) ||
@@ -341,7 +347,7 @@ export const withPreparedCodeGraphRemovedViewVectorUnit = Effect.fn('codeGraph.w
     yield* ensureVectorUnitDeadline(preparation);
     const pointerPlan = yield* planCodeGraphVectorPointerRetirement(candidate.databasePath, {
       expectedSnapshotId: entry.expectedSnapshotId,
-      worktreeId: entry.worktreeId,
+      worktreeId: vectorViewId,
     }).pipe(Effect.match({onFailure: () => undefined, onSuccess: value => value}));
     if (pointerPlan === undefined) return yield* useBeforeDeadline(Effect.succeed(preservedResult()));
     if (pointerPlan.state === 'planned') {
@@ -355,7 +361,7 @@ export const withPreparedCodeGraphRemovedViewVectorUnit = Effect.fn('codeGraph.w
 
     yield* ensureVectorUnitDeadline(preparation);
     const marker = yield* selectCodeGraphVectorRetirementMarkerCandidate(candidate.databasePath, {
-      retiredByWorktreeId: entry.worktreeId,
+      retiredByWorktreeId: vectorViewId,
       snapshotId: entry.expectedSnapshotId,
     }).pipe(Effect.match({onFailure: () => undefined, onSuccess: value => value}));
     if (marker === undefined) {
@@ -1367,12 +1373,12 @@ function verifyVectorUnitInventory(
           if (schemaPlan.state === 'planned') return true;
           const pointerPlan = yield* planCodeGraphVectorPointerRetirement(candidate.databasePath, {
             expectedSnapshotId: entry.expectedSnapshotId,
-            worktreeId: entry.worktreeId,
+            worktreeId: codeGraphVectorViewId(entry.worktreeId, entry.scopeId),
           });
           if (pointerPlan.state === 'planned') return true;
           return (
             (yield* selectCodeGraphVectorRetirementMarkerCandidate(candidate.databasePath, {
-              retiredByWorktreeId: entry.worktreeId,
+              retiredByWorktreeId: codeGraphVectorViewId(entry.worktreeId, entry.scopeId),
               snapshotId: entry.expectedSnapshotId,
             })) !== undefined
           );
@@ -1601,10 +1607,15 @@ export const cleanupCodeGraphVectorPointers = Effect.fn('codeGraph.cleanupVector
   checkoutId: string,
   worktreeId: string,
   expectedSnapshotId: string,
+  scopeId?: string,
 ) {
   if (!HASH_ID.test(checkoutId) || !HASH_ID.test(worktreeId) || !validSnapshotId(expectedSnapshotId)) {
     return yield* CodeGraphVectorMaintenanceError.make({message: 'Code graph vector cleanup target is invalid.'});
   }
+  const vectorViewId = yield* Effect.try({
+    try: () => codeGraphVectorViewId(worktreeId, scopeId),
+    catch: () => CodeGraphVectorMaintenanceError.make({message: 'Code graph vector cleanup scope is invalid.'}),
+  });
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const warnings = new Map<CodeGraphVectorCleanupWarningCode, number>();
@@ -1633,7 +1644,7 @@ export const cleanupCodeGraphVectorPointers = Effect.fn('codeGraph.cleanupVector
         waitTimeoutMilliseconds: 0,
       },
       validateVectorDatabaseCandidate(fs, path, candidate).pipe(
-        Effect.andThen(removeExpectedVectorPointer(fs, path, candidate, worktreeId, expectedSnapshotId)),
+        Effect.andThen(removeExpectedVectorPointer(fs, path, candidate, vectorViewId, expectedSnapshotId)),
       ),
     ).pipe(
       Effect.match({

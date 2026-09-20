@@ -9,6 +9,10 @@ import {describe, expect, it} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {codeGraphWorksetCatalogLayout} from '../../src/code_graph/workset_catalog/layout.js';
+import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
 import {readSeedManifest} from '../../src/manifest.js';
 import {validateManagerProjectRoots} from '../../src/manager/project_roots.js';
@@ -116,6 +120,191 @@ function git(cwd: string, args: readonly string[]): void {
 }
 
 describe('Manager Worksets manifest transactions', () => {
+  effectIt.effect('retires only the configured logical scope when Manager clears graph configuration', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const current = yield* fixture(root =>
+          manifest(root).replace(
+            '    seed: []',
+            '    seed: []\n    graph:\n      roots: [apps/api]\n      closure: dependencies',
+          ),
+        );
+        const repo = current.path.join(current.root, 'api');
+        yield* current.fs.makeDirectory(repo);
+        yield* Effect.sync(() => {
+          git(repo, ['init', '-q']);
+          git(repo, [
+            '-c',
+            'user.name=Test',
+            '-c',
+            'user.email=test@example.invalid',
+            'commit',
+            '--allow-empty',
+            '-qm',
+            'fixture',
+          ]);
+        });
+        const identity = yield* resolveRepositoryIdentity(repo);
+        const layout = codeGraphLayout(
+          current.path,
+          current.config.agentContextHome,
+          identity.checkoutId,
+          identity.worktreeId,
+        );
+        const store = yield* CodeGraphStore;
+        const scopeId = `code-graph-scope:${sha256HexSync('threadnote://resources/repos/api')}`;
+        for (const [index, selectedScope] of [undefined, scopeId].entries()) {
+          const snapshotId = `cgsn_${(index + 1).toString().repeat(40)}`;
+          yield* store.activate(
+            layout.databasePath,
+            identity,
+            {
+              commit: identity.headCommit,
+              completedAt: '2026-09-20T00:00:00.000Z',
+              dirty: false,
+              edgeCount: 0,
+              extractorSet: 'manager-test',
+              fileCount: 0,
+              id: snapshotId,
+              repositoryId: identity.repositoryId,
+              scopeId: selectedScope,
+              state: 'ready',
+              symbolCount: 0,
+              worktreeId: identity.worktreeId,
+            },
+            [],
+            [],
+            [],
+          );
+          yield* store.promote(layout.databasePath, identity, snapshotId);
+        }
+        const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+        const renamed = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: revision,
+          operation: 'update',
+          project: 'api',
+          name: 'renamed-api',
+          path: repo,
+          seed: [],
+          uri: 'threadnote://resources/repos/api',
+        });
+        expect(yield* store.loadActiveViewFence(layout.databasePath, identity.worktreeId, scopeId)).toBeDefined();
+        const cleared = yield* mutateManagerManifestProject(current.config, {
+          clearGraph: true,
+          expectedRevision: renamed.catalog.revision,
+          operation: 'update',
+          project: 'renamed-api',
+          name: 'renamed-api',
+          path: repo,
+          seed: [],
+          uri: 'threadnote://resources/repos/api',
+        });
+        expect(cleared.changed).toBe(true);
+        expect(yield* store.loadActiveViewFence(layout.databasePath, identity.worktreeId, scopeId)).toBeUndefined();
+        expect(yield* store.loadActiveViewFence(layout.databasePath, identity.worktreeId)).toBeDefined();
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect('preserves a project graph scope while editing other project fields', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root =>
+          manifest(root).replace(
+            '    seed: []',
+            [
+              '    seed: []',
+              '    graph:',
+              '      roots: [apps/api]',
+              '      closure: dependencies',
+              '      include: [tools/generated]',
+            ].join('\n'),
+          ),
+        );
+        const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+        yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: revision,
+          name: 'api',
+          operation: 'update',
+          path: `${current.root}/api`,
+          project: 'api',
+          seed: ['README.md'],
+          uri: 'threadnote://resources/repos/api',
+        });
+
+        expect(yield* readManagerManifestProject(current.config, 'api')).toMatchObject({
+          graph: {closure: 'dependencies', include: ['tools/generated'], roots: ['apps/api']},
+          seed: ['README.md'],
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect(
+    'sets, updates, and clears an optional project graph scope without changing other project fields',
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const current = yield* fixture(root => manifest(root));
+          const catalog = yield* readManagerWorksetCatalog(current.config);
+          const set = yield* mutateManagerManifestProject(current.config, {
+            expectedRevision: catalog.revision,
+            graph: {closure: 'dependencies', include: ['tools/generated'], roots: ['apps/api']},
+            name: 'api',
+            operation: 'update',
+            path: `${current.root}/api`,
+            project: 'api',
+            seed: [],
+            uri: 'threadnote://resources/repos/api',
+          });
+          expect(set.changed).toBe(true);
+          expect(yield* readManagerManifestProject(current.config, 'api')).toMatchObject({
+            graph: {closure: 'dependencies', include: ['tools/generated'], roots: ['apps/api']},
+          });
+
+          const cleared = yield* mutateManagerManifestProject(current.config, {
+            clearGraph: true,
+            expectedRevision: set.catalog.revision,
+            name: 'api',
+            operation: 'update',
+            path: `${current.root}/api`,
+            project: 'api',
+            seed: [],
+            uri: 'threadnote://resources/repos/api',
+          });
+          expect(cleared.changed).toBe(true);
+          expect(yield* readManagerManifestProject(current.config, 'api')).not.toHaveProperty('graph');
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('does not mutate an unchanged structural project graph', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const current = yield* fixture(root =>
+          manifest(root).replace(
+            '    seed: []',
+            ['    seed: []', '    graph:', '      roots: [apps/api]', '      closure: dependencies'].join('\n'),
+          ),
+        );
+        const before = yield* current.fs.readFileString(current.manifestPath);
+        const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
+        const result = yield* mutateManagerManifestProject(current.config, {
+          expectedRevision: revision,
+          name: 'api',
+          operation: 'update',
+          path: `${current.root}/api`,
+          project: 'api',
+          seed: [],
+          uri: 'threadnote://resources/repos/api',
+        });
+
+        expect(result.changed).toBe(false);
+        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(before);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('creates the first project and then the first workset from an empty manifest inventory', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1127,6 +1316,47 @@ describe('Manager Worksets manifest transactions', () => {
           const revision = (yield* readManagerWorksetCatalog(current.config)).revision;
           const result = yield* mutateManagerWorksetDefinition(current.config, updateMutation(revision, order));
 
+          expect(result.changed).toBe(false);
+          expect(yield* current.fs.readFileString(current.manifestPath)).toBe(before);
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 12}},
+  );
+
+  fcEffectProp(
+    effectIt,
+    'keeps reorder-equivalent graph roots and includes byte-stable',
+    {
+      includes: fc.shuffledSubarray(['tools/generated', 'scripts/codegen'], {minLength: 2, maxLength: 2}),
+      roots: fc.shuffledSubarray(['apps/api', 'packages/core'], {minLength: 2, maxLength: 2}),
+    },
+    ({includes, roots}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const current = yield* fixture(root =>
+            manifest(root).replace(
+              '    seed: []',
+              [
+                '    seed: []',
+                '    graph:',
+                '      roots: [apps/api, packages/core]',
+                '      closure: dependencies',
+                '      include: [tools/generated, scripts/codegen]',
+              ].join('\n'),
+            ),
+          );
+          const before = yield* current.fs.readFileString(current.manifestPath);
+          const catalog = yield* readManagerWorksetCatalog(current.config);
+          const result = yield* mutateManagerManifestProject(current.config, {
+            expectedRevision: catalog.revision,
+            graph: {closure: 'dependencies', include: includes, roots},
+            name: 'api',
+            operation: 'update',
+            path: `${current.root}/api`,
+            project: 'api',
+            seed: [],
+            uri: 'threadnote://resources/repos/api',
+          });
           expect(result.changed).toBe(false);
           expect(yield* current.fs.readFileString(current.manifestPath)).toBe(before);
         }),

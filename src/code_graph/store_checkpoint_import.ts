@@ -32,6 +32,7 @@ import {ensureBoundedCodeGraphFact} from './fact_budget.js';
 import {decodeStoredCodeGraphFact, encodeStoredCodeGraphFact} from './fact_storage.js';
 import {materializedFileShardIdentity} from './store_cache.js';
 import {stagePersistedFullFacts} from './store_resolution_core.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
 
 interface CheckpointImportRow {
   readonly abi_algorithm: unknown;
@@ -59,6 +60,7 @@ interface CheckpointSnapshotAuthorityRow {
   readonly dirty: unknown;
   readonly graph_content_id: unknown;
   readonly repository_id: unknown;
+  readonly scope_id: unknown;
   readonly state: unknown;
 }
 
@@ -384,8 +386,10 @@ const selectCheckpointImportRow = Effect.fn('codeGraph.selectCheckpointImportRow
        source_graph_content_id, abi_algorithm, abi_digest, logical_algorithm, logical_digest,
        base_logical_digest, artifact_algorithm, artifact_digest, artifact_size,
        artifact_media_type, coverage_json, trust, ${timestamp} AS recorded_at
-     FROM ${table} WHERE snapshot_id = ? LIMIT 2`,
-    [snapshotId],
+     FROM ${table} WHERE snapshot_id = ?
+       AND EXISTS (SELECT 1 FROM snapshots WHERE id = snapshot_id AND scope_id = ?)
+     LIMIT 2`,
+    [snapshotId, CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY],
   );
   if (rows.length > 1) return yield* invalid('Code graph checkpoint import authority is invalid.');
   return rows[0] ? receiptFromRow(rows[0]) : undefined;
@@ -398,11 +402,16 @@ const assertSnapshotAuthority = Effect.fn('codeGraph.assertCheckpointSnapshotAut
   acceptedState: 'building' | 'ready',
 ) {
   const rows = yield* sql.unsafe<CheckpointSnapshotAuthorityRow>(
-    `SELECT repository_id, commit_id, graph_content_id, base_snapshot_id, dirty, state
+    `SELECT repository_id, commit_id, graph_content_id, base_snapshot_id, dirty, state, scope_id
      FROM snapshots WHERE id = ? LIMIT 2`,
     [snapshotId],
   );
   const row = rows[0];
+  if (row !== undefined && row.scope_id !== CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) {
+    return yield* invalid(
+      'Checkpoint v1 import supports only the full repository graph; scoped graph transport requires a verified scope receipt.',
+    );
+  }
   if (
     rows.length !== 1 ||
     row?.state !== acceptedState ||
@@ -1124,6 +1133,7 @@ export const selectReadySnapshotByLogicalDigest = Effect.fn('codeGraph.selectRea
     readonly id: string;
     readonly overlay_fingerprint: string | null;
     readonly repository_id: string;
+    readonly scope_id: string;
     readonly state: CodeGraphSnapshot['state'];
     readonly symbol_count: number;
     readonly worktree_id: string;
@@ -1138,9 +1148,10 @@ export const selectReadySnapshotByLogicalDigest = Effect.fn('codeGraph.selectRea
          AND snapshot.state = 'ready'
          AND snapshot.dirty = 0
          AND snapshot.base_snapshot_id IS NULL
+         AND snapshot.scope_id = ?
        ORDER BY receipt.imported_at DESC, receipt.snapshot_id
        LIMIT 1`,
-    [repositoryId, logicalDigest, abiDigest ?? null, abiDigest ?? null],
+    [repositoryId, logicalDigest, abiDigest ?? null, abiDigest ?? null, CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY],
   );
   const row = rows[0];
   if (!row) return undefined;

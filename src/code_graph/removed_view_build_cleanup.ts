@@ -4,6 +4,7 @@ import {runtimeTextDirectoryNamePage} from '../effect/system.js';
 import {parseCodeGraphBuildStatus, type CodeGraphBuildStatus} from './build_status.js';
 import {codeGraphRepositoryRoot} from './layout.js';
 import type {CodeGraphRemovedViewCleanupPageResult} from './removed_view_cleanup.js';
+import {codeGraphScopeViewKey} from './scope_identity.js';
 
 export const CODE_GRAPH_REMOVED_VIEW_BUILD_STATUS_LIMIT = 10_000;
 export const CODE_GRAPH_REMOVED_VIEW_BUILD_DIRECTORY_ENTRY_LIMIT = CODE_GRAPH_REMOVED_VIEW_BUILD_STATUS_LIMIT * 2 + 2;
@@ -23,6 +24,8 @@ const BUILD_DIGEST = /^[0-9a-f]{64}$/u;
 const BUILD_SCAN_DIGEST_SEED = sha256HexSync('threadnote-code-graph-build-cleanup-scan-v1');
 
 export interface CodeGraphRemovedViewBuildCleanupOptions {
+  /** Optional logical view identity; omission retains the legacy full-repository directory. */
+  readonly scopeId?: string;
   /** @internal Deterministic replacement seam before either exact sidecar is removed. */
   readonly beforeFinalStatusObservation?: () => Effect.Effect<void, unknown>;
   /** @internal Deterministic interruption seam after context removal and before status removal. */
@@ -114,7 +117,14 @@ const cleanupBuildStatusUnit = Effect.fn('codeGraph.cleanupRemovedViewBuildStatu
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const directory = yield* inspectBuildStatusDirectory(fs, path, threadnoteHome, checkoutId, worktreeId);
+  const directory = yield* inspectBuildStatusDirectory(
+    fs,
+    path,
+    threadnoteHome,
+    checkoutId,
+    worktreeId,
+    options.scopeId,
+  );
   if (directory === undefined) return {state: 'complete'} as const satisfies CodeGraphRemovedViewCleanupPageResult;
 
   const page = yield* runtimeTextDirectoryNamePage(directory, CODE_GRAPH_REMOVED_VIEW_BUILD_DIRECTORY_ENTRY_LIMIT).pipe(
@@ -149,7 +159,14 @@ const cleanupBuildStatusUnit = Effect.fn('codeGraph.cleanupRemovedViewBuildStatu
 
   let candidate: BuildStatusCandidate | undefined;
   for (const name of pageNames) {
-    const observed = yield* readBuildStatusCandidate(fs, path, path.join(directory, name), checkoutId, worktreeId);
+    const observed = yield* readBuildStatusCandidate(
+      fs,
+      path,
+      path.join(directory, name),
+      checkoutId,
+      worktreeId,
+      options.scopeId,
+    );
     if (observed === undefined) {
       return yield* InvalidBuildSidecarError.make({message: 'Build status disappeared during its bounded page.'});
     }
@@ -193,7 +210,14 @@ const cleanupBuildStatusUnit = Effect.fn('codeGraph.cleanupRemovedViewBuildStatu
   const contextFile = path.join(directory, `${candidate.status.buildId}.manager-context`);
   const initialContext = yield* readManagerContextCandidate(fs, contextFile, candidate.status.buildId);
   yield* options.beforeFinalStatusObservation?.() ?? Effect.void;
-  const finalStatus = yield* readBuildStatusCandidate(fs, path, candidate.file, checkoutId, worktreeId);
+  const finalStatus = yield* readBuildStatusCandidate(
+    fs,
+    path,
+    candidate.file,
+    checkoutId,
+    worktreeId,
+    options.scopeId,
+  );
   const finalContext = yield* readManagerContextCandidate(fs, contextFile, candidate.status.buildId);
   if (
     finalStatus === undefined ||
@@ -207,7 +231,14 @@ const cleanupBuildStatusUnit = Effect.fn('codeGraph.cleanupRemovedViewBuildStatu
 
   if (finalContext !== undefined) yield* fs.remove(contextFile, {force: false});
   yield* options.afterManagerContextRemoval?.() ?? Effect.void;
-  const ownedStatus = yield* readBuildStatusCandidate(fs, path, candidate.file, checkoutId, worktreeId);
+  const ownedStatus = yield* readBuildStatusCandidate(
+    fs,
+    path,
+    candidate.file,
+    checkoutId,
+    worktreeId,
+    options.scopeId,
+  );
   if (
     ownedStatus === undefined ||
     !sameObservedSidecar(candidate, ownedStatus) ||
@@ -228,6 +259,7 @@ const inspectBuildStatusDirectory = Effect.fn('codeGraph.inspectRemovedViewBuild
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId: string | undefined,
 ) {
   if ((yield* optionalDirectory(fs, threadnoteHome)) === undefined) return undefined;
   const canonicalHome = yield* fs.realPath(threadnoteHome);
@@ -246,10 +278,14 @@ const inspectBuildStatusDirectory = Effect.fn('codeGraph.inspectRemovedViewBuild
     return yield* InvalidBuildSidecarError.make({message: 'Build status root escaped containment.'});
   }
 
-  const directory = path.join(statusRoot, worktreeId);
+  const viewKey = yield* Effect.try({
+    try: () => codeGraphScopeViewKey(worktreeId, scopeId),
+    catch: () => InvalidBuildSidecarError.make({message: 'Build status scope identity is invalid.'}),
+  });
+  const directory = path.join(statusRoot, viewKey);
   if ((yield* optionalDirectory(fs, directory)) === undefined) return undefined;
   const canonicalDirectory = yield* fs.realPath(directory);
-  if (canonicalDirectory !== path.join(canonicalStatusRoot, worktreeId)) {
+  if (canonicalDirectory !== path.join(canonicalStatusRoot, viewKey)) {
     return yield* InvalidBuildSidecarError.make({message: 'Build status worktree escaped containment.'});
   }
   return canonicalDirectory;
@@ -261,6 +297,7 @@ const readBuildStatusCandidate = Effect.fn('codeGraph.readRemovedViewBuildStatus
   file: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId: string | undefined,
 ) {
   const observed = yield* readObservedSidecar(fs, file, STATUS_FILE_BYTES_LIMIT);
   if (observed === undefined) return undefined;
@@ -271,6 +308,7 @@ const readBuildStatusCandidate = Effect.fn('codeGraph.readRemovedViewBuildStatus
   if (
     parsed === undefined ||
     parsed.identity.checkoutId !== checkoutId ||
+    parsed.identity.scopeId !== scopeId ||
     parsed.identity.worktreeId !== worktreeId ||
     path.basename(file) !== `${parsed.buildId}.json`
   ) {

@@ -65,10 +65,12 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   if (!isRecord(value) || value.schemaVersion !== CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION) return undefined;
   if (!isText(value.buildId, 64) || !BUILD_ID.test(value.buildId)) return undefined;
   if (!isRecord(value.identity) || !isRecord(value.owner) || !isRecord(value.timestamps)) return undefined;
+  const scopeId = value.identity.scopeId;
   if (
     !isHash(value.identity.repositoryId) ||
     !isHash(value.identity.checkoutId) ||
     !isHash(value.identity.worktreeId) ||
+    (scopeId !== undefined && (typeof scopeId !== 'string' || !/^code-graph-scope:[0-9a-f]{64}$/u.test(scopeId))) ||
     !isText(value.identity.commit, 64) ||
     !COMMIT_ID.test(value.identity.commit) ||
     !Number.isSafeInteger(value.owner.processId) ||
@@ -137,6 +139,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
       commit: value.identity.commit,
       ...(displayName ? {displayName} : {}),
       repositoryId: value.identity.repositoryId,
+      ...(scopeId === undefined ? {} : {scopeId}),
       worktreeId: value.identity.worktreeId,
     },
     ...(materialization ? {materialization} : {}),

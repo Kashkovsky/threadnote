@@ -199,7 +199,7 @@ export function registerStoreTool(
           (requestedCodeRefs.length > 0 && !sharedTarget && metadata.status === 'active' ? 'defer' : 'require-current');
         const captured = yield* captureMemoryCodeCitationsForMcp(
           config,
-          {callerCwd: callerCwd!, refs: requestedCodeRefs},
+          {callerCwd: callerCwd!, ...(project === undefined ? {} : {project}), refs: requestedCodeRefs},
           name,
         );
         const deferredCodeAnchor: DeferredCodeAnchorWriteRequest | undefined =
@@ -210,6 +210,7 @@ export function registerStoreTool(
             ? {
                 callerCwd: callerCwd!,
                 codeRefs: requestedCodeRefs,
+                ...(project === undefined ? {} : {project}),
                 recovery: captured.failure.recovery,
               }
             : undefined;

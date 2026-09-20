@@ -1009,6 +1009,10 @@ export function reusableBaseFileSetFingerprint(files: readonly CodeGraphInventor
   );
 }
 
+export function reusableBaseComponentRankingJson(workspace: CodeGraphWorkspace): string {
+  return JSON.stringify(workspace.projects.slice(0, 256));
+}
+
 export function currentSnapshotReusableBaseReceipt(
   inventory: CodeGraphInventory,
   workspace: CodeGraphWorkspace,

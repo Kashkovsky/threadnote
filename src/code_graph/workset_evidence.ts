@@ -6,7 +6,13 @@ import {
   measureAgentToolResponse,
   type AgentToolResponseMeasurement,
 } from '../evaluation/agent-response.js';
-import type {CodeGraphProvenance, CodeGraphRelation, CodeGraphSpan} from './types.js';
+import {
+  CodeGraphProjectCoverageSchema,
+  type CodeGraphProjectCoverage,
+  type CodeGraphProvenance,
+  type CodeGraphRelation,
+  type CodeGraphSpan,
+} from './types.js';
 
 export const CODE_GRAPH_WORKSET_EVIDENCE_RESULT_VERSION = 2 as const;
 export const CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION = 1 as const;
@@ -92,6 +98,7 @@ export interface CodeGraphWorksetContinuationIdentityV1 {
 }
 
 export interface RepositoryEvidenceReceiptV1 {
+  readonly projectCoverage?: CodeGraphProjectCoverage;
   readonly considered: boolean;
   readonly deepQueried: boolean;
   readonly repositoryId: string;
@@ -237,6 +244,7 @@ const SnapshotReceiptSchema = Schema.Struct({
 });
 
 const RepositoryReceiptSchema = Schema.Struct({
+  projectCoverage: Schema.optionalKey(CodeGraphProjectCoverageSchema),
   considered: Schema.Boolean,
   deepQueried: Schema.Boolean,
   repositoryId: Sha256Hex,
@@ -578,8 +586,11 @@ function validateFullCoverage(result: CodeGraphWorksetQueryResultV2): void {
       throw invalid(`Workset ${state} repository count does not match member receipts.`);
     }
   }
-  if (result.coverage.complete !== (considered === catalogued)) {
-    throw invalid('Workset completeness must report whether every catalogued repository was considered.');
+  if (
+    result.coverage.complete !==
+    (considered === catalogued && receipts.every(receipt => receipt.projectCoverage?.completeness !== 'partial'))
+  ) {
+    throw invalid('Workset completeness must report full consideration without partial project coverage.');
   }
 }
 

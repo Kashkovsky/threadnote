@@ -1,7 +1,10 @@
 import type {Path} from 'effect';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
+import {codeGraphScopeViewKey} from './scope_identity.js';
 
 export interface CodeGraphLayout {
+  readonly scopeId?: string;
   readonly checkoutId: string;
   readonly databaseWriteLockPath: string;
   readonly databasePath: string;
@@ -169,10 +172,14 @@ export function codeGraphWorktreeLockPath(
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId?: string,
 ): string {
   assertCheckoutId(checkoutId);
   assertWorktreeId(worktreeId);
-  return path.join(codeGraphWorktreeLockRoot(path, threadnoteHome, checkoutId), `${worktreeId}.lock`);
+  return path.join(
+    codeGraphWorktreeLockRoot(path, threadnoteHome, checkoutId),
+    `${codeGraphScopeViewKey(worktreeId, scopeId)}.lock`,
+  );
 }
 
 /**
@@ -184,6 +191,7 @@ export function codeGraphWorktreeSpawnLockPath(
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId?: string,
 ): string {
   assertCheckoutId(checkoutId);
   assertWorktreeId(worktreeId);
@@ -194,7 +202,7 @@ export function codeGraphWorktreeSpawnLockPath(
     'code-graph',
     'worktree-spawns',
     checkoutId,
-    `${worktreeId}.lock`,
+    `${codeGraphScopeViewKey(worktreeId, scopeId)}.lock`,
   );
 }
 
@@ -204,10 +212,22 @@ export function codeGraphRefreshDemandPath(
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId?: string,
 ): string {
   assertCheckoutId(checkoutId);
   assertWorktreeId(worktreeId);
-  return path.join(threadnoteHome, `.code-graph-refresh-demand-v1-${checkoutId}-${worktreeId}.json`);
+  if (scopeId !== undefined) {
+    return path.join(
+      threadnoteHome,
+      'refresh-demands',
+      checkoutId,
+      `${sha256HexSync(codeGraphScopeViewKey(worktreeId, scopeId))}.json`,
+    );
+  }
+  return path.join(
+    threadnoteHome,
+    `.code-graph-refresh-demand-v1-${checkoutId}-${codeGraphScopeViewKey(worktreeId, scopeId)}.json`,
+  );
 }
 
 export function codeGraphRefreshDemandLockPath(
@@ -215,10 +235,22 @@ export function codeGraphRefreshDemandLockPath(
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId?: string,
 ): string {
   assertCheckoutId(checkoutId);
   assertWorktreeId(worktreeId);
-  return path.join(threadnoteHome, `.code-graph-refresh-demand-v1-${checkoutId}-${worktreeId}.lock`);
+  if (scopeId !== undefined) {
+    return path.join(
+      threadnoteHome,
+      'refresh-demands',
+      checkoutId,
+      `${sha256HexSync(codeGraphScopeViewKey(worktreeId, scopeId))}.lock`,
+    );
+  }
+  return path.join(
+    threadnoteHome,
+    `.code-graph-refresh-demand-v1-${checkoutId}-${codeGraphScopeViewKey(worktreeId, scopeId)}.lock`,
+  );
 }
 
 export function codeGraphLayout(
@@ -226,16 +258,18 @@ export function codeGraphLayout(
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId?: string,
 ): CodeGraphLayout {
   const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
   const worktreeLockRoot = codeGraphWorktreeLockRoot(path, threadnoteHome, checkoutId);
   return {
+    ...(scopeId === undefined ? {} : {scopeId}),
     checkoutId,
     databaseWriteLockPath: codeGraphDatabaseWriteLockPath(path, threadnoteHome, checkoutId),
     databasePath: path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`),
-    lockPath: codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId),
+    lockPath: codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId, scopeId),
     repositoryRoot,
-    staleMarkerPath: path.join(repositoryRoot, 'stale', `${worktreeId}.stale`),
+    staleMarkerPath: path.join(repositoryRoot, 'stale', `${codeGraphScopeViewKey(worktreeId, scopeId)}.stale`),
     vectorRoot: path.join(repositoryRoot, 'vectors'),
     worktreeLockRoot,
     worktreeId,

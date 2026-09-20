@@ -10,6 +10,7 @@ import {
   type QualifiedCodeGraphRefV1,
 } from '../workset_evidence.js';
 import {codeGraphWorksetCatalogLayout} from './layout.js';
+import {normalizeWorksetScopeReceipt, worksetScopeReceiptsMatch, type WorksetScopeRow} from './scope_receipt.js';
 import {
   codeGraphWorksetCatalogGenerationDigest,
   codeGraphWorksetCatalogGenerationIdentity,
@@ -142,7 +143,7 @@ interface GenerationMemberRow {
   readonly worktree_id: unknown;
 }
 
-interface ProjectionRow {
+interface ProjectionRow extends WorksetScopeRow {
   readonly checkout_id: unknown;
   readonly commit_id: unknown;
   readonly component_count: unknown;
@@ -253,7 +254,10 @@ export const beginCodeGraphWorksetCatalogProjection = Effect.fn('codeGraphWorkse
       const now = yield* currentIsoInstant;
       const existing = yield* selectProjectionForSnapshot(sql, receipt);
       if (existing !== undefined) {
-        if (existing.projection_digest !== receipt.projectionDigest) {
+        if (
+          existing.projection_digest !== receipt.projectionDigest ||
+          !worksetScopeReceiptsMatch(existing.scope, receipt)
+        ) {
           return yield* invalid('A ready snapshot produced different records for the same projector version.');
         }
         if (existing.state === 'ready') {
@@ -455,6 +459,7 @@ export const stageCodeGraphWorksetCatalogGeneration = Effect.fn('codeGraphWorkse
     for (const member of identity.members) {
       const projection = member.projection;
       const projectionReceipt = {
+        ...normalizeWorksetScopeReceipt(projection),
         checkoutId: projection.checkoutId,
         commitId: projection.commitId,
         componentCount: projection.componentCount,
@@ -483,6 +488,7 @@ export const stageCodeGraphWorksetCatalogGeneration = Effect.fn('codeGraphWorkse
         });
       }
       members.push({
+        ...normalizeWorksetScopeReceipt(projection),
         projectionDigest: projection.projectionDigest,
         repositoryId: projection.repositoryId,
         repositoryKey: member.repositoryKey,
@@ -549,6 +555,7 @@ export const stageCodeGraphWorksetCatalogGenerationFromReceipts = Effect.fn(
               member.repository_key === expected.repositoryKey &&
               member.repository_id === expected.repositoryId &&
               member.snapshot_id === expected.snapshotId &&
+              worksetScopeReceiptsMatch(member, expected) &&
               member.projection_digest === expected.projectionDigest
             );
           });
@@ -567,7 +574,8 @@ export const stageCodeGraphWorksetCatalogGenerationFromReceipts = Effect.fn(
           projection === undefined ||
           projection.state !== 'ready' ||
           projection.repository_id !== member.repositoryId ||
-          projection.snapshot_id !== member.snapshotId
+          projection.snapshot_id !== member.snapshotId ||
+          !worksetScopeReceiptsMatch(projection.scope, member)
         ) {
           return yield* CodeGraphWorksetCatalogError.of(
             'missing',
@@ -659,7 +667,7 @@ export const retireCodeGraphWorksetCatalogPreparation = Effect.fn('codeGraphWork
 
 /** Atomically replace one workset's published pointer after validating every staged projection receipt. */
 export const publishCodeGraphWorksetCatalogGeneration = Effect.fn('codeGraphWorksetCatalog.publishGeneration')(
-  function* <E, R>(
+  function* <E = never, R = never>(
     threadnoteHome: string,
     input: {
       /** Final lease/snapshot guard run under the writer lock before the pointer transaction. */
@@ -710,6 +718,7 @@ export const publishCodeGraphWorksetCatalogGeneration = Effect.fn('codeGraphWork
             return yield* corrupt('A staged workset member does not match its routing projection.');
           }
           digestMembers.push({
+            ...normalizeWorksetScopeReceipt(projection.receipt),
             projectionDigest: projection.receipt.projectionDigest,
             repositoryId: projection.receipt.repositoryId,
             repositoryKey: member.repository_key,
@@ -851,9 +860,7 @@ export const readPublishedCodeGraphWorksetCatalogGeneration = Effect.fn(
         const members: CodeGraphWorksetCatalogPublishedMemberV1[] = [];
         for (const member of memberRows) {
           const projections = yield* sql.unsafe<ProjectionRow>(
-            `SELECT projection_digest, repository_id, checkout_id, worktree_id, snapshot_id,
-                    snapshot_digest, commit_id, extractor_generation, projector_version,
-                    component_count, symbol_count, state
+            `SELECT *
              FROM repository_snapshots
              WHERE projection_digest = ? AND state = 'ready'
              LIMIT 1`,
@@ -863,7 +870,11 @@ export const readPublishedCodeGraphWorksetCatalogGeneration = Effect.fn(
             return yield* corrupt('Published workset projection is missing.');
           }
           const projection = yield* decodeProjectionMetadata(projections[0]);
+          if (projection.repository_id !== member.repository_id || projection.snapshot_id !== member.snapshot_id) {
+            return yield* corrupt('Published Workset member identity does not match its projection.');
+          }
           members.push({
+            ...projection.scope,
             checkoutId: projection.checkout_id,
             commitId: projection.commit_id,
             ordinal: member.ordinal,
@@ -876,6 +887,11 @@ export const readPublishedCodeGraphWorksetCatalogGeneration = Effect.fn(
             worktreeId: projection.worktree_id,
           });
         }
+        const digest = yield* validateStored(() =>
+          codeGraphWorksetCatalogGenerationDigest(generation.workset_name, generation.manifest_digest, members),
+        );
+        if (digest !== generation.generation_digest)
+          return yield* corrupt('Published Workset scope receipts do not match their generation.');
         return {
           digest: generation.generation_digest,
           id: generation.id,

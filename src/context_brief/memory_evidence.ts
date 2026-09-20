@@ -179,6 +179,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       retryContextBriefCodeAnchorRead(
         captureMemoryCodeCitations(config, {
           callerCwd,
+          project: plan.scope.project,
           refs: plan.codeRefs,
         }),
         retryBudget,
@@ -202,6 +203,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
                   retryContextBriefCodeAnchorRead(
                     captureMemoryCodeCitations(config, {
                       callerCwd,
+                      project: plan.scope.project,
                       refs: [ref],
                     }),
                     retryBudget,
@@ -424,7 +426,10 @@ export function parseMemoryActionCard(body: string): ContextBriefMemoryActionCar
 }
 
 function isUnresolvedContextBriefCodeAnchorFailure(error: unknown): boolean {
-  return Schema.is(MemoryCodeCitationCaptureError)(error) && error.failureCode === 'code-reference-unresolved';
+  return (
+    Schema.is(MemoryCodeCitationCaptureError)(error) &&
+    (error.failureCode === 'code-reference-unresolved' || error.failureCode === 'outside-project-graph')
+  );
 }
 
 function isUnexpectedContextBriefCodeAnchorFailure(error: unknown): boolean {

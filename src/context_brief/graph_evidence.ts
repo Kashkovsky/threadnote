@@ -74,12 +74,16 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
   if (plan.scope.kind !== 'repository') throw new Error('Context Brief repository graph plan has the wrong scope.');
   const callerCwd = plan.scope.callerCwd;
   const query = yield* CodeGraphQueryService;
-  const status = yield* query.status(config.agentContextHome, callerCwd, {requestMaintenance: false});
+  const scopeOptions = {project: plan.scope.project, manifestPath: config.manifestPath};
+  const status = yield* query.status(config.agentContextHome, callerCwd, {...scopeOptions, requestMaintenance: false});
   const readySnapshot = status.readySnapshot;
   if (readySnapshot === undefined) {
-    return unavailableContextBriefGraphEvidence('graph-ready-snapshot-missing', 1, {
-      missing: 1,
-    });
+    return {
+      ...unavailableContextBriefGraphEvidence('graph-ready-snapshot-missing', 1, {
+        missing: 1,
+      }),
+      ...(status.projectCoverage === undefined ? {} : {projectCoverage: status.projectCoverage}),
+    };
   }
   const anchoredRequests = contextBriefAnchoredRepositoryGraphRequests(plan);
   if (anchoredRequests.length > 0) {
@@ -91,6 +95,7 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
           const primary = yield* Effect.result(
             retryContextBriefGraphRead(
               query.inspect({
+                ...scopeOptions,
                 cwd: callerCwd,
                 depth: request.depth,
                 direction: request.direction,
@@ -134,6 +139,7 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
           const evidence = yield* Effect.result(
             retryContextBriefGraphRead(
               query.inspect({
+                ...scopeOptions,
                 cwd: callerCwd,
                 depth: evidenceRequest.depth,
                 direction: evidenceRequest.direction,
@@ -206,6 +212,7 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
   const result = yield* Effect.result(
     retryContextBriefGraphRead(
       query.inspect({
+        ...scopeOptions,
         cwd: callerCwd,
         edgeLimit: plan.edgeLimit,
         nodeLimit: plan.nodeLimit,
@@ -362,6 +369,7 @@ export function fromRepositoryQuery(result: CodeGraphQueryResult): ContextBriefG
     snapshotId: result.snapshot.id,
   };
   return {
+    ...(result.projectCoverage === undefined ? {} : {projectCoverage: result.projectCoverage}),
     cards,
     citationValidationFence: {
       kind: 'repository',
@@ -370,13 +378,13 @@ export function fromRepositoryQuery(result: CodeGraphQueryResult): ContextBriefG
     },
     contracts,
     coverage: {
-      complete: true,
+      complete: result.projectCoverage?.completeness !== 'partial',
       consideredRepositories: 1,
       readyRepositories: 1,
       requestedRepositories: 1,
       states: {[result.freshness]: 1},
     },
-    gaps: [],
+    gaps: result.projectCoverage?.completeness === 'partial' ? ['graph-project-scope-partial'] : [],
     resolvedSnapshots: [snapshot],
     trust: TRUST,
     warnings: result.warnings.map(warning => compactText(warning, 240)).slice(0, 16),
@@ -416,6 +424,7 @@ function unavailableReadyRepositoryGraphEvidence(
   const freshness =
     status.freshness === 'current' ? 'fresh' : status.freshness === 'stale' ? 'stale' : ('unknown' as const);
   return {
+    ...(status.projectCoverage === undefined ? {} : {projectCoverage: status.projectCoverage}),
     cards: [],
     citationValidationFence: {
       kind: 'repository',

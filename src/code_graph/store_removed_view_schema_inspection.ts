@@ -14,10 +14,16 @@ import {
   inspectBoundedSchemaMetadataValue,
 } from './store_schema_metadata.js';
 import {normalizeSchemaDefinition} from './store_schema_normalization.js';
+import {codeGraphScopeAuthorityInstalled, codeGraphScopeAuthoritySchemaCompatible} from './store_scope_schema.js';
 
 export const removedViewAuthorityTableState = Effect.fn('codeGraph.removedViewAuthorityTableState')(function* (
   sql: SqlClient.SqlClient,
 ) {
+  if (yield* codeGraphScopeAuthorityInstalled(sql)) {
+    return (yield* codeGraphScopeAuthoritySchemaCompatible(sql, ['removed_views']))
+      ? ('compatible' as const)
+      : ('incompatible' as const);
+  }
   const objects = yield* sql.unsafe<{
     readonly name: unknown;
     readonly sql: unknown;
@@ -129,6 +135,15 @@ export const removedViewAuthorityTableState = Effect.fn('codeGraph.removedViewAu
 export const removedViewCleanupSchemaState = Effect.fn('codeGraph.removedViewCleanupSchemaState')(function* (
   sql: SqlClient.SqlClient,
 ) {
+  if (yield* codeGraphScopeAuthorityInstalled(sql)) {
+    return (yield* codeGraphScopeAuthoritySchemaCompatible(sql, [
+      'removed_view_cleanup',
+      'removed_view_cleanup_due',
+      ...REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS.map(trigger => trigger.name),
+    ]))
+      ? ('compatible' as const)
+      : ('incompatible' as const);
+  }
   const objects = yield* sql.unsafe<{
     readonly name: string;
     readonly sql: string | null;

@@ -42,6 +42,8 @@ import {
   type CodeGraphCheckpointHeaderV1,
 } from '../../src/code_graph/checkpoint/schema.js';
 import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../../src/code_graph/inventory_policy.js';
+import {CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION} from '../../src/code_graph/store/schema_revision.js';
+import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 
 describe('code graph checkpoint import store', () => {
   effectIt.effect('keeps staged records unreachable and atomically publishes an immutable receipt', () =>
@@ -157,9 +159,67 @@ describe('code graph checkpoint import store', () => {
             }),
           );
           expect(remaining).toEqual([{batches: 0, builds: 0, workspace_root: ''}]);
+          // A legacy receipt cannot authorize a scope relabel, even if every
+          // other source identity and the artifact digest still match.
+          yield* store.withSession(
+            databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              yield* sql`UPDATE snapshots SET scope_id = ${`code-graph-scope:${'f'.repeat(64)}`} WHERE id = ${snapshot.id}`;
+            }),
+          );
+          expect(yield* store.checkpointImportReceipt(databasePath, snapshot.id)).toBeUndefined();
+          expect(
+            yield* store.readySnapshotByLogicalDigest(
+              databasePath,
+              identity.repositoryId,
+              input.logical.digest,
+              input.abi.digest,
+            ),
+          ).toBeUndefined();
+          expect(
+            String(yield* store.recordCheckpointImportReceipt(databasePath, snapshot.id, input).pipe(Effect.flip)),
+          ).toContain('only the full repository graph');
         }),
       ).pipe(provideTestLayer(ApplicationLayer)),
     ),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'refuses legacy import bindings and receipts for every project scope without writing authority',
+    {
+      scopeHex: fc
+        .array(fc.constantFrom(...'0123456789abcdef'), {minLength: 64, maxLength: 64})
+        .map(chars => chars.join('')),
+    },
+    ({scopeHex}) =>
+      TestClock.withLive(
+        withFixture(({databasePath, identity, snapshot, store}) =>
+          Effect.gen(function* () {
+            const scoped = {...snapshot, scopeId: `code-graph-scope:${scopeHex}`};
+            yield* claimPersistentBuildForTest(store, databasePath, identity, scoped);
+            const bindingError = yield* store
+              .bindCheckpointImportBuild(databasePath, scoped.id, checkpointBuildInput())
+              .pipe(Effect.flip);
+            expect(String(bindingError)).toContain('only the full repository graph');
+            const receiptError = yield* store
+              .recordCheckpointImportReceipt(databasePath, scoped.id, checkpointReceiptInput())
+              .pipe(Effect.flip);
+            expect(String(receiptError)).toContain('only the full repository graph');
+            expect(yield* store.checkpointImportReceipt(databasePath, scoped.id)).toBeUndefined();
+            const rows = yield* store.withSession(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                return yield* sql`SELECT COUNT(*) AS count FROM checkpoint_import_builds`;
+              }),
+            );
+            expect(rows).toEqual([{count: 0}]);
+          }),
+        ).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    {fastCheck: {numRuns: 8}},
   );
 
   fcEffectProp(
@@ -454,6 +514,7 @@ describe('code graph checkpoint import store', () => {
           yield* Effect.sync(() => {
             const database = new Database(databasePath, {strict: true});
             try {
+              for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
               database.exec('DROP TABLE checkpoint_import_receipts');
               database.exec('DROP TABLE checkpoint_import_batches');
               database.exec('DROP TABLE checkpoint_import_builds');
@@ -488,7 +549,7 @@ describe('code graph checkpoint import store', () => {
               database.close(false);
             }
           });
-          expect(observation.revision).toEqual({value: '17'});
+          expect(observation.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION)});
           expect(observation.tables).toEqual([
             {name: 'checkpoint_import_batches'},
             {name: 'checkpoint_import_builds'},

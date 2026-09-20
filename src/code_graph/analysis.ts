@@ -256,6 +256,7 @@ export interface CodeGraphAnalysisUsage {
 }
 
 export interface CodeGraphAnalysisResult {
+  readonly projectCoverage?: import('./types.js').CodeGraphProjectCoverage;
   readonly algorithms: {
     readonly communities: 'structural-connectivity-v1';
     readonly components: 'weak-connectivity-v1';

@@ -37,6 +37,8 @@ export class CodeGraphRefreshDemandSuperseded extends Schema.TaggedError<CodeGra
 
 export interface CodeGraphRefreshDemandIdentity {
   readonly checkoutId: string;
+  /** Opaque selected graph view; absent retains the legacy full-repository sidecar. */
+  readonly scopeId?: string;
   readonly threadnoteHome: string;
   readonly worktreeId: string;
 }
@@ -65,18 +67,29 @@ const mutate = Effect.fn('codeGraph.refreshDemand.mutate')(function* <A, E, R>(
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const dataPath = codeGraphRefreshDemandPath(path, identity.threadnoteHome, identity.checkoutId, identity.worktreeId);
+  const dataPath = codeGraphRefreshDemandPath(
+    path,
+    identity.threadnoteHome,
+    identity.checkoutId,
+    identity.worktreeId,
+    identity.scopeId,
+  );
   const lockPath = codeGraphRefreshDemandLockPath(
     path,
     identity.threadnoteHome,
     identity.checkoutId,
     identity.worktreeId,
+    identity.scopeId,
   );
-  // Both files are direct children of the already-created private Threadnote
-  // home. No attacker-replaceable descendant directory is created or traversed
-  // before exclusive creation; final-file reads use the stable no-follow path.
-  const dataAncestors = [identity.threadnoteHome];
-  const lockAncestors = [identity.threadnoteHome];
+  // Full-repository demand files retain their historical direct-home names;
+  // scoped files live under a private checkout directory to keep atomic
+  // temporary names below filesystem component limits.
+  const dataAncestors =
+    path.dirname(dataPath) === identity.threadnoteHome
+      ? [identity.threadnoteHome]
+      : [identity.threadnoteHome, path.dirname(path.dirname(dataPath)), path.dirname(dataPath)];
+  const lockAncestors = dataAncestors;
+  yield* ensurePrivateDirectories(fs, dataAncestors);
   const lockAuthority = yield* inspectPrivateDirectories(fs, lockAncestors);
   if (lockAuthority === undefined)
     return yield* CodeGraphRefreshDemandSuperseded.make({
@@ -103,7 +116,6 @@ const mutate = Effect.fn('codeGraph.refreshDemand.mutate')(function* <A, E, R>(
         return yield* CodeGraphRefreshDemandSuperseded.make({
           message: 'Code graph refresh demand lock directory changed.',
         });
-      yield* ensurePrivateDirectories(fs, dataAncestors);
       const state = yield* readState(fs, dataPath, dataAncestors, identity);
       const result = yield* f(state);
       if (result.state !== state) yield* writeState(fs, crypto, dataPath, dataAncestors, result.state);
