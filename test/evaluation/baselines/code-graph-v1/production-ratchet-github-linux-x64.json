@@ -985,14 +985,14 @@
     "cold-workspace-component-rows": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 1034,
-      "minimum": 1034
+      "maximum": 996,
+      "minimum": 996
     },
     "cold-workspace-scope-rows": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 26,
-      "minimum": 26
+      "maximum": 25,
+      "minimum": 25
     },
     "derived-index-disk": {
       "samplesMinimum": 1,
