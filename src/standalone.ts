@@ -220,6 +220,8 @@ async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {
 }
 
 async function remoteMemoryServiceProgram() {
+  if (arguments_[1] === '--help' || arguments_[1] === '-h') return remoteMemoryServiceHelpProgram();
+
   const [service, locks, system] = await Promise.all([
     import('./remote_memory/main.js'),
     import('./effect/git_worktree_lock.js'),
@@ -252,6 +254,20 @@ async function remoteMemoryServiceProgram() {
       );
     }),
   ).pipe(Effect.provide(Layer.merge(system.SystemInfo.layer, BunServices.layer)));
+}
+
+function remoteMemoryServiceHelpProgram(): Effect.Effect<void, never, never> {
+  return Effect.sync(() => {
+    process.stdout.write(
+      [
+        'Threadnote remote memory service',
+        '',
+        'Usage: threadnote remote-memory-service',
+        '',
+        'Starts the remote memory HTTP service using THREADNOTE_REMOTE_* environment variables.',
+      ].join('\n') + '\n',
+    );
+  });
 }
 
 function remoteMemoryShutdownSignal(effectSignal: AbortSignal): {
