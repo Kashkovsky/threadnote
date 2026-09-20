@@ -21,8 +21,9 @@ provenance, not proof of current code or absence. If a brief retains a selector,
 
 Call `inspect_code_graph`/`analyze_code_graph` through the code-graph skill before broad search, then verify claims in
 exact source. `cgr_` handles are for graph inspection, not `codeRefs`; use up to eight canonical anchors. Named Worksets
-use only their published ready generation; prepare one explicitly when needed. If graph tooling is unavailable, say so
-and use targeted search. Skip graph for known exact paths/symbols, remote reviews without a checkout, or binary/visual
-evidence.
+use only their published ready generation; prepare one explicitly when needed. Preserve a Context Brief's `project`
+selector in later graph calls. If project coverage is partial, ambiguous, or excludes a requested path, follow the
+reported action instead of silently widening to the full repository. If graph tooling is unavailable, say so and use
+targeted search. Skip graph for known exact paths/symbols, remote reviews without a checkout, or binary/visual evidence.
 
 <!-- END THREADNOTE USER INSTRUCTIONS -->

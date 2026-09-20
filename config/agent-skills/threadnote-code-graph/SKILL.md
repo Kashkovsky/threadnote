@@ -16,6 +16,11 @@ handles remain inspection handles. If a brief is truncated, follow its retained 
 provenance, not proof of absence. During indexing, use compatible stale/deferred cards, verify exact source, and retry
 only before strict current/relationship claims or when no usable cards survive; never tight-poll refresh state.
 
+Preserve the Context Brief `project` selector and read `projectCoverage`: a configured project graph covers its roots,
+forward dependencies, and explicit includes, not the whole repository. Do not claim repository-wide absence from that
+view. For `outside-project-graph`, partial coverage, or ambiguous selection, follow the returned action or choose a
+project explicitly identified by the task or repository guidance; never guess, silently widen, or force a full rebuild.
+
 Named Worksets expose only their published ready generation; run `threadnote workset prepare <name>` when a fresher ready
 snapshot is required. If graph tooling is unavailable, say so and use targeted search. Skip graph for known exact paths
 or symbols, remote review without a checkout, and visual/binary evidence. Carry consequential anchors into the handoff.
