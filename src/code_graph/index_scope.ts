@@ -5,6 +5,10 @@ import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphLanguagePackError, CodeGraphWorkspace, CodeGraphWorkspaceProject} from './languages/types.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphInventoryFile} from './types.js';
+import {
+  codeGraphWorkspaceProjectsForDiagnostic,
+  createCodeGraphWorkspaceDiagnosticIndex,
+} from './workspace_diagnostics.js';
 
 export interface CodeGraphWorkspaceCatalog {
   readonly fingerprint: string;
@@ -106,7 +110,7 @@ export function resolveCodeGraphIndexScope(
     admittedPrefixes,
     catalog,
     definitionDigest,
-    diagnostics: scopeDiagnostics(catalog.workspace, includedProjects),
+    diagnostics: scopeDiagnostics(catalog.workspace, includedProjects, {admittedPrefixes, controlPaths}),
     includedProjects,
     rootProjectIds: rootProjects.map(candidate => candidate.id),
     scopeKey,
@@ -205,10 +209,20 @@ function resolvedScope(input: {
 function scopeDiagnostics(
   workspace: CodeGraphWorkspace,
   projects: readonly CodeGraphWorkspaceProject[],
+  selected?: {readonly admittedPrefixes: readonly string[]; readonly controlPaths: readonly string[]},
 ): readonly string[] {
   const knownIds = new Set(workspace.projects.map(project => project.id));
+  const selectedIds = new Set(projects.map(project => project.id));
+  const diagnosticIndex =
+    selected === undefined ? undefined : createCodeGraphWorkspaceDiagnosticIndex(workspace.projects);
   return uniqueStrings([
-    ...workspace.diagnostics,
+    ...workspace.diagnostics.filter(diagnostic => {
+      if (selected === undefined) return true;
+      const attributed = codeGraphWorkspaceProjectsForDiagnostic(diagnosticIndex!, diagnostic);
+      return attributed.length > 0
+        ? attributed.some(project => selectedIds.has(project.id))
+        : diagnosticAppliesToScope(diagnostic, selected);
+    }),
     ...projects.flatMap(project => [
       ...project.diagnostics,
       ...(project.provenance === 'inferred' ? [`Component ${project.id} is inferred.`] : []),
@@ -219,6 +233,27 @@ function scopeDiagnostics(
   ])
     .filter(diagnostic => diagnostic.length > 0)
     .slice(0, 100);
+}
+
+function diagnosticAppliesToScope(
+  diagnostic: string,
+  selected: {readonly admittedPrefixes: readonly string[]; readonly controlPaths: readonly string[]},
+): boolean {
+  const separator = diagnostic.indexOf(':');
+  if (separator <= 0) return true;
+  const evidencePath = diagnostic.slice(0, separator);
+  if (
+    evidencePath.startsWith('/') ||
+    evidencePath.includes('\\') ||
+    evidencePath.split('/').some(segment => segment === '' || segment === '.' || segment === '..')
+  )
+    return true;
+  return (
+    selected.controlPaths.includes(evidencePath) ||
+    selected.admittedPrefixes.some(
+      prefix => prefix === '' || evidencePath === prefix || evidencePath.startsWith(`${prefix}/`),
+    )
+  );
 }
 
 function workspaceCatalogFingerprint(files: readonly CodeGraphInventoryFile[]): string {

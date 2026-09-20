@@ -13,6 +13,7 @@ import {compareCodeUnits} from './ordering.js';
 import {canonicalCodeGraphMonikers, codeGraphPackageMoniker} from './cross_repository/monikers.js';
 import type {CodeGraphExternalDependencyV1, CodeGraphMonikerV1} from './cross_repository/types.js';
 import {discoverNodeWorkspaceCandidates} from './workspace_node.js';
+import {boundedCodeGraphWorkspaceDiagnostics, resolveCodeGraphWorkspaceDiagnostics} from './workspace_diagnostics.js';
 import {
   basename,
   dirname,
@@ -62,8 +63,12 @@ export function discoverManifestWorkspace(files: readonly CodeGraphInventoryFile
     ...discoverXcodeProjects(files, diagnostics),
   ];
   addFallbackProjects(files, candidates);
-  const projects = materializeProjects(mergeProjectCandidates(candidates), diagnostics);
-  const orderedDiagnostics = uniqueStrings(diagnostics).slice(0, 100);
+  const diagnosticResolution = resolveCodeGraphWorkspaceDiagnostics(
+    materializeProjects(mergeProjectCandidates(candidates), diagnostics),
+    diagnostics,
+  );
+  const projects = diagnosticResolution.projects;
+  const orderedDiagnostics = boundedCodeGraphWorkspaceDiagnostics(diagnosticResolution);
   const fingerprint = sha256HexSync(
     [
       'code-graph-workspace-v1',
@@ -135,13 +140,17 @@ export function mergeCodeGraphWorkspaces(workspaces: readonly CodeGraphWorkspace
     }
     diagnostics.push(...workspace.diagnostics);
   }
-  const orderedProjects = [...projects.values()].sort(
-    (left, right) =>
-      compareCodeUnits(left.root, right.root) ||
-      compareCodeUnits(left.resolutionDomain, right.resolutionDomain) ||
-      compareCodeUnits(left.id, right.id),
+  const diagnosticResolution = resolveCodeGraphWorkspaceDiagnostics(
+    [...projects.values()].sort(
+      (left, right) =>
+        compareCodeUnits(left.root, right.root) ||
+        compareCodeUnits(left.resolutionDomain, right.resolutionDomain) ||
+        compareCodeUnits(left.id, right.id),
+    ),
+    diagnostics,
   );
-  const orderedDiagnostics = uniqueStrings(diagnostics).slice(0, 100);
+  const orderedProjects = diagnosticResolution.projects;
+  const orderedDiagnostics = boundedCodeGraphWorkspaceDiagnostics(diagnosticResolution);
   const buildWorkspaces = materializeBuildWorkspaces(orderedProjects, orderedDiagnostics);
   return {
     diagnostics: orderedDiagnostics,

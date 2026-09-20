@@ -10,6 +10,9 @@ import {
   type CodeGraphWorkspaceCatalog,
 } from '../../src/code_graph/index_scope.js';
 import type {CodeGraphWorkspaceProject} from '../../src/code_graph/languages/types.js';
+import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
+import {discoverBazelWorkspace, discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
+import {resolveCodeGraphWorkspaceDiagnostics} from '../../src/code_graph/workspace_diagnostics.js';
 
 const project = (id: string, root: string, dependencies: readonly string[] = []) =>
   ({
@@ -37,6 +40,17 @@ const catalog = (projects: readonly CodeGraphWorkspaceProject[]): CodeGraphWorks
   fingerprint: 'catalog',
   resolutionContextPaths: ['tsconfig.json', ...projects.map(value => `${value.root}/tsconfig.json`)],
   workspace: {diagnostics: [], fingerprint: 'workspace', projects, workspaces: []},
+});
+
+const workspaceFile = (path: string, content: string, language: string): CodeGraphInventoryFile => ({
+  blobId: `blob-${path}`,
+  content,
+  contentHash: `hash-${path}`,
+  language,
+  mode: '100644',
+  path,
+  size: Buffer.byteLength(content),
+  source: 'commit',
 });
 
 describe('code graph index scope', () => {
@@ -114,6 +128,143 @@ describe('code graph index scope', () => {
     expect(changedControls.closureDigest).not.toBe(complete.closureDigest);
     expect(partial.closureDigest).not.toBe(complete.closureDigest);
   });
+
+  it('keeps unrelated workspace diagnostics out of a selected project scope', () => {
+    const app = project('app', 'apps/app');
+    const workspace = catalog([app, project('other', 'apps/other')]);
+    const selected = resolveCodeGraphIndexScope(
+      {graph: {closure: 'dependencies', roots: ['apps/app']}, uri: 'threadnote://resources/repos/app'},
+      {
+        ...workspace,
+        workspace: {
+          ...workspace.workspace,
+          diagnostics: [
+            'apps/app/tsconfig.json: selected project is incomplete',
+            'apps/other/tsconfig.json: unrelated project is incomplete',
+          ],
+        },
+      },
+    );
+
+    expect(selected.completeness).toBe('partial');
+    expect(selected.diagnostics).toEqual(['apps/app/tsconfig.json: selected project is incomplete']);
+  });
+
+  it('indexes the most-specific diagnostic projects once, retaining equal-specificity matches', () => {
+    const diagnostic = 'apps/app/src/index.ts: invalid TypeScript config';
+    const resolution = resolveCodeGraphWorkspaceDiagnostics(
+      [
+        project('parent', 'apps'),
+        {...project('left', 'components/left'), sourceRoots: ['apps/app/src']},
+        {...project('right', 'components/right'), sourceRoots: ['apps/app/src']},
+      ],
+      [diagnostic, diagnostic, 'pathless diagnostic'],
+    );
+
+    expect(resolution.diagnostics).toEqual([diagnostic, 'pathless diagnostic']);
+    expect([...resolution.projectsByDiagnostic.keys()]).toEqual([diagnostic, 'pathless diagnostic']);
+    expect(resolution.projectsByDiagnostic.get(diagnostic)?.map(candidate => candidate.id)).toEqual(['left', 'right']);
+    expect(resolution.projects.map(candidate => [candidate.id, candidate.diagnostics])).toEqual([
+      ['parent', []],
+      ['left', [diagnostic]],
+      ['right', [diagnostic]],
+    ]);
+  });
+
+  it('preserves a selected diagnostic beyond the global workspace diagnostic bound', () => {
+    const files: CodeGraphInventoryFile[] = [];
+    for (let index = 0; index < 105; index += 1) {
+      const root = `apps/a-${String(index).padStart(3, '0')}`;
+      files.push(
+        workspaceFile(`${root}/package.json`, JSON.stringify({name: `@fixture/a-${index}`}), 'npm-manifest'),
+        workspaceFile(`${root}/tsconfig.json`, '{invalid', 'typescript-config'),
+      );
+    }
+    files.push(
+      workspaceFile('apps/z-selected/package.json', JSON.stringify({name: '@fixture/selected'}), 'npm-manifest'),
+      workspaceFile('apps/z-selected/tsconfig.json', '{selected-invalid', 'typescript-config'),
+    );
+    const workspace = discoverManifestWorkspace(files);
+    const selected = resolveCodeGraphIndexScope(
+      {graph: {closure: 'dependencies', roots: ['apps/z-selected']}, uri: 'threadnote://resources/repos/selected'},
+      {
+        fingerprint: workspace.fingerprint,
+        resolutionContextPaths: files.map(file => file.path),
+        workspace,
+      },
+    );
+
+    expect(workspace.diagnostics).toHaveLength(100);
+    expect(workspace.diagnostics.some(diagnostic => diagnostic.startsWith('apps/z-selected/'))).toBe(false);
+    expect(selected.completeness).toBe('partial');
+    expect(selected.diagnostics).toEqual([
+      expect.stringMatching(/^apps\/z-selected\/tsconfig\.json: invalid TypeScript config/u),
+    ]);
+  });
+
+  it('preserves a selected Bazel diagnostic beyond the global workspace diagnostic bound', () => {
+    const files: CodeGraphInventoryFile[] = [];
+    for (let index = 0; index < 101; index += 1) {
+      const root = `apps/a-${String(index).padStart(3, '0')}`;
+      files.push(
+        workspaceFile(
+          `${root}/BUILD`,
+          `cc_library(name = "a-${index}", deps = ["//missing-a-${index}:target"])`,
+          'bazel-build',
+        ),
+      );
+    }
+    files.push(
+      workspaceFile(
+        'apps/z-selected/BUILD',
+        'cc_library(name = "selected", deps = ["//missing-selected:target"])',
+        'bazel-build',
+      ),
+    );
+    const workspace = discoverBazelWorkspace(files);
+    const selected = resolveCodeGraphIndexScope(
+      {graph: {closure: 'dependencies', roots: ['apps/z-selected']}, uri: 'threadnote://resources/repos/selected'},
+      {
+        fingerprint: workspace.fingerprint,
+        resolutionContextPaths: files.map(file => file.path),
+        workspace,
+      },
+    );
+
+    expect(workspace.diagnostics).toHaveLength(100);
+    expect(workspace.diagnostics.some(diagnostic => diagnostic.startsWith('apps/z-selected/'))).toBe(false);
+    expect(selected.completeness).toBe('partial');
+    expect(selected.diagnostics).toEqual([
+      'apps/z-selected/BUILD: local Bazel package //missing-selected was not indexed',
+    ]);
+  });
+
+  fcProp(
+    it,
+    'leaves scope identity complete when only an unrelated component reports a diagnostic',
+    {suffix: FC.stringMatching(/^[a-z]{1,8}$/)},
+    ({suffix}) => {
+      const app = project('app', 'apps/app');
+      const workspace = catalog([app, project('other', `packages/${suffix}`)]);
+      const complete = resolveCodeGraphIndexScope(
+        {graph: {closure: 'dependencies', roots: ['apps/app']}, uri: 'threadnote://resources/repos/app'},
+        workspace,
+      );
+      const unrelated = resolveCodeGraphIndexScope(
+        {graph: {closure: 'dependencies', roots: ['apps/app']}, uri: 'threadnote://resources/repos/app'},
+        {
+          ...workspace,
+          workspace: {
+            ...workspace.workspace,
+            diagnostics: [`packages/${suffix}/tsconfig.json: unrelated diagnostic`],
+          },
+        },
+      );
+
+      expect(unrelated).toEqual(complete);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
 
   fcProp(
     it,

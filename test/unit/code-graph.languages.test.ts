@@ -14,6 +14,27 @@ import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {createWorkspaceAttributor, discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import {SystemInfo} from '../../src/effect/system.js';
 describe('polyglot code graph language packs', () => {
+  effectIt.effect('discovers named TypeScript configs used by project references', () =>
+    Effect.gen(function* () {
+      const files = [
+        inventoryFile(
+          'tsconfig.json',
+          JSON.stringify({references: [{path: 'tsconfig.packages.json'}, {path: 'tsconfig.tests.jsonc'}]}),
+        ),
+        inventoryFile('tsconfig.packages.json', JSON.stringify({include: ['packages']})),
+        inventoryFile('tsconfig.tests.jsonc', '{"include":["test"],}'),
+      ];
+      const workspace = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.discoverWorkspace(files);
+      const root = workspace.projects.find(project => project.name === 'tsconfig.json');
+
+      expect(BUILTIN_LANGUAGE_PACK_REGISTRY.isResolutionContext('tsconfig.packages.json')).toBe(true);
+      expect(BUILTIN_LANGUAGE_PACK_REGISTRY.isResolutionContext('config/tsconfig.tests.jsonc')).toBe(true);
+      expect(BUILTIN_LANGUAGE_PACK_REGISTRY.isResolutionContext('config/tsconfig..json')).toBe(false);
+      expect(workspace.diagnostics).toEqual([]);
+      expect(root?.dependencies).toHaveLength(2);
+    }),
+  );
+
   effectIt.effect('preserves the TypeScript compiler extractor behind the registry', () =>
     Effect.gen(function* () {
       const file = inventoryFile(

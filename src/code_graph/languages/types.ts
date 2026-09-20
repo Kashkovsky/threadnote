@@ -23,6 +23,13 @@ export type CodeGraphFileMatcher =
       readonly value: string;
     }
   | {
+      /** Basename glob with one or more non-empty `*` segments. */
+      readonly kind: 'basename-pattern';
+      readonly language: string;
+      readonly role: CodeGraphFileRole;
+      readonly value: string;
+    }
+  | {
       readonly kind: 'extension';
       readonly language: string;
       readonly role: CodeGraphFileRole;

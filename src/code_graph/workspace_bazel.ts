@@ -10,12 +10,12 @@ import {
 import type {CodeGraphWorkspace, CodeGraphWorkspaceDependency, CodeGraphWorkspaceProject} from './languages/types.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphInventoryFile} from './types.js';
+import {boundedCodeGraphWorkspaceDiagnostics, resolveCodeGraphWorkspaceDiagnostics} from './workspace_diagnostics.js';
 import {
   basename,
   dirname,
   materializeBuildWorkspaces,
   relativeContainedPath,
-  unique,
   workspaceIdentity,
 } from './workspace_primitives.js';
 
@@ -101,40 +101,46 @@ export function discoverBazelWorkspace(files: readonly CodeGraphInventoryFile[])
       bazelProjectIdentity(candidate.root),
     );
   }
-  const projects = candidates.map(candidate => {
-    const id = bazelProjectIdentity(candidate.root);
-    const dependencies = new Map<string, CodeGraphWorkspaceDependency>();
-    for (const dependency of candidate.dependencyLabels) {
-      const parsed = bazelLabelPackage(dependency.label);
-      if (Option.isNone(parsed) || parsed.value.external) continue;
-      const targetId = projectIdByPackage.get(bazelPackageIdentity(candidate.workspaceRoot, parsed.value.packagePath));
-      if (targetId === undefined) {
-        diagnostics.push(`${dependency.evidence}: local Bazel package //${parsed.value.packagePath} was not indexed`);
-      } else if (targetId !== id) {
-        dependencies.set(targetId, {evidence: dependency.evidence, provenance: 'declared', targetId});
+  const diagnosticResolution = resolveCodeGraphWorkspaceDiagnostics(
+    candidates.map(candidate => {
+      const id = bazelProjectIdentity(candidate.root);
+      const dependencies = new Map<string, CodeGraphWorkspaceDependency>();
+      for (const dependency of candidate.dependencyLabels) {
+        const parsed = bazelLabelPackage(dependency.label);
+        if (Option.isNone(parsed) || parsed.value.external) continue;
+        const targetId = projectIdByPackage.get(
+          bazelPackageIdentity(candidate.workspaceRoot, parsed.value.packagePath),
+        );
+        if (targetId === undefined) {
+          diagnostics.push(`${dependency.evidence}: local Bazel package //${parsed.value.packagePath} was not indexed`);
+        } else if (targetId !== id) {
+          dependencies.set(targetId, {evidence: dependency.evidence, provenance: 'declared', targetId});
+        }
       }
-    }
-    const dependencyDetails = [...dependencies.values()].sort((left, right) =>
-      compareCodeUnits(left.targetId, right.targetId),
-    );
-    return {
-      buildSystem: 'bazel',
-      dependencies: dependencyDetails.map(dependency => dependency.targetId),
-      dependencyDetails,
-      diagnostics: [],
-      id,
-      kind: BAZEL_BUILD_FILES.has(basename(candidate.evidence).toLowerCase()) ? 'package' : 'project',
-      languages: ['bazel', 'starlark'],
-      name: candidate.name,
-      provenance: 'declared',
-      resolutionDomain: 'bazel',
-      root: candidate.root,
-      sourceRoots: [candidate.root],
-      workspaceId: workspaceIdentity('bazel', candidate.workspaceRoot),
-      workspaceRoots: [candidate.workspaceRoot],
-    } satisfies CodeGraphWorkspaceProject;
-  });
-  const orderedDiagnostics = unique(diagnostics).sort(compareCodeUnits).slice(0, 100);
+      const dependencyDetails = [...dependencies.values()].sort((left, right) =>
+        compareCodeUnits(left.targetId, right.targetId),
+      );
+      return {
+        buildSystem: 'bazel',
+        dependencies: dependencyDetails.map(dependency => dependency.targetId),
+        dependencyDetails,
+        diagnostics: [],
+        id,
+        kind: BAZEL_BUILD_FILES.has(basename(candidate.evidence).toLowerCase()) ? 'package' : 'project',
+        languages: ['bazel', 'starlark'],
+        name: candidate.name,
+        provenance: 'declared',
+        resolutionDomain: 'bazel',
+        root: candidate.root,
+        sourceRoots: [candidate.root],
+        workspaceId: workspaceIdentity('bazel', candidate.workspaceRoot),
+        workspaceRoots: [candidate.workspaceRoot],
+      } satisfies CodeGraphWorkspaceProject;
+    }),
+    diagnostics,
+  );
+  const projects = diagnosticResolution.projects;
+  const orderedDiagnostics = boundedCodeGraphWorkspaceDiagnostics(diagnosticResolution);
   const workspaces = materializeBuildWorkspaces(projects, orderedDiagnostics);
   return {
     diagnostics: orderedDiagnostics,
@@ -147,6 +153,7 @@ export function discoverBazelWorkspace(files: readonly CodeGraphInventoryFile[])
           project.name,
           project.root,
           project.dependencies,
+          project.diagnostics,
           project.workspaceRoots,
         ]),
         version: 'bazel-static-workspace-v1',

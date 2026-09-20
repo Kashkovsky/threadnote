@@ -202,7 +202,7 @@ function parsePnpmWorkspaces(files: readonly CodeGraphInventoryFile[]): Readonly
 
 function parseTsconfigs(files: readonly CodeGraphInventoryFile[], diagnostics: string[]): readonly ParsedTsconfig[] {
   return files
-    .filter(file => /^tsconfig(?:\.[^/]+)?\.json$/iu.test(basename(file.path)) && file.content !== undefined)
+    .filter(file => /^tsconfig(?:\.[^/]+)?\.jsonc?$/iu.test(basename(file.path)) && file.content !== undefined)
     .flatMap(file => {
       const parsed = parseJsonObject(file, 'TypeScript config', diagnostics, true);
       if (!parsed) return [];
@@ -664,7 +664,7 @@ function typescriptReferencePaths(root: string, config: Record<string, unknown>)
       if (typeof value !== 'string') return [];
       const normalized = normalizeContainedPath(root, value);
       if (normalized === undefined) return [];
-      return [/\.json$/iu.test(normalized) ? normalized : joinPath(normalized, 'tsconfig.json')];
+      return [/\.jsonc?$/iu.test(normalized) ? normalized : joinPath(normalized, 'tsconfig.json')];
     }),
   );
 }

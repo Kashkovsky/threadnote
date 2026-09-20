@@ -389,6 +389,7 @@ function inventoryFile(path: string, content: string): CodeGraphInventoryFile {
 
 function fuzzPath(matcher: CodeGraphFileMatcher): string {
   if (matcher.kind === 'basename') return `src/${matcher.value}`;
+  if (matcher.kind === 'basename-pattern') return `src/${matcher.value.replaceAll('*', 'fuzz')}`;
   if (matcher.kind === 'path-suffix') return `src/fuzz${matcher.value.startsWith('/') ? '' : '/'}${matcher.value}`;
   return `src/fuzz${matcher.value}`;
 }

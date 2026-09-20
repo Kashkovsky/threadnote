@@ -91,14 +91,14 @@ describe('scoped graph retrieval', () => {
             scopeId: a.snapshot.scopeId,
             definitionDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
             closureDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
-            completeness: 'partial',
+            completeness: 'complete',
           },
           {
             repositoryKey: 'b',
             scopeId: b.snapshot.scopeId,
             definitionDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
             closureDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
-            completeness: 'partial',
+            completeness: 'complete',
           },
         ]);
         expect((yield* inspectCodeGraphWorksetStatus(config, 'both')).coverage.current).toBe(2);
