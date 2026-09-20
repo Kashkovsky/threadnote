@@ -401,7 +401,7 @@ describe('Context Brief compiler', () => {
             },
             {
               ...request(budgetTokens),
-              codeRefs: ['src/context_brief/graph_evidence.ts'],
+              codeRefs: ['src/context_brief/graph/evidence.ts'],
               mode: 'locate',
             },
           );

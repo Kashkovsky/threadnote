@@ -63,7 +63,7 @@ describe('remote memory executable boundaries', () => {
 
   it('awaits delayed operation drain before releasing after SIGTERM', async () => {
     const standalone = await readFile(new URL('../../src/standalone.ts', import.meta.url), 'utf8');
-    const operator = await readFile(new URL('../../src/remote_memory/operator_main.ts', import.meta.url), 'utf8');
+    const operator = await readFile(new URL('../../src/remote_memory/operator/main.ts', import.meta.url), 'utf8');
     expect(standalone).toContain('fromPromiseInterruptibleAwaiting(');
     expect(standalone).toContain('service.runRemoteMemoryService(process.env');
     expect(operator).toContain('fromPromiseInterruptibleAwaiting(evaluate, cause => cause)');

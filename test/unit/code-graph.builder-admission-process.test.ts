@@ -18,7 +18,7 @@ describe('builder admission process boundary', () => {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-builder-process-'});
-          const moduleUrl = new URL('../../src/code_graph/builder_admission.ts', import.meta.url).href;
+          const moduleUrl = new URL('../../src/code_graph/builder/admission.ts', import.meta.url).href;
           const systemUrl = new URL('../../src/effect/system.ts', import.meta.url).href;
           const start = (name: string, checkoutId: string) =>
             Effect.acquireRelease(

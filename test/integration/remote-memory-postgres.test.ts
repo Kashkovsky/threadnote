@@ -2021,7 +2021,7 @@ function operatorCitation(
   return createMemoryCodeCitation({
     extractorSet: 'native-code-graph-13',
     fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
-    path: overrides.path ?? 'src/remote_memory/operator_postgres.ts',
+    path: overrides.path ?? 'src/remote_memory/operator/postgres.ts',
     repositoryId: overrides.repositoryId ?? 'b'.repeat(64),
     repositoryIdentityKind: overrides.repositoryIdentityKind ?? 'remote',
     sourceCommit: 'c'.repeat(40),

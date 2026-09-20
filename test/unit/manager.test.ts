@@ -96,12 +96,12 @@ vi.mock('../../src/seeding.js', async importOriginal => {
   };
 });
 
-vi.mock('../../src/code_graph/automatic_compaction.js', async importOriginal => {
+vi.mock('../../src/code_graph/automatic/compaction.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/code_graph/automatic/compaction.js')>();
   return {...actual, compactCodeGraphStorageIsolated: vi.fn(actual.compactCodeGraphStorageIsolated)};
 });
 
-vi.mock('../../src/code_graph/isolated_index.js', async importOriginal => {
+vi.mock('../../src/code_graph/isolated/index.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/code_graph/isolated/index.js')>();
   return {...actual, runIsolatedCodeGraphIndexSnapshot: vi.fn(actual.runIsolatedCodeGraphIndexSnapshot)};
 });

@@ -712,7 +712,7 @@ function projectedBrief(
               language: 'typescript',
               line: 20,
               name: 'ContextPanel',
-              path: 'src/manager/context_view.tsx',
+              path: 'src/manager/context/view.tsx',
               qualifiedName: 'manager.ContextPanel',
             },
           },
@@ -836,7 +836,7 @@ function connectionsResponse(requestedUri: string): ManagerContextConnectionsRes
   const citation = createMemoryCodeCitation({
     extractorSet: 'manager-ui-test',
     fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
-    path: 'src/manager/context_view.tsx',
+    path: 'src/manager/context/view.tsx',
     repositoryId: 'b'.repeat(64),
     repositoryIdentityKind: 'remote',
     sourceCommit: 'c'.repeat(40),

@@ -117,11 +117,11 @@ function isQualityPath(path: string): boolean {
     path.startsWith('src/effect/ai/') ||
     path.startsWith('src/evaluation/') ||
     path.startsWith('src/models/') ||
-    path.startsWith('src/memory/code_citation') ||
+    path.startsWith('src/memory/code/citation') ||
     path.startsWith('src/recall/') ||
     path === 'src/effect/command.ts' ||
     path === 'src/effect/digest.ts' ||
-    path === 'src/effect/file_lock.ts' ||
+    path === 'src/effect/file/lock.ts' ||
     path === 'src/effect/runtime.ts' ||
     path === 'src/effect/system.ts' ||
     path === 'src/search/chunker.ts' ||

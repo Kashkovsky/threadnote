@@ -443,7 +443,7 @@ describe('CI changed-path scope properties', () => {
       'release',
       'windows',
     ]);
-    expect(enabledScopes(['src/memory/code_citation_capture.ts'])).toEqual(['code', 'quality', 'release', 'windows']);
+    expect(enabledScopes(['src/memory/code/citation_capture.ts'])).toEqual(['code', 'quality', 'release', 'windows']);
     expect(enabledScopes(['.github/workflows/pages.yml'])).toEqual(['actions', 'site_check', 'site_build']);
     expect(enabledScopes(['test/unit/website-content.test.ts'])).toEqual(['site_check', 'site_build']);
     expect(enabledScopes(['test/unit/website-site-meta.test.ts'])).toEqual(['site_check', 'site_build']);
