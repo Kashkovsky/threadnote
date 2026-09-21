@@ -39,6 +39,7 @@ import {
   type CodeGraphTraversalTimeBudgets,
 } from './query/contract.js';
 import {codeGraphSnapshotRuntimeCurrent} from './query/snapshot_runtime.js';
+import {selectCompatibleReadyCodeGraphSnapshot} from './query/ready_snapshot.js';
 import {
   codeGraphProjectCoverage,
   codeGraphQueryScopeCurrent,
@@ -1435,46 +1436,13 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
           'fallback',
         ));
   const read = Effect.gen(function* () {
-    const preferredSnapshot = input.borrowedSnapshotId
-      ? yield* input.store.readySnapshotById(input.layout.databasePath, input.borrowedSnapshotId)
-      : undefined;
-    let storedSnapshot = preferredSnapshot;
-    let incompatibleSnapshotObserved = false;
-    const compatible = (snapshot: CodeGraphSnapshot) =>
-      Effect.gen(function* () {
-        if (snapshot.repositoryId !== identity.repositoryId) return false;
-        const matches = yield* codeGraphQueryScopeSnapshotCompatible(
-          input.projectScope,
-          input.store,
-          input.layout.databasePath,
-          input.borrowedSnapshotId ? snapshot.worktreeId : identity.worktreeId,
-          snapshot,
-        );
-        if (!matches) incompatibleSnapshotObserved = true;
-        return matches;
-      });
-    if (storedSnapshot !== undefined && !(yield* compatible(storedSnapshot))) storedSnapshot = undefined;
-    if (storedSnapshot === undefined) {
-      const active = yield* input.store.readySnapshot(
-        input.layout.databasePath,
-        identity.worktreeId,
-        input.projectScope?.scope?.scopeKey,
-      );
-      if (active !== undefined && (yield* compatible(active))) storedSnapshot = active;
-    }
-    if (storedSnapshot === undefined && input.borrowedSnapshotId !== undefined) {
-      const recent = yield* input.store.recentReadySnapshotsForRepository(
-        input.layout.databasePath,
-        identity.repositoryId,
-        input.projectScope?.scope?.scopeKey,
-      );
-      for (const candidate of recent) {
-        if (yield* compatible(candidate)) {
-          storedSnapshot = candidate;
-          break;
-        }
-      }
-    }
+    const {snapshot: storedSnapshot, incompatibleSnapshotObserved} = yield* selectCompatibleReadyCodeGraphSnapshot({
+      borrowedSnapshotId: input.borrowedSnapshotId,
+      databasePath: input.layout.databasePath,
+      identity,
+      projectScope: input.projectScope,
+      store: input.store,
+    });
     if (!storedSnapshot) {
       return yield* CodeGraphSnapshotUnavailable.make({
         message: incompatibleSnapshotObserved
