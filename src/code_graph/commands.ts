@@ -30,7 +30,7 @@ import {
   type CodeGraphRepairCompletion,
   type ObsoleteCodeGraphStoreInventory,
 } from './maintenance.js';
-import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './query.js';
+import {CodeGraphQueryService, renderCodeGraphResult} from './query.js';
 import {repositoryChangesSince, repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore} from './store.js';
 import type {
@@ -78,6 +78,7 @@ import {
 import {
   CODE_GRAPH_CLI_READ_RETRY_MILLISECONDS,
   CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS,
+  codeGraphCliUsesBorrowedContinuity,
   codeGraphCliReadPlan,
   type CodeGraphCliFreshnessPolicy,
   type CodeGraphCliReadPlan,
@@ -98,6 +99,7 @@ import {
   renderCodeGraphReadySnapshotStatus as renderReadySnapshotStatus,
 } from './status/render.js';
 import {inspectAllCodeGraphsLocal, renderCodeGraphDiagnostics} from './diagnostics.js';
+import {resolveCodeGraphCliReadContinuity} from './commands/read_continuity.js';
 export {runCodeGraphInventory} from './commands/inventory.js';
 import {
   codeGraphViewRemovalTargetFailure,
@@ -115,7 +117,7 @@ import {
 interface CwdOption {
   readonly cwd?: string;
 }
-export {CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS, codeGraphCliReadPlan};
+export {CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS, codeGraphCliReadPlan, codeGraphCliUsesBorrowedContinuity};
 export type {CodeGraphCliFreshnessPolicy, CodeGraphCliReadPlan};
 
 class CodeGraphCommandError extends Schema.TaggedError<CodeGraphCommandError>()('CodeGraphCommandError', {
@@ -1165,17 +1167,17 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
   const service = yield* CodeGraphQueryService;
   const cwd = yield* commandCwd(effectiveOptions.cwd);
   const freshness = options.freshness ?? defaultCodeGraphCliFreshness(options.operation);
-  let status = yield* service.status(config.agentContextHome, cwd, {
+  const initialStatus = yield* service.status(config.agentContextHome, cwd, {
     manifestPath: config.manifestPath,
     ...(options.project === undefined ? {} : {project: options.project}),
   });
-  const identity = status.identity;
-  if (status.stale || !status.readySnapshot) {
-    status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
-      allowBorrowedStale: freshness !== 'current',
-    });
-  }
-  const readPlan = codeGraphCliReadPlan(freshness, status);
+  const {borrowedContinuity, readPlan, status, statusObservation} = yield* resolveCodeGraphCliReadContinuity(
+    config,
+    service,
+    initialStatus,
+    options.operation,
+    freshness,
+  );
   if (readPlan.unavailable) {
     const unavailable = codeGraphCliReadState(status, freshness, options.operation, 'no-ready-snapshot');
     yield* writeFinalCliOutput(
@@ -1183,7 +1185,6 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
     );
     return;
   }
-  const statusObservation = observationFromCodeGraphStatus(status);
   const inspect = (onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>) =>
     service.inspect({
       ...effectiveOptions,
@@ -1225,9 +1226,16 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
     );
     return;
   }
-  yield* writeFinalCliOutput(
-    options.json ? JSON.stringify(result.value) : renderCodeGraphResult(result.value).trimEnd(),
-  );
+  const output = borrowedContinuity
+    ? {
+        ...result.value,
+        warnings: [
+          ...result.value.warnings,
+          'Serving compatible shared graph evidence. Run graph index to create a current snapshot for this worktree.',
+        ],
+      }
+    : result.value;
+  yield* writeFinalCliOutput(options.json ? JSON.stringify(output) : renderCodeGraphResult(output).trimEnd());
 });
 
 export const runCodeGraphWorksetTopology = Effect.fn('codeGraph.command.worksetTopology')(function* (

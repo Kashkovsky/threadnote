@@ -145,6 +145,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         readonly worktreeId: string;
       }) {
         const resources = yield* makeCodeGraphBuildResourceCoordinator(input.reporter.resource);
+        let latestAdmissionQueue: CodeGraphBuilderAdmissionQueue | undefined;
         const admissionOptions = {
           admissionClass: input.admissionClass,
           identity: {
@@ -154,15 +155,20 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             ...(input.desiredOverlayDigest === undefined ? {} : {desiredOverlayDigest: input.desiredOverlayDigest}),
           },
           onQueue: (queue: CodeGraphBuilderAdmissionQueue) =>
-            input.reporter
-              .admission(queue)
-              .pipe(
-                Effect.andThen(
-                  input.onProgress?.({phase: 'waiting', reason: 'home-builder-cap', admission: queue}) ?? Effect.void,
-                ),
-                Effect.ignore,
-              ),
-          onAdmitted: input.reporter.admission().pipe(Effect.andThen(input.resumeProgress()), Effect.ignore),
+            Effect.sync(() => {
+              latestAdmissionQueue = queue;
+            }).pipe(Effect.andThen(input.reporter.admission(queue)), Effect.ignore),
+          onAdmitted: input.reporter.admission().pipe(Effect.ignore),
+          onResumed: Effect.suspend(input.resumeProgress).pipe(Effect.ignore),
+          onWaiting: Effect.suspend(() =>
+            (
+              input.onProgress?.({
+                ...(latestAdmissionQueue === undefined ? {} : {admission: latestAdmissionQueue}),
+                phase: 'waiting',
+                reason: 'home-builder-cap',
+              }) ?? Effect.void
+            ).pipe(Effect.ignore),
+          ),
           threadnoteHome: input.threadnoteHome,
         } as const;
         const admit: CodeGraphIndexResourceGate = effect =>
@@ -481,7 +487,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               onProgress: options.onProgress,
               reporter,
               requestKey,
-              resumeProgress: () => reporter.progress(lastActiveProgress),
+              resumeProgress: () => options.onProgress?.(lastActiveProgress) ?? Effect.void,
               threadnoteHome: options.threadnoteHome,
               worktreeId: initialIdentity.worktreeId,
             });
@@ -1531,7 +1537,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               checkoutId: initialIdentity.checkoutId,
               onProgress: options.onProgress,
               reporter,
-              resumeProgress: () => reporter.progress(lastActiveProgress),
+              resumeProgress: () => options.onProgress(lastActiveProgress),
               threadnoteHome: options.threadnoteHome,
               worktreeId: initialIdentity.worktreeId,
             });

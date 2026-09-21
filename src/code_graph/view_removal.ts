@@ -48,6 +48,7 @@ export interface CodeGraphViewRemovalActionResult {
   readonly observedSnapshotId?: string;
   readonly observedState?: 'active' | 'removed';
   readonly retiredSnapshots?: number;
+  readonly scopeId?: string;
   readonly snapshotId: string;
   readonly state: 'already-removed' | 'not-found' | 'ready' | 'removed' | 'stale-target';
   readonly type: 'code-graph-view-removal';
@@ -58,6 +59,7 @@ export interface CodeGraphViewRemovalActionResult {
 
 export interface CodeGraphViewRemovalTarget {
   readonly checkoutId: string;
+  readonly scopeId?: string;
   readonly snapshotId: string;
   readonly worktreeId: string;
 }
@@ -97,7 +99,12 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
     );
   }
   if (!options.apply) {
-    const observation = yield* store.observeView(inspected.databasePath, target.worktreeId, target.snapshotId);
+    const observation = yield* store.observeView(
+      inspected.databasePath,
+      target.worktreeId,
+      target.snapshotId,
+      target.scopeId,
+    );
     return actionResult(target, false, observation, {provenance: null, vectors: null}, []);
   }
 
@@ -106,12 +113,16 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
     target.checkoutId,
     target.worktreeId,
     Effect.gen(function* () {
-      const provenanceEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(inspected.canonicalHome, {
-        checkoutId: target.checkoutId,
-        worktreeId: target.worktreeId,
-      });
+      const provenanceEvidence =
+        target.scopeId === undefined
+          ? yield* captureCodeGraphLocalProvenanceCleanupEvidence(inspected.canonicalHome, {
+              checkoutId: target.checkoutId,
+              worktreeId: target.worktreeId,
+            })
+          : undefined;
       yield* options.afterProvenanceEvidenceCapture?.() ?? Effect.void;
       const core = yield* store.removeView(inspected.databasePath, target.worktreeId, target.snapshotId, {
+        ...(target.scopeId === undefined ? {} : {scopeId: target.scopeId}),
         beforeDatabaseOpen: () =>
           inspectCodeGraphViewDatabaseTarget(inspected.canonicalHome, target.checkoutId).pipe(
             Effect.flatMap(current =>
@@ -174,6 +185,7 @@ export const removeCodeGraphView = Effect.fn('codeGraph.removeViewAction')(funct
         warnings,
       );
     }),
+    target.scopeId,
   );
   if (result.state === 'removed' || result.state === 'already-removed') {
     yield* (
@@ -327,6 +339,7 @@ function actionResult(
     ...('observedSnapshotId' in core ? {observedSnapshotId: core.observedSnapshotId} : {}),
     ...('observedState' in core ? {observedState: core.observedState} : {}),
     ...('retiredSnapshots' in core ? {retiredSnapshots: core.retiredSnapshots} : {}),
+    ...(target.scopeId === undefined ? {} : {scopeId: target.scopeId}),
     snapshotId: target.snapshotId,
     state: core.state,
     type: 'code-graph-view-removal',
@@ -351,5 +364,8 @@ const validateCodeGraphViewRemovalTarget = Effect.fn('codeGraph.validateViewRemo
   }
   if (!SNAPSHOT_ID.test(target.snapshotId)) {
     return yield* CodeGraphViewRemovalError.make({message: 'Code graph snapshot identity is invalid.'});
+  }
+  if (target.scopeId !== undefined && !/^code-graph-scope:[0-9a-f]{64}$/u.test(target.scopeId)) {
+    return yield* CodeGraphViewRemovalError.make({message: 'Code graph scope identity is invalid.'});
   }
 });

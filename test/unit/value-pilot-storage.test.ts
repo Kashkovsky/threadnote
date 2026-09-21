@@ -161,12 +161,11 @@ effectIt.effect('does not remove staging while its writer owns the storage lock'
         }),
       ).pipe(Effect.forkChild);
       yield* Deferred.await(started);
-      const cleanup = yield* managePilotReports(home, 'retention', true).pipe(Effect.forkChild);
-      yield* TestClock.adjust('100 millis');
+      const cleanup = yield* managePilotReports(home, 'retention', true).pipe(TestClock.withLive, Effect.forkChild);
+      yield* Effect.sleep('100 millis').pipe(TestClock.withLive);
       expect(yield* fs.exists(staging)).toBe(true);
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(writer);
-      yield* TestClock.adjust('100 millis');
       expect((yield* Fiber.join(cleanup)).removed).toBe(0);
     }),
   ).pipe(provideTestLayer(layer)),

@@ -83,6 +83,7 @@ export interface CodeGraphDiagnosticsView {
   readonly projectsTruncated: boolean;
   readonly repository: CodeGraphVisualizationCatalog['repository'];
   readonly snapshot: CodeGraphVisualizationCatalog['snapshot'];
+  readonly viewScopeId?: string;
   readonly viewWorktreeId: string;
   readonly workspaceCount: number;
   readonly workspacesTruncated: boolean;
@@ -283,6 +284,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
             managementAvailable: [...buildSelection.builds, ...buildSelection.waiters].some(
               status =>
                 status.identity.checkoutId === checkoutId &&
+                status.identity.scopeId === catalog.viewScopeId &&
                 status.identity.worktreeId === catalog.viewWorktreeId &&
                 status.managerContext !== undefined,
             ),
@@ -292,6 +294,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
             projectsTruncated: catalog.projectsTruncated,
             repository: catalog.repository,
             snapshot: catalog.snapshot,
+            ...(catalog.viewScopeId === undefined ? {} : {viewScopeId: catalog.viewScopeId}),
             viewWorktreeId: catalog.viewWorktreeId,
             workspaceCount: catalog.workspaceCount,
             workspacesTruncated: catalog.workspacesTruncated,
@@ -365,6 +368,7 @@ export const inspectAllCodeGraphsLocal = Effect.fn('codeGraph.inspectAllDiagnost
             const liveStatus = buildStatuses.find(
               status =>
                 status.identity.checkoutId === database.checkoutId &&
+                status.identity.scopeId === view.viewScopeId &&
                 status.identity.worktreeId === view.viewWorktreeId &&
                 status.identity.repositoryId === view.repository.repositoryId &&
                 status.managerContext !== undefined,

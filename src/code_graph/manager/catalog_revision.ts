@@ -33,6 +33,7 @@ export function managerGraphCatalogRevision(databases: readonly ManagerGraphCata
         .map(view => ({
           activatedAt: view.activatedAt ?? '',
           repositoryId: view.repositoryId,
+          scopeId: view.scopeId ?? '',
           snapshotId: view.snapshotId,
           worktreeId: view.worktreeId,
         }))
@@ -122,12 +123,14 @@ function compareRevisionViews(
   left: {
     readonly activatedAt: string;
     readonly repositoryId: string;
+    readonly scopeId: string;
     readonly snapshotId: string;
     readonly worktreeId: string;
   },
   right: {
     readonly activatedAt: string;
     readonly repositoryId: string;
+    readonly scopeId: string;
     readonly snapshotId: string;
     readonly worktreeId: string;
   },
@@ -135,6 +138,7 @@ function compareRevisionViews(
   return (
     compareCodeUnits(left.repositoryId, right.repositoryId) ||
     compareCodeUnits(left.worktreeId, right.worktreeId) ||
+    compareCodeUnits(left.scopeId, right.scopeId) ||
     compareCodeUnits(left.snapshotId, right.snapshotId) ||
     compareCodeUnits(left.activatedAt, right.activatedAt)
   );

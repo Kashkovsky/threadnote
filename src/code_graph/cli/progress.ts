@@ -17,7 +17,7 @@ export function formatCodeGraphIndexProgressLine(progress: CodeGraphProgress, re
     case 'registering':
       return `Registering${eta}`;
     case 'waiting':
-      return `${waitingProgressLabel(progress.reason)}${eta}`;
+      return `${waitingProgressLabel(progress.reason)}${waitingQueueLabel(progress)}${eta}`;
     case 'scanning':
       return `Scanning · ${countProgress(progress.completed, progress.total)} files${eta}`;
     case 'materializing': {
@@ -160,7 +160,7 @@ function waitingProgressLabel(reason: Extract<CodeGraphProgress, {readonly phase
     case 'database-writer':
       return 'Waiting for database writer';
     case 'home-builder-cap':
-      return 'Waiting for builder cap';
+      return 'Waiting for graph builder slot';
     case 'prepared-spool-budget':
       return 'Waiting for prepared graph publication capacity';
     case 'request-lock':
@@ -170,6 +170,12 @@ function waitingProgressLabel(reason: Extract<CodeGraphProgress, {readonly phase
     default:
       return 'Waiting for another build';
   }
+}
+
+function waitingQueueLabel(progress: Extract<CodeGraphProgress, {readonly phase: 'waiting'}>): string {
+  return progress.reason === 'home-builder-cap' && progress.admission !== undefined
+    ? ` · queue ${progress.admission.position.toLocaleString()}/${progress.admission.size.toLocaleString()}`
+    : '';
 }
 
 function purgePhaseLabel(phase: CodeGraphCliPurgePhase): string {

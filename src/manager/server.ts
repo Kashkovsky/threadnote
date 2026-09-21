@@ -64,6 +64,7 @@ import {
 } from './memory/move.js';
 import {assertManagerRawPersonalMemorySave, assertManagerRawSharedMemorySave} from './memory/save.js';
 import {ManagerMemoryRelationsError, updateManagerMemoryRelations} from './memory/relations.js';
+import {managerGraphViewRemovalApprovalDigest} from './graph/removal_digest.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
@@ -101,6 +102,7 @@ import {
   consolidationAgent,
   memoryKind,
   memoryStatus,
+  optionalGraphScopeIdentity,
   optionalNonEmptyQuery,
   optionalNonNegativeIntegerQuery,
   optionalPositiveIntegerQuery,
@@ -1643,7 +1645,16 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
       try: () => requireGraphSnapshotIdentity(body.expectedSnapshotId),
       catch: managerOperationError,
     });
-    const target = {checkoutId, snapshotId: expectedSnapshotId, worktreeId};
+    const scopeId = yield* Effect.try({
+      try: () => optionalGraphScopeIdentity(body.scopeId),
+      catch: managerOperationError,
+    });
+    const target = {
+      checkoutId,
+      ...(scopeId === undefined ? {} : {scopeId}),
+      snapshotId: expectedSnapshotId,
+      worktreeId,
+    };
     const approvalDigest = yield* managerGraphViewRemovalApprovalDigest(target);
     if (!dryRun && body.approvalDigest !== approvalDigest) {
       return yield* ManagerOperationError.make({
@@ -1832,22 +1843,6 @@ function requireGraphSnapshotIdentity(value: unknown): string {
   }
   return identity;
 }
-
-const managerGraphViewRemovalApprovalDigest = Effect.fn('manager.graphViewRemovalApprovalDigest')(function* (target: {
-  readonly checkoutId: string;
-  readonly snapshotId: string;
-  readonly worktreeId: string;
-}) {
-  return `sha256:${yield* sha256(
-    JSON.stringify({
-      action: 'remove-view',
-      checkoutId: target.checkoutId,
-      expectedSnapshotId: target.snapshotId,
-      version: 1,
-      worktreeId: target.worktreeId,
-    }),
-  )}`;
-});
 
 const memoryUriFor = Effect.fn('manager.memoryUriFor')(function* (
   config: RuntimeConfig,

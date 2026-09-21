@@ -61,6 +61,7 @@ export interface GraphRepository {
   readonly projectCount: number;
   readonly projects: readonly GraphProject[];
   readonly projectsTruncated: boolean;
+  readonly scopeId?: string;
   readonly snapshot: GraphSnapshot;
   readonly worktreeId: string;
   readonly workspaceCount: number;
@@ -137,6 +138,7 @@ export type GraphAdministrationAction =
       readonly checkoutId: string;
       readonly dryRun?: boolean;
       readonly expectedSnapshotId: string;
+      readonly scopeId?: string;
       readonly worktreeId: string;
     }
   | {readonly action: 'purge-all'; readonly dryRun?: boolean}
@@ -156,12 +158,17 @@ export function graphAdministrationTarget(
 
 export function graphViewRemovalTarget(
   checkoutId: string,
-  view: {readonly snapshot: {readonly id: string}; readonly worktreeId: string},
+  view: {readonly scopeId?: string; readonly snapshot: {readonly id: string}; readonly worktreeId: string},
 ): Pick<
   Extract<GraphAdministrationAction, {readonly action: 'remove-view'}>,
-  'checkoutId' | 'expectedSnapshotId' | 'worktreeId'
+  'checkoutId' | 'expectedSnapshotId' | 'scopeId' | 'worktreeId'
 > {
-  return {checkoutId, expectedSnapshotId: view.snapshot.id, worktreeId: view.worktreeId};
+  return {
+    checkoutId,
+    expectedSnapshotId: view.snapshot.id,
+    ...(view.scopeId === undefined ? {} : {scopeId: view.scopeId}),
+    worktreeId: view.worktreeId,
+  };
 }
 
 export interface GraphCatalogPage {
@@ -262,6 +269,7 @@ export interface GraphBuildStatus {
     readonly commit: string;
     readonly displayName?: string;
     readonly repositoryId: string;
+    readonly scopeId?: string;
     readonly worktreeId: string;
   };
   readonly managerContext?: {
@@ -462,7 +470,9 @@ export function orderGraphBuildStatuses(
     const repository = repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
     const view = repository?.views.find(
       candidate =>
-        candidate.checkoutId === build.identity.checkoutId && candidate.worktreeId === build.identity.worktreeId,
+        candidate.checkoutId === build.identity.checkoutId &&
+        candidate.scopeId === build.identity.scopeId &&
+        candidate.worktreeId === build.identity.worktreeId,
     );
     return view?.localAssociation.displayPath ?? build.managerContext?.worktreePath ?? build.identity.checkoutId;
   };
@@ -540,7 +550,9 @@ export function graphBuildTarget(
   const repository = repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
   const view = repository?.views.find(
     candidate =>
-      candidate.checkoutId === build.identity.checkoutId && candidate.worktreeId === build.identity.worktreeId,
+      candidate.checkoutId === build.identity.checkoutId &&
+      candidate.scopeId === build.identity.scopeId &&
+      candidate.worktreeId === build.identity.worktreeId,
   );
   const fallbackName = build.identity.displayName?.trim();
   const repositoryLabel = repository
@@ -576,13 +588,16 @@ export function graphBuildConcurrencyState(
     waiter =>
       waiter.buildId !== build.buildId &&
       waiter.identity.checkoutId === build.identity.checkoutId &&
+      waiter.identity.scopeId === build.identity.scopeId &&
       waiter.identity.worktreeId === build.identity.worktreeId,
   );
   const latest = [build, ...matchingWaiters].sort(compareGraphBuildRequest)[matchingWaiters.length];
   const repository = repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
   const ready = repository?.views.find(
     candidate =>
-      candidate.checkoutId === build.identity.checkoutId && candidate.worktreeId === build.identity.worktreeId,
+      candidate.checkoutId === build.identity.checkoutId &&
+      candidate.scopeId === build.identity.scopeId &&
+      candidate.worktreeId === build.identity.worktreeId,
   );
   const queuedRequests = matchingWaiters.length;
   const readySnapshotCommit = ready?.snapshot.commit;
@@ -764,6 +779,7 @@ export function graphStatusRequiresCatalogRefresh(
         repository.views.some(
           view =>
             view.checkoutId === build.identity.checkoutId &&
+            view.scopeId === build.identity.scopeId &&
             view.worktreeId === build.identity.worktreeId &&
             view.snapshot.id === build.result?.snapshotId,
         ),
@@ -789,6 +805,7 @@ export function graphWaiterCountForBuild(build: GraphBuildStatus, waiters: reado
     waiter =>
       waiter.buildId !== build.buildId &&
       waiter.identity.checkoutId === build.identity.checkoutId &&
+      waiter.identity.scopeId === build.identity.scopeId &&
       waiter.identity.worktreeId === build.identity.worktreeId &&
       waiter.request?.key === build.request?.key,
   ).length;

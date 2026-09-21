@@ -15,6 +15,7 @@ export interface ManagerGraphViewRemovalResponse {
 export interface ManagerGraphViewRemovalTarget {
   readonly checkoutId: string;
   readonly expectedSnapshotId: string;
+  readonly scopeId?: string;
   readonly worktreeId: string;
 }
 
@@ -77,7 +78,10 @@ export function withoutRemovedGraphDiagnosticsView(
   const databases = report.databases.map(database => {
     if (database.checkoutId !== target.checkoutId) return database;
     const views = database.views.filter(view => {
-      const removed = view.viewWorktreeId === target.worktreeId && view.snapshot.id === target.expectedSnapshotId;
+      const removed =
+        view.viewWorktreeId === target.worktreeId &&
+        view.viewScopeId === target.scopeId &&
+        view.snapshot.id === target.expectedSnapshotId;
       if (removed) removedCount += 1;
       return !removed;
     });
@@ -95,6 +99,7 @@ export function withoutRemovedGraphDiagnosticsView(
 function graphViewMatchesRemovalTarget(
   view: {
     readonly checkoutId: string;
+    readonly scopeId?: string;
     readonly snapshot: {readonly id: string};
     readonly worktreeId: string;
   },
@@ -102,6 +107,7 @@ function graphViewMatchesRemovalTarget(
 ): boolean {
   return (
     view.checkoutId === target.checkoutId &&
+    view.scopeId === target.scopeId &&
     view.worktreeId === target.worktreeId &&
     view.snapshot.id === target.expectedSnapshotId
   );

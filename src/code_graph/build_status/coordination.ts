@@ -37,16 +37,26 @@ export function annotateBuildCoordination(
   });
 }
 
-export function groupBuildStatusesByWorktree(
+export function groupBuildStatusesByView(
   statuses: readonly ObservedCodeGraphBuildStatus[],
-): readonly (readonly [string, readonly ObservedCodeGraphBuildStatus[]])[] {
+): readonly (readonly [
+  worktreeId: string,
+  scopeId: string | undefined,
+  statuses: readonly ObservedCodeGraphBuildStatus[],
+])[] {
   const groups = new Map<string, ObservedCodeGraphBuildStatus[]>();
   for (const status of statuses) {
-    const group = groups.get(status.identity.worktreeId) ?? [];
+    const key = `${status.identity.worktreeId}\0${status.identity.scopeId ?? ''}`;
+    const group = groups.get(key) ?? [];
     group.push(status);
-    groups.set(status.identity.worktreeId, group);
+    groups.set(key, group);
   }
-  return [...groups].sort(([left], [right]) => left.localeCompare(right));
+  return [...groups]
+    .map(([, group]) => [group[0].identity.worktreeId, group[0].identity.scopeId, group] as const)
+    .sort(
+      ([leftWorktree, leftScope], [rightWorktree, rightScope]) =>
+        leftWorktree.localeCompare(rightWorktree) || (leftScope ?? '').localeCompare(rightScope ?? ''),
+    );
 }
 
 export function sameProcessOwner(status: ObservedCodeGraphBuildStatus, lockOwner: FileLockOwner): boolean {

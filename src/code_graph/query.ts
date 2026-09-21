@@ -539,10 +539,11 @@ export class CodeGraphQueryService extends Context.Service<
       ) {
         const identity = status.identity;
         const observation = observationFromCodeGraphStatus(status);
+        const scopeKey = observation?.projectScope?.scope?.scopeKey;
         if (observation?.overlay === undefined) {
           yield* skipCodeGraphQueryTelemetryStage(telemetry, 'graph.query.snapshot', 'query-worktree-observation');
         }
-        const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+        const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId, scopeKey);
         const statusSnapshotRuntimeCurrent =
           status.readySnapshot !== undefined &&
           status.readySnapshot.repositoryId === identity.repositoryId &&
@@ -551,12 +552,22 @@ export class CodeGraphQueryService extends Context.Service<
         const candidates =
           (yield* readReadySnapshotWhileBuilderStarts(
             layout,
-            store.recentReadySnapshotsForRepository(layout.databasePath, identity.repositoryId),
+            store.recentReadySnapshotsForRepository(layout.databasePath, identity.repositoryId, scopeKey),
           )) ?? [];
         let candidate: CodeGraphSnapshot | undefined;
         for (const recent of candidates) {
+          const scopeCompatible =
+            observation?.projectScope?.scope === undefined ||
+            (yield* codeGraphQueryScopeSnapshotCompatible(
+              observation.projectScope,
+              store,
+              layout.databasePath,
+              recent.worktreeId,
+              recent,
+            ));
           if (
             recent.repositoryId === identity.repositoryId &&
+            scopeCompatible &&
             (yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, recent, languagePacks))
           ) {
             candidate = recent;
@@ -575,11 +586,14 @@ export class CodeGraphQueryService extends Context.Service<
             freshness: 'stale',
             readySnapshot: {...candidate, worktreeId: identity.worktreeId},
             stale: true,
+            ...(observation?.projectScope === undefined
+              ? {}
+              : {projectCoverage: codeGraphProjectCoverage(observation.projectScope, identity, candidate, false)}),
           },
           {
+            ...(observation ?? {}),
             borrowedSnapshotId: candidate.id,
             identity,
-            ...(observation?.overlay === undefined ? {} : {overlay: observation.overlay}),
           },
         );
       });
@@ -589,7 +603,11 @@ export class CodeGraphQueryService extends Context.Service<
         observedStatus?: CodeGraphStatus,
         interlock?: CodeGraphSharedReadyAttachInterlock,
       ) => {
-        if (observedStatus?.projectCoverage?.kind === 'project') return Effect.succeed(observedStatus);
+        if (observedStatus?.projectCoverage?.kind === 'project') {
+          return interlock?.allowBorrowedStale === true
+            ? borrowSharedReadySnapshot(threadnoteHome, observedStatus, interlock.telemetry)
+            : Effect.succeed(observedStatus);
+        }
         const exact = attachExactSharedReadySnapshot(threadnoteHome, identity, observedStatus, interlock);
         if (interlock?.allowBorrowedStale !== true) return exact;
         return Effect.gen(function* () {
@@ -1432,7 +1450,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       input.projectScope,
       input.store,
       input.layout.databasePath,
-      identity.worktreeId,
+      input.borrowedSnapshotId ? storedSnapshot.worktreeId : identity.worktreeId,
       storedSnapshot,
     ))
   ) {

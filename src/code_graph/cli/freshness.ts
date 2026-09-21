@@ -1,4 +1,4 @@
-import type {CodeGraphStatus} from '../types.js';
+import type {CodeGraphQueryOptions, CodeGraphStatus} from '../types.js';
 
 export type CodeGraphCliFreshnessPolicy = 'allow-stale' | 'current' | 'ready';
 
@@ -23,4 +23,21 @@ export function codeGraphCliReadPlan(
     strictFreshness,
     unavailable,
   };
+}
+
+/** A fresh worktree may immediately read shared immutable evidence while its exact graph refreshes off-path. */
+export function codeGraphCliUsesBorrowedContinuity(
+  policy: CodeGraphCliFreshnessPolicy,
+  operation: CodeGraphQueryOptions['operation'],
+  status: Pick<CodeGraphStatus, 'readySnapshot' | 'stale'>,
+  borrowedSnapshot: boolean,
+): boolean {
+  return (
+    policy === 'current' &&
+    borrowedSnapshot &&
+    status.readySnapshot !== undefined &&
+    status.stale &&
+    operation !== 'impact' &&
+    operation !== 'path'
+  );
 }

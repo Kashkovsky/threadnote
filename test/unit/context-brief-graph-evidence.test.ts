@@ -74,6 +74,44 @@ describe('Context Brief exact-anchor graph evidence', () => {
     expect(projected.structuredContent.scope.projectCoverage).toEqual(projectCoverage);
     expect(parseContextBriefAgentViewText(projected.text).scope.projectCoverage).toEqual(projectCoverage);
   });
+  effectIt.effect('borrows compatible shared graph evidence before reporting a fresh-worktree gap', () =>
+    Effect.gen(function* () {
+      const attachOptions: unknown[] = [];
+      const missing = {...STATUS, freshness: 'stale' as const, readySnapshot: undefined, stale: true};
+      const borrowed = {...STATUS, freshness: 'stale' as const, stale: true};
+      const plan = planContextBrief({
+        scope: {callerCwd: '/workspace/effect', kind: 'repository', project: 'effect'},
+        task: 'Locate the HTTP client from a fresh worktree.',
+      });
+      const query = CodeGraphQueryService.of({
+        attachSharedReadySnapshot: (_home, _identity, _status, options) => {
+          attachOptions.push(options);
+          return Effect.succeed(borrowed);
+        },
+        inspect: () =>
+          Effect.succeed(
+            queryResult({
+              edges: [],
+              nodes: [sourceNode(stableId(1), PATH_ANCHOR, PATH_ANCHOR, 'module')],
+              operation: 'query',
+            }),
+          ),
+        purge: () => Effect.die('Unexpected graph purge.'),
+        status: () => Effect.succeed(missing),
+        statusForIdentity: () => Effect.die('Unexpected identity status.'),
+        statusForPublishedIdentity: () => Effect.die('Unexpected published identity status.'),
+      });
+
+      const evidence = yield* retrieveContextBriefGraphEvidence(CONFIG, plan.graph).pipe(
+        Effect.provideService(CodeGraphQueryService, query),
+        provideTestLayer(Layer.mergeAll(BunServices.layer, SystemInfo.layer)),
+      );
+
+      expect(attachOptions).toEqual([{allowBorrowedStale: true, requestMaintenance: false}]);
+      expect(evidence.cards[0]?.symbol.path).toBe(PATH_ANCHOR);
+      expect(evidence.gaps).not.toContain('graph-ready-snapshot-missing');
+    }),
+  );
   effectIt.effect('traces mixed path and cgs anchors in both directions without task-semantic displacement', () =>
     Effect.gen(function* () {
       const calls: CodeGraphInspectOptions[] = [];

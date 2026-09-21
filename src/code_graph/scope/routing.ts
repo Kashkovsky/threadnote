@@ -37,23 +37,38 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
   const caller = path.resolve(cwd);
   if (explicitProject !== undefined) {
     const requested = explicitProject.trim().toLowerCase();
-    const project = manifest.projects.find(candidate => candidate.name.toLowerCase() === requested);
-    if (project === undefined) {
+    const exactProject = manifest.projects.find(candidate => candidate.name.toLowerCase() === requested);
+    const aliasProjects = exactProject === undefined ? graphRootAliasProjects(manifest.projects, requested) : [];
+    const localAliasProjects =
+      aliasProjects.length === 0 ? [] : yield* projectsInCallerRepository(aliasProjects, caller);
+    if (localAliasProjects.length > 1) {
       return yield* CodeGraphScopeRoutingError.make({
-        message: `No configured project named "${explicitProject}" exists.`,
+        message: `Graph root alias "${explicitProject}" belongs to multiple configured projects. Select one of: ${localAliasProjects
+          .map(project => project.name)
+          .sort()
+          .join(', ')}.`,
+      });
+    }
+    const project = exactProject ?? localAliasProjects[0];
+    if (project === undefined) {
+      if (aliasProjects.length > 0) {
+        return yield* CodeGraphScopeRoutingError.make({
+          message: `Graph root alias "${explicitProject}" is outside this cwd. Choose a project in this repository.`,
+        });
+      }
+      return yield* CodeGraphScopeRoutingError.make({
+        message: `No configured project named "${explicitProject}" exists. --project accepts a configured project name or an unambiguous graph root.`,
       });
     }
     const root = yield* expandPath(project.path);
-    if (!pathContains(path, root, caller) && !pathContains(path, caller, root)) {
-      const [callerIdentity, projectIdentity] = yield* Effect.all([
-        resolveRepositoryIdentity(caller),
-        resolveRepositoryIdentity(root).pipe(Effect.option),
-      ]);
-      if (!sameCheckoutRepository(callerIdentity, projectIdentity)) {
-        return yield* CodeGraphScopeRoutingError.make({
-          message: `Configured project "${project.name}" is outside this cwd. Choose a project in this repository.`,
-        });
-      }
+    const [callerIdentity, projectIdentity] = yield* Effect.all([
+      resolveRepositoryIdentity(caller),
+      resolveRepositoryIdentity(root).pipe(Effect.option),
+    ]);
+    if (!sameCheckoutRepository(callerIdentity, projectIdentity)) {
+      return yield* CodeGraphScopeRoutingError.make({
+        message: `Configured project "${project.name}" is outside this cwd. Choose a project in this repository.`,
+      });
     }
     return selectedRoute(project);
   }
@@ -62,7 +77,12 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
     expandPath(project.path).pipe(Effect.map(root => ({project, root}))),
   );
   const localMatches = expanded.filter(candidate => pathContains(path, candidate.root, caller));
-  let matches = localMatches.map(candidate => candidate.project);
+  const localGraphRootMatches = localMatches.filter(candidate =>
+    candidate.project.graph?.roots.some(root => pathContains(path, path.resolve(candidate.root, root), caller)),
+  );
+  let matches = (localGraphRootMatches.length > 0 ? localGraphRootMatches : localMatches).map(
+    candidate => candidate.project,
+  );
   if (matches.length === 0) {
     const worktreeRoots = yield* resolveCheckoutWorktreeRoots(caller).pipe(Effect.option);
     if (Option.isSome(worktreeRoots)) {
@@ -119,6 +139,23 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
       .join(', ')}.`,
   });
 });
+
+function projectsInCallerRepository(projects: readonly ProjectManifest[], caller: string) {
+  return Effect.gen(function* () {
+    const callerIdentity = yield* resolveRepositoryIdentity(caller);
+    const candidates = yield* Effect.forEach(
+      projects,
+      project =>
+        Effect.gen(function* () {
+          const root = yield* expandPath(project.path);
+          const projectIdentity = yield* resolveRepositoryIdentity(root).pipe(Effect.option);
+          return sameCheckoutRepository(callerIdentity, projectIdentity) ? project : undefined;
+        }),
+      {concurrency: 4},
+    );
+    return candidates.filter((project): project is ProjectManifest => project !== undefined);
+  });
+}
 
 function sameCheckoutRepository(
   caller: {readonly checkoutId: string; readonly repositoryId: string},
@@ -196,6 +233,20 @@ function parseGitWorktreeRoot(output: Uint8Array): string | undefined {
 function pathContains(path: Path.Path, root: string, target: string): boolean {
   const relative = path.relative(path.resolve(root), target);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function graphRootAliasProjects(projects: readonly ProjectManifest[], requested: string): readonly ProjectManifest[] {
+  const normalizedRequested = normalizeGraphRootAlias(requested);
+  return projects.filter(project =>
+    project.graph?.roots.some(root => {
+      const normalizedRoot = normalizeGraphRootAlias(root);
+      return normalizedRoot === normalizedRequested || normalizedRoot.split('/').at(-1) === normalizedRequested;
+    }),
+  );
+}
+
+function normalizeGraphRootAlias(value: string): string {
+  return value.trim().replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/+$/u, '').toLowerCase();
 }
 
 function selectedRoute(

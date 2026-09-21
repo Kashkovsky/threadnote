@@ -32,7 +32,7 @@ export const CODE_GRAPH_PROTOCOL_VERSIONS = {
   checkpointRecordSchema: 1,
   checkpointSemantic: 2,
   inventoryReuseReceipt: 2,
-  managerCatalogRevision: 1,
+  managerCatalogRevision: 2,
   resolutionSurface: 1,
   reusableBaseReceipt: 2,
 } as const;
