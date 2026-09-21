@@ -7,14 +7,20 @@ description: Investigate unfamiliar local source relationships with Threadnote's
 
 # Threadnote code graph
 
-For unfamiliar source or relationship claims, call `inspect_code_graph` before broad text search: start with `query`,
-then round-trip stable `cgs_`/`cgr_` IDs through `node`, `neighbors`, or `path`. Use `impact` for reverse dependencies
-and `analyze_code_graph` for repository-wide structure. Follow graph evidence with exact path or literal search.
+For unfamiliar source or relationship claims, call `inspect_code_graph` before broad text search: `query` discovers;
+`node`/`neighbors` round-trip stable `cgs_`/`cgr_` handles; `explain` expands symbols or queries; `path` connects local
+`cgs_` endpoints or qualified Workset endpoints; `impact` finds reverse dependencies; `topology` summarizes Worksets.
+Use `analyze_code_graph` for repository-wide `stats`, `communities`, `community`, `groups`, `hubs`, `surprises`,
+`confidence`, or `full`. Verify with exact source.
 
-Use canonical repository-relative POSIX paths or exact lowercase `cgs_<32 hex>` IDs as Context Brief `codeRefs`; `cgr_`
-handles remain inspection handles. If a brief is truncated, follow its retained selector. Treat bounded cards as
-provenance, not proof of absence. During indexing, use compatible stale/deferred cards, verify exact source, and retry
-only before strict current/relationship claims or when no usable cards survive; never tight-poll refresh state.
+For `inspect_code_graph`, prefer `responseFormat: "text"`. Successful graph-result responses put complete bounded JSON
+in the first text block without duplicate `structuredContent`; status/error envelopes may retain it. Omit for the
+default dual response for programmatic fields.
+
+Use repository-relative POSIX paths or lowercase `cgs_<32 hex>` IDs as Context Brief `codeRefs`; `cgr_` handles remain
+inspection handles. If a brief is truncated, follow its retained selector. Treat bounded cards as provenance, not proof
+of absence. During indexing, use compatible stale/deferred cards, verify source, and retry only for strict
+current/relationship claims or no usable cards; never tight-poll.
 
 Preserve the Context Brief `project` selector and read `projectCoverage`: a configured project graph covers its roots,
 forward dependencies, and explicit includes, not the whole repository. Do not claim repository-wide absence from that
