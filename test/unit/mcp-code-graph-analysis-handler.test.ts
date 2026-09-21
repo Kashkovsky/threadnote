@@ -13,6 +13,8 @@ import {
   type CodeGraphSharedReadyAttachInterlock,
   type CodeGraphStatusOptions,
 } from '../../src/code_graph/query.js';
+import type {CodeGraphQueryScope} from '../../src/code_graph/query/scope.js';
+import {attachCodeGraphStatusObservation} from '../../src/code_graph/query/contract.js';
 import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {
   CodeGraphWatcher,
@@ -77,6 +79,56 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         });
       }
       expect(harness.observation.isolatedInspectCalls).toBe(2);
+      expect(harness.observation.isolatedRequests).toEqual([
+        expect.objectContaining({operation: 'query', readySnapshotId: ready.readySnapshot?.id}),
+        expect.objectContaining({operation: 'node', readySnapshotId: ready.readySnapshot?.id}),
+      ]);
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect('forwards the resolved project scope instead of making the isolated worker rediscover it', () => {
+    const projectScope = scopedProjectObservation();
+    const base = codeGraphStatus({ready: true, stale: false});
+    const ready = attachCodeGraphStatusObservation(
+      {
+        ...base,
+        projectCoverage: {
+          project: 'web',
+          kind: 'project',
+          configuredRoots: ['apps/web'],
+          rootComponents: 1,
+          dependencyComponents: 1,
+          completeness: 'complete',
+          negativeProof: 'selected-graph-only',
+          observedWorktreeCommit: base.identity.headCommit,
+          reusedEquivalentSnapshot: false,
+          snapshotSourceCommit: base.readySnapshot!.commit,
+        },
+      },
+      {identity: base.identity, projectScope},
+    );
+    const harness = analyzeHandlerHarness({
+      attachResults: [],
+      inspectDelayMilliseconds: 1,
+      refresh: false,
+      statuses: [ready],
+    });
+
+    return Effect.gen(function* () {
+      const fiber = yield* harness
+        .invokeInspect({callerCwd: ready.identity.repoRoot, operation: 'query', project: 'web', query: 'value'})
+        .pipe(Effect.forkChild({startImmediately: true}));
+      yield* TestClock.adjust(1);
+      const result = yield* Fiber.join(fiber);
+
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(harness.observation.isolatedRequests).toEqual([
+        expect.objectContaining({
+          operation: 'query',
+          projectScope,
+          readySnapshotId: ready.readySnapshot?.id,
+        }),
+      ]);
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -194,6 +246,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   const refreshOptions: CodeGraphWatchOptions[] = [];
   let analysisCalls = 0;
   let isolatedInspectCalls = 0;
+  const isolatedRequests: Array<Record<string, unknown>> = [];
   let watcherStatusCalls = 0;
   let statusIndex = 0;
   let attachIndex = 0;
@@ -269,9 +322,10 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         if (input.inspectDelayMilliseconds === undefined || status === undefined || options?.input === undefined) {
           return yield* Effect.die('Unexpected isolated graph inspection.');
         }
-        const request = JSON.parse(new TextDecoder().decode(options.input)) as {
+        const request = JSON.parse(new TextDecoder().decode(options.input)) as Record<string, unknown> & {
           readonly operation: CodeGraphQueryResult['operation'];
         };
+        isolatedRequests.push(request);
         yield* Effect.sleep(input.inspectDelayMilliseconds);
         return commandResult(
           JSON.stringify({ok: true, protocol: 1, result: codeGraphInspectionResult(status, request.operation)}),
@@ -334,11 +388,45 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
       get isolatedInspectCalls() {
         return isolatedInspectCalls;
       },
+      isolatedRequests,
       refreshOptions,
       statusOptions,
       get watcherStatusCalls() {
         return watcherStatusCalls;
       },
+    },
+  };
+}
+
+function scopedProjectObservation(): CodeGraphQueryScope {
+  return {
+    project: {
+      graph: {closure: 'dependencies', roots: ['apps/web']},
+      name: 'web',
+      uri: 'threadnote://projects/web',
+    },
+    scope: {
+      admittedPrefixes: ['apps/web', 'packages/shared'],
+      closureDigest: 'closure-digest',
+      completeness: 'complete',
+      controlPaths: ['package.json'],
+      definitionDigest: 'definition-digest',
+      diagnostics: [],
+      includedProjectIds: ['web', 'shared'],
+      rootProjectIds: ['web'],
+      scopeKey: 'code-graph-scope:web',
+    },
+    evidence: {
+      catalogFingerprint: 'catalog-fingerprint',
+      closureDigest: 'closure-digest',
+      definitionDigest: 'definition-digest',
+      extractorSet: 'extractor-set',
+      inventoryFingerprint: 'inventory-fingerprint',
+      observedCommit: 'b'.repeat(40),
+      policyFingerprint: 'policy-fingerprint',
+      repositoryId: analysisSnapshot([], []).repositoryId,
+      scopeKey: 'code-graph-scope:web',
+      worktreeId: analysisSnapshot([], []).worktreeId,
     },
   };
 }
@@ -381,7 +469,7 @@ function systemInfoStub(): SystemInfoShape {
 }
 
 function codeGraphStatus(options: {readonly ready: boolean; readonly stale: boolean}): CodeGraphStatus {
-  const readySnapshot = analysisSnapshot([], []);
+  const readySnapshot = {...analysisSnapshot([], []), id: `cgsn_${'c'.repeat(40)}`};
   const identity: RepositoryIdentity = {
     caseMode: 'sensitive',
     checkoutId: 'analysis-checkout',

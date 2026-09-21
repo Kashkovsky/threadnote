@@ -149,7 +149,7 @@ export function skipCodeGraphQueryTelemetryStage(
   return telemetry?.skip(phase, stage) ?? Effect.void;
 }
 
-/** Retrieve pre-read identity and optional exact overlay evidence without serializing it. */
+/** Retrieve pre-read identity and optional exact overlay evidence without exposing it in command or MCP output. */
 export function observationFromCodeGraphStatus(status: CodeGraphStatus): CodeGraphStatusObservation | undefined {
   return (status as ObservedCodeGraphStatus)[CODE_GRAPH_STATUS_OBSERVATION];
 }

@@ -7,6 +7,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   decodeImpactQueryRequest,
+  impactQueryWorkerStatusObservation,
   impactQueryTransportSelector,
   impactQueryWorkerInspectOptions,
   impactQueryWorkerEnvironment,
@@ -16,7 +17,8 @@ import {
   IsolatedCodeGraphImpactQueryTimedOut,
 } from '../../src/code_graph/isolated/impact_query.js';
 import type {CodeGraphQueryTelemetryObservation} from '../../src/code_graph/query/contract.js';
-import type {CodeGraphQueryResult} from '../../src/code_graph/types.js';
+import type {CodeGraphQueryScope} from '../../src/code_graph/query/scope.js';
+import type {CodeGraphQueryResult, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CommandExecutor, type CommandOptions} from '../../src/effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 import type {CommandResult} from '../../src/types.js';
@@ -50,6 +52,49 @@ const input = {
   seedQueries: ['src/private-file.ts'],
   threadnoteHome: '/threadnote-home',
 } as const;
+
+const projectScope: CodeGraphQueryScope = {
+  project: {
+    graph: {closure: 'dependencies', include: ['shared'], roots: ['apps/web']},
+    name: 'web',
+    uri: 'threadnote://projects/web',
+  },
+  scope: {
+    admittedPrefixes: ['apps/web', 'shared'],
+    closureDigest: 'closure-digest',
+    completeness: 'complete',
+    controlPaths: ['package.json'],
+    definitionDigest: 'definition-digest',
+    diagnostics: [],
+    includedProjectIds: ['web', 'shared'],
+    rootProjectIds: ['web'],
+    scopeKey: 'code-graph-scope:web',
+  },
+  evidence: {
+    catalogFingerprint: 'catalog-fingerprint',
+    closureDigest: 'closure-digest',
+    definitionDigest: 'definition-digest',
+    extractorSet: 'extractor-set',
+    inventoryFingerprint: 'inventory-fingerprint',
+    observedCommit: 'b'.repeat(40),
+    policyFingerprint: 'policy-fingerprint',
+    repositoryId: 'a'.repeat(64),
+    scopeKey: 'code-graph-scope:web',
+    worktreeId: 'd'.repeat(64),
+  },
+};
+
+const identity: RepositoryIdentity = {
+  caseMode: 'sensitive',
+  checkoutId: 'checkout-id',
+  displayName: 'acme/repository',
+  gitCommonDirectory: '/workspace/repository/.git',
+  headCommit: 'b'.repeat(40),
+  objectFormat: 'sha1',
+  repoRoot: '/workspace/repository',
+  repositoryId: 'a'.repeat(64),
+  worktreeId: 'd'.repeat(64),
+};
 
 describe('isolated code graph impact query', () => {
   it('keeps request content out of process arguments and the inherited environment', () => {
@@ -156,17 +201,44 @@ describe('isolated code graph impact query', () => {
         edgeLimit: input.edgeLimit,
         nodeLimit: input.nodeLimit,
         operation: 'query',
+        projectScope,
         query: input.query,
+        readySnapshotId: result.snapshot.id,
         threadnoteHome: input.threadnoteHome,
       }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
 
       expect(actual).toEqual(queryResult);
       expect(decodeImpactQueryRequest(new TextDecoder().decode(encodedRequest))).toMatchObject({
         operation: 'query',
+        projectScope,
         query: input.query,
+        readySnapshotId: result.snapshot.id,
       });
     }),
   );
+
+  it('reuses the parent ready snapshot and resolved project scope in the worker', () => {
+    const request = decodeImpactQueryRequest(
+      JSON.stringify({
+        cwd: input.cwd,
+        edgeLimit: input.edgeLimit,
+        nodeLimit: input.nodeLimit,
+        operation: 'query',
+        projectScope,
+        protocol: 1,
+        query: input.query,
+        readySnapshotId: result.snapshot.id,
+        threadnoteHome: input.threadnoteHome,
+      }),
+    );
+
+    expect(request).toBeDefined();
+    expect(impactQueryWorkerStatusObservation(request!, identity)).toEqual({
+      borrowedSnapshotId: result.snapshot.id,
+      identity,
+      projectScope,
+    });
+  });
 
   effectIt.effect('accepts every canonical borrowed ready-snapshot identity', () =>
     Effect.gen(function* () {
@@ -374,9 +446,14 @@ describe('isolated code graph impact query', () => {
     'round-trips every local inspection operation without changing its selector contract (property)',
     {
       operation: fc.constantFrom('query', 'node', 'neighbors', 'explain', 'path', 'impact'),
+      prefixes: fc.array(
+        fc.string({maxLength: 40, minLength: 1}).filter(value => !value.includes('\0')),
+        {maxLength: 8},
+      ),
+      snapshotHash: gitObjectId(40),
       selector: fc.string({maxLength: 80, minLength: 1}).filter(value => !value.includes('\0')),
     },
-    ({operation, selector}) => {
+    ({operation, prefixes, selector, snapshotHash}) => {
       const operationFields =
         operation === 'query' || operation === 'impact'
           ? {query: selector}
@@ -390,7 +467,12 @@ describe('isolated code graph impact query', () => {
         edgeLimit: 40,
         nodeLimit: 20,
         operation,
+        projectScope: {
+          ...projectScope,
+          scope: {...projectScope.scope!, admittedPrefixes: prefixes},
+        },
         protocol: 1,
+        readySnapshotId: `cgsn_${snapshotHash}`,
         threadnoteHome: '/threadnote-home',
         ...operationFields,
       };

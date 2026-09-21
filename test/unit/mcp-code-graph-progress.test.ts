@@ -68,12 +68,16 @@ describe('MCP code graph indexing progress', () => {
           worktreeId: 'worktree',
         },
         ...(borrowedSnapshotId === undefined ? {} : {borrowedSnapshotId}),
+        projectScope: {
+          project: {name: 'fixture-project', uri: 'threadnote://projects/fixture-project'},
+        },
         ...(observed ? {overlay: {dirty, fingerprint}} : {}),
       };
       const before = JSON.stringify(observation);
       const projected = codeGraphInspectionObservation(observation, operation);
       expect(projected?.identity).toBe(observation.identity);
       expect(projected?.borrowedSnapshotId).toBe(borrowedSnapshotId);
+      expect(projected?.projectScope).toBe(observation.projectScope);
       if (operation === 'path' || operation === 'impact') expect(projected).toBe(observation);
       else expect(projected?.overlay).toBeUndefined();
       expect(codeGraphInspectionObservation(projected, operation)).toEqual(projected);

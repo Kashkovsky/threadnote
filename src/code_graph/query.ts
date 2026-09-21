@@ -39,6 +39,7 @@ import {
   type CodeGraphTraversalTimeBudgets,
 } from './query/contract.js';
 import {codeGraphSnapshotRuntimeCurrent} from './query/snapshot_runtime.js';
+import {selectCompatibleReadyCodeGraphSnapshot} from './query/ready_snapshot.js';
 import {
   codeGraphProjectCoverage,
   codeGraphQueryScopeCurrent,
@@ -1435,30 +1436,18 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
           'fallback',
         ));
   const read = Effect.gen(function* () {
-    const storedSnapshot = input.borrowedSnapshotId
-      ? yield* input.store.readySnapshotById(input.layout.databasePath, input.borrowedSnapshotId)
-      : yield* input.store.readySnapshot(
-          input.layout.databasePath,
-          identity.worktreeId,
-          input.projectScope?.scope?.scopeKey,
-        );
-    if (!storedSnapshot || storedSnapshot.repositoryId !== identity.repositoryId) {
+    const {snapshot: storedSnapshot, incompatibleSnapshotObserved} = yield* selectCompatibleReadyCodeGraphSnapshot({
+      borrowedSnapshotId: input.borrowedSnapshotId,
+      databasePath: input.layout.databasePath,
+      identity,
+      projectScope: input.projectScope,
+      store: input.store,
+    });
+    if (!storedSnapshot) {
       return yield* CodeGraphSnapshotUnavailable.make({
-        message: 'No ready native code graph snapshot exists. Run `threadnote graph index` first.',
-      });
-    }
-    if (
-      !(yield* codeGraphQueryScopeSnapshotCompatible(
-        input.projectScope,
-        input.store,
-        input.layout.databasePath,
-        input.borrowedSnapshotId ? storedSnapshot.worktreeId : identity.worktreeId,
-        storedSnapshot,
-      ))
-    ) {
-      return yield* CodeGraphSnapshotUnavailable.make({
-        message:
-          'The ready graph has a different project definition or dependency closure. Rebuild the selected project graph.',
+        message: incompatibleSnapshotObserved
+          ? 'The ready graph has a different project definition or dependency closure. Rebuild the selected project graph.'
+          : 'No ready native code graph snapshot exists. Run `threadnote graph index` first.',
       });
     }
     const snapshot = {...storedSnapshot, worktreeId: identity.worktreeId};
