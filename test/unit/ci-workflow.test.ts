@@ -240,7 +240,7 @@ describe('dependency-aware CI workflow', () => {
       if: "needs.changes.outputs.long_test_mode != 'none'",
     });
     expect(long.strategy?.matrix?.group).toBe('${{ fromJSON(needs.changes.outputs.long_test_groups) }}');
-    expect(ciRequiredLongRunningTestGroupNames).toHaveLength(9);
+    expect(ciRequiredLongRunningTestGroupNames).toHaveLength(10);
     expect(long.steps?.find(step => step.uses?.startsWith('actions/checkout@'))?.with?.['fetch-depth']).toBe(0);
     expect(stepForRun(long, 'bun --bun vitest run').env).toEqual({
       THREADNOTE_VITEST_LONG_GROUP: '${{ matrix.group }}',
@@ -285,14 +285,15 @@ describe('dependency-aware CI workflow', () => {
 
   it('keeps the quota-aware long-test plan bounded and non-overlapping', () => {
     expect(ciLongRunningTestGroupNames).toEqual(Object.keys(ciLongRunningTestGroups));
-    expect(ciLongRunningTestGroupNames).toHaveLength(10);
+    expect(ciLongRunningTestGroupNames).toHaveLength(11);
     expect(ciRequiredLongRunningTestGroupNames).not.toContain('load-evidence');
     expect(ciScheduledLongRunningTestGroupNames).toEqual(['load-evidence']);
     expect(new Set([...ciRequiredLongRunningTestGroupNames, ...ciScheduledLongRunningTestGroupNames])).toEqual(
       new Set(ciLongRunningTestGroupNames),
     );
     expect([...ciSerializedLongRunningTestGroups]).toEqual([
-      'heavy-integration',
+      'heavy-integration-runtime',
+      'heavy-integration-graph',
       'heavy-state',
       'incremental-property',
       'load-evidence',

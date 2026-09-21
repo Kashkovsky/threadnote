@@ -46,7 +46,8 @@ const fixedLongGroupNames = [
   'incremental-property',
   'load-evidence',
   'os-contention',
-  'heavy-integration',
+  'heavy-integration-runtime',
+  'heavy-integration-graph',
   'heavy-state',
 ] as const;
 type FixedLongGroupName = (typeof fixedLongGroupNames)[number];
@@ -81,9 +82,8 @@ const fixedLongGroupModel: Readonly<Record<FixedLongGroupName, readonly string[]
     'test/integration/code-graph.disk-reservation.test.ts',
     'test/unit/code-graph.maintenance-residual-live.test.ts',
   ],
-  'heavy-integration': [
-    'test/integration/cli.effect.test.ts',
-    'test/integration/mcp.native-tools.test.ts',
+  'heavy-integration-runtime': ['test/integration/cli.effect.test.ts', 'test/integration/mcp.native-tools.test.ts'],
+  'heavy-integration-graph': [
     'test/integration/code-graph.performance-evidence.test.ts',
     'test/integration/code-graph.snapshot-repair.property.test.ts',
     'test/integration/code-graph.cross-session-incremental.test.ts',
