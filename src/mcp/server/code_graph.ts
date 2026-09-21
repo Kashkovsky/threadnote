@@ -79,9 +79,9 @@ const MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS = 5_000;
 const MCP_CODE_GRAPH_RETRY_MINIMUM_MILLISECONDS = 3_000;
 const MCP_CODE_GRAPH_RETRY_MAXIMUM_MILLISECONDS = 30_000;
 const MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS = 30_000;
-// Leave enough room for the adapter to serialize a structured retry response
-// before a client enforcing the documented 30-second envelope gives up.
-const MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS = 25_000;
+// Ready-snapshot reads can briefly contend with background graph maintenance.
+// Keep five seconds for structured recovery before the MCP client's default deadline.
+const MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS = 55_000;
 const MCP_CODE_GRAPH_TIMEOUT_STATUS_MILLISECONDS = 1_000;
 const MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT = 20;
 const MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT = 40;
@@ -1928,7 +1928,7 @@ export function codeGraphQueryTimeoutResult(
           type: 'text',
           text: readyReadStarted
             ? `Code graph ready-snapshot inspection exceeded Threadnote's ${MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS / 1_000}-second MCP budget. ` +
-              'The ready snapshot remains available; use the matching `threadnote graph` command with `--freshness ready --read-timeout-ms 60000` for a longer foreground read.'
+              'The ready snapshot remains available; use the matching `threadnote graph` command with `--freshness ready --read-timeout-ms 120000` for a longer foreground read.'
             : `Code graph inspection exceeded Threadnote's ${MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS / 1_000}-second ` +
               'server budget and was stopped before the MCP client timeout. No indexing failure was observed; retry the ' +
               'same request after the suggested delay. If it repeats, run `threadnote graph status`, then ' +

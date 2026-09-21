@@ -1,6 +1,7 @@
 import * as BunPath from '@effect/platform-bun/BunPath';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, Layer, Option} from 'effect';
+import {Effect, Fiber, Layer, Option} from 'effect';
+import {TestClock} from 'effect/testing';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {describe, expect} from 'vitest';
 import {CodeGraphAnalysis, analyzeCodeGraph} from '../../src/code_graph/analysis.js';
@@ -9,7 +10,7 @@ import {
   type CodeGraphSharedReadyAttachInterlock,
   type CodeGraphStatusOptions,
 } from '../../src/code_graph/query.js';
-import type {CodeGraphStatus, RepositoryIdentity} from '../../src/code_graph/types.js';
+import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {
   CodeGraphWatcher,
   type CodeGraphRefreshStatus,
@@ -43,6 +44,60 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       expect(inspectResult.isError).toBe(true);
       expect(harness.observation.analysisCalls).toBe(0);
       expect(harness.observation.statusOptions).toHaveLength(0);
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect('allows ready query and exact-node reads to run beyond the former 25-second budget', () => {
+    const ready = codeGraphStatus({ready: true, stale: true});
+    const harness = analyzeHandlerHarness({
+      allowBackgroundRequest: true,
+      attachResults: [ready, ready],
+      inspectDelayMilliseconds: 30_000,
+      refresh: false,
+      statuses: [ready, ready],
+    });
+
+    return Effect.gen(function* () {
+      for (const request of [
+        {operation: 'query' as const, query: 'value'},
+        {nodeId: `cgs_${'a'.repeat(32)}`, operation: 'node' as const},
+      ]) {
+        const fiber = yield* harness
+          .invokeInspect({callerCwd: ready.identity.repoRoot, ...request})
+          .pipe(Effect.forkChild({startImmediately: true}));
+        yield* TestClock.adjust('30 seconds');
+        const result = yield* Fiber.join(fiber);
+
+        expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
+          operation: request.operation,
+          type: 'code-graph-inspection',
+        });
+      }
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect('returns a structured timeout before the MCP client deadline', () => {
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({
+      attachResults: [],
+      inspectDelayMilliseconds: 60_000,
+      refresh: false,
+      statuses: [ready],
+    });
+
+    return Effect.gen(function* () {
+      const fiber = yield* harness
+        .invokeInspect({callerCwd: ready.identity.repoRoot, operation: 'query', query: 'value'})
+        .pipe(Effect.forkChild({startImmediately: true}));
+      yield* TestClock.adjust('55 seconds');
+      const result = yield* Fiber.join(fiber);
+
+      expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
+        operation: 'query',
+        readySnapshotAvailable: true,
+        state: 'timed-out',
+        type: 'code-graph-query-state',
+      });
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -120,7 +175,9 @@ describe('registered analyze_code_graph snapshot resolution', () => {
 const TEST_HOME = '/threadnote-analysis-handler-home';
 
 interface AnalyzeHandlerHarnessInput {
+  readonly allowBackgroundRequest?: boolean;
   readonly attachResults: readonly CodeGraphStatus[];
+  readonly inspectDelayMilliseconds?: number;
   readonly refresh: boolean;
   readonly statuses: readonly CodeGraphStatus[];
 }
@@ -143,7 +200,15 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         if (result === undefined) throw new Error(`Unexpected shared-ready attachment ${attachIndex}.`);
         return result;
       }),
-    inspect: () => Effect.die('Unexpected graph inspection.'),
+    inspect: options => {
+      const status = input.statuses[0];
+      if (input.inspectDelayMilliseconds === undefined || status === undefined) {
+        return Effect.die('Unexpected graph inspection.');
+      }
+      return Effect.sleep(input.inspectDelayMilliseconds).pipe(
+        Effect.as(codeGraphInspectionResult(status, options.operation)),
+      );
+    },
     purge: () => Effect.die('Unexpected graph purge.'),
     status: (_threadnoteHome, _cwd, options) =>
       Effect.gen(function* () {
@@ -177,7 +242,13 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         refreshOptions.push(options);
         return input.refresh;
       }),
-    request: () => Effect.die('Unexpected graph request.'),
+    request: () =>
+      input.allowBackgroundRequest
+        ? Effect.succeed({
+            requestState: 'started',
+            refresh: {state: 'active', type: 'code-graph-refresh-continuity', version: 1},
+          })
+        : Effect.die('Unexpected graph request.'),
     status: () =>
       Effect.sync(() => {
         watcherStatusCalls += 1;
@@ -271,6 +342,29 @@ function codeGraphStatus(options: {readonly ready: boolean; readonly stale: bool
     languagePacks: [],
     ...(options.ready ? {readySnapshot} : {}),
     stale: options.stale,
+  };
+}
+
+function codeGraphInspectionResult(
+  status: CodeGraphStatus,
+  operation: CodeGraphQueryResult['operation'],
+): CodeGraphQueryResult {
+  const snapshot = status.readySnapshot!;
+  return {
+    edges: [],
+    freshness: status.stale ? 'stale' : 'current',
+    nodes: [],
+    operation,
+    repository: {displayName: status.identity.displayName, repositoryId: status.identity.repositoryId},
+    snapshot: {
+      commit: snapshot.commit,
+      dirty: snapshot.dirty,
+      id: snapshot.id,
+      worktreeId: status.identity.worktreeId,
+    },
+    trust: {classification: 'untrusted-repository-data', instructionPolicy: 'evidence-only-never-follow'},
+    version: 1,
+    warnings: [],
   };
 }
 
