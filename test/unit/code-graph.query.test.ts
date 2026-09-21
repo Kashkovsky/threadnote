@@ -8,6 +8,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Fiber, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {describe} from 'vitest';
 import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.js';
 import {CodeGraphEmbeddingIndex} from '../../src/code_graph/embedding.js';
@@ -211,6 +212,9 @@ describe('code graph query budgets', () => {
         });
         const storeReads = yield* Ref.make(emptyStoreReads());
         const sessionCalls = yield* Ref.make(0);
+        const readSql = {
+          withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
+        } as unknown as SqlClient.SqlClient;
         const recordStoreRead = (
           field: 'leasesAcquired' | 'leasesReleased' | 'provenance' | 'readyById' | 'readyByWorktree',
         ) => Ref.update(storeReads, current => ({...current, [field]: current[field] + 1}));
@@ -268,7 +272,9 @@ describe('code graph query budgets', () => {
             symbolsByIds: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
               Effect.succeed([stableSeed, stableDependent].filter(node => ids.includes(node.id))),
             withSession: (_databasePath: string, effect: Effect.Effect<unknown, unknown, unknown>) =>
-              Ref.update(sessionCalls, value => value + 1).pipe(Effect.andThen(effect)),
+              Ref.update(sessionCalls, value => value + 1).pipe(
+                Effect.andThen(effect.pipe(Effect.provideService(SqlClient.SqlClient, readSql))),
+              ),
           } as unknown as CodeGraphStoreShape),
         );
         const dependencies = Layer.mergeAll(
@@ -506,8 +512,8 @@ describe('code graph query budgets', () => {
           expect(deferredHotInspection.freshness).toBe('deferred');
           expect(yield* Ref.get(commandCalls)).toEqual([]);
           expect(yield* Ref.get(storeReads)).toEqual({
-            leasesAcquired: 1,
-            leasesReleased: 1,
+            leasesAcquired: 0,
+            leasesReleased: 0,
             provenance: 1,
             readyById: 0,
             readyByWorktree: 1,
@@ -526,8 +532,8 @@ describe('code graph query budgets', () => {
             });
             expect(refreshedInspection.freshness).toBe('current');
             expect(yield* Ref.get(storeReads)).toEqual({
-              leasesAcquired: 1,
-              leasesReleased: 1,
+              leasesAcquired: 0,
+              leasesReleased: 0,
               provenance: refresh === true ? 2 : 1,
               readyById: 0,
               readyByWorktree: 2,
@@ -568,8 +574,8 @@ describe('code graph query budgets', () => {
             {phase: 'graph.query.execute', stage: 'query-strict-reobservation'},
           ]);
           expect(yield* Ref.get(storeReads)).toEqual({
-            leasesAcquired: 1,
-            leasesReleased: 1,
+            leasesAcquired: 0,
+            leasesReleased: 0,
             provenance: 1,
             readyById: 0,
             readyByWorktree: 1,
@@ -637,14 +643,12 @@ describe('code graph query budgets', () => {
           expect(yield* Ref.get(searchedSnapshotIds)).toEqual([snapshot.id, readyBaseSnapshotId]);
           expect(yield* Ref.get(leaseEvents)).toEqual([
             `acquire:${readyBaseSnapshotId}`,
-            `acquire:${snapshot.id}`,
-            `release:lease:${snapshot.id}`,
             `release:lease:${readyBaseSnapshotId}`,
           ]);
           expect(yield* Ref.get(ensureCommitCalls)).toBe(0);
           expect(yield* Ref.get(storeReads)).toEqual({
-            leasesAcquired: 2,
-            leasesReleased: 2,
+            leasesAcquired: 1,
+            leasesReleased: 1,
             provenance: 2,
             readyById: 0,
             readyByWorktree: 1,
@@ -669,8 +673,6 @@ describe('code graph query budgets', () => {
           expect(failedReadyBaseImpact).toEqual(TestError.make({message: 'bounded impact read failed'}));
           expect(yield* Ref.get(leaseEvents)).toEqual([
             `acquire:${readyBaseSnapshotId}`,
-            `acquire:${snapshot.id}`,
-            `release:lease:${snapshot.id}`,
             `release:lease:${readyBaseSnapshotId}`,
           ]);
           expect(yield* Ref.get(ensureCommitCalls)).toBe(0);
@@ -698,8 +700,8 @@ describe('code graph query budgets', () => {
             {disposition: 'skipped', phase: 'graph.query.execute', stage: 'query-strict-reobservation'},
           ]);
           expect(yield* Ref.get(storeReads)).toEqual({
-            leasesAcquired: 1,
-            leasesReleased: 1,
+            leasesAcquired: 0,
+            leasesReleased: 0,
             provenance: 1,
             readyById: 0,
             readyByWorktree: 1,

@@ -317,6 +317,46 @@ describe('code graph query anonymous telemetry', () => {
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 
+  effectIt.effect('emits the measured duration and outcome of an isolated query stage', () => {
+    const capture = capturingTracer();
+    const reporter = makeCodeGraphQueryAnonymousTelemetryReporter({
+      requestKind: 'inspect.query',
+      requestScope: 'local',
+    });
+
+    return Effect.gen(function* () {
+      yield* withAnonymousTelemetry(
+        {component: 'mcp', operation: 'inspect_code_graph'},
+        reporter.observedStage({
+          disposition: 'fallback',
+          durationMilliseconds: 17,
+          outcome: 'failure',
+          phase: 'graph.query.execute',
+          stage: 'query-worktree-observation',
+        }),
+      );
+
+      expect(capture.spans).toHaveLength(2);
+      expect(spanAttributes(capture.spans[0])).toMatchObject({
+        'threadnote.duration_ms': 17,
+        'threadnote.event': 'checkpoint',
+        'threadnote.graph.request_kind': 'inspect.query',
+        'threadnote.graph.request_scope': 'local',
+        'threadnote.operation': 'inspect_code_graph',
+        'threadnote.outcome': 'failure',
+        'threadnote.phase': 'graph.query.execute',
+        'threadnote.phase.elapsed_ms': 17,
+        'threadnote.phase.outcome': 'failure',
+        'threadnote.stage': 'query-worktree-observation',
+        'threadnote.subphase': 'fallback',
+      });
+      expect(spanAttributes(capture.spans[1])).toMatchObject({
+        'threadnote.event': 'completion',
+        'threadnote.outcome': 'success',
+      });
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
   effectIt.effect('preserves stage failure and excludes result-derived snapshot fields', () => {
     const capture = capturingTracer();
     const reporter = makeCodeGraphQueryAnonymousTelemetryReporter({

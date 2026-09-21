@@ -17,7 +17,7 @@ import {
 import {repositoryChangesSince} from '../../code_graph/repository.js';
 import {
   impactQueryTransportSelector,
-  inspectCodeGraphImpactIsolated,
+  inspectCodeGraphIsolated,
   IsolatedCodeGraphImpactQueryTimedOut,
 } from '../../code_graph/isolated/impact_query.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../code_graph/types.js';
@@ -559,45 +559,38 @@ export function registerCodeGraphTool(
         const refreshContinuity = snapshotResolution.refreshContinuity ?? refreshStatus?.refresh;
         const queryText = impactQueryTransportSelector(requestedQuery, changes?.paths);
         readyReadStarted = true;
+        const statusObservation = codeGraphInspectionObservation(observationFromCodeGraphStatus(status), operation);
         const result = yield* queryTelemetry.execute(
-          operation === 'impact'
-            ? inspectCodeGraphImpactIsolated({
-                project: inspectionProject,
-                manifestPath: config.manifestPath,
-                ...(changes?.baseCommit === undefined ? {} : {baseCommit: changes.baseCommit}),
-                cwd: inspectionCwd,
-                depth,
-                edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
-                includeHeuristic,
-                includeModelAssociations,
-                nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
-                query: queryText,
-                seedQueries: changes?.paths,
-                threadnoteHome: config.agentContextHome,
-              })
-            : service.inspect({
-                project: inspectionProject,
-                manifestPath: config.manifestPath,
-                cwd: inspectionCwd,
-                depth,
-                direction,
-                edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
-                from,
-                includeHeuristic,
-                includeModelAssociations,
-                nodeId: inspectionNodeId,
-                nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
-                operation,
-                packageName: packageName?.trim() || undefined,
-                query: queryText,
-                refresh: false,
-                requestMaintenance: false,
-                statusObservation: codeGraphInspectionObservation(observationFromCodeGraphStatus(status), operation),
-                symbol,
-                telemetry: queryStageTelemetry,
-                threadnoteHome: config.agentContextHome,
-                to,
-              }),
+          inspectCodeGraphIsolated(
+            {
+              project: inspectionProject,
+              manifestPath: config.manifestPath,
+              ...(changes?.baseCommit === undefined ? {} : {baseCommit: changes.baseCommit}),
+              ...(statusObservation?.borrowedSnapshotId === undefined
+                ? {}
+                : {borrowedSnapshotId: statusObservation.borrowedSnapshotId}),
+              cwd: inspectionCwd,
+              depth,
+              direction,
+              edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+              from,
+              includeHeuristic,
+              includeModelAssociations,
+              nodeId: inspectionNodeId,
+              nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
+              operation,
+              packageName: packageName?.trim() || undefined,
+              query: queryText,
+              seedQueries: changes?.paths,
+              symbol,
+              threadnoteHome: config.agentContextHome,
+              to,
+            },
+            {
+              onTelemetryObservation: queryTelemetry.observedStage,
+              timeoutMilliseconds: MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS - 5_000,
+            },
+          ),
           codeGraphQueryAnonymousTelemetrySnapshotSurface(status, selection),
         );
         return yield* queryTelemetry.stage(

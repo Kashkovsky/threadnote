@@ -398,12 +398,7 @@ export const runIsolatedCodeGraphIndex: (
         return {compatible: false, mode: 'attach' as const};
       }
       const observed = startup.observed;
-      if (!observed) {
-        // The child remains detached. A caller that lost the bounded startup
-        // race follows the same sidecar attach path as a spawn-lock waiter.
-        return {compatible: false, mode: 'attach' as const};
-      }
-      return {child, mode: 'spawned' as const, observedBuildId: observed.buildId, priorBuildId};
+      return isolatedBuilderOwnedAdmission(observed, child, priorBuildId);
     }),
   ).pipe(Effect.catchIf(isFileLockTimeout, () => Effect.succeed({compatible: false, mode: 'attach' as const})));
 
@@ -429,9 +424,9 @@ export const runIsolatedCodeGraphIndex: (
     return yield* Effect.suspend(() => runIsolatedCodeGraphIndex(options));
   }
 
-  const {child, observedBuildId: initialObservedBuildId, priorBuildId} = admission;
+  const {child, priorBuildId} = admission;
   const observedBuildId = yield* Ref.make<string | undefined>(undefined);
-  yield* Ref.set(observedBuildId, initialObservedBuildId);
+  if (admission.mode === 'spawned') yield* Ref.set(observedBuildId, admission.observedBuildId);
 
   const exitCode = yield* Effect.raceFirst(
     isolatedBuilderPromise('Could not await isolated code graph builder', () => child.exited),
@@ -545,6 +540,17 @@ export function isolatedBuilderRequestMatches(
   requestKey: string | undefined,
 ): boolean {
   return requestKey !== undefined && status.request?.key === requestKey;
+}
+
+/** @internal Preserve detached child ownership when status publication is delayed. */
+export function isolatedBuilderOwnedAdmission(
+  observed: ObservedCodeGraphBuildStatus | undefined,
+  child: CodeGraphIsolatedBuilderProcess,
+  priorBuildId: string | undefined,
+) {
+  return observed === undefined
+    ? ({child, mode: 'starting', priorBuildId} as const)
+    : ({child, mode: 'spawned', observedBuildId: observed.buildId, priorBuildId} as const);
 }
 
 export function statusBelongsToChild(
