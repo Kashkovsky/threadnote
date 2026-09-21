@@ -20,6 +20,7 @@ import {writerSessionOptions} from '../../src/code_graph/indexer/build.js';
 import {runCodeGraphStatus} from '../../src/code_graph/commands.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../../src/code_graph/query.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query/status_helpers.js';
 import {captureConsole} from '../../src/effect/console.js';
@@ -1400,6 +1401,78 @@ describe('code graph cross-process build status', () => {
     );
     expect(result.human).toContain('indexing continues with live telemetry');
   });
+
+  effectIt.effect('serves an in-flight scoped build before its first ready snapshot', () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() => mkdtemp('threadnote-graph-scoped-status-command-'));
+      homes.push(home);
+      const repository = join(home, 'repository');
+      yield* Effect.promise(() => mkdir(join(repository, 'apps', 'scoped', 'src'), {recursive: true}));
+      yield* Effect.promise(() =>
+        writeFile(join(repository, 'package.json'), '{"private":true,"workspaces":["apps/*"]}\n'),
+      );
+      yield* Effect.promise(() =>
+        writeFile(join(repository, 'apps', 'scoped', 'package.json'), '{"name":"scoped-status-fixture"}\n'),
+      );
+      yield* Effect.promise(() =>
+        writeFile(join(repository, 'apps', 'scoped', 'src', 'source.ts'), 'export const scopedValue = 1;\n'),
+      );
+      runGit(repository, ['init', '--quiet']);
+      runGit(repository, ['config', 'user.email', 'test@example.invalid']);
+      runGit(repository, ['config', 'user.name', 'Threadnote Test']);
+      runGit(repository, ['add', '.']);
+      runGit(repository, ['commit', '--quiet', '-m', 'fixture']);
+      const manifestPath = join(home, 'manifest.yaml');
+      yield* Effect.promise(() =>
+        writeFile(
+          manifestPath,
+          `version: 1\nprojects:\n  - name: scoped\n    path: ${JSON.stringify(repository)}\n    uri: threadnote://resources/repos/scoped\n    seed: []\n    graph:\n      roots: ["apps/scoped"]\n      closure: dependencies\n      include: []\n`,
+        ),
+      );
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: home,
+        agentId: 'threadnote',
+        manifestPath,
+        user: 'tester',
+      };
+
+      const path = yield* Path.Path;
+      const query = yield* CodeGraphQueryService;
+      const observed = yield* query.status(home, repository, {manifestPath, project: 'scoped'});
+      const scopeKey = observationFromCodeGraphStatus(observed)?.projectScope?.scope?.scopeKey;
+      if (scopeKey === undefined) return yield* Effect.die('Expected a resolved project graph scope.');
+      const reporter = yield* makeCodeGraphBuildReporter(
+        observed.identity,
+        codeGraphLayout(path, home, observed.identity.checkoutId, observed.identity.worktreeId, scopeKey),
+      );
+      yield* reporter.progress({
+        accepted: 1,
+        completed: 1,
+        excluded: 0,
+        phase: 'scanning',
+        skipped: 0,
+        total: 2,
+        unit: 'files',
+      });
+      const result = yield* captureConsole(
+        runCodeGraphStatus(config, {cwd: repository, json: true, project: 'scoped'}),
+      );
+      const output = result.output.trim();
+
+      expect(JSON.parse(output)).toMatchObject({
+        build: {index: 0},
+        builds: [
+          {
+            phase: 'scanning',
+            state: 'running',
+          },
+        ],
+        readySnapshot: null,
+        stale: true,
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it('does not let another worktree sidecar hide the current ready snapshot', async () => {
     const home = await mkdtemp('threadnote-graph-status-ready-');
