@@ -15,11 +15,12 @@ import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CodeGraphWatcher} from '../../src/code_graph/watcher.js';
 import {EffectMcpServerAdapter, type EffectMcpServer} from '../../src/effect/ai/mcp.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import type {SystemInfoShape} from '../../src/effect/system.js';
+import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 import {anonymousTelemetryTestLayer} from '../../src/effect/telemetry.js';
 import {registerCodeGraphTool} from '../../src/mcp/server/code_graph.js';
-import type {RuntimeConfig} from '../../src/types.js';
+import type {CommandResult, RuntimeConfig} from '../../src/types.js';
 import {analysisSnapshot, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -425,6 +426,32 @@ function registeredTelemetryHarness(tracer: Tracer.Tracer, onWatcherEnsure: () =
   });
   const store = pagedAnalysisStore([], []);
   const analysis = CodeGraphAnalysis.of({analyze: options => analyzeCodeGraph(store, options)});
+  const command = CommandExecutor.of({
+    execute: (_executable, _arguments, options) =>
+      Effect.sync(() => {
+        if (options?.input === undefined) throw new Error('Missing isolated graph inspection request.');
+        const request = JSON.parse(new TextDecoder().decode(options.input)) as {
+          readonly operation: CodeGraphQueryResult['operation'];
+        };
+        return commandResult(
+          JSON.stringify({
+            ok: true,
+            protocol: 1,
+            result: {...telemetryQueryResult(status(false)), operation: request.operation},
+            telemetry: [
+              {
+                disposition: 'skipped',
+                durationMilliseconds: 0,
+                outcome: 'success',
+                phase: 'graph.query.execute',
+                stage: 'query-strict-reobservation',
+              },
+            ],
+          }),
+        );
+      }),
+    executeStreaming: () => Effect.die('Unexpected streaming command.'),
+  });
   const server = new EffectMcpServerAdapter('threadnote-graph-telemetry-test', '1.0.0', 'Test server.');
   registerCodeGraphTool(server, runtimeConfig(TELEMETRY_HOME));
   type AddedTool = Parameters<EffectMcpServer['addTool']>[0];
@@ -439,9 +466,11 @@ function registeredTelemetryHarness(tracer: Tracer.Tracer, onWatcherEnsure: () =
   } as unknown as EffectMcpServer);
   const applicationLayer = Layer.mergeAll(
     BunPath.layer,
+    Layer.succeed(CommandExecutor, command),
     Layer.succeed(CodeGraphAnalysis, analysis),
     Layer.succeed(CodeGraphQueryService, query),
     Layer.succeed(CodeGraphWatcher, watcher),
+    Layer.succeed(SystemInfo, telemetrySystemInfoStub()),
     anonymousTelemetryTestLayer({system: telemetrySystemInfoStub(), tracer}),
   );
   // The registry contains only the two handlers exercised here. Its production
@@ -465,6 +494,10 @@ function registeredTelemetryHarness(tracer: Tracer.Tracer, onWatcherEnsure: () =
     inspect: (arguments_: Record<string, unknown>) => invoke(inspectHandle, 'inspect_code_graph', arguments_),
     layer,
   };
+}
+
+function commandResult(stdout: string): CommandResult {
+  return {exitCode: 0, stderr: '', stdout};
 }
 
 function telemetryQueryResult(status: CodeGraphStatus): CodeGraphQueryResult {

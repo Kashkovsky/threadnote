@@ -3,6 +3,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Context, Effect, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as FC from 'fast-check';
 import {describe, expect} from 'vitest';
 import {
@@ -89,6 +90,9 @@ const makeFixture = Effect.fn('test.makeQueryRuntimeFixture')(function* () {
   const failProvenance = yield* Ref.make(false);
   const failRead = yield* Ref.make(false);
   const counters = yield* Ref.make({indexed: 0, provenance: 0, acquired: 0, released: 0, strict: 0});
+  const readSql = {
+    withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
+  } as unknown as SqlClient.SqlClient;
   const record = (field: 'indexed' | 'provenance' | 'acquired' | 'released' | 'strict') =>
     Ref.update(counters, value => ({...value, [field]: value[field] + 1}));
   const admission = (environment?: string) =>
@@ -121,7 +125,8 @@ const makeFixture = Effect.fn('test.makeQueryRuntimeFixture')(function* () {
     searchSymbolsMany: () => Effect.succeed([[node]]),
     searchSymbolsByPaths: () => Effect.succeed([[node]]),
     edgesForNodes: () => Effect.succeed([]),
-    withSession: (_database: string, use: Effect.Effect<unknown, unknown, unknown>) => use,
+    withSession: (_database: string, use: Effect.Effect<unknown, unknown, unknown>) =>
+      use.pipe(Effect.provideService(SqlClient.SqlClient, readSql)),
   } as unknown as CodeGraphStoreShape);
   const indexer = CodeGraphIndexer.of({
     index: () =>
@@ -189,8 +194,8 @@ describe('query runtime probe policy', () => {
             expect(yield* Ref.get(fixture.counters)).toEqual({
               indexed: 0,
               provenance: refresh !== false && rebuildMode ? 2 : 1,
-              acquired: 1,
-              released: 1,
+              acquired: 0,
+              released: 0,
               strict: strictFreshness ? 1 : 0,
             });
           }
@@ -231,7 +236,7 @@ describe('query runtime probe policy', () => {
           const observed = refresh !== false || (strictFreshness ?? (operation === 'path' || operation === 'impact'));
           expect(result.freshness).toBe(!valid && !builds ? 'stale' : observed ? 'current' : 'deferred');
           expect(result.nodes.map(value => value.id)).toContain(node.id);
-          expect(yield* Ref.get(fixture.counters)).toMatchObject({indexed: builds ? 1 : 0, acquired: 1, released: 1});
+          expect(yield* Ref.get(fixture.counters)).toMatchObject({indexed: builds ? 1 : 0, acquired: 0, released: 0});
         }).pipe(provideTestLayer(dependencies), TestClock.withLive),
       // Four generated fixtures per operation: 24 total, separately bounded by the ordinary test timeout.
       {fastCheck: {numRuns: 4}},
@@ -253,8 +258,8 @@ describe('query runtime probe policy', () => {
           expect(yield* Ref.get(fixture.counters)).toEqual({
             indexed: 1,
             provenance: 1,
-            acquired: 1,
-            released: 1,
+            acquired: 0,
+            released: 0,
             strict: 0,
           });
         }
@@ -272,15 +277,15 @@ describe('query runtime probe policy', () => {
         expect(yield* Ref.get(fixture.counters)).toEqual({
           indexed: 1,
           provenance: 2,
-          acquired: 1,
-          released: 1,
+          acquired: 0,
+          released: 0,
           strict: 0,
         });
       }
     }).pipe(provideTestLayer(dependencies), TestClock.withLive),
   );
 
-  effectIt.effect('observes invalid provenance after the worktree observation and retains balanced read leases', () =>
+  effectIt.effect('observes invalid provenance after the worktree observation without taking writer-gated leases', () =>
     Effect.gen(function* () {
       const fixture = yield* makeFixture();
       const result = yield* fixture.inspect({interlock: {afterObservation: () => Ref.set(fixture.valid, false)}});
@@ -288,15 +293,15 @@ describe('query runtime probe policy', () => {
       expect(yield* Ref.get(fixture.counters)).toEqual({
         indexed: 0,
         provenance: 1,
-        acquired: 1,
-        released: 1,
+        acquired: 0,
+        released: 0,
         strict: 0,
       });
       yield* Ref.set(fixture.failProvenance, true);
       expect((yield* fixture.inspect()).freshness).toBe('stale');
       yield* Ref.set(fixture.failRead, true);
       expect(yield* fixture.inspect().pipe(Effect.flip)).toMatchObject({message: 'graph read failed'});
-      expect(yield* Ref.get(fixture.counters)).toMatchObject({indexed: 0, acquired: 3, released: 3});
+      expect(yield* Ref.get(fixture.counters)).toMatchObject({indexed: 0, acquired: 0, released: 0});
     }).pipe(provideTestLayer(dependencies), TestClock.withLive),
   );
 
@@ -318,8 +323,8 @@ describe('query runtime probe policy', () => {
         expect(yield* Ref.get(fixture.counters)).toEqual({
           indexed: 0,
           provenance: 2,
-          acquired: 2,
-          released: 2,
+          acquired: 0,
+          released: 0,
           strict: 1,
         });
       }).pipe(provideTestLayer(dependencies), TestClock.withLive),
@@ -357,8 +362,8 @@ describe('query runtime probe policy', () => {
       expect(yield* Ref.get(fixture.counters)).toEqual({
         indexed: 0,
         provenance: 2,
-        acquired: 2,
-        released: 2,
+        acquired: 0,
+        released: 0,
         strict: 2,
       });
     }).pipe(provideTestLayer(dependencies), TestClock.withLive),
