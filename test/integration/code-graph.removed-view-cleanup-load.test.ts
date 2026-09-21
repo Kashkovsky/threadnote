@@ -18,6 +18,7 @@ import {
 import {CODE_GRAPH_EXTRACTOR_GENERATION, CodeGraphStoreError} from '../../src/code_graph/types.js';
 import {inspectPersistentExtensionTables} from '../../src/code_graph/store/schema/inspection.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
 const REPOSITORY_ID = 'b'.repeat(64);
@@ -26,6 +27,8 @@ const ANCHOR_SNAPSHOT_ID = `cgsn_${'f'.repeat(40)}`;
 const REMOVED_AT = new Date(0).toISOString();
 const LOAD_ROWS = 10_000;
 const MIGRATION_ROWS = 73_000;
+const MIGRATION_MAIN_GROWTH_LIMIT_BYTES = 2 * 1_048_576;
+const MIGRATION_TRANSIENT_GROWTH_LIMIT_BYTES = 20 * 1_048_576;
 
 describe('removed code graph view cleanup load and migration', () => {
   effectIt.effect(
@@ -210,12 +213,20 @@ describe('removed code graph view cleanup load and migration', () => {
               0,
               committedEvidence.databaseBytes + committedEvidence.walBytes - baselineMainBytes - baselineWalBytes,
             );
-            expect(mainGrowthBytes).toBeLessThan(1_048_576);
-            expect(walGrowthBytes).toBeLessThan(1_048_576);
-            expect(sharedGrowthBytes).toBeLessThan(1_048_576);
+            // The current upgrade also adds scope authority to the 73,000
+            // legacy tombstones. Keep that bounded without mistaking the
+            // expected one-time rewrite for an eager cleanup-queue backfill.
+            expect(mainGrowthBytes).toBeLessThan(MIGRATION_MAIN_GROWTH_LIMIT_BYTES);
+            expect(walGrowthBytes).toBeLessThan(MIGRATION_TRANSIENT_GROWTH_LIMIT_BYTES);
+            expect(sharedGrowthBytes).toBeLessThan(MIGRATION_TRANSIENT_GROWTH_LIMIT_BYTES);
             const after = authorityDigest(databasePath);
             expect(after).toEqual(before);
-            expect(phases).toEqual(['added-removed-view-cleanup', 'migrated-query-indexes', 'recorded-revision']);
+            expect(phases).toEqual([
+              'added-removed-view-cleanup',
+              'migrated-query-indexes',
+              'added-graph-scope-authority',
+              'recorded-revision',
+            ]);
 
             const surface = readCleanupSurface(databasePath);
             expect(surface).toMatchObject({
@@ -310,15 +321,23 @@ function withFixture<A, E, R>(prefix: string, use: (databasePath: string) => Eff
 function downgradeToRevision7(databasePath: string): void {
   const database = new Database(databasePath, {strict: true});
   try {
-    database.exec(`
-      DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
-      DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;
-      DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update;
-      DROP TABLE IF EXISTS removed_view_cleanup;
-      DELETE FROM schema_metadata
-      WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor');
-      UPDATE schema_metadata SET value = '7' WHERE key = 'persistent_extension_schema_revision';
-    `);
+    database.run('BEGIN IMMEDIATE');
+    try {
+      for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
+      database.exec(`
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update;
+        DROP TABLE IF EXISTS removed_view_cleanup;
+        DELETE FROM schema_metadata
+        WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor');
+        UPDATE schema_metadata SET value = '7' WHERE key = 'persistent_extension_schema_revision';
+      `);
+      database.run('COMMIT');
+    } catch (error) {
+      if (database.inTransaction) database.run('ROLLBACK');
+      throw error;
+    }
   } finally {
     database.close(false);
   }
