@@ -359,7 +359,7 @@ const TELEMETRY_HOME = '/threadnote-telemetry-handler-home';
 const TELEMETRY_REPOSITORY_ROOT = '/workspace/private-telemetry-repository';
 
 function registeredTelemetryHarness(tracer: Tracer.Tracer, onWatcherEnsure: () => void) {
-  const snapshot = analysisSnapshot([], []);
+  const snapshot = {...analysisSnapshot([], []), id: `cgsn_${'1'.repeat(40)}`};
   const identity: RepositoryIdentity = {
     caseMode: 'sensitive',
     checkoutId: 'telemetry-checkout',
