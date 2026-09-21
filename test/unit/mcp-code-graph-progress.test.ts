@@ -402,7 +402,9 @@ describe('MCP code graph indexing progress', () => {
       type: 'code-graph-query-state',
     });
     expect(JSON.stringify(readyReadTimedOut.structuredContent)).not.toContain('retryAfterMilliseconds');
-    expect((readyReadTimedOut.content[0] as {readonly text: string}).text).toContain('--freshness ready');
+    const readyReadTimeoutText = (readyReadTimedOut.content[0] as {readonly text: string}).text;
+    expect(readyReadTimeoutText).toContain('55-second MCP budget');
+    expect(readyReadTimeoutText).toContain('--freshness ready --read-timeout-ms 120000');
     expect(readAnonymousTelemetryReportedOutcome(readyReadTimedOut)).toBe('timed-out');
 
     const indexing = codeGraphQueryTimeoutResult('query', indexingStatus(60_000));
