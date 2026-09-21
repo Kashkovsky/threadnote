@@ -1,4 +1,5 @@
 import {Clock, Context, Crypto, Effect, FileSystem, Layer, Option, Path, Schema} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {
@@ -1433,43 +1434,42 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
           observeWorktree(identity, input.options.interlock),
           'fallback',
         ));
-  const storedSnapshot = input.borrowedSnapshotId
-    ? yield* input.store.readySnapshotById(input.layout.databasePath, input.borrowedSnapshotId)
-    : yield* input.store.readySnapshot(
+  const read = Effect.gen(function* () {
+    const storedSnapshot = input.borrowedSnapshotId
+      ? yield* input.store.readySnapshotById(input.layout.databasePath, input.borrowedSnapshotId)
+      : yield* input.store.readySnapshot(
+          input.layout.databasePath,
+          identity.worktreeId,
+          input.projectScope?.scope?.scopeKey,
+        );
+    if (!storedSnapshot || storedSnapshot.repositoryId !== identity.repositoryId) {
+      return yield* CodeGraphSnapshotUnavailable.make({
+        message: 'No ready native code graph snapshot exists. Run `threadnote graph index` first.',
+      });
+    }
+    if (
+      !(yield* codeGraphQueryScopeSnapshotCompatible(
+        input.projectScope,
+        input.store,
         input.layout.databasePath,
-        identity.worktreeId,
-        input.projectScope?.scope?.scopeKey,
-      );
-  if (!storedSnapshot || storedSnapshot.repositoryId !== identity.repositoryId) {
-    return yield* CodeGraphSnapshotUnavailable.make({
-      message: 'No ready native code graph snapshot exists. Run `threadnote graph index` first.',
-    });
-  }
-  if (
-    !(yield* codeGraphQueryScopeSnapshotCompatible(
-      input.projectScope,
+        input.borrowedSnapshotId ? storedSnapshot.worktreeId : identity.worktreeId,
+        storedSnapshot,
+      ))
+    ) {
+      return yield* CodeGraphSnapshotUnavailable.make({
+        message:
+          'The ready graph has a different project definition or dependency closure. Rebuild the selected project graph.',
+      });
+    }
+    const snapshot = {...storedSnapshot, worktreeId: identity.worktreeId};
+    const runtimeCurrent = yield* codeGraphSnapshotRuntimeCurrent(
       input.store,
       input.layout.databasePath,
-      input.borrowedSnapshotId ? storedSnapshot.worktreeId : identity.worktreeId,
-      storedSnapshot,
-    ))
-  ) {
-    return yield* CodeGraphSnapshotUnavailable.make({
-      message:
-        'The ready graph has a different project definition or dependency closure. Rebuild the selected project graph.',
-    });
-  }
-  const snapshot = {...storedSnapshot, worktreeId: identity.worktreeId};
-  const runtimeCurrent = yield* codeGraphSnapshotRuntimeCurrent(
-    input.store,
-    input.layout.databasePath,
-    snapshot,
-    input.languagePacks,
-    overlay === undefined || input.projectScope?.scope !== undefined ? undefined : {layout: input.layout, identity},
-  );
-  yield* input.options.interlock?.afterSnapshotSelected?.() ?? Effect.void;
-  const lease = yield* input.store.acquireSnapshotLease(input.layout.databasePath, snapshot.id, 2 * 60_000);
-  const read = Effect.gen(function* () {
+      snapshot,
+      input.languagePacks,
+      overlay === undefined || input.projectScope?.scope !== undefined ? undefined : {layout: input.layout, identity},
+    );
+    yield* input.options.interlock?.afterSnapshotSelected?.() ?? Effect.void;
     const nodeLimit = boundedInteger(input.options.nodeLimit, 20, 1, 200);
     const edgeLimit = boundedInteger(input.options.edgeLimit, 40, 1, 500);
     const depth = boundedInteger(
@@ -1715,9 +1715,14 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
         : input.options.seedQueries.length - (scopedSeedQueries?.length ?? 0),
     );
   });
-  return yield* input.store
-    .withSession(input.layout.databasePath, read, {readOnly: true})
-    .pipe(Effect.ensuring(input.store.releaseSnapshotLease(input.layout.databasePath, lease).pipe(Effect.ignore)));
+  return yield* input.store.withSession(
+    input.layout.databasePath,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return yield* sql.withTransaction(read);
+    }),
+    {readOnly: true},
+  );
 });
 
 class WorktreeChangedDuringQuery extends Schema.TaggedError<WorktreeChangedDuringQuery>()(
@@ -1984,7 +1989,6 @@ function boundedInteger(value: number | undefined, fallback: number, minimum: nu
   }
   return value;
 }
-
 export const QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS = 10_000;
 const CODE_GRAPH_RESULT_MAX_BYTES = 256 * 1_024;
 const MAX_IMPACT_ANALYSIS_EDGES = 5_000;

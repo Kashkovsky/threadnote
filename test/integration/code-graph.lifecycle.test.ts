@@ -75,6 +75,7 @@ import {
 } from '../../src/code_graph/types.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {CommandExecutor} from '../../src/effect/command.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runDoctor, runRepair} from '../../src/lifecycle.js';
@@ -198,6 +199,45 @@ describe('native code graph lifecycle', () => {
         );
         expect(queryOnly).toBe(1);
 
+        const selectedBehindWriterGate = yield* Deferred.make<void>();
+        const writerGateLayout = codeGraphLayout(
+          yield* Path.Path,
+          home,
+          indexed.identity.checkoutId,
+          indexed.identity.worktreeId,
+        );
+        const fs = yield* FileSystem.FileSystem;
+        const queryBehindWriterGate = yield* withExclusiveFileLock(
+          fs,
+          writerGateLayout.databaseWriteLockPath,
+          {retryIntervalMilliseconds: 1, staleAfterMilliseconds: 5_000, waitTimeoutMilliseconds: 5_000},
+          Effect.gen(function* () {
+            const reader = yield* graph
+              .inspect({
+                cwd: root,
+                interlock: {
+                  afterSnapshotSelected: () => Deferred.succeed(selectedBehindWriterGate, undefined),
+                },
+                operation: 'query',
+                query: 'withExclusiveFileLock',
+                refresh: false,
+                threadnoteHome: home,
+              })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(selectedBehindWriterGate);
+            return yield* Fiber.join(reader).pipe(
+              Effect.timeoutOrElse({
+                duration: 1_000,
+                orElse: () =>
+                  Effect.fail(
+                    TestError.make({message: 'Ready-snapshot query waited behind the checkout database writer gate.'}),
+                  ),
+              }),
+            );
+          }),
+        );
+        expect(queryBehindWriterGate.nodes.some(node => node.name === 'withExclusiveFileLock')).toBe(true);
+
         const selected = yield* Ref.make(0);
         const allSelected = yield* Deferred.make<void>();
         const afterSnapshotSelected = () =>
@@ -239,10 +279,21 @@ describe('native code graph lifecycle', () => {
 
         const readCompleted = yield* Deferred.make<void>();
         const finish = yield* Deferred.make<void>();
+        const retiredSnapshots = yield* Ref.make(0);
         const query = yield* graph
           .inspect({
             cwd: root,
             interlock: {
+              afterSnapshotSelected: () =>
+                Effect.sync(() => {
+                  const database = new Database(databasePath);
+                  try {
+                    database.exec('PRAGMA foreign_keys = ON');
+                    return database.query('DELETE FROM snapshots WHERE id = ?').run(indexed.snapshot.id).changes;
+                  } finally {
+                    database.close();
+                  }
+                }).pipe(Effect.flatMap(changes => Ref.set(retiredSnapshots, changes))),
               beforeReadCompletion: () =>
                 Deferred.succeed(readCompleted, undefined).pipe(Effect.andThen(Deferred.await(finish))),
             },
@@ -255,9 +306,11 @@ describe('native code graph lifecycle', () => {
         yield* Deferred.await(readCompleted);
         const active = yield* Effect.sync(() => snapshotLeaseCount(databasePath));
         yield* Deferred.succeed(finish, undefined);
-        yield* Fiber.join(query);
+        const queryAfterRetirement = yield* Fiber.join(query);
         const released = yield* Effect.sync(() => snapshotLeaseCount(databasePath));
-        expect({active, released}).toEqual({active: 1, released: 0});
+        expect({active, released}).toEqual({active: 0, released: 0});
+        expect(yield* Ref.get(retiredSnapshots)).toBeGreaterThan(0);
+        expect(queryAfterRetirement.nodes.some(node => node.name === 'withExclusiveFileLock')).toBe(true);
       }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     // Suite-wide graph fixtures can delay setup; the in-test 5s barrier still
     // enforces that all eight selected readers bootstrap without contention.

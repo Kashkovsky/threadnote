@@ -5,6 +5,9 @@ import {TestClock} from 'effect/testing';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {describe, expect} from 'vitest';
 import {CodeGraphAnalysis, analyzeCodeGraph} from '../../src/code_graph/analysis.js';
+import {CommandExecutor} from '../../src/effect/command.js';
+import {succeedUndefined} from '../../src/effect/optional.js';
+import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 import {
   CodeGraphQueryService,
   type CodeGraphSharedReadyAttachInterlock,
@@ -18,7 +21,7 @@ import {
 } from '../../src/code_graph/watcher.js';
 import {EffectMcpServerAdapter, type EffectMcpServer} from '../../src/effect/ai/mcp.js';
 import {registerCodeGraphTool} from '../../src/mcp/server/code_graph.js';
-import type {RuntimeConfig} from '../../src/types.js';
+import type {CommandResult, RuntimeConfig} from '../../src/types.js';
 import {analysisSnapshot, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -73,6 +76,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
           type: 'code-graph-inspection',
         });
       }
+      expect(harness.observation.isolatedInspectCalls).toBe(2);
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -98,6 +102,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         state: 'timed-out',
         type: 'code-graph-query-state',
       });
+      expect(harness.observation.isolatedInspectCalls).toBe(1);
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -188,6 +193,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   const ensureOptions: CodeGraphWatchOptions[] = [];
   const refreshOptions: CodeGraphWatchOptions[] = [];
   let analysisCalls = 0;
+  let isolatedInspectCalls = 0;
   let watcherStatusCalls = 0;
   let statusIndex = 0;
   let attachIndex = 0;
@@ -200,15 +206,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         if (result === undefined) throw new Error(`Unexpected shared-ready attachment ${attachIndex}.`);
         return result;
       }),
-    inspect: options => {
-      const status = input.statuses[0];
-      if (input.inspectDelayMilliseconds === undefined || status === undefined) {
-        return Effect.die('Unexpected graph inspection.');
-      }
-      return Effect.sleep(input.inspectDelayMilliseconds).pipe(
-        Effect.as(codeGraphInspectionResult(status, options.operation)),
-      );
-    },
+    inspect: () => Effect.die('Unexpected in-process graph inspection.'),
     purge: () => Effect.die('Unexpected graph purge.'),
     status: (_threadnoteHome, _cwd, options) =>
       Effect.gen(function* () {
@@ -263,6 +261,22 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         analysisCalls += 1;
       }).pipe(Effect.andThen(analyzeCodeGraph(store, options))),
   });
+  const command = CommandExecutor.of({
+    execute: (_executable, _arguments, options) =>
+      Effect.gen(function* () {
+        isolatedInspectCalls += 1;
+        const status = input.statuses[0];
+        if (input.inspectDelayMilliseconds === undefined || status === undefined || options?.input === undefined) {
+          return yield* Effect.die('Unexpected isolated graph inspection.');
+        }
+        const request = JSON.parse(new TextDecoder().decode(options.input)) as {readonly operation: CodeGraphQueryResult['operation']};
+        yield* Effect.sleep(input.inspectDelayMilliseconds);
+        return commandResult(
+          JSON.stringify({ok: true, protocol: 1, result: codeGraphInspectionResult(status, request.operation)}),
+        );
+      }),
+    executeStreaming: () => Effect.die('Unexpected streaming command.'),
+  });
   const server = new EffectMcpServerAdapter('threadnote-analysis-handler-test', '1.0.0', 'Test server.');
   registerCodeGraphTool(server, runtimeConfig());
   type AddedTool = Parameters<EffectMcpServer['addTool']>[0];
@@ -277,9 +291,11 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   } as unknown as EffectMcpServer);
   const applicationLayer = Layer.mergeAll(
     BunPath.layer,
+    Layer.succeed(CommandExecutor, command),
     Layer.succeed(CodeGraphAnalysis, analysis),
     Layer.succeed(CodeGraphQueryService, query),
     Layer.succeed(CodeGraphWatcher, watcher),
+    Layer.succeed(SystemInfo, systemInfoStub()),
   );
   // This registry contains only the code-graph handlers audited above. The
   // production registry type is deliberately conservative because arbitrary
@@ -313,12 +329,52 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
       get analysisCalls() {
         return analysisCalls;
       },
+      get isolatedInspectCalls() {
+        return isolatedInspectCalls;
+      },
       refreshOptions,
       statusOptions,
       get watcherStatusCalls() {
         return watcherStatusCalls;
       },
     },
+  };
+}
+
+function commandResult(stdout: string): CommandResult {
+  return {exitCode: 0, stderr: '', stdout};
+}
+
+function systemInfoStub(): SystemInfoShape {
+  return {
+    architecture: 'arm64',
+    availableDiskBytes: () => succeedUndefined,
+    currentDirectory: () => '/',
+    environment: () => ({HOME: '/bootstrap-home', PATH: '/bootstrap-bin'}),
+    executablePath: '/opt/bin/bun',
+    hardwareInfo: Effect.succeed({
+      cpuModel: 'test',
+      effectiveMemoryBytes: 1,
+      memoryBytes: 1,
+      operatingSystem: 'test',
+    }),
+    homeDirectory: '/home/test',
+    isProcessRunning: () => false,
+    memoryUsage: () => ({external: 0, heapUsed: 0, rss: 0}),
+    pathDelimiter: ':',
+    platform: 'darwin',
+    processArguments: ['/opt/bin/bun', '/src/standalone.ts', 'mcp-server'],
+    processId: 1,
+    processStartIdentity: () => succeedUndefined,
+    readLine: () => () => undefined,
+    runtimeVersion: 'test',
+    setEnvironmentVariable: () => undefined,
+    setExitCode: () => undefined,
+    signalProcess: () => undefined,
+    stdinIsTTY: false,
+    stdoutIsTTY: false,
+    tempDirectory: '/tmp',
+    userName: 'test',
   };
 }
 

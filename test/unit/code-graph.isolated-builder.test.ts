@@ -15,6 +15,7 @@ import {
   developmentStandaloneScript,
   isCodeGraphIsolatedBuilderHost,
   isolatedBuilderFailureMessage,
+  isolatedBuilderOwnedAdmission,
   isolatedBuilderRequestMatches,
   isolatedBuilderResultFromCompletedStatus,
   runIsolatedCodeGraphIndex,
@@ -138,6 +139,18 @@ describe('isolated code-graph builder spawn plan', () => {
     expect(isolatedBuilderRequestMatches(status, 'request-a')).toBe(true);
     expect(isolatedBuilderRequestMatches(status, 'request-b')).toBe(false);
     expect(isolatedBuilderRequestMatches(status, undefined)).toBe(false);
+  });
+
+  it('retains detached child ownership while startup status is not yet published', () => {
+    const child = {exited: Promise.resolve(0), kill: () => undefined, processId: 77};
+    expect(isolatedBuilderOwnedAdmission(undefined, child, 'prior-build')).toEqual({
+      child,
+      mode: 'starting',
+      priorBuildId: 'prior-build',
+    });
+    expect(
+      isolatedBuilderOwnedAdmission({buildId: 'owned-build'} as ObservedCodeGraphBuildStatus, child, 'prior-build'),
+    ).toEqual({child, mode: 'spawned', observedBuildId: 'owned-build', priorBuildId: 'prior-build'});
   });
 
   it('checks runtime compatibility before observing or spawning a child', async () => {

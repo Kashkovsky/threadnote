@@ -54,6 +54,14 @@ export type CodeGraphQueryTelemetryStage =
 
 export type CodeGraphQueryTelemetryStageDisposition = 'fallback' | 'skipped';
 
+export interface CodeGraphQueryTelemetryObservation {
+  readonly disposition?: CodeGraphQueryTelemetryStageDisposition;
+  readonly durationMilliseconds: number;
+  readonly outcome: 'failure' | 'interrupted' | 'success';
+  readonly phase: CodeGraphQueryTelemetryPhase;
+  readonly stage: CodeGraphQueryTelemetryStage;
+}
+
 /** Closed internal stage boundary that cannot accept repository-derived labels or text. */
 export interface CodeGraphQueryTelemetryObserver {
   readonly skip: (phase: CodeGraphQueryTelemetryPhase, stage: CodeGraphQueryTelemetryStage) => Effect.Effect<void>;

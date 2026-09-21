@@ -1,5 +1,6 @@
 import {Effect} from 'effect';
 import {
+  emitObservedAnonymousTelemetryCheckpoint,
   recordAnonymousTelemetryFields,
   withAnonymousTelemetryCheckpoint,
   type AnonymousTelemetryFields,
@@ -14,10 +15,11 @@ import {
 } from '../../effect/telemetry.js';
 import {observationFromCodeGraphStatus} from '../query.js';
 import type {
+  CodeGraphQueryTelemetryObservation,
   CodeGraphQueryTelemetryObserver,
   CodeGraphQueryTelemetryStage,
   CodeGraphQueryTelemetryStageDisposition,
-} from '../query.js';
+} from './contract.js';
 import type {CodeGraphQueryResult, CodeGraphSnapshot, CodeGraphStatus} from '../types.js';
 
 export type CodeGraphInspectAnonymousTelemetryOperation = CodeGraphQueryResult['operation'] | 'topology';
@@ -55,6 +57,7 @@ export interface CodeGraphQueryAnonymousTelemetryReporter extends CodeGraphQuery
     select:
       CodeGraphQueryAnonymousTelemetrySnapshotSurface | ((value: A) => CodeGraphQueryAnonymousTelemetrySnapshotSurface),
   ) => Effect.Effect<A, E, R>;
+  readonly observedStage: (observation: CodeGraphQueryTelemetryObservation) => Effect.Effect<void>;
   readonly status: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 }
 
@@ -186,6 +189,12 @@ export function makeCodeGraphQueryAnonymousTelemetryReporter(input: {
   return {
     annotate: recordAnonymousTelemetryFields(requestFields),
     execute: (effect, snapshot) => checkpoint('graph.query.execute', effect, true, snapshot),
+    observedStage: observation =>
+      emitObservedAnonymousTelemetryCheckpoint({
+        durationMilliseconds: observation.durationMilliseconds,
+        fields: fields(observation.phase, undefined, observation.stage, observation.disposition),
+        outcome: observation.outcome,
+      }),
     skip: (phase, stage) => checkpoint(phase, Effect.void, false, undefined, stage, 'skipped'),
     snapshot: (effect, select) => checkpoint('graph.query.snapshot', effect, false, select),
     stage: (phase, stage, effect, disposition) => checkpoint(phase, effect, false, undefined, stage, disposition),
