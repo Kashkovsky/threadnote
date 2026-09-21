@@ -11,7 +11,7 @@ import type {
   CodeGraphQueryTelemetryStageDisposition,
   CodeGraphStatusObservation,
 } from '../query/contract.js';
-import type {CodeGraphQueryScope} from '../query/scope.js';
+import {codeGraphQueryScopeReceipt, type CodeGraphQueryScope, type CodeGraphQueryScopeReceipt} from '../query/scope.js';
 import {resolveRepositoryIdentity} from '../repository.js';
 import type {CodeGraphQueryResult, RepositoryIdentity} from '../types.js';
 
@@ -44,7 +44,7 @@ interface CodeGraphImpactQueryRequest {
   readonly nodeLimit: number;
   readonly operation: CodeGraphIsolatedQueryOperation;
   readonly packageName?: string;
-  readonly projectScope?: CodeGraphQueryScope;
+  readonly projectScopeReceipt?: CodeGraphQueryScopeReceipt;
   readonly protocol: typeof CODE_GRAPH_IMPACT_QUERY_PROTOCOL;
   readonly query: string;
   /** Exact parent-selected ready snapshot; avoids repeating discovery in the worker. */
@@ -101,11 +101,13 @@ export interface IsolatedCodeGraphQueryInput {
   readonly nodeLimit: number;
   readonly operation: CodeGraphIsolatedQueryOperation;
   readonly packageName?: string;
-  /** Parent-observed scope retained only across this bounded local worker boundary. */
+  /** Parent-observed scope is reduced to a compact receipt at the worker boundary. */
   readonly projectScope?: CodeGraphQueryScope;
   readonly query?: string;
   /** Exact ready snapshot selected by the parent status pass. */
   readonly readySnapshotId?: string;
+  /** Original count retained when the caller removes outside-scope changed paths. */
+  readonly seedQueryCount?: number;
   readonly seedQueries?: readonly string[];
   readonly symbol?: string;
   readonly threadnoteHome: string;
@@ -251,6 +253,8 @@ export function impactQueryWorkerInspectOptions(
     operation: request.operation,
     packageName: request.packageName,
     query: request.query,
+    deferProjectScopePresentation: request.projectScopeReceipt !== undefined,
+    readyScopeReceipt: request.projectScopeReceipt,
     refresh: false,
     requestMaintenance: false,
     seedQueryCount: request.seedQueryCount,
@@ -264,6 +268,7 @@ export function impactQueryWorkerInspectOptions(
 
 function encodeImpactQueryRequest(input: IsolatedCodeGraphQueryInput): Uint8Array {
   const seedQueries = input.seedQueries?.slice(0, CODE_GRAPH_IMPACT_QUERY_SEED_LIMIT);
+  const projectScopeReceipt = codeGraphQueryScopeReceipt(input.projectScope);
   const request = {
     ...(input.project === undefined ? {} : {project: input.project}),
     ...(input.manifestPath === undefined ? {} : {manifestPath: input.manifestPath}),
@@ -280,12 +285,14 @@ function encodeImpactQueryRequest(input: IsolatedCodeGraphQueryInput): Uint8Arra
     nodeLimit: input.nodeLimit,
     operation: input.operation,
     ...(input.packageName === undefined ? {} : {packageName: input.packageName}),
-    ...(input.projectScope === undefined ? {} : {projectScope: input.projectScope}),
+    ...(projectScopeReceipt === undefined ? {} : {projectScopeReceipt}),
     protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
     query:
       input.operation === 'impact' ? impactQueryTransportSelector(input.query, input.seedQueries) : (input.query ?? ''),
     ...(input.readySnapshotId === undefined ? {} : {readySnapshotId: input.readySnapshotId}),
-    ...(input.seedQueries === undefined ? {} : {seedQueries, seedQueryCount: input.seedQueries.length}),
+    ...(input.seedQueries === undefined
+      ? {}
+      : {seedQueries, seedQueryCount: input.seedQueryCount ?? input.seedQueries.length}),
     ...(input.symbol === undefined ? {} : {symbol: input.symbol}),
     threadnoteHome: input.threadnoteHome,
     ...(input.to === undefined ? {} : {to: input.to}),
@@ -365,7 +372,7 @@ function validImpactQueryRequest(value: unknown): value is CodeGraphImpactQueryR
     (record.includeModelAssociations !== undefined && typeof record.includeModelAssociations !== 'boolean') ||
     (record.nodeId !== undefined && !validProtocolText(record.nodeId)) ||
     (record.packageName !== undefined && !validProtocolText(record.packageName)) ||
-    (record.projectScope !== undefined && !validCodeGraphQueryScope(record.projectScope)) ||
+    (record.projectScopeReceipt !== undefined && !validCodeGraphQueryScopeReceipt(record.projectScopeReceipt)) ||
     (record.readySnapshotId !== undefined && !validSnapshotId(record.readySnapshotId)) ||
     (record.seedQueryCount !== undefined && !boundedInteger(record.seedQueryCount, 0, Number.MAX_SAFE_INTEGER)) ||
     (record.symbol !== undefined && !validProtocolText(record.symbol)) ||
@@ -414,11 +421,10 @@ export function impactQueryWorkerStatusObservation(
   identity: RepositoryIdentity,
 ): CodeGraphStatusObservation | undefined {
   const selectedSnapshotId = request.readySnapshotId ?? request.borrowedSnapshotId;
-  if (selectedSnapshotId === undefined && request.projectScope === undefined) return undefined;
+  if (selectedSnapshotId === undefined) return undefined;
   return {
     ...(selectedSnapshotId === undefined ? {} : {borrowedSnapshotId: selectedSnapshotId}),
     identity,
-    ...(request.projectScope === undefined ? {} : {projectScope: request.projectScope}),
   };
 }
 
@@ -451,33 +457,15 @@ function validSnapshotId(value: unknown): value is string {
   return typeof value === 'string' && CODE_GRAPH_SNAPSHOT_ID_PATTERN.test(value);
 }
 
-function validCodeGraphQueryScope(value: unknown): value is CodeGraphQueryScope {
-  if (!Predicate.isObject(value) || !Predicate.isObject(value.project)) return false;
-  const project = value.project;
-  if (!validProtocolText(project.name) || !validProtocolText(project.uri)) return false;
-  if (project.graph !== undefined) {
-    if (
-      !Predicate.isObject(project.graph) ||
-      project.graph.closure !== 'dependencies' ||
-      !validProtocolTextArray(project.graph.roots) ||
-      (project.graph.include !== undefined && !validProtocolTextArray(project.graph.include))
-    ) {
-      return false;
-    }
+function validCodeGraphQueryScopeReceipt(value: unknown): value is CodeGraphQueryScopeReceipt {
+  if (!Predicate.isObject(value) || !Predicate.isObject(value.scope) || !Predicate.isObject(value.evidence)) {
+    return false;
   }
-  if (value.scope === undefined && value.evidence === undefined) return true;
-  if (!Predicate.isObject(value.scope) || !Predicate.isObject(value.evidence)) return false;
   const scope = value.scope;
   const evidence = value.evidence;
   return (
-    validProtocolTextArray(scope.admittedPrefixes) &&
     validProtocolText(scope.closureDigest) &&
-    (scope.completeness === 'complete' || scope.completeness === 'partial') &&
-    validProtocolTextArray(scope.controlPaths) &&
     validProtocolText(scope.definitionDigest) &&
-    validProtocolTextArray(scope.diagnostics) &&
-    validProtocolTextArray(scope.includedProjectIds) &&
-    validProtocolTextArray(scope.rootProjectIds) &&
     validProtocolText(scope.scopeKey) &&
     validProtocolText(evidence.catalogFingerprint) &&
     validProtocolText(evidence.closureDigest) &&
@@ -489,12 +477,11 @@ function validCodeGraphQueryScope(value: unknown): value is CodeGraphQueryScope 
     validProtocolText(evidence.policyFingerprint) &&
     validProtocolText(evidence.repositoryId) &&
     validProtocolText(evidence.scopeKey) &&
-    validProtocolText(evidence.worktreeId)
+    validProtocolText(evidence.worktreeId) &&
+    evidence.scopeKey === scope.scopeKey &&
+    evidence.definitionDigest === scope.definitionDigest &&
+    evidence.closureDigest === scope.closureDigest
   );
-}
-
-function validProtocolTextArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.length <= 10_000 && value.every(item => validProtocolText(item, true));
 }
 
 function codeGraphIsolatedQueryTelemetryRecorder(

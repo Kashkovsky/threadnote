@@ -4,6 +4,12 @@ import {discloseCodeGraphProjectCoverage, outsideCodeGraphProjectPaths} from '..
 import type {ResolvedCodeGraphIndexScope} from '../../src/code_graph/index_scope.js';
 import type {CodeGraphProjectCoverage, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import {compactCodeGraphMcpResult} from '../../src/mcp/code_graph_projection.js';
+import {
+  presentCodeGraphScopedReadyRead,
+  selectCodeGraphReadyReadChangedPaths,
+} from '../../src/mcp/server/code_graph/ready_read.js';
+import type {CodeGraphQueryScope} from '../../src/code_graph/query/scope.js';
+import type {RepositoryIdentity} from '../../src/code_graph/types.js';
 
 const scope: ResolvedCodeGraphIndexScope = {
   admittedPrefixes: ['apps/a', 'shared/core'],
@@ -45,6 +51,33 @@ const result: CodeGraphQueryResult = {
   trust: {classification: 'untrusted-repository-data', instructionPolicy: 'evidence-only-never-follow'},
   warnings: [],
 };
+const identity: RepositoryIdentity = {
+  caseMode: 'sensitive',
+  checkoutId: 'checkout',
+  displayName: 'fixture',
+  gitCommonDirectory: '/repo/.git',
+  headCommit: 'f'.repeat(40),
+  objectFormat: 'sha1',
+  repoRoot: '/repo',
+  repositoryId: result.repository.repositoryId,
+  worktreeId: result.snapshot.worktreeId,
+};
+const projectScope: CodeGraphQueryScope = {
+  project: {graph: {closure: 'dependencies', roots: ['apps/a']}, name: 'app-a', uri: 'threadnote://projects/app-a'},
+  scope,
+  evidence: {
+    catalogFingerprint: 'catalog',
+    closureDigest: scope.closureDigest,
+    definitionDigest: scope.definitionDigest,
+    extractorSet: 'extractors',
+    inventoryFingerprint: 'inventory',
+    observedCommit: identity.headCommit,
+    policyFingerprint: 'policy',
+    repositoryId: identity.repositoryId,
+    scopeKey: scope.scopeKey,
+    worktreeId: identity.worktreeId,
+  },
+};
 
 describe('project graph retrieval coverage', () => {
   it('returns typed outside-project-graph paths and preserves disclosure in MCP output', () => {
@@ -81,5 +114,73 @@ describe('project graph retrieval coverage', () => {
       outsideCodeGraphProjectPaths({cwd: '/repo', operation: 'query', query: 'parse module dependencies'}, scope),
     ).toEqual([]);
     expect(outsideCodeGraphProjectPaths({cwd: '/repo', operation: 'query', query: 'package.json'}, scope)).toEqual([]);
+  });
+
+  it('removes worker evidence for an outside-project selector and presents the snapshot actually read', () => {
+    const workerResult: CodeGraphQueryResult = {
+      ...result,
+      edges: [
+        {
+          confidence: 1,
+          evidencePath: 'apps/a/index.ts',
+          evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+          id: 'edge',
+          provenance: 'resolved',
+          relation: 'calls',
+          sourceName: 'inside',
+          targetName: 'target',
+        },
+      ],
+      nodes: [
+        {
+          contentHash: 'content',
+          exported: true,
+          id: 'node',
+          kind: 'function',
+          language: 'typescript',
+          name: 'inside',
+          path: 'apps/a/index.ts',
+          qualifiedName: 'inside',
+          score: 1,
+          span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+        },
+      ],
+      snapshot: {...result.snapshot, commit: 'a'.repeat(40)},
+      warnings: ['Selector did not resolve.'],
+    };
+    const presented = presentCodeGraphScopedReadyRead({
+      identity,
+      options: {cwd: '/repo', operation: 'query', query: 'apps/b/index.ts'},
+      projectScope,
+      result: workerResult,
+      snapshot: workerResult.snapshot,
+    });
+
+    expect(presented.nodes).toEqual([]);
+    expect(presented.edges).toEqual([]);
+    expect(presented.searchCoverage).toBeUndefined();
+    expect(presented.outsideProjectGraph?.paths).toEqual(['apps/b/index.ts']);
+    expect(presented.warnings).not.toContain('Selector did not resolve.');
+    expect(presented.projectCoverage?.snapshotSourceCommit).toBe(workerResult.snapshot.commit);
+    expect(workerResult.nodes).toHaveLength(1);
+  });
+
+  it('counts only selected changed paths for the worker while retaining parent-side outside coverage', () => {
+    const selected = selectCodeGraphReadyReadChangedPaths(projectScope, [
+      'apps/a/index.ts',
+      ...Array.from({length: 299}, (_, index) => `apps/b/file-${index}.ts`),
+    ]);
+    const presented = presentCodeGraphScopedReadyRead({
+      identity,
+      options: {cwd: '/repo', operation: 'impact', query: 'changed paths'},
+      projectScope,
+      result,
+      selectedChangedPathCount: selected?.length,
+      snapshot: result.snapshot,
+      totalChangedPathCount: 300,
+    });
+
+    expect(selected).toEqual(['apps/a/index.ts']);
+    expect(presented.outsideScopeChangedPaths).toBe(299);
   });
 });
