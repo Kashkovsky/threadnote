@@ -523,9 +523,12 @@ export function registerCodeGraphTool(
               }
             }
             const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
-            if (
-              selectCodeGraphReadySnapshotForInspection(status, refreshStatus, allowStaleReadySnapshot) === undefined
-            ) {
+            const readySnapshot = selectCodeGraphReadySnapshotForInspection(
+              status,
+              refreshStatus,
+              allowStaleReadySnapshot,
+            );
+            if (readySnapshot === undefined) {
               return {
                 identity,
                 ready: false as const,
@@ -538,6 +541,7 @@ export function registerCodeGraphTool(
             return {
               identity,
               ready: true as const,
+              readySnapshot,
               refreshStatus,
               ...(refreshContinuity === undefined ? {} : {refreshContinuity}),
               selection,
@@ -555,7 +559,7 @@ export function registerCodeGraphTool(
             ),
           );
         }
-        const {refreshStatus, selection, status} = snapshotResolution;
+        const {readySnapshot, refreshStatus, selection, status} = snapshotResolution;
         const refreshContinuity = snapshotResolution.refreshContinuity ?? refreshStatus?.refresh;
         const queryText = impactQueryTransportSelector(requestedQuery, changes?.paths);
         readyReadStarted = true;
@@ -580,7 +584,9 @@ export function registerCodeGraphTool(
               nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
               operation,
               packageName: packageName?.trim() || undefined,
+              ...(statusObservation?.projectScope === undefined ? {} : {projectScope: statusObservation.projectScope}),
               query: queryText,
+              readySnapshotId: readySnapshot.id,
               seedQueries: changes?.paths,
               symbol,
               threadnoteHome: config.agentContextHome,
@@ -1662,6 +1668,8 @@ export function codeGraphInspectionObservation(
   return {
     identity: observation.identity,
     ...(observation.borrowedSnapshotId === undefined ? {} : {borrowedSnapshotId: observation.borrowedSnapshotId}),
+    ...(observation.manifestPath === undefined ? {} : {manifestPath: observation.manifestPath}),
+    ...(observation.projectScope === undefined ? {} : {projectScope: observation.projectScope}),
   };
 }
 

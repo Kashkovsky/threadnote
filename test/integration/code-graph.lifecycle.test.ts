@@ -238,6 +238,20 @@ describe('native code graph lifecycle', () => {
         );
         expect(queryBehindWriterGate.nodes.some(node => node.name === 'withExclusiveFileLock')).toBe(true);
 
+        const queryAfterPreferredRetirement = yield* graph.inspect({
+          cwd: root,
+          operation: 'query',
+          query: 'withExclusiveFileLock',
+          refresh: false,
+          statusObservation: {
+            borrowedSnapshotId: `cgsn_${'f'.repeat(40)}`,
+            identity: indexed.identity,
+          },
+          threadnoteHome: home,
+        });
+        expect(queryAfterPreferredRetirement.snapshot.id).toBe(indexed.snapshot.id);
+        expect(queryAfterPreferredRetirement.nodes.some(node => node.name === 'withExclusiveFileLock')).toBe(true);
+
         const selected = yield* Ref.make(0);
         const allSelected = yield* Deferred.make<void>();
         const afterSnapshotSelected = () =>

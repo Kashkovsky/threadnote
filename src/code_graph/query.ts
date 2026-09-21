@@ -1435,30 +1435,51 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
           'fallback',
         ));
   const read = Effect.gen(function* () {
-    const storedSnapshot = input.borrowedSnapshotId
+    const preferredSnapshot = input.borrowedSnapshotId
       ? yield* input.store.readySnapshotById(input.layout.databasePath, input.borrowedSnapshotId)
-      : yield* input.store.readySnapshot(
+      : undefined;
+    let storedSnapshot = preferredSnapshot;
+    let incompatibleSnapshotObserved = false;
+    const compatible = (snapshot: CodeGraphSnapshot) =>
+      Effect.gen(function* () {
+        if (snapshot.repositoryId !== identity.repositoryId) return false;
+        const matches = yield* codeGraphQueryScopeSnapshotCompatible(
+          input.projectScope,
+          input.store,
           input.layout.databasePath,
-          identity.worktreeId,
-          input.projectScope?.scope?.scopeKey,
+          input.borrowedSnapshotId ? snapshot.worktreeId : identity.worktreeId,
+          snapshot,
         );
-    if (!storedSnapshot || storedSnapshot.repositoryId !== identity.repositoryId) {
-      return yield* CodeGraphSnapshotUnavailable.make({
-        message: 'No ready native code graph snapshot exists. Run `threadnote graph index` first.',
+        if (!matches) incompatibleSnapshotObserved = true;
+        return matches;
       });
-    }
-    if (
-      !(yield* codeGraphQueryScopeSnapshotCompatible(
-        input.projectScope,
-        input.store,
+    if (storedSnapshot !== undefined && !(yield* compatible(storedSnapshot))) storedSnapshot = undefined;
+    if (storedSnapshot === undefined) {
+      const active = yield* input.store.readySnapshot(
         input.layout.databasePath,
-        input.borrowedSnapshotId ? storedSnapshot.worktreeId : identity.worktreeId,
-        storedSnapshot,
-      ))
-    ) {
+        identity.worktreeId,
+        input.projectScope?.scope?.scopeKey,
+      );
+      if (active !== undefined && (yield* compatible(active))) storedSnapshot = active;
+    }
+    if (storedSnapshot === undefined && input.borrowedSnapshotId !== undefined) {
+      const recent = yield* input.store.recentReadySnapshotsForRepository(
+        input.layout.databasePath,
+        identity.repositoryId,
+        input.projectScope?.scope?.scopeKey,
+      );
+      for (const candidate of recent) {
+        if (yield* compatible(candidate)) {
+          storedSnapshot = candidate;
+          break;
+        }
+      }
+    }
+    if (!storedSnapshot) {
       return yield* CodeGraphSnapshotUnavailable.make({
-        message:
-          'The ready graph has a different project definition or dependency closure. Rebuild the selected project graph.',
+        message: incompatibleSnapshotObserved
+          ? 'The ready graph has a different project definition or dependency closure. Rebuild the selected project graph.'
+          : 'No ready native code graph snapshot exists. Run `threadnote graph index` first.',
       });
     }
     const snapshot = {...storedSnapshot, worktreeId: identity.worktreeId};
