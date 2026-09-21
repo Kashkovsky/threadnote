@@ -34,6 +34,7 @@ import {
 } from './build_status.js';
 import {readCodeGraphLocalAssociation, type CodeGraphLocalAssociation} from './local_provenance.js';
 import {
+  MANAGER_GRAPH_CATALOG_SCOPE_SEARCH_LIMIT,
   managerGraphVisualizationLimits,
   type ManagerGraphVisualizationBudget,
   type ManagerGraphVisualizationLimits,
@@ -90,6 +91,7 @@ const managerSnapshotLeases = new Map<
 >();
 const managerSnapshotLeaseGates = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
 const INDEXED_VIEW_ID = /^[0-9a-f]{64}(?:\.[0-9a-f]{64}(?:\.[0-9a-f]{64})?)?$/;
+const GRAPH_SCOPE_ID = /^code-graph-scope:[0-9a-f]{64}$/u;
 const NODE_ID_MAX_LENGTH = 512;
 const NODE_DETAIL_PROVENANCES: readonly CodeGraphProvenance[] = [
   'declared',
@@ -763,7 +765,7 @@ export const managerGraphCatalogPage = Effect.fn('codeGraph.managerCatalogPage')
 export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(function* (
   threadnoteHome: string,
   indexedViewId: string,
-  request: {readonly offset?: number; readonly query?: string} = {},
+  request: {readonly offset?: number; readonly query?: string; readonly scopeIds?: readonly string[]} = {},
 ) {
   if (!INDEXED_VIEW_ID.test(indexedViewId))
     return yield* CodeGraphVisualizationError.make({message: 'Graph view identity is invalid.'});
@@ -777,9 +779,18 @@ export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(fun
   if (!database) return yield* CodeGraphVisualizationError.make({message: 'Indexed graph checkout was not found.'});
   const offset = boundedCatalogOffset(request.offset);
   const query = boundedCatalogQuery(request.query);
+  const requestedScopeIds = [...new Set(request.scopeIds ?? [])];
+  if (
+    requestedScopeIds.length > MANAGER_GRAPH_CATALOG_SCOPE_SEARCH_LIMIT ||
+    requestedScopeIds.some(scopeId => !GRAPH_SCOPE_ID.test(scopeId))
+  ) {
+    return yield* CodeGraphVisualizationError.make({message: 'Graph scope selection is invalid.'});
+  }
+  const scopeIds = requestedScopeIds;
   const catalogs = yield* store.loadVisualizationCatalogs(database, 'deferred', {
     includeDependencies: false,
     projectLimit: MANAGER_CATALOG_PROJECT_LIMIT,
+    ...(scopeIds.length === 0 ? {} : {scopeIds}),
     viewLimit: MANAGER_CATALOG_VIEW_LIMIT + 1,
     viewOffset: offset,
     viewQuery: query.length === 0 ? Option.none() : Option.some(query),

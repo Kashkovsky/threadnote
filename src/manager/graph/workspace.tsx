@@ -17,11 +17,14 @@ import {
   graphCatalogEmptyState,
   graphCatalogPageOffsets,
   graphCatalogSearchOptions,
+  graphConfiguredProjectScopeIds,
   graphLocalAssociationText,
   graphNodeDetailRequestIsCurrent,
   graphOverviewSizeLabel,
   graphProjectBadge,
+  graphRepositoryGroupScopeId,
   graphRepositoryOptionLabel,
+  graphRepositoryScopeLabel,
   graphRequestIsCurrent,
   graphWithNodeNeighborhood,
   isAbortError,
@@ -97,6 +100,7 @@ export function GraphWorkspace(props: {
     repositoryId: string,
     offset: number,
     query: string,
+    scopeIds: readonly string[],
     signal: AbortSignal,
   ) => Promise<GraphViewPage>;
   readonly onAdministrationAction?: (action: GraphAdministrationAction) => void;
@@ -575,6 +579,7 @@ export function GraphWorkspace(props: {
           })
         : {projectOffset: 0, viewOffset: 0, workspaceOffset: 0};
     const {projectOffset, viewOffset, workspaceOffset} = offsets;
+    const configuredScopeIds = graphConfiguredProjectScopeIds(query, props.catalog?.configuredProjects);
     const requestedScope = `${repository.id}:${repository.snapshot.id}:${projectOffset}:${workspaceOffset}:${viewOffset}:${query}`;
     const requestSequence = catalogRequestSequence.current + 1;
     catalogRequestSequence.current = requestSequence;
@@ -592,7 +597,7 @@ export function GraphWorkspace(props: {
         query,
         controller.signal,
       ),
-      props.loadViewsPage(repository.id, viewOffset, query, controller.signal),
+      props.loadViewsPage(repository.id, viewOffset, query, configuredScopeIds, controller.signal),
     ])
       .then(([catalogPage, viewPage]) => {
         const currentScope = `${repository.id}:${repository.snapshot.id}:${projectOffset}:${workspaceOffset}:${viewOffset}:${query}`;
@@ -613,7 +618,11 @@ export function GraphWorkspace(props: {
         );
         if (query.length > 0) {
           setCatalogSearchResult({
-            options: graphCatalogSearchOptions(catalogPage.repository, viewPage.repositories),
+            options: graphCatalogSearchOptions(
+              catalogPage.repository,
+              viewPage.repositories,
+              props.catalog?.configuredProjects,
+            ),
             query,
           });
         }
@@ -741,6 +750,7 @@ export function GraphWorkspace(props: {
               {administrationJobs.jobs.map(build => (
                 <GraphBuildProgress
                   build={build}
+                  configuredProjects={props.catalog?.configuredProjects}
                   key={`${build.identity.checkoutId}:${build.identity.worktreeId}:${build.buildId}`}
                   repositories={repositories}
                   storage={props.catalog?.storage?.[build.identity.checkoutId]}
@@ -787,7 +797,11 @@ export function GraphWorkspace(props: {
               >
                 {repositories.map(item => (
                   <option key={item.id} value={item.id}>
-                    {graphRepositoryOptionLabel(item, repositories)}
+                    {graphRepositoryScopeLabel(
+                      graphRepositoryOptionLabel(item, repositories),
+                      graphRepositoryGroupScopeId(item),
+                      props.catalog?.configuredProjects,
+                    )}
                   </option>
                 ))}
               </select>
@@ -802,6 +816,7 @@ export function GraphWorkspace(props: {
                 >
                   {repositoryGroup.views.map(view => (
                     <option key={view.id} value={view.id}>
+                      {graphRepositoryScopeLabel(view.displayName, view.scopeId, props.catalog?.configuredProjects)} ·{' '}
                       {view.label}
                       {view.localAssociation.branch ? ` · observed branch ${view.localAssociation.branch}` : ''} ·
                       folder {graphLocalAssociationText(view.localAssociation)}

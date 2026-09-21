@@ -51,10 +51,13 @@ export const assessResolutionCandidateIncrementalClosure = Effect.fn(
   readonly currentChangedFiles: readonly CodeGraphInventoryFile[];
   readonly currentFiles: readonly CodeGraphInventoryFile[];
   readonly currentWorkspace: CodeGraphWorkspace;
+  readonly deletedPaths?: readonly string[];
   readonly initialLookupKeys: readonly ProjectResolutionLookupKey[];
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly projectCount: number;
+  /** Declared-project closure already selected for this update. */
+  readonly requiredFiles?: readonly CodeGraphInventoryFile[];
   readonly store: CodeGraphStoreShape;
 }) {
   if (input.baseFiles.length > PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FILES) {
@@ -102,7 +105,11 @@ export const assessResolutionCandidateIncrementalClosure = Effect.fn(
   });
   if (scan.mode === 'fallback') return resolutionCandidateScanFallback(scan, input.currentChangedFiles.length);
 
-  const selectedPaths = new Set([...scan.paths, ...input.currentChangedFiles.map(file => file.path)]);
+  const selectedPaths = new Set([
+    ...scan.paths,
+    ...input.currentChangedFiles.map(file => file.path),
+    ...(input.requiredFiles ?? []).map(file => file.path),
+  ]);
   const stagedAliasIdentities = new Set(
     [...scan.reexports.filter(reexport => selectedPaths.has(reexport.sourcePath)), ...input.candidateReexports].flatMap(
       reexport => reexport.aliases.map(alias => `${alias.resolutionDomain}\0${alias.key}`),
@@ -131,6 +138,7 @@ const assessSelectedResolutionCandidateClosure = Effect.fn('codeGraph.assessSele
     readonly currentChangedFiles: readonly CodeGraphInventoryFile[];
     readonly currentFiles: readonly CodeGraphInventoryFile[];
     readonly currentWorkspace: CodeGraphWorkspace;
+    readonly deletedPaths?: readonly string[];
     readonly languagePacks: CodeGraphLanguagePackRegistryShape;
     readonly layout: CodeGraphLayout;
     readonly projectCount: number;
@@ -203,13 +211,15 @@ const assessSelectedResolutionCandidateClosure = Effect.fn('codeGraph.assessSele
     if (facts === undefined) {
       return {mode: 'fallback', reason: 'project-closure-incomplete'} satisfies IncrementalOverlayPreassessment;
     }
-    if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(facts))) {
+    const deletionOnly = facts.length === 0 && (input.deletedPaths?.length ?? 0) > 0;
+    if (!deletionOnly && !codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(facts))) {
       return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
     }
     return {
       baseFileSetFingerprint: input.baseFileSetFingerprint,
       closureProjects: input.projectCount,
       committedWorkspace: input.committedWorkspace,
+      ...(input.deletedPaths === undefined ? {} : {deletedPaths: input.deletedPaths}),
       facts,
       files: input.selectedFiles,
       mode: 'compatible',

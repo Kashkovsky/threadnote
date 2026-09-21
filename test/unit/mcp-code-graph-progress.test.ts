@@ -24,9 +24,10 @@ import {
   compactCodeGraphMcpTiming,
   selectCodeGraphReadySnapshotForInspection,
 } from '../../src/mcp/server/index.js';
+import {completeCodeGraphReadyReadRefresh} from '../../src/mcp/server/code_graph/ready_read.js';
 import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../src/code_graph/types.js';
-import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
+import type {CodeGraphRefreshStatus, CodeGraphWatcherShape} from '../../src/code_graph/watcher.js';
 import type {CodeGraphStatusObservation} from '../../src/code_graph/query/contract.js';
 import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
 import {formatCodeGraphMcpResponse} from '../../src/mcp/code_graph_projection.js';
@@ -98,7 +99,7 @@ describe('MCP code graph indexing progress', () => {
     ).toEqual({explain: true, impact: false, neighbors: true, node: true, path: false, query: true});
   });
 
-  it('requests durable background refresh only for compatible stale ready evidence', () => {
+  it('identifies stale ready evidence that may install background monitoring', () => {
     for (const operation of ['query', 'node', 'neighbors', 'explain', 'path', 'impact'] as const) {
       expect(codeGraphInspectionRequestsBackgroundRefresh({readySnapshot: {id: 'ready'}, stale: true}, operation)).toBe(
         codeGraphInspectionAllowsStaleReady(operation),
@@ -109,6 +110,39 @@ describe('MCP code graph indexing progress', () => {
       ).toBe(false);
     }
   });
+
+  effectIt.effect('never registers a build demand after a successful ready read', () =>
+    Effect.gen(function* () {
+      let ensured = 0;
+      let requested = 0;
+      const watcher = {
+        ensure: () =>
+          Effect.sync(() => {
+            ensured += 1;
+          }),
+        request: () =>
+          Effect.sync(() => {
+            requested += 1;
+            return {
+              refresh: {state: 'active' as const, type: 'code-graph-refresh-continuity' as const, version: 1 as const},
+              requestState: 'started' as const,
+            };
+          }),
+      } as unknown as CodeGraphWatcherShape;
+
+      const continuity = yield* completeCodeGraphReadyReadRefresh({
+        backgroundRefreshRequested: true,
+        ensureWatcher: true,
+        key: 'worktree',
+        target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
+        watcher,
+      });
+
+      expect(continuity).toEqual({state: 'deferred', type: 'code-graph-refresh-continuity', version: 1});
+      expect(ensured).toBe(1);
+      expect(requested).toBe(0);
+    }),
+  );
 
   fcProp(
     it,

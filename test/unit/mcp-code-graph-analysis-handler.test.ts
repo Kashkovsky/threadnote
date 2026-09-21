@@ -1,6 +1,7 @@
+import {BunFileSystem} from '@effect/platform-bun';
 import * as BunPath from '@effect/platform-bun/BunPath';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, Fiber, Layer, Option} from 'effect';
+import {Effect, FileSystem, Fiber, Layer, Option} from 'effect';
 import {TestClock} from 'effect/testing';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {describe, expect} from 'vitest';
@@ -38,6 +39,59 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       expect(harness.observation.statusOptions[0]).toMatchObject({project: 'app-a'});
     }).pipe(provideTestLayer(harness.layer));
   });
+
+  effectIt.effect('infers one configured project before selecting an inspect ready snapshot', () => {
+    const manifestPath = '/tmp/threadnote-mcp-code-graph-routing-unique.yaml';
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({
+      attachResults: [],
+      manifestPath,
+      refresh: false,
+      statuses: [ready],
+    });
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(manifestPath, graphManifest(['web']));
+      const result = yield* harness.invokeInspect({
+        callerCwd: ready.identity.repoRoot,
+        operation: 'query',
+        query: 'value',
+      });
+
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(harness.observation.statusOptions[0]).toMatchObject({project: 'web'});
+    }).pipe(
+      Effect.ensuring(FileSystem.FileSystem.pipe(Effect.flatMap(fs => fs.remove(manifestPath).pipe(Effect.ignore)))),
+      provideTestLayer(harness.layer),
+    );
+  });
+
+  effectIt.effect('rejects ambiguous configured inspect scope before graph status selection', () => {
+    const manifestPath = '/tmp/threadnote-mcp-code-graph-routing-ambiguous.yaml';
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({
+      attachResults: [],
+      manifestPath,
+      refresh: false,
+      statuses: [ready],
+    });
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(manifestPath, graphManifest(['web', 'api']));
+      const result = yield* harness.invokeInspect({
+        callerCwd: ready.identity.repoRoot,
+        operation: 'query',
+        query: 'value',
+      });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain('api, web');
+      expect(harness.observation.statusOptions).toHaveLength(0);
+    }).pipe(
+      Effect.ensuring(FileSystem.FileSystem.pipe(Effect.flatMap(fs => fs.remove(manifestPath).pipe(Effect.ignore)))),
+      provideTestLayer(harness.layer),
+    );
+  });
   effectIt.effect('rejects missing operation at the adapter boundary for both code-graph tools', () => {
     const ready = codeGraphStatus({ready: true, stale: false});
     const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});
@@ -51,6 +105,70 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       expect(harness.observation.analysisCalls).toBe(0);
       expect(harness.observation.statusOptions).toHaveLength(0);
     }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect(
+    'directs explicit configured-project topology requests to scoped analysis or a prepared workset',
+    () => {
+      const manifestPath = '/tmp/threadnote-mcp-code-graph-topology-explicit.yaml';
+      const repositoryRoot = process.cwd();
+      const ready = codeGraphStatus({ready: true, stale: false});
+      const harness = analyzeHandlerHarness({
+        attachResults: [],
+        liveGit: true,
+        manifestPath,
+        refresh: false,
+        statuses: [ready],
+      });
+
+      return Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(manifestPath, graphManifest(['web'], repositoryRoot));
+        const result = yield* harness.invokeInspect({
+          callerCwd: repositoryRoot,
+          operation: 'topology',
+          project: 'web',
+        });
+
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result.content)).toContain('analyze_code_graph');
+        expect(JSON.stringify(result.content)).toContain('project');
+        expect(JSON.stringify(result.content)).toContain('workset prepare');
+        expect(harness.observation.statusOptions).toHaveLength(0);
+      }).pipe(
+        Effect.ensuring(FileSystem.FileSystem.pipe(Effect.flatMap(fs => fs.remove(manifestPath).pipe(Effect.ignore)))),
+        provideTestLayer(harness.layer),
+      );
+    },
+  );
+
+  effectIt.effect('infers configured-project topology guidance and rejects unknown selectors', () => {
+    const manifestPath = '/tmp/threadnote-mcp-code-graph-topology-routing.yaml';
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({attachResults: [], manifestPath, refresh: false, statuses: [ready]});
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(manifestPath, graphManifest(['web']));
+
+      const inferred = yield* harness.invokeInspect({callerCwd: ready.identity.repoRoot, operation: 'topology'});
+      expect(inferred.isError).toBe(true);
+      expect(JSON.stringify(inferred.content)).toContain('configured project \\"web\\"');
+      expect(JSON.stringify(inferred.content)).toContain('analyze_code_graph');
+
+      const unknown = yield* harness.invokeInspect({
+        callerCwd: ready.identity.repoRoot,
+        operation: 'topology',
+        project: 'unknown',
+      });
+      expect(unknown.isError).toBe(true);
+      expect(JSON.stringify(unknown.content)).toContain('No configured project named');
+      expect(JSON.stringify(unknown.content)).not.toContain('configured project \\"unknown\\"');
+      expect(harness.observation.statusOptions).toHaveLength(0);
+    }).pipe(
+      Effect.ensuring(FileSystem.FileSystem.pipe(Effect.flatMap(fs => fs.remove(manifestPath).pipe(Effect.ignore)))),
+      provideTestLayer(harness.layer),
+    );
   });
 
   effectIt.effect('allows ready query and exact-node reads to run beyond the former 25-second budget', () => {
@@ -88,11 +206,9 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         'isolated-read-start',
         'isolated-read-complete',
         'watcher-ensure',
-        'background-refresh-request',
         'isolated-read-start',
         'isolated-read-complete',
         'watcher-ensure',
-        'background-refresh-request',
       ]);
     }).pipe(provideTestLayer(harness.layer));
   });
@@ -153,7 +269,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     }).pipe(provideTestLayer(harness.layer));
   });
 
-  effectIt.effect('returns a structured timeout and schedules stale-ready recovery after the read exits', () => {
+  effectIt.effect('returns a structured timeout without scheduling a hidden stale-ready rebuild', () => {
     const ready = codeGraphStatus({ready: true, stale: true});
     const harness = analyzeHandlerHarness({
       allowBackgroundRequest: true,
@@ -177,11 +293,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         type: 'code-graph-query-state',
       });
       expect(harness.observation.isolatedInspectCalls).toBe(1);
-      expect(harness.observation.lifecycleEvents).toEqual([
-        'isolated-read-start',
-        'watcher-ensure',
-        'background-refresh-request',
-      ]);
+      expect(harness.observation.lifecycleEvents).toEqual(['isolated-read-start', 'watcher-ensure']);
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -262,6 +374,8 @@ interface AnalyzeHandlerHarnessInput {
   readonly allowBackgroundRequest?: boolean;
   readonly attachResults: readonly CodeGraphStatus[];
   readonly inspectDelayMilliseconds?: number;
+  readonly liveGit?: boolean;
+  readonly manifestPath?: string;
   readonly refresh: boolean;
   readonly statuses: readonly CodeGraphStatus[];
 }
@@ -346,28 +460,56 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
       }).pipe(Effect.andThen(analyzeCodeGraph(store, options))),
   });
   const command = CommandExecutor.of({
-    execute: (_executable, _arguments, options) =>
-      Effect.gen(function* () {
-        isolatedInspectCalls += 1;
-        const status = input.statuses[0];
-        if (input.inspectDelayMilliseconds === undefined || status === undefined || options?.input === undefined) {
-          return yield* Effect.die('Unexpected isolated graph inspection.');
-        }
-        const request = JSON.parse(new TextDecoder().decode(options.input)) as Record<string, unknown> & {
-          readonly operation: CodeGraphQueryResult['operation'];
-        };
-        lifecycleEvents.push('isolated-read-start');
-        isolatedRequests.push(request);
-        yield* Effect.sleep(input.inspectDelayMilliseconds);
-        lifecycleEvents.push('isolated-read-complete');
-        return commandResult(
-          JSON.stringify({ok: true, protocol: 1, result: codeGraphInspectionResult(status, request.operation)}),
-        );
-      }),
+    execute: (executable, arguments_, options) =>
+      input.liveGit === true && executable === 'git'
+        ? Effect.sync(() => {
+            const result = Bun.spawnSync([executable, ...arguments_], {
+              cwd: options?.cwd,
+              stderr: 'pipe',
+              stdout: 'pipe',
+            });
+            return {
+              exitCode: result.exitCode,
+              stderr: new TextDecoder().decode(result.stderr),
+              stdout: new TextDecoder().decode(result.stdout),
+            };
+          })
+        : Effect.gen(function* () {
+            isolatedInspectCalls += 1;
+            const status = input.statuses[0];
+            if (status === undefined || options?.input === undefined) {
+              return yield* Effect.die('Unexpected isolated graph inspection.');
+            }
+            const request = JSON.parse(new TextDecoder().decode(options.input)) as Record<string, unknown> & {
+              readonly operation: CodeGraphQueryResult['operation'];
+            };
+            lifecycleEvents.push('isolated-read-start');
+            isolatedRequests.push(request);
+            if (input.inspectDelayMilliseconds !== undefined) yield* Effect.sleep(input.inspectDelayMilliseconds);
+            lifecycleEvents.push('isolated-read-complete');
+            return commandResult(
+              JSON.stringify({ok: true, protocol: 1, result: codeGraphInspectionResult(status, request.operation)}),
+            );
+          }),
+    executeBytes: (executable, arguments_, options) =>
+      input.liveGit === true && executable === 'git'
+        ? Effect.sync(() => {
+            const result = Bun.spawnSync([executable, ...arguments_], {
+              cwd: options?.cwd,
+              stderr: 'pipe',
+              stdout: 'pipe',
+            });
+            return {
+              exitCode: result.exitCode,
+              stderr: new TextDecoder().decode(result.stderr),
+              stdout: new Uint8Array(result.stdout),
+            };
+          })
+        : Effect.die('Unexpected binary command.'),
     executeStreaming: () => Effect.die('Unexpected streaming command.'),
   });
   const server = new EffectMcpServerAdapter('threadnote-analysis-handler-test', '1.0.0', 'Test server.');
-  registerCodeGraphTool(server, runtimeConfig());
+  registerCodeGraphTool(server, runtimeConfig(input.manifestPath));
   type AddedTool = Parameters<EffectMcpServer['addTool']>[0];
   let analyzeHandle: AddedTool['handle'] | undefined;
   let inspectHandle: AddedTool['handle'] | undefined;
@@ -379,6 +521,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
       }),
   } as unknown as EffectMcpServer);
   const applicationLayer = Layer.mergeAll(
+    BunFileSystem.layer,
     BunPath.layer,
     Layer.succeed(CommandExecutor, command),
     Layer.succeed(CodeGraphAnalysis, analysis),
@@ -560,14 +703,31 @@ function deferredRefreshStatus(): CodeGraphRefreshStatus {
   };
 }
 
-function runtimeConfig(): RuntimeConfig {
+function runtimeConfig(manifestPath = `${TEST_HOME}/seed-manifest.yaml`): RuntimeConfig {
   return {
     account: 'local',
     agentContextHome: TEST_HOME,
     agentId: 'analysis-handler-test',
-    manifestPath: `${TEST_HOME}/seed-manifest.yaml`,
+    manifestPath,
     user: 'analysis-handler-test',
   };
+}
+
+function graphManifest(projects: readonly string[], projectPath = '/workspace/repository'): string {
+  return [
+    'version: 1',
+    'projects:',
+    ...projects.flatMap(name => [
+      `  - name: ${name}`,
+      `    path: ${projectPath}`,
+      '    seed: []',
+      `    uri: threadnote://resources/repos/${name}`,
+      '    graph:',
+      '      closure: dependencies',
+      '      roots: [src]',
+    ]),
+    '',
+  ].join('\n');
 }
 
 function mcpServerClient(): McpSchema.McpServerClient['Service'] {

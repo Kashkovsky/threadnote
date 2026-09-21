@@ -666,7 +666,7 @@ describe('Manager Worksets manifest transactions', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('canonicalizes nested Git roots and rejects checkout aliases and non-directory paths', () =>
+  effectIt.effect('canonicalizes shared monorepo roots for distinct graph scopes and rejects non-directory paths', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const current = yield* fixture(() => 'version: 1\nprojects: []\n');
@@ -682,6 +682,7 @@ describe('Manager Worksets manifest transactions', () => {
         const empty = yield* readManagerWorksetCatalog(current.config);
         const created = yield* mutateManagerManifestProject(current.config, {
           expectedRevision: empty.revision,
+          graph: {closure: 'dependencies', roots: ['packages/app']},
           name: 'api',
           operation: 'create',
           path: nested,
@@ -691,20 +692,25 @@ describe('Manager Worksets manifest transactions', () => {
         const canonicalRepository = yield* current.fs.realPath(repository);
         expect((yield* readManagerManifestProject(current.config, 'api')).path).toBe(canonicalRepository);
 
-        const beforeAlias = yield* current.fs.readFileString(current.manifestPath);
-        const aliasError = yield* mutateManagerManifestProject(current.config, {
+        const aliased = yield* mutateManagerManifestProject(current.config, {
           expectedRevision: created.catalog.revision,
+          graph: {closure: 'dependencies', roots: ['packages/worker']},
           name: 'alias',
           operation: 'create',
           path: alias,
           seed: [],
           uri: 'threadnote://resources/repos/alias',
-        }).pipe(Effect.flip);
-        expect(aliasError).toMatchObject({code: 'path-conflict', status: 409});
-        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(beforeAlias);
+        });
+        const sharedRoot = yield* readManagerManifestProject(current.config, 'alias');
+        expect(sharedRoot).toMatchObject({
+          graph: {closure: 'dependencies', roots: ['packages/worker']},
+          path: canonicalRepository,
+        });
+        expect((yield* readManagerManifestProject(current.config, 'api')).path).toBe(canonicalRepository);
+        const afterAlias = yield* current.fs.readFileString(current.manifestPath);
 
         const fileError = yield* mutateManagerManifestProject(current.config, {
-          expectedRevision: created.catalog.revision,
+          expectedRevision: aliased.catalog.revision,
           name: 'file',
           operation: 'create',
           path: file,
@@ -712,7 +718,7 @@ describe('Manager Worksets manifest transactions', () => {
           uri: 'threadnote://resources/repos/file',
         }).pipe(Effect.flip);
         expect(fileError).toMatchObject({code: 'invalid-input', status: 400});
-        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(beforeAlias);
+        expect(yield* current.fs.readFileString(current.manifestPath)).toBe(afterAlias);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

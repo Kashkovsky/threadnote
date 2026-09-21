@@ -653,13 +653,28 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
     store: input.store,
   });
   if (modificationSeeds.mode === 'fallback') return modificationSeeds;
-  // A non-project publication can be scanned safely only while the repository
-  // file set is unchanged. Additions and deletions can introduce endpoints
-  // that have no complete cached-base candidate surface, so this mixed case
-  // retains the existing full-materialization safety gate.
-  if (modificationSeeds.candidateScanRequired) {
-    return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
-  }
+  const unownedResolutionDomains = seeds.unownedResolutionDomains ?? [];
+  const fileSetResolutionSeeds =
+    unownedResolutionDomains.length === 0
+      ? undefined
+      : yield* assessAddedProjectResolutionSeeds({
+          addedFiles: addedFiles.filter(file =>
+            unownedResolutionDomains.includes(
+              projectClosureResolutionDomainByPath([file], input.languagePacks).get(file.path) ?? '',
+            ),
+          ),
+          deletedFiles: input.deletedFiles.filter(file =>
+            unownedResolutionDomains.includes(
+              projectClosureResolutionDomainByPath([file], input.languagePacks).get(file.path) ?? '',
+            ),
+          ),
+          currentFiles: input.currentFiles,
+          currentWorkspace: input.currentWorkspace,
+          languagePacks: input.languagePacks,
+          layout: input.layout,
+          store: input.store,
+        });
+  if (fileSetResolutionSeeds?.mode === 'fallback') return fileSetResolutionSeeds;
   const seedProjectIds = [
     ...new Set([...seeds.seedProjectIds, ...modificationSeeds.seedProjectIds, ...input.workspaceSeedProjectIds]),
   ].sort(compareCodeUnits);
@@ -675,6 +690,83 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
     seedProjectIds,
     store: input.store,
   });
+  const candidateLookupKeys = [
+    ...(modificationSeeds.candidateLookupKeys ?? []),
+    ...(fileSetResolutionSeeds?.candidateLookupKeys ?? []),
+  ];
+  const candidateReexports = [
+    ...(modificationSeeds.candidateReexports ?? []),
+    ...(fileSetResolutionSeeds?.candidateReexports ?? []),
+  ];
+  if (unownedResolutionDomains.length > 0 || modificationSeeds.candidateScanRequired) {
+    const pureUnownedCandidate =
+      seedProjectIds.length === 0 &&
+      input.baseWorkspace.diagnostics.length === 0 &&
+      input.currentWorkspace.diagnostics.length === 0 &&
+      planned.mode === 'fallback' &&
+      planned.reason === 'project-closure-incomplete';
+    const zeroPublicationUnownedFileSet =
+      pureUnownedCandidate &&
+      existingModifiedFiles.length === 0 &&
+      candidateLookupKeys.length === 0 &&
+      candidateReexports.length === 0 &&
+      fileSetResolutionSeeds?.mode === 'eligible';
+    if (zeroPublicationUnownedFileSet) {
+      return zeroPublicationUnownedFileSetCompatibility({
+        addedFiles,
+        baseFileSetFingerprint: input.baseFileSetFingerprint,
+        committedWorkspace: input.baseWorkspace,
+        deletedPaths: input.deletedFiles.map(file => file.path),
+        facts: fileSetResolutionSeeds.currentFacts,
+      });
+    }
+    if ((planned.mode === 'compatible' || pureUnownedCandidate) && candidateLookupKeys.length > 0) {
+      const candidate = yield* assessResolutionCandidateIncrementalClosure({
+        baseAttributionContext: {files: input.currentFiles, workspace: input.currentWorkspace},
+        baseFileSetFingerprint: input.baseFileSetFingerprint,
+        baseFiles: input.baseFiles,
+        candidateReexports,
+        committedWorkspace: input.baseWorkspace,
+        currentChangedFiles: input.currentChangedFiles,
+        currentFiles: input.currentFiles,
+        currentWorkspace: input.currentWorkspace,
+        initialLookupKeys: candidateLookupKeys,
+        languagePacks: input.languagePacks,
+        layout: input.layout,
+        projectCount: planned.mode === 'compatible' ? (planned.closureProjects ?? 0) : 0,
+        ...(planned.mode === 'compatible' ? {requiredFiles: planned.files} : {}),
+        deletedPaths: input.deletedFiles.map(file => file.path),
+        store: input.store,
+      });
+      if (candidate.mode === 'compatible') return candidate;
+      if (unownedResolutionDomains.length === 0 || candidate.reason !== 'project-closure-incomplete') {
+        return candidate;
+      }
+      return {
+        ...candidate,
+        fallbackAssessment: {
+          addedFiles: addedFiles.length,
+          changedFiles: input.currentChangedFiles.length,
+          deletedFiles: input.deletedFiles.length,
+          detail: 'resolution-domain-unowned',
+          stage: 'file-set-seed-assessment',
+          unownedResolutionDomainFiles:
+            input.currentChangedFiles.filter(file =>
+              unownedResolutionDomains.includes(
+                projectClosureResolutionDomainByPath([file], input.languagePacks).get(file.path) ?? '',
+              ),
+            ).length +
+            input.deletedFiles.filter(file =>
+              unownedResolutionDomains.includes(
+                projectClosureResolutionDomainByPath([file], input.languagePacks).get(file.path) ?? '',
+              ),
+            ).length,
+          unownedResolutionDomains,
+        },
+      } satisfies IncrementalOverlayPreassessment;
+    }
+    return planned;
+  }
   if (
     planned.mode !== 'fallback' ||
     planned.reason !== 'project-closure-unbounded' ||
@@ -714,52 +806,96 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
 
 const assessAddedProjectResolutionSeeds = Effect.fn('codeGraph.assessAddedProjectResolutionSeeds')(function* (input: {
   readonly addedFiles: readonly CodeGraphInventoryFile[];
+  readonly deletedFiles?: readonly CodeGraphInventoryFile[];
   readonly currentFiles: readonly CodeGraphInventoryFile[];
   readonly currentWorkspace: CodeGraphWorkspace;
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly store: CodeGraphStoreShape;
 }) {
-  if (!projectClosureSourceBudgetFits(input.addedFiles)) {
+  const deletedFiles = input.deletedFiles ?? [];
+  if (!projectClosureSourceBudgetFits([...input.addedFiles, ...deletedFiles])) {
     return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
   }
-  const metadata = yield* cachedFactsMetadata(
-    input.store,
-    input.layout.databasePath,
-    input.addedFiles,
-    input.languagePacks,
+  const [currentMetadata, deletedMetadata] = yield* Effect.all(
+    [
+      cachedFactsMetadata(input.store, input.layout.databasePath, input.addedFiles, input.languagePacks),
+      cachedFactsMetadata(input.store, input.layout.databasePath, deletedFiles, input.languagePacks),
+    ],
+    {concurrency: 1},
   );
-  if (metadata.files !== input.addedFiles.length || metadata.bytesByPath.size !== input.addedFiles.length) {
+  if (
+    currentMetadata.files !== input.addedFiles.length ||
+    currentMetadata.bytesByPath.size !== input.addedFiles.length ||
+    deletedMetadata.files !== deletedFiles.length ||
+    deletedMetadata.bytesByPath.size !== deletedFiles.length
+  ) {
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
-  const metadataBudget = projectClosureCachedFactBudgetFallback(metadata, input.addedFiles.length);
-  if (metadataBudget !== undefined) return metadataBudget;
-  const currentCache = yield* loadCachedFacts(
-    input.store,
-    input.layout.databasePath,
-    input.addedFiles,
-    input.languagePacks,
+  const combinedBudget = projectClosureCombinedCachedFactBudgetFallback(
+    [currentMetadata, deletedMetadata],
+    input.addedFiles.length + deletedFiles.length,
   );
-  if (input.addedFiles.some(file => !currentCache.facts.has(file.path))) {
+  if (combinedBudget !== undefined) return combinedBudget;
+  const [currentCache, deletedCache] = yield* Effect.all(
+    [
+      loadCachedFacts(input.store, input.layout.databasePath, input.addedFiles, input.languagePacks),
+      loadCachedFacts(input.store, input.layout.databasePath, deletedFiles, input.languagePacks),
+    ],
+    {concurrency: 1},
+  );
+  if (
+    input.addedFiles.some(file => !currentCache.facts.has(file.path)) ||
+    deletedFiles.some(file => !deletedCache.facts.has(file.path))
+  ) {
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
   const currentRawFacts = input.addedFiles.map(file =>
     input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!),
   );
   const currentFacts = attributeInventoryFacts(input.currentFiles, input.currentWorkspace, currentRawFacts);
-  const emptyCommittedFacts = currentFacts.map((facts): CodeGraphFileFacts => ({
-    diagnostics: [],
-    edges: [],
-    path: facts.path,
-    references: [],
-    symbols: [],
-  }));
-  return assessProjectClosureSeeds({
-    committedFacts: emptyCommittedFacts,
-    effectiveFacts: currentFacts,
+  const deletedRawFacts = deletedFiles.map(file =>
+    input.languagePacks.postprocessFile(file, deletedCache.facts.get(file.path)!),
+  );
+  const deletedFacts = attributeInventoryFacts(input.currentFiles, input.currentWorkspace, deletedRawFacts);
+  const emptyFacts = (facts: readonly CodeGraphFileFacts[]) =>
+    facts.map((facts): CodeGraphFileFacts => ({
+      diagnostics: [],
+      edges: [],
+      path: facts.path,
+      references: [],
+      symbols: [],
+    }));
+  const seeds = assessProjectClosureSeeds({
+    committedFacts: [...emptyFacts(currentFacts), ...deletedFacts],
+    effectiveFacts: [...currentFacts, ...emptyFacts(deletedFacts)],
     projects: input.currentWorkspace.projects,
   });
+  return seeds.mode === 'fallback' ? seeds : {...seeds, currentFacts};
 });
+
+function zeroPublicationUnownedFileSetCompatibility(input: {
+  readonly addedFiles: readonly CodeGraphInventoryFile[];
+  readonly baseFileSetFingerprint: string;
+  readonly committedWorkspace: CodeGraphWorkspace;
+  readonly deletedPaths: readonly string[];
+  readonly facts: readonly CodeGraphFileFacts[];
+}): IncrementalOverlayPreassessment {
+  const deletionOnly = input.facts.length === 0 && input.deletedPaths.length > 0;
+  if (!deletionOnly && !codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(input.facts))) {
+    return {mode: 'fallback', reason: 'fact-budget-expanded'};
+  }
+  return {
+    baseFileSetFingerprint: input.baseFileSetFingerprint,
+    closureProjects: 0,
+    committedWorkspace: input.committedWorkspace,
+    deletedPaths: input.deletedPaths,
+    facts: input.facts,
+    files: input.addedFiles,
+    mode: 'compatible',
+    resolutionClosure: 'project',
+  };
+}
 
 const assessExistingProjectModificationSeeds = Effect.fn('codeGraph.assessExistingProjectModificationSeeds')(
   function* (input: {
@@ -971,6 +1107,39 @@ function projectClosureCachedFactBudgetFallback(
     aggregateBytes: metadata.bytes,
     factBytes: metadata.bytesByPath.values(),
   });
+  if (assessment.mode === 'eligible') return undefined;
+  if (assessment.mode === 'invalid') return {mode: 'fallback', reason: 'cache-incomplete'};
+  return {
+    fallbackBoundary: {
+      changedFiles,
+      limit: assessment.limit,
+      metric: 'cached-fact-bytes',
+      observedAtDecision: assessment.observedAtDecision,
+      stage: 'project-closure-selection',
+    },
+    mode: 'fallback',
+    reason: 'project-closure-unbounded',
+  };
+}
+
+function projectClosureCombinedCachedFactBudgetFallback(
+  metadata: readonly {readonly bytes: number; readonly bytesByPath: ReadonlyMap<string, number>}[],
+  changedFiles: number,
+): Extract<IncrementalOverlayPreassessment, {readonly mode: 'fallback'}> | undefined {
+  let aggregateBytes = 0;
+  const factBytes: number[] = [];
+  for (const current of metadata) {
+    if (
+      !Number.isSafeInteger(current.bytes) ||
+      current.bytes < 0 ||
+      current.bytes > Number.MAX_SAFE_INTEGER - aggregateBytes
+    ) {
+      return {mode: 'fallback', reason: 'cache-incomplete'};
+    }
+    aggregateBytes += current.bytes;
+    factBytes.push(...current.bytesByPath.values());
+  }
+  const assessment = assessCodeGraphIncrementalFactBytes({aggregateBytes, factBytes});
   if (assessment.mode === 'eligible') return undefined;
   if (assessment.mode === 'invalid') return {mode: 'fallback', reason: 'cache-incomplete'};
   return {

@@ -170,7 +170,7 @@ export function measureCodeGraphIncrementalWork(input: {
 export function codeGraphIncrementalWorkFitsBudget(work: CodeGraphIncrementalWork): boolean {
   return (
     Number.isSafeInteger(work.changedFiles) &&
-    work.changedFiles > 0 &&
+    (work.changedFiles > 0 || work.deletedFiles > 0) &&
     work.changedFiles <= CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES &&
     Number.isSafeInteger(work.attributionContextFiles) &&
     work.attributionContextFiles >= 0 &&

@@ -597,8 +597,26 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
   const viewLimit = boundedVisualizationCatalogLimit(options.viewLimit, 32, 64);
   const viewOffset = boundedVisualizationCatalogOffset(options.viewOffset);
   const viewQuery = boundedVisualizationCatalogQuery(options.viewQuery);
+  const scopeIds = [
+    ...new Set([...(options.scopeIds ?? []), ...(options.scopeId === undefined ? [] : [options.scopeId])]),
+  ].slice(0, 64);
   const removedViewsAvailable = yield* tableExists(sql, 'removed_views');
   const scoped = yield* codeGraphScopeAuthorityInstalled(sql);
+  if (!scoped && scopeIds.length > 0) return [];
+  const scopePredicate =
+    scoped && scopeIds.length > 0 ? `active_snapshots.scope_id IN (${scopeIds.map(() => '?').join(', ')})` : '';
+  const queryPredicate =
+    viewQuery.length === 0
+      ? ''
+      : "instr(lower(repositories.display_name || ' ' || snapshots.commit_id || ' ' || active_snapshots.worktree_id), lower(?)) > 0";
+  const viewPredicate =
+    scopePredicate.length > 0 && queryPredicate.length > 0
+      ? `AND (${scopePredicate} OR ${queryPredicate})`
+      : scopePredicate.length > 0
+        ? `AND ${scopePredicate}`
+        : queryPredicate.length > 0
+          ? `AND ${queryPredicate}`
+          : '';
   const worktrees = yield* sql.unsafe<{readonly worktree_id: string; readonly scope_id?: string}>(
     `SELECT active_snapshots.worktree_id ${scoped ? ', active_snapshots.scope_id' : ''}
      FROM active_snapshots
@@ -615,20 +633,10 @@ const selectVisualizationCatalogs = Effect.fn('codeGraph.selectVisualizationCata
               )`
            : ''
        }
-       ${scoped && options.scopeId !== undefined ? 'AND active_snapshots.scope_id = ?' : ''}
-       ${
-         viewQuery.length === 0
-           ? ''
-           : "AND instr(lower(repositories.display_name || ' ' || snapshots.commit_id || ' ' || active_snapshots.worktree_id), lower(?)) > 0"
-       }
+       ${viewPredicate}
      ORDER BY active_snapshots.activated_at DESC, active_snapshots.worktree_id
      LIMIT ? OFFSET ?`,
-    [
-      ...(scoped && options.scopeId !== undefined ? [options.scopeId] : []),
-      ...(viewQuery.length === 0 ? [] : [viewQuery]),
-      viewLimit,
-      viewOffset,
-    ],
+    [...(scoped ? scopeIds : []), ...(viewQuery.length === 0 ? [] : [viewQuery]), viewLimit, viewOffset],
   );
   return (yield* Effect.forEach(
     worktrees,

@@ -1340,7 +1340,7 @@ threadnote graph export --format svg --output code-graph.svg`,
           {
             type: 'code',
             language: 'sh',
-            code: `# "storefront" is an existing manifest project for this monorepo.
+            code: `# Run this from the monorepo checkout. The project is created if needed.
 threadnote graph scope set storefront \\
   --root apps/storefront \\
   --include tools/storefront-generated
@@ -1352,7 +1352,7 @@ threadnote graph query --query "checkout session"`,
           },
           {
             type: 'paragraph',
-            text: 'The preview is read-only. It lists the resolved root and dependency components, explicit includes, required control files, included and excluded file/byte counts, completeness, and diagnostics. Review it before indexing, especially after changing workspace manifests. Manager exposes the same roots, dependency-closure explanation, includes, coverage state, and preview-before-save flow. Remove the block with `threadnote graph scope clear storefront --confirm` to return that project to full-repository behavior.',
+            text: 'A Threadnote project is a named local configuration that connects its memory identity, repository root, guidance seeds, and optional graph scope; it is not a package manifest such as package.json. The preview is read-only. It lists the resolved root and dependency components, explicit includes, required control files, included and excluded file/byte counts, completeness, and diagnostics. Review it before indexing, especially after changing workspace manifests. Manager exposes the same roots, dependency-closure explanation, includes, coverage state, and preview-before-save flow. Remove the block with `threadnote graph scope clear storefront --confirm` to return that project to full-repository behavior.',
           },
           {
             type: 'paragraph',
@@ -1361,6 +1361,10 @@ threadnote graph query --query "checkout session"`,
           {
             type: 'paragraph',
             text: 'Commands select a scoped project automatically only when the current directory belongs to exactly one configured graph project. If more than one applies, Threadnote reports the available project names instead of silently choosing a partial graph. Keep the same manifest definition with linked worktrees: compatible graph-equivalent commit content can be reused, but dirty overlays, active views, and observations remain worktree-local so uncommitted changes do not cross branches.',
+          },
+          {
+            type: 'paragraph',
+            text: 'The project that names task context and the project that supplies a graph are not required to be the same label. An agent can keep its handoff and durable knowledge with the application it is changing while Threadnote routes code evidence to the one configured scope that contains that application. From a repository root, choose the scope explicitly when several scopes could apply; Threadnote never guesses between overlapping boundaries.',
           },
           {
             type: 'list',

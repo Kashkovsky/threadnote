@@ -9,6 +9,7 @@ import {compareCodeUnits} from '../../code_graph/ordering.js';
 import {
   MANAGER_GRAPH_DEFAULT_EDGE_LIMIT,
   MANAGER_GRAPH_DEFAULT_NODE_LIMIT,
+  MANAGER_GRAPH_CATALOG_SCOPE_SEARCH_LIMIT,
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
   MANAGER_GRAPH_MAX_NODE_LIMIT,
 } from './limits.js';
@@ -89,6 +90,7 @@ export interface GraphConfiguredProject {
   readonly graphState: 'not-indexed' | 'ready' | 'unknown';
   readonly name: string;
   readonly path: string;
+  readonly scopeId?: string;
 }
 
 export interface GraphCatalog {
@@ -546,6 +548,7 @@ export interface GraphBuildConcurrencyState {
 export function graphBuildTarget(
   build: GraphBuildStatus,
   repositories: readonly GraphRepositoryGroup[],
+  configuredProjects: readonly GraphConfiguredProject[] = [],
 ): GraphBuildTarget {
   const repository = repositories.find(candidate => candidate.repositoryId === build.identity.repositoryId);
   const view = repository?.views.find(
@@ -567,11 +570,60 @@ export function graphBuildTarget(
       ? `build-start branch ${build.managerContext.branch}`
       : undefined;
   return {
-    repositoryLabel,
+    repositoryLabel: graphRepositoryScopeLabel(repositoryLabel, build.identity.scopeId, configuredProjects),
     worktreeLabel:
       ([branch, folder].filter((value): value is string => value !== undefined).join(' · ') || view?.label) ??
       `Local folder unavailable · commit ${build.identity.commit.slice(0, 8) || 'unknown'}`,
   };
+}
+
+/** Present one opaque graph-scope identity as its configured project name when available. */
+export function graphRepositoryScopeLabel(
+  repositoryLabel: string,
+  scopeId: string | undefined,
+  configuredProjects: readonly Pick<GraphConfiguredProject, 'name' | 'scopeId'>[] = [],
+): string {
+  if (scopeId === undefined) return repositoryLabel;
+  const project = configuredProjects.find(candidate => candidate.scopeId === scopeId);
+  const fallback = scopeId.startsWith('code-graph-scope:')
+    ? `scope ${scopeId.slice('code-graph-scope:'.length, 'code-graph-scope:'.length + 8)}`
+    : 'scoped graph';
+  return `${repositoryLabel}: ${project?.name ?? fallback}`;
+}
+
+/** A repository-level selector can name one scope only when its view inventory is complete. */
+export function graphRepositoryGroupScopeId(
+  repository: Pick<GraphRepositoryGroup, 'views' | 'viewsTruncated'>,
+): string | undefined {
+  return repository.views.length === 1 && !repository.viewsTruncated ? repository.views[0]?.scopeId : undefined;
+}
+
+/** Resolve project-name catalog searches to their opaque scoped-view identities. */
+export function graphConfiguredProjectScopeIds(
+  query: string,
+  configuredProjects: readonly Pick<GraphConfiguredProject, 'name' | 'scopeId'>[] = [],
+): readonly string[] {
+  const needle = query.trim().toLowerCase();
+  if (needle.length === 0) return [];
+  return [
+    ...new Set(
+      configuredProjects.flatMap(project =>
+        project.scopeId !== undefined && project.name.toLowerCase().includes(needle) ? [project.scopeId] : [],
+      ),
+    ),
+  ]
+    .sort(compareCodeUnits)
+    .slice(0, MANAGER_GRAPH_CATALOG_SCOPE_SEARCH_LIMIT);
+}
+
+/** Select the exact scoped diagnostics view for one build or waiter row. */
+export function graphAdministrationJobView(
+  views: CodeGraphLocalDiagnosticsReport['databases'][number]['views'],
+  job: Pick<GraphBuildStatus, 'identity'>,
+): CodeGraphLocalDiagnosticsReport['databases'][number]['views'][number] | undefined {
+  return views.find(
+    candidate => candidate.viewWorktreeId === job.identity.worktreeId && candidate.viewScopeId === job.identity.scopeId,
+  );
 }
 
 /**
@@ -1323,6 +1375,7 @@ export interface GraphCatalogSearchOptions {
 export function graphCatalogSearchOptions(
   repository: GraphRepository,
   repositories: readonly GraphRepositoryGroup[],
+  configuredProjects: readonly Pick<GraphConfiguredProject, 'name' | 'scopeId'>[] = [],
 ): GraphCatalogSearchOptions {
   const workspaces = new Map(repository.workspaces.map(workspace => [workspace.id, workspace]));
   const projects = repository.projects
@@ -1345,7 +1398,7 @@ export function graphCatalogSearchOptions(
       viewsById.set(view.id, {
         description: `${group.displayName} · ${view.snapshot.commit.slice(0, 8)}${view.snapshot.dirty ? ' · dirty' : ''}${view.localAssociation.branch ? ` · observed branch ${view.localAssociation.branch}` : ''} · folder ${graphLocalAssociationText(view.localAssociation)}`,
         id: view.id,
-        label: view.label,
+        label: graphRepositoryScopeLabel(view.label, view.scopeId, configuredProjects),
         repositoryId: group.id,
       });
     }

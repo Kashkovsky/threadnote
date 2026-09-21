@@ -653,6 +653,7 @@ export interface CodeGraphVisualizationEdgePage {
 
 export interface CodeGraphVisualizationCatalogOptions {
   readonly scopeId?: string;
+  readonly scopeIds?: readonly string[];
   readonly includeDependencies?: boolean;
   readonly projectOffset?: number;
   readonly projectId?: Option.Option<string>;

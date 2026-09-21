@@ -74,6 +74,8 @@ export type ProjectClosureSeedAssessment =
         readonly pathIndexProjects: number;
       };
       readonly seedProjectIds: readonly string[];
+      /** Resolver domains with no workspace detector; their cross-file surface uses a bounded candidate scan. */
+      readonly unownedResolutionDomains?: readonly string[];
     }
   | {
       readonly fallbackDetail?: CodeGraphProjectFileSetFallbackDetail;
@@ -159,6 +161,7 @@ export function assessProjectFileSetClosureSeeds(input: {
     return incompleteSeeds('duplicate-project-identity');
   }
   const seeds = new Set<string>();
+  const unownedResolutionDomains = new Set<string>();
   let ownershipChecks = 0;
   const collect = (
     paths: readonly string[],
@@ -175,7 +178,10 @@ export function assessProjectFileSetClosureSeeds(input: {
       // ambiguity in another domain cannot affect these facts.
       const resolutionDomain = resolutionDomainByPath?.get(path);
       const domainIndexes = resolutionDomain === undefined ? undefined : indexesByDomain.get(resolutionDomain);
-      if (resolutionDomain !== undefined && domainIndexes === undefined) return 'resolution-domain-unowned';
+      if (resolutionDomain !== undefined && domainIndexes === undefined) {
+        unownedResolutionDomains.add(resolutionDomain);
+        continue;
+      }
       const indexesForPath =
         resolutionDomain === undefined
           ? indexesByDomain
@@ -223,7 +229,7 @@ export function assessProjectFileSetClosureSeeds(input: {
     input.deletedResolutionDomainByPath,
   );
   if (deletedFailure !== undefined) return incompleteSeeds(deletedFailure);
-  if (seeds.size === 0) return incompleteSeeds('no-project-seeds');
+  if (seeds.size === 0 && unownedResolutionDomains.size === 0) return incompleteSeeds('no-project-seeds');
   if ([...seeds].some(id => !baseProjectsById.has(id) || !currentProjectsById.has(id))) {
     return incompleteSeeds('project-not-stable');
   }
@@ -242,6 +248,9 @@ export function assessProjectFileSetClosureSeeds(input: {
       pathIndexProjects: input.baseProjects.length + input.currentProjects.length,
     },
     seedProjectIds: [...seeds].sort(compareCodeUnits),
+    ...(unownedResolutionDomains.size === 0
+      ? {}
+      : {unownedResolutionDomains: [...unownedResolutionDomains].sort(compareCodeUnits)}),
   };
 }
 
@@ -449,7 +458,7 @@ export function assessProjectClosureSeeds(input: {
   for (const [id, left] of committedPublishedSymbols) {
     const right = effectivePublishedSymbols.get(id);
     if (right === undefined) {
-      if (isCandidateScannableDocumentationSymbol(left)) {
+      if (isCandidateScannableUnownedSymbol(left)) {
         for (const key of left.lookupKeys ?? []) {
           addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, left.resolutionDomain), key);
         }
@@ -472,8 +481,8 @@ export function assessProjectClosureSeeds(input: {
       continue;
     }
     const candidateScannableDocumentationPair =
-      isCandidateScannableDocumentationSymbol(left) &&
-      isCandidateScannableDocumentationSymbol(right) &&
+      isCandidateScannableUnownedSymbol(left) &&
+      isCandidateScannableUnownedSymbol(right) &&
       hasSameCandidateScannableDocumentationSurface(left, right);
     if (!hasSameGlobalSymbolSurface(left, right) && !candidateScannableDocumentationPair) {
       return {mode: 'fallback', reason: 'resolution-surface-changed'};
@@ -521,7 +530,7 @@ export function assessProjectClosureSeeds(input: {
     if (committedSymbols.has(id) || !right.exported) {
       return {mode: 'fallback', reason: 'resolution-surface-changed'};
     }
-    if (isCandidateScannableDocumentationSymbol(right)) {
+    if (isCandidateScannableUnownedSymbol(right)) {
       for (const key of right.lookupKeys ?? []) {
         addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, right.resolutionDomain), key);
       }
@@ -560,29 +569,25 @@ export function assessProjectClosureSeeds(input: {
 }
 
 /**
- * Markdown document resolution is the one non-project surface whose complete
- * cross-file lookup contract is explicit in persisted facts: the documentation
- * extractor publishes only these canonical global keys, and every consumer
- * carries the same keys in its reference lookup tiers. Restrict candidate-scan
- * admission to that exact contract; other non-TypeScript domains remain
- * fail-closed until they can prove equivalent exhaustive coverage.
+ * Candidate scans are admitted only for resolution domains whose persisted
+ * lookup keys are their complete cross-file contract. Markdown has a canonical
+ * global surface; Swift and Bash use their pack-local static lookup domains.
  */
-function isCandidateScannableDocumentationSymbol(symbol: CodeGraphSymbol): boolean {
-  if (
-    symbol.language !== 'markdown' ||
-    !['document', 'heading'].includes(symbol.kind) ||
-    symbol.exported !== true ||
-    symbol.resolutionDomain !== 'documentation' ||
-    symbol.resolutionScopeId !== undefined
-  ) {
-    return false;
+function isCandidateScannableUnownedSymbol(symbol: CodeGraphSymbol): boolean {
+  if (symbol.exported !== true || symbol.resolutionScopeId !== undefined) return false;
+  if (symbol.language === 'markdown' && ['document', 'heading'].includes(symbol.kind)) {
+    const expected = [
+      `global:qualified:${encodeURIComponent(symbol.qualifiedName)}`,
+      `global:name:${encodeURIComponent(symbol.name)}`,
+      ...(symbol.kind === 'document' ? [`global:path:${encodeURIComponent(symbol.path)}`] : []),
+    ];
+    return symbol.resolutionDomain === 'documentation' && sameStrings(symbol.lookupKeys ?? [], expected);
   }
-  const expected = [
-    `global:qualified:${encodeURIComponent(symbol.qualifiedName)}`,
-    `global:name:${encodeURIComponent(symbol.name)}`,
-    ...(symbol.kind === 'document' ? [`global:path:${encodeURIComponent(symbol.path)}`] : []),
-  ];
-  return sameStrings(symbol.lookupKeys ?? [], expected);
+  return (
+    ['swift', 'bash'].includes(symbol.language) &&
+    symbol.resolutionDomain === symbol.language &&
+    (symbol.lookupKeys?.length ?? 0) > 0
+  );
 }
 
 function hasSameCandidateScannableDocumentationSurface(left: CodeGraphSymbol, right: CodeGraphSymbol): boolean {

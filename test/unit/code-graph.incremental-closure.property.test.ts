@@ -231,6 +231,36 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 100}},
   );
 
+  it('candidate-scans static Swift and Bash global lookup keys', () => {
+    for (const language of ['swift', 'bash'] as const) {
+      const path = `scripts/${language}.${language === 'swift' ? 'swift' : 'sh'}`;
+      const symbol: CodeGraphSymbol = {
+        contentHash: 'hash',
+        exported: true,
+        id: language,
+        kind: 'function',
+        language,
+        lookupKeys: [`${language}:q:consumer`],
+        name: 'consumer',
+        path,
+        qualifiedName: 'consumer',
+        resolutionDomain: language,
+        span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+      };
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [facts(path, [], false)],
+          effectiveFacts: [facts(path, [symbol], false)],
+          projects: [],
+        }),
+      ).toMatchObject({
+        candidateLookupKeys: [{key: `${language}:q:consumer`, resolutionDomain: language}],
+        candidateScanRequired: true,
+        mode: 'eligible',
+      });
+    }
+  });
+
   fcProp(
     it,
     'candidate-scans only the canonical global lookup surface of existing Markdown headings',
@@ -443,7 +473,7 @@ describe('project incremental closure', () => {
 
   fcProp(
     it,
-    'classifies an unowned resolver domain deterministically without exposing changed paths',
+    'admits an unowned resolver domain deterministically without exposing changed paths',
     {
       pathCount: FC.integer({max: 16, min: 1}),
       reverse: FC.boolean(),
@@ -461,9 +491,10 @@ describe('project incremental closure', () => {
       });
 
       expect(result).toEqual({
-        fallbackDetail: 'resolution-domain-unowned',
-        mode: 'fallback',
-        reason: 'project-closure-incomplete',
+        mode: 'eligible',
+        planningOperations: {ownershipChecks: 0, pathIndexProjects: 2},
+        seedProjectIds: [],
+        unownedResolutionDomains: ['documentation'],
       });
       expect(
         assessProjectFileSetClosureSeeds({

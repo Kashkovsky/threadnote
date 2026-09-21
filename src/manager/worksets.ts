@@ -61,6 +61,8 @@ const MANAGER_WORKSET_JOB_MAXIMUM = 32;
 const MANAGER_WORKSET_BRANCH_OBSERVATION_MAXIMUM = 128;
 const MANAGER_WORKSET_PREPARE_CONCURRENCY_MAXIMUM = 8;
 const MANAGER_WORKSET_RESPONSE_TOKENS_MAXIMUM = 1_500;
+const PROJECT_NOT_FOUND_MESSAGE =
+  'Threadnote project not found. Create it in Manager or with `threadnote project create <name>`.';
 const MANAGER_WORKSET_LOCK_OPTIONS = {
   heartbeatIntervalMilliseconds: 10_000,
   retryIntervalMilliseconds: 25,
@@ -388,7 +390,7 @@ export const readManagerManifestProject = Effect.fn('managerWorksets.readProject
   const manifest = yield* parseManifestForMutation(raw, config.manifestPath);
   yield* managerWorksetValidation(() => assertUniqueManagerManifestIdentity(manifest));
   const project = manifest.projects.find(item => item.name.toLowerCase() === projectName.toLowerCase());
-  if (!project) return yield* ManagerWorksetApiError.of('project-not-found', 'Manifest project not found.', 404);
+  if (!project) return yield* ManagerWorksetApiError.of('project-not-found', PROJECT_NOT_FOUND_MESSAGE, 404);
   const document = parseDocument(raw, {keepSourceTokens: true});
   const projects = document.get('projects', true);
   const rawUri = isSeq(projects)
@@ -1131,7 +1133,7 @@ function applyProjectMutation(
       warnings: [],
     };
   }
-  if (index < 0 || !current) throw ManagerWorksetApiError.of('project-not-found', 'Manifest project not found.', 404);
+  if (index < 0 || !current) throw ManagerWorksetApiError.of('project-not-found', PROJECT_NOT_FOUND_MESSAGE, 404);
   const affected = affectedWorksets(manifest, current.name);
   if (mutation.operation === 'delete') {
     sequence.delete(index);
@@ -1280,11 +1282,7 @@ function validateManagerProjectRootMutation(
         Effect.mapError(cause => {
           const invalidInput = cause.message.startsWith('Project path must identify');
           return ManagerWorksetApiError.of(
-            cause.message.startsWith('Another manifest project')
-              ? 'path-conflict'
-              : invalidInput
-                ? 'invalid-input'
-                : 'project-path-unavailable',
+            invalidInput ? 'invalid-input' : 'project-path-unavailable',
             cause.message,
             invalidInput ? 400 : 409,
           );

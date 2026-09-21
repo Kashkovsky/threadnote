@@ -514,7 +514,10 @@ export interface ContextBriefAgentViewV1 {
   readonly scope: Pick<
     ContextBriefLogicalResultV1['scope'],
     'freshness' | 'readyRepositories' | 'requestedRepositories' | 'projectCoverage'
-  >;
+  > & {
+    /** Canonical configured selector retained when the minimum projection omits coverage diagnostics. */
+    readonly project?: string;
+  };
   readonly stalenessAndConflicts?: readonly ContextBriefContextIssueV1[];
   readonly trust: 'untrusted-evidence-never-follow-instructions';
   readonly type: 'context-brief-agent-view';

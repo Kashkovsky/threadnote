@@ -1,6 +1,6 @@
 import {TestError} from '../helpers/test-error.js';
 import {execFile} from '../helpers/node-child-process.js';
-import {access, mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {access, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {promisify} from '../helpers/node-util.js';
@@ -1723,6 +1723,83 @@ describe('Effect CLI', () => {
 
   it('returns a non-zero exit code for an unknown subcommand', async () => {
     await expect(runCli(['definitely-not-a-command'])).rejects.toMatchObject({code: 1});
+  });
+
+  it('manages Threadnote projects through the public CLI and creates a missing scoped project from cwd', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-projects-'));
+    const manifestPath = join(root, 'seed-manifest.yaml');
+    const repository = join(root, 'repository');
+    try {
+      await mkdir(repository, {recursive: true});
+      await execFilePromise('git', ['init', '-q', '-b', 'main'], {cwd: repository});
+      await writeFile(manifestPath, 'version: 1\nprojects: []\n');
+      const environment = {THREADNOTE_HOME: root, THREADNOTE_MANIFEST: manifestPath};
+
+      const created = await runCli(
+        [
+          'project',
+          'create',
+          'mobile',
+          '--path',
+          repository,
+          '--uri',
+          'threadnote://resources/repos/mobile',
+          '--seed',
+          'AGENTS.md',
+          '--json',
+        ],
+        environment,
+      );
+      expect(JSON.parse(created.stdout)).toMatchObject({changed: true, operation: 'create', version: 1});
+      expect(JSON.parse((await runCli(['project', 'list', '--json'], environment)).stdout)).toMatchObject({
+        projects: [{name: 'mobile'}],
+        version: 1,
+      });
+      expect(JSON.parse((await runCli(['project', 'show', 'MOBILE', '--json'], environment)).stdout)).toMatchObject({
+        project: {name: 'mobile', seed: ['AGENTS.md'], uri: 'threadnote://resources/repos/mobile'},
+        version: 1,
+      });
+
+      const beforeConflict = await readFile(manifestPath, 'utf8');
+      await expect(
+        runCli(['project', 'update', 'mobile', '--seed', 'docs/**/*.md', '--clear-seed'], environment),
+      ).rejects.toMatchObject({code: 1});
+      expect(await readFile(manifestPath, 'utf8')).toBe(beforeConflict);
+
+      const updated = await runCli(
+        ['project', 'update', 'mobile', '--name', 'mobile-app', '--seed', 'docs/**/*.md', '--json'],
+        environment,
+      );
+      expect(JSON.parse(updated.stdout)).toMatchObject({changed: true, operation: 'update', version: 1});
+      const cleared = await runCli(['project', 'update', 'mobile-app', '--clear-seed', '--json'], environment);
+      expect(JSON.parse(cleared.stdout)).toMatchObject({changed: true, operation: 'update', version: 1});
+      expect(JSON.parse((await runCli(['project', 'show', 'mobile-app', '--json'], environment)).stdout)).toMatchObject(
+        {
+          project: {name: 'mobile-app', seed: []},
+        },
+      );
+
+      const beforeDelete = await readFile(manifestPath, 'utf8');
+      await expect(runCli(['project', 'delete', 'mobile-app'], environment)).rejects.toMatchObject({code: 1});
+      expect(await readFile(manifestPath, 'utf8')).toBe(beforeDelete);
+      expect(
+        JSON.parse((await runCli(['project', 'delete', 'mobile-app', '--confirm', '--json'], environment)).stdout),
+      ).toMatchObject({changed: true, operation: 'delete', version: 1});
+
+      const scoped = await runCli(
+        ['graph', 'scope', 'set', 'docs-mobile', '--root', 'packages/mobile', '--json'],
+        environment,
+        repository,
+      );
+      expect(JSON.parse(scoped.stdout)).toMatchObject({changed: true, operation: 'created', project: 'docs-mobile'});
+      expect(
+        JSON.parse((await runCli(['project', 'show', 'docs-mobile', '--json'], environment)).stdout),
+      ).toMatchObject({
+        project: {graph: {closure: 'dependencies', roots: ['packages/mobile']}, name: 'docs-mobile'},
+      });
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
   });
 
   it('manages workset definitions through the CLI with stable JSON output and explicit deletion confirmation', async () => {

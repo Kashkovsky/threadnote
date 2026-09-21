@@ -2,6 +2,7 @@ export const MANAGER_GRAPH_DEFAULT_NODE_LIMIT = 240;
 export const MANAGER_GRAPH_DEFAULT_EDGE_LIMIT = 640;
 export const MANAGER_GRAPH_MAX_NODE_LIMIT = 500;
 export const MANAGER_GRAPH_MAX_EDGE_LIMIT = 1_500;
+export const MANAGER_GRAPH_CATALOG_SCOPE_SEARCH_LIMIT = 32;
 
 export interface ManagerGraphVisualizationBudget {
   readonly edgeLimit?: number;

@@ -88,6 +88,7 @@ import {
 import {getRuntimeConfig} from '../runtime.js';
 import {runInitManifest, runSeed, runSeedSkills} from '../seeding.js';
 import {makeWorksetCommand} from './workset_cli.js';
+import {makeProjectCommand} from './project_cli.js';
 import {makeCodeGraphScopeCommand} from './graph_scope_cli.js';
 import {
   runShareConflictResolve,
@@ -1409,6 +1410,7 @@ const recallFeedback = makeRecallFeedbackCommand(options =>
 );
 
 const workset = makeWorksetCommand(withScopedRuntime);
+const project = makeProjectCommand(withScopedRuntime);
 const contextBrief = makeContextBriefCommand(options => withRuntimeEffect(config => runContextBrief(config, options)));
 const contextHealth = makeContextHealthCommand(
   options => withRuntimeEffect(config => runContextHealth(config, options)),
@@ -1940,6 +1942,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('recall', recall),
   registerTopLevelCommand('recall-feedback', recallFeedback),
   registerTopLevelCommand('workset', workset),
+  registerTopLevelCommand('project', project),
   registerTopLevelCommand('context', context),
   registerTopLevelCommand('value', value, {productionLog: {subcommands: {report: 'requires-apply', pilot: 'never'}}}),
   registerTopLevelCommand('procedure', procedure, {productionLog: {subcommands: {verify: 'requires-apply'}}}),

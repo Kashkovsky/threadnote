@@ -63,6 +63,7 @@ import {sanitizeCodeGraphPresentationText} from '../../code_graph/presentation_t
 import {AgentResponseBudgetTooSmallError} from '../../evaluation/agent-response.js';
 import {codeGraphMcpResponse, compactCodeGraphMcpResult, formatCodeGraphMcpResponse} from '../code_graph_projection.js';
 import {discloseCodeGraphAnalysisProjectCoverage} from '../../code_graph/query/scope.js';
+import {resolveCodeGraphScopeRoute} from '../../code_graph/scope/routing.js';
 import {
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionObservation,
@@ -415,7 +416,20 @@ export function registerCodeGraphTool(
           return formatCodeGraphMcpResponse(response, responseFormat);
         }
         if (operation === 'topology') {
-          return argumentError('inspect_code_graph topology requires a named workset.');
+          const topologyScopeRoute = yield* queryTelemetry.stage(
+            'graph.query.status',
+            'query-repository-identity',
+            resolveCodeGraphScopeRoute(config.manifestPath, checkedCwd.value, project),
+          );
+          if (topologyScopeRoute.state === 'selected') {
+            const selectedProject = topologyScopeRoute.project.name;
+            return argumentError(
+              `inspect_code_graph topology for configured project "${selectedProject}" requires either analyze_code_graph with the same callerCwd/project or a prepared named workset. Run analyze_code_graph with callerCwd="${checkedCwd.value}" and project="${selectedProject}", or run threadnote workset prepare <name> before inspect_code_graph topology.`,
+            );
+          }
+          return argumentError(
+            'inspect_code_graph topology requires a named workset. Run threadnote workset prepare <name> first.',
+          );
         }
         if (cursor?.trim()) {
           return argumentError('inspect_code_graph cursor requires a named workset query.');
@@ -428,7 +442,16 @@ export function registerCodeGraphTool(
             )
           : undefined;
         const inspectionCwd = qualifiedTarget?.cwd ?? checkedCwd.value;
-        const inspectionProject = qualifiedTarget?.project ?? project;
+        const scopeRoute =
+          qualifiedTarget === undefined
+            ? yield* queryTelemetry.stage(
+                'graph.query.status',
+                'query-repository-identity',
+                resolveCodeGraphScopeRoute(config.manifestPath, inspectionCwd, project),
+              )
+            : undefined;
+        const inspectionProject =
+          qualifiedTarget?.project ?? (scopeRoute?.state === 'selected' ? scopeRoute.project.name : project);
         const inspectionNodeId = qualifiedTarget?.nodeId ?? nodeId;
         const allowStaleReadySnapshot = codeGraphInspectionAllowsStaleReady(operation);
         const strictFreshness = !allowStaleReadySnapshot;

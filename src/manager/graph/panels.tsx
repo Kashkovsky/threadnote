@@ -10,6 +10,7 @@ import {
   compactNumber,
   graphAdministrationInventorySummary,
   graphAdministrationJobSelection,
+  graphAdministrationJobView,
   graphAdministrationTarget,
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
@@ -20,6 +21,7 @@ import {
   graphMaintenanceStatusLabel,
   graphRelationshipCountLabel,
   graphRelationshipSampleLabel,
+  graphRepositoryScopeLabel,
   graphViewRemovalTarget,
   graphWaiterCountForBuild,
   GRAPH_PALETTE,
@@ -796,7 +798,13 @@ export function GraphAdministration(props: {
                         <div
                           key={`${database.checkoutId}:${candidate.viewWorktreeId}:${candidate.viewScopeId ?? 'full-repository'}`}
                         >
-                          <strong>{candidate.repository.displayName}</strong>
+                          <strong>
+                            {graphRepositoryScopeLabel(
+                              candidate.repository.displayName,
+                              candidate.viewScopeId,
+                              props.configuredProjects,
+                            )}
+                          </strong>
                           <span>
                             {candidate.snapshot.fileCount.toLocaleString()} files ·{' '}
                             {candidate.snapshot.symbolCount.toLocaleString()} symbols ·{' '}
@@ -850,12 +858,14 @@ export function GraphAdministration(props: {
                     })}
                   </div>
                   {jobs.jobs.map(job => {
-                    const jobView = database.views.find(
-                      candidate => candidate.viewWorktreeId === job.identity.worktreeId,
-                    );
+                    const jobView = graphAdministrationJobView(database.views, job);
                     return (
                       <p className="graph-database-job" key={`${job.buildId}:${job.coordination?.role ?? 'build'}`}>
-                        {jobView?.repository.displayName ?? 'Indexed repository'}
+                        {graphRepositoryScopeLabel(
+                          jobView?.repository.displayName ?? 'Indexed repository',
+                          job.identity.scopeId,
+                          props.configuredProjects,
+                        )}
                         {jobView ? ` · folder ${graphLocalAssociationText(jobView.localAssociation)}` : ''} ·{' '}
                         {job.state === 'running' ? 'active' : job.state} · {job.phase}
                         {job.subphase ? `/${job.subphase}` : ''} · {job.observation.liveness}
@@ -1139,6 +1149,7 @@ export function GraphAutomaticCompactionProgress(props: {
 
 export function GraphBuildProgress(props: {
   readonly build: GraphBuildStatus;
+  readonly configuredProjects?: readonly GraphConfiguredProject[];
   readonly repositories: readonly GraphRepositoryGroup[];
   readonly storage?: GraphStorageSummary;
   readonly waiters: readonly GraphBuildStatus[];
@@ -1154,7 +1165,7 @@ export function GraphBuildProgress(props: {
   const lastProgress = Math.max(0, Date.now() - Date.parse(build.timestamps.lastProgressAt));
   const progressSilent = build.coordination?.progressSilent === true;
   const eta = progressSilent ? undefined : build.eta;
-  const target = graphBuildTarget(build, props.repositories);
+  const target = graphBuildTarget(build, props.repositories, props.configuredProjects);
   const concurrency = graphBuildConcurrencyState(build, props.waiters, props.repositories);
   const waiterCount = graphWaiterCountForBuild(build, props.waiters);
   const statusLabel =

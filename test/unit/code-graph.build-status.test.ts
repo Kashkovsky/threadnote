@@ -171,6 +171,43 @@ describe('code graph cross-process build status', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('round-trips candidate-closure fallback reasons without inventing file-set evidence', () =>
+    Effect.forEach(
+      ['cache-incomplete', 'fact-budget-expanded', 'project-closure-incomplete', 'project-closure-unbounded'] as const,
+      fallbackReason =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectory({prefix: 'threadnote-graph-candidate-fallback-'});
+          homes.push(home);
+          const identity = fixtureIdentity(home);
+          const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+          yield* reporter.progress({
+            completed: 0,
+            metrics: {
+              batchesCompleted: 0,
+              batchesTotal: 1,
+              fallbackReason,
+              mode: 'full',
+              sourceBytesCompleted: 0,
+              sourceBytesTotal: 1,
+            },
+            phase: 'materializing',
+            reused: 0,
+            total: 1,
+            unit: 'files',
+          });
+          const status = (yield* readCodeGraphBuildStatuses(layout))[0];
+          expect(status).toMatchObject({
+            materialization: {metrics: {fallbackReason}},
+          });
+          expect(status?.materialization?.metrics?.fallbackAssessment).toBeUndefined();
+        }),
+      {concurrency: 1},
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('publishes a reporter ETA only after stable phase-local throughput', () =>
     Effect.gen(function* () {
       const confidenceFor = (delays: readonly number[]) =>
