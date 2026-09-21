@@ -87,6 +87,7 @@ describe('agent instructions', () => {
     const skills = skillFiles.join('\n').replace(/\s+/g, ' ');
     const [context, graph, memory] = skillFiles;
     const normalizedContext = context.replace(/\s+/g, ' ');
+    const normalizedGraph = graph.replace(/\s+/g, ' ');
     expect(context.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(400);
     expect(graph.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(300);
     expect(memory.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(500);
@@ -102,8 +103,10 @@ describe('agent instructions', () => {
       '`query`',
       '`node`',
       '`neighbors`',
+      '`explain`',
       '`path`',
       '`impact`',
+      '`topology`',
       '`analyze_code_graph`',
       '`projectCoverage`',
       '`outside-project-graph`',
@@ -158,8 +161,27 @@ describe('agent instructions', () => {
     expect(normalizedContext).toContain('MCP `context_brief`');
     expect(normalizedContext).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
     expect(normalizedContext).not.toContain('threadnote context brief --caller-cwd');
+    expect(normalizedGraph).toContain('`node`/`neighbors` round-trip stable `cgs_`/`cgr_` handles');
+    expect(normalizedGraph).toContain('`explain` expands symbols or queries');
+    expect(normalizedGraph).toContain('`path` connects local');
+    expect(normalizedGraph).toContain('qualified Workset endpoints');
+    expect(normalizedGraph).toContain('`responseFormat: "text"`');
+    expect(normalizedGraph).toContain('Successful graph-result responses');
+    expect(normalizedGraph).toContain('status/error envelopes may retain');
+    expect(normalizedGraph).toContain('the default dual response');
+    for (const analysisOperation of [
+      '`stats`',
+      '`communities`',
+      '`community`',
+      '`groups`',
+      '`hubs`',
+      '`surprises`',
+      '`confidence`',
+      '`full`',
+    ]) {
+      expect(graph).toContain(analysisOperation);
+    }
     for (const retiredDetail of [
-      '`responseFormat`',
       '`offsetBytes`',
       '`sourceHash`',
       '`canonicalUri`',
