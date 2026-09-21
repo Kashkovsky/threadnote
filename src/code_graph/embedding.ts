@@ -2,7 +2,7 @@ import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Clock, Context, Crypto, DateTime, Effect, FileSystem, Layer, Path, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {LocalModelRuntime, type LocalModelRuntimeShape} from '../effect/ai/local-model-runtime.js';
 import {LocalModelCatalog, type LocalModelCatalogShape, type LocalModelManifest} from '../models/catalog.js';
@@ -11,6 +11,8 @@ import {LocalModelStore, type LocalModelStoreShape} from '../models/store.js';
 import {normalizeVector, searchExactVectors, type VectorSearchResult} from '../search/vector-search.js';
 import {codeGraphVectorWriteLockPath, type CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
+import {codeGraphVectorViewId} from './vector/identity.js';
 import type {CodeGraphProgress, CodeGraphSnapshot, CodeGraphSymbol} from './types.js';
 import type {CodeGraphSymbolCursor} from './store.js';
 import {
@@ -23,7 +25,7 @@ import {
   makeCodeGraphVectorRetirementCapacityProtector,
   prepareCodeGraphVectorRetirement,
   requireCodeGraphVectorRetirementSchema,
-} from './vector_retirement.js';
+} from './vector/retirement.js';
 
 class CodeGraphEmbeddingError extends Schema.TaggedError<CodeGraphEmbeddingError>()('CodeGraphEmbeddingError', {
   cause: Schema.optionalKey(Schema.Defect()),
@@ -228,6 +230,12 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
 }) {
   const crypto = yield* Crypto.Crypto;
   const system = yield* SystemInfo;
+  if (
+    (input.snapshot.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) !==
+    (input.layout.scopeId ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY)
+  ) {
+    return yield* CodeGraphEmbeddingError.make({message: 'Code graph vector snapshot scope does not match its view.'});
+  }
   const selected = yield* selectedEmbeddingModel(input.threadnoteHome, input.catalog, input.modelStore).pipe(
     Effect.catch(cause => Effect.succeed({reason: messageOf(cause)} as const)),
   );
@@ -301,7 +309,7 @@ const ensureGraphVectors = Effect.fn('codeGraph.ensureVectors')(function* (input
               active.template_version === CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION &&
               active.dimensions === selected.manifest.dimensions
             ? active
-            : yield* selectMostRecentCompatibleGeneration(sql, selected.manifest.sha256, selected.manifest.dimensions!);
+            : undefined;
         const generation = `${yield* Clock.currentTimeMillis}-${worktreeId.slice(-8)}-${input.snapshot.id.slice(-8)}-${(yield* crypto.randomUUIDv4).slice(
           0,
           8,
@@ -818,26 +826,6 @@ const selectGenerationForSnapshot = Effect.fn('codeGraph.selectVectorGenerationF
   return rows[0];
 });
 
-const selectMostRecentCompatibleGeneration = Effect.fn('codeGraph.selectMostRecentCompatibleVectorGeneration')(
-  function* (sql: SqlClient.SqlClient, modelSha256: string, dimensions: number) {
-    const rows = yield* sql.unsafe<VectorGenerationRow>(
-      `SELECT * FROM vector_generations
-     WHERE model_sha256 = ?
-       AND dimensions = ?
-       AND template_version = ?
-       AND state = 'ready'
-       AND NOT EXISTS (
-         SELECT 1 FROM vector_generation_retirements AS retirement
-         WHERE retirement.generation = vector_generations.generation
-       )
-     ORDER BY created_at DESC, generation DESC
-     LIMIT 1`,
-      [modelSha256, dimensions, CODE_GRAPH_EMBEDDING_TEMPLATE_VERSION],
-    );
-    return rows[0];
-  },
-);
-
 function activateVectorGeneration(sql: SqlClient.SqlClient, worktreeId: string, generation: string) {
   return sql`
     INSERT INTO vector_pointers (worktree_id, generation)
@@ -859,7 +847,7 @@ const removeLegacyVectorSidecars = Effect.fn('codeGraph.removeLegacyVectorSideca
 function requiredWorktreeId(layout: CodeGraphLayout): string {
   if (!/^[0-9a-f]{64}$/.test(layout.worktreeId))
     throw CodeGraphEmbeddingError.make({message: 'Code graph worktree identity is invalid.'});
-  return layout.worktreeId;
+  return codeGraphVectorViewId(layout.worktreeId, layout.scopeId);
 }
 
 function messageOf(cause: unknown): string {

@@ -4,8 +4,8 @@ import * as FC from 'fast-check';
 import {
   codeGraphMaterializationSpoolApplyPlan,
   CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES,
-} from '../../src/code_graph/materialization_spool_apply_surfaces.js';
-import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '../../src/code_graph/materialization_spool_surfaces.js';
+} from '../../src/code_graph/materialization/spool/apply_surfaces.js';
+import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '../../src/code_graph/materialization/spool/surfaces.js';
 
 fcProp(
   it,

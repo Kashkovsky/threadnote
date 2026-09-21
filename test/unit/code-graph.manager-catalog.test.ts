@@ -37,7 +37,7 @@ import {CodeGraphStoreError} from '../../src/code_graph/types.js';
 import {
   COMPONENT_SCOPE_TEMP_TABLE,
   componentEdgeAggregateMaterializationStatement,
-} from '../../src/code_graph/store_component_aggregates.js';
+} from '../../src/code_graph/store/component_aggregates.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,
@@ -935,6 +935,48 @@ describe('Manager logical repository and workspace catalogs', () => {
     }),
   );
 
+  effectIt.effect('retains and identifies a scoped Manager view independently from the full-repository view', () =>
+    Effect.gen(function* () {
+      const home = temporaryRoot('threadnote-manager-scoped-view-');
+      const identity = repositoryIdentity(home, '9'.repeat(64));
+      const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+      const full = readySnapshot(identity, 0, 0, 0, '2026-09-21T08:00:00.000Z');
+      const scopeId = `code-graph-scope:${'a'.repeat(64)}`;
+      const scoped = {
+        ...readySnapshot(identity, 0, 0, 0, '2026-09-21T08:01:00.000Z'),
+        scopeId,
+      };
+
+      const catalog = yield* Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, full, [], [], []);
+        yield* store.promote(databasePath, identity, full.id);
+        yield* store.activate(databasePath, identity, scoped, [], [], []);
+        yield* store.promote(databasePath, identity, scoped.id);
+        return yield* managerGraphCatalog(home);
+      }).pipe(provideTestLayer(storeLayer));
+
+      expect(catalog.diagnostics).toEqual([]);
+      expect(catalog.repositories).toHaveLength(1);
+      expect(catalog.repositories[0]?.views).toHaveLength(2);
+      expect(catalog.repositories[0]?.views.map(view => view.scopeId ?? 'full-repository').sort()).toEqual([
+        scopeId,
+        'full-repository',
+      ]);
+      expect(new Set(catalog.repositories[0]?.views.map(view => view.id)).size).toBe(2);
+      expect(catalog.repositories[0]?.views.find(view => view.scopeId === scopeId)?.id).toMatch(
+        /^[0-9a-f]{64}\.[0-9a-f]{64}\.[0-9a-f]{64}$/u,
+      );
+      const scopedView = catalog.repositories[0]?.views.find(view => view.scopeId === scopeId);
+      expect(scopedView).toBeDefined();
+      const analysis = yield* managerGraphAnalysis(home, scopedView!.id, Option.some(scoped.id)).pipe(
+        provideTestLayer(storeLayer),
+      );
+      expect(analysis.snapshot.id).toBe(scoped.id);
+      yield* releaseManagerGraphSnapshotLeases().pipe(provideTestLayer(storeLayer));
+    }),
+  );
+
   effectIt.effect('migrates a readable legacy lease table while retaining the Manager catalog', () =>
     Effect.gen(function* () {
       const home = temporaryRoot('threadnote-manager-legacy-lease-');
@@ -947,11 +989,50 @@ describe('Manager logical repository and workspace catalogs', () => {
       yield* Effect.sync(() => {
         const legacy = new Database(databasePath);
         try {
+          legacy.run('PRAGMA foreign_keys = OFF');
           legacy.transaction(() => {
             legacy.run('DROP TRIGGER removed_views_cleanup_revoke_delete');
             legacy.run('DROP TRIGGER removed_views_cleanup_revoke_insert');
             legacy.run('DROP TRIGGER removed_views_cleanup_revoke_update');
             legacy.run('DROP TABLE removed_view_cleanup');
+            legacy.run('DROP TABLE snapshot_build_owner_instances');
+            legacy.run('DROP TABLE snapshot_component_edge_aggregate_receipts');
+            legacy.run('DROP TABLE snapshot_component_edge_aggregates');
+            legacy.run('DROP TABLE scope_applicability');
+            legacy.run('DROP TABLE snapshot_scope_receipts');
+            legacy.run('DROP INDEX snapshots_scope_recent_ready');
+            legacy.run('DROP INDEX snapshots_scope_commit_ready');
+            legacy.run('DROP INDEX snapshots_scope_reusable');
+            legacy.run('DROP INDEX snapshots_scope_reusable_content');
+            legacy.run('DROP INDEX snapshots_scope_reusable_commit');
+            legacy.run(
+              `CREATE TEMP TABLE legacy_active_snapshots AS
+               SELECT worktree_id, snapshot_id, activated_at FROM active_snapshots
+               WHERE scope_id = 'full-repository'`,
+            );
+            legacy.run('DROP TABLE active_snapshots');
+            legacy.run(`CREATE TABLE active_snapshots (
+              worktree_id TEXT PRIMARY KEY NOT NULL,
+              snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+              activated_at TEXT NOT NULL
+            )`);
+            legacy.run(
+              `INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
+               SELECT worktree_id, snapshot_id, activated_at FROM legacy_active_snapshots`,
+            );
+            legacy.run('DROP TABLE legacy_active_snapshots');
+            legacy.run('DROP TABLE removed_views');
+            legacy.run('ALTER TABLE snapshots DROP COLUMN scope_id');
+            legacy.run(
+              'CREATE INDEX IF NOT EXISTS active_snapshots_snapshot_worktree ON active_snapshots(snapshot_id, worktree_id)',
+            );
+            legacy.run('CREATE INDEX IF NOT EXISTS snapshots_base_state_id ON snapshots(base_snapshot_id, state, id)');
+            legacy.run(
+              'CREATE INDEX IF NOT EXISTS snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)',
+            );
+            legacy.run('CREATE INDEX IF NOT EXISTS snapshot_leases_expiry ON snapshot_leases(expires_at)');
+            legacy.run('DROP INDEX snapshot_files_raw_content_hash');
+            legacy.run('ALTER TABLE snapshot_files DROP COLUMN raw_content_hash');
             legacy.run(
               `DELETE FROM schema_metadata
                WHERE key IN ('removed_view_cleanup_epoch_sequence', 'removed_view_cleanup_admission_cursor')`,
@@ -960,6 +1041,7 @@ describe('Manager logical repository and workspace catalogs', () => {
             legacy.run('ALTER TABLE snapshot_leases DROP COLUMN retire_when_inactive');
           })();
         } finally {
+          legacy.run('PRAGMA foreign_keys = ON');
           legacy.close();
         }
       });

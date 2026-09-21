@@ -15,7 +15,7 @@ import {
   inventoryRepositoryFromReusableCleanBase,
   worktreeBuildRequestObservation,
 } from '../../src/code_graph/inventory.js';
-import {inventoryRepositoryFromReusableCleanBaseSlice} from '../../src/code_graph/inventory_sparse.js';
+import {inventoryRepositoryFromReusableCleanBaseSlice} from '../../src/code_graph/inventory/sparse.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {
   BUILTIN_LANGUAGE_PACK_REGISTRY,
@@ -31,13 +31,14 @@ import {
   type CodeGraphVisualizationCatalog,
 } from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, type CodeGraphIndexSummary} from '../../src/code_graph/types.js';
-import {CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES} from '../../src/code_graph/inventory_policy.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../../src/code_graph/index_scope.js';
+import {CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES} from '../../src/code_graph/inventory/policy.js';
 import {
   validateContextBriefFileCitation,
   validateContextBriefMemoryCitations,
 } from '../../src/context_brief/citation_validation.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
-import {captureMemoryCodeCitations} from '../../src/memory/code_citation_capture.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
+import {captureMemoryCodeCitations} from '../../src/memory/code/citation_capture.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 
@@ -2025,13 +2026,13 @@ function promoteLegacySnapshot(databasePath: string, worktreeId: string, snapsho
   try {
     database
       .query(
-        `INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(worktree_id) DO UPDATE SET
+        `INSERT INTO active_snapshots (worktree_id, scope_id, snapshot_id, activated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(worktree_id, scope_id) DO UPDATE SET
            snapshot_id = excluded.snapshot_id,
            activated_at = excluded.activated_at`,
       )
-      .run(worktreeId, snapshotId, '2026-07-31T00:00:02.000Z');
+      .run(worktreeId, CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY, snapshotId, '2026-07-31T00:00:02.000Z');
   } finally {
     database.close();
   }

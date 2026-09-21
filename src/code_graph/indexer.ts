@@ -7,23 +7,23 @@ export {
   CODE_GRAPH_REFERENCE_CANDIDATE_BUDGET_DIAGNOSTIC,
   compactCachedFileRelationships,
   finalCodeGraphFactBatches,
-} from './fact_budget.js';
+} from './fact/budget.js';
 
-export {CodeGraphIndexer} from './indexer_service.js';
+export {CodeGraphIndexer} from './indexer/service.js';
 export {
   codeGraphIndexEnsuresVectors,
   type CodeGraphCommitLease,
   type CodeGraphIndexerShape,
   type CodeGraphIndexOptions,
   type DirectPersistentCapacityProtection,
-} from './indexer_types.js';
+} from './indexer/types.js';
 export {
   createCachedCodeGraphFactsAttributor,
   deriveCachedCodeGraphFacts,
   hasSameCodeGraphResolutionSurface,
   resolvePersistedReexportTerminals,
   reusableBaseFileSetFingerprint,
-} from './indexer_incremental.js';
+} from './indexer/incremental.js';
 export {
   addMaterializationReplayMetrics,
   addMaterializationRows,
@@ -56,4 +56,4 @@ export {
   type MaterializationStorageAvailability,
   type MaterializationStoragePlan,
   type PersistentMaterializationTransactionCandidate,
-} from './indexer_materialization.js';
+} from './indexer/materialization.js';

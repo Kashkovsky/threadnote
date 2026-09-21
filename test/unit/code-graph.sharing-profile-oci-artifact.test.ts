@@ -16,7 +16,7 @@ import {
   GRAPH_SHARE_PROFILE_OCI_MANIFEST_MAX_BYTES,
   graphShareProfileOciArtifact,
   parseGraphShareProfileOciArtifact,
-} from '../../src/code_graph/sharing/profile_oci_artifact.js';
+} from '../../src/code_graph/sharing/profile/oci_artifact.js';
 import {defaultGraphShareProfile, parseGraphShareProfile} from '../../src/code_graph/sharing/profile.js';
 
 const UTF8 = new TextEncoder();

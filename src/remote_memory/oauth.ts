@@ -18,6 +18,7 @@ export const COMPOSER_OAUTH_SCOPES = [
 ] as const;
 
 export interface OAuthPrincipalClaims {
+  readonly clientId?: string;
   readonly issuer: string;
   readonly scopes: ReadonlySet<string>;
   readonly subject: string;
@@ -29,12 +30,14 @@ export interface OAuthTokenVerifier {
 
 export interface OAuthVerifierConfig {
   readonly audience: string;
+  readonly clientIdClaim?: 'azp' | 'client_id' | 'cid' | 'azp-or-client_id';
   readonly issuer: string;
   readonly jwksUrl: URL;
 }
 
 export interface LocalOAuthVerifierConfig {
   readonly audience: string;
+  readonly clientIdClaim?: 'azp' | 'client_id' | 'cid' | 'azp-or-client_id';
   readonly issuer: string;
   readonly publicKey: CryptoKey;
 }
@@ -59,8 +62,8 @@ function memoryVerifier(verify: (token: string) => Promise<AccessTokenClaims>): 
   return {
     verify: async token => {
       try {
-        const {issuer, scopes, subject} = await verify(token);
-        return {issuer, scopes, subject};
+        const {clientId, issuer, scopes, subject} = await verify(token);
+        return {...(clientId === undefined ? {} : {clientId}), issuer, scopes, subject};
       } catch (error) {
         throw memoryTokenError(error);
       }

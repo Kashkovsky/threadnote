@@ -17,7 +17,7 @@ import {
   rankCodeGraphWorksetRouterCandidates,
   type CodeGraphWorksetCatalogCandidateRequestV1,
   type CodeGraphWorksetCatalogCandidateSourceV1,
-} from '../../src/code_graph/workset_router.js';
+} from '../../src/code_graph/workset/router.js';
 import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 

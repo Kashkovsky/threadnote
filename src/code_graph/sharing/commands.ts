@@ -1,16 +1,16 @@
 import {Console, Effect} from 'effect';
-import {writeFinalCliOutput} from '../../effect/cli_output.js';
+import {writeFinalCliOutput} from '../../effect/cli/output.js';
 import type {RuntimeConfig} from '../../types.js';
 import {graphSharingFailure} from './errors.js';
 import {
-  configureGraphAuth0User,
-  configureRegistryAuth0User,
-  loginGraphAuth0User,
-  loginRegistryAuth0User,
-  logoutGraphAuth0User,
-  logoutRegistryAuth0User,
-} from './auth0_user.js';
-import {graphPublisherPublicationMessage, readGraphPublisherRegistryStatus} from './publisher_registry.js';
+  configureGraphOAuthUser,
+  configureRegistryOAuthUser,
+  loginGraphOAuthUser,
+  loginRegistryOAuthUser,
+  logoutGraphOAuthUser,
+  logoutRegistryOAuthUser,
+} from './oauth/user.js';
+import {graphPublisherPublicationMessage, readGraphPublisherRegistryStatus} from './publisher/registry.js';
 import {
   runGraphContributeSet,
   runGraphContributeStatus,
@@ -229,9 +229,79 @@ export const runGraphPublisherStatusCommand = Effect.fn('codeGraph.sharing.publi
   return result;
 });
 
-export const runGraphAuth0ConfigureCommand = Effect.fn('codeGraph.sharing.auth0ConfigureCommand')(function* (
+interface OAuthProviderOptions {
+  readonly audienceParameter?: string;
+  readonly clientIdClaim?: string;
+  readonly deviceAuthorizationUrl?: string;
+  readonly jwksUrl?: string;
+  readonly tokenUrl?: string;
+}
+
+function legacyAuth0Provider(issuer: string, audience: string) {
+  let url: URL;
+  try {
+    url = new URL(issuer);
+  } catch {
+    throw graphSharingFailure('Legacy Auth0 setup requires an exact HTTPS tenant root issuer.');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.pathname !== '/' ||
+    url.href !== issuer ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    throw graphSharingFailure('Legacy Auth0 setup requires an exact HTTPS tenant root issuer.');
+  return {
+    audienceParameter: audience,
+    clientIdClaim: 'azp-or-client_id' as const,
+    deviceAuthorizationUrl: new URL('oauth/device/code', issuer).href,
+    jwksUrl: new URL('.well-known/jwks.json', issuer).href,
+    tokenUrl: new URL('oauth/token', issuer).href,
+  };
+}
+
+function explicitOAuthProvider(options: OAuthProviderOptions):
+  | {
+      readonly audienceParameter?: string;
+      readonly clientIdClaim: 'azp' | 'client_id' | 'cid' | 'azp-or-client_id';
+      readonly deviceAuthorizationUrl: string;
+      readonly jwksUrl: string;
+      readonly tokenUrl: string;
+    }
+  | undefined {
+  const values = [
+    options.audienceParameter,
+    options.clientIdClaim,
+    options.deviceAuthorizationUrl,
+    options.jwksUrl,
+    options.tokenUrl,
+  ];
+  if (values.every(value => value === undefined)) return undefined;
+  if (
+    options.clientIdClaim === undefined ||
+    options.deviceAuthorizationUrl === undefined ||
+    options.jwksUrl === undefined ||
+    options.tokenUrl === undefined ||
+    !['azp', 'client_id', 'cid', 'azp-or-client_id'].includes(options.clientIdClaim)
+  )
+    throw graphSharingFailure(
+      'Explicit OAuth setup requires --device-authorization-url, --token-url, --jwks-url, and --client-id-claim.',
+    );
+  return {
+    ...(options.audienceParameter === undefined ? {} : {audienceParameter: options.audienceParameter}),
+    clientIdClaim: options.clientIdClaim as 'azp' | 'client_id' | 'cid' | 'azp-or-client_id',
+    deviceAuthorizationUrl: options.deviceAuthorizationUrl,
+    jwksUrl: options.jwksUrl,
+    tokenUrl: options.tokenUrl,
+  };
+}
+
+export const runGraphOAuthConfigureCommand = Effect.fn('codeGraph.sharing.oauthConfigureCommand')(function* (
   config: RuntimeConfig,
-  options: {
+  options: OAuthProviderOptions & {
     readonly audience: string;
     readonly clientId: string;
     readonly coordinatorUrl: string;
@@ -240,18 +310,36 @@ export const runGraphAuth0ConfigureCommand = Effect.fn('codeGraph.sharing.auth0C
     readonly json: boolean;
   },
 ) {
-  const result = yield* configureGraphAuth0User(config, {
+  const selection = yield* Effect.try({
+    try: () => {
+      const explicit = explicitOAuthProvider(options);
+      return {
+        profile: explicit === undefined ? ('legacy-auth0' as const) : ('generic' as const),
+        provider: explicit ?? legacyAuth0Provider(options.issuer, options.audience),
+      };
+    },
+    catch: error => error as ReturnType<typeof graphSharingFailure>,
+  });
+  const base = {
     audience: options.audience,
     clientId: options.clientId,
     coordinatorUrl: options.coordinatorUrl,
     issuer: options.issuer,
     organization: options.organization,
-  });
+  };
+  const result = yield* configureGraphOAuthUser(
+    config,
+    {
+      ...base,
+      ...selection.provider,
+    },
+    {profile: selection.profile},
+  );
   if (options.json) yield* writeFinalCliOutput(JSON.stringify(result));
-  else yield* Console.log('Configured the public Auth0 graph client. Run `threadnote graph auth login` once.');
+  else yield* Console.log('Configured the public OAuth graph client. Run `threadnote graph auth login` once.');
 });
 
-export const runGraphAuth0LoginCommand = Effect.fn('codeGraph.sharing.auth0LoginCommand')(function* (
+export const runGraphOAuthLoginCommand = Effect.fn('codeGraph.sharing.oauthLoginCommand')(function* (
   config: RuntimeConfig,
   options: {readonly coordinatorUrl?: string; readonly organization?: string},
 ) {
@@ -261,11 +349,11 @@ export const runGraphAuth0LoginCommand = Effect.fn('codeGraph.sharing.auth0Login
     options.coordinatorUrl === undefined || options.organization === undefined
       ? undefined
       : {coordinatorUrl: options.coordinatorUrl, organization: options.organization};
-  yield* loginGraphAuth0User(config.agentContextHome, undefined, selector);
-  yield* Console.log('Graph Auth0 login complete. Background graph contributions can refresh silently.');
+  yield* loginGraphOAuthUser(config.agentContextHome, undefined, selector);
+  yield* Console.log('Graph OAuth login complete. Background graph contributions can refresh silently.');
 });
 
-export const runGraphAuth0LogoutCommand = Effect.fn('codeGraph.sharing.auth0LogoutCommand')(function* (
+export const runGraphOAuthLogoutCommand = Effect.fn('codeGraph.sharing.oauthLogoutCommand')(function* (
   config: RuntimeConfig,
   options: {readonly coordinatorUrl?: string; readonly organization?: string},
 ) {
@@ -275,13 +363,13 @@ export const runGraphAuth0LogoutCommand = Effect.fn('codeGraph.sharing.auth0Logo
     options.coordinatorUrl === undefined || options.organization === undefined
       ? undefined
       : {coordinatorUrl: options.coordinatorUrl, organization: options.organization};
-  yield* logoutGraphAuth0User(config.agentContextHome, undefined, selector);
-  yield* Console.log('Removed the local Graph Auth0 session. Run `threadnote graph auth login` to reconnect.');
+  yield* logoutGraphOAuthUser(config.agentContextHome, undefined, selector);
+  yield* Console.log('Removed the local graph OAuth session. Run `threadnote graph auth login` to reconnect.');
 });
 
-export const runRegistryAuth0ConfigureCommand = Effect.fn('codeGraph.sharing.registryAuth0ConfigureCommand')(function* (
+export const runRegistryOAuthConfigureCommand = Effect.fn('codeGraph.sharing.registryOAuthConfigureCommand')(function* (
   config: RuntimeConfig,
-  options: {
+  options: OAuthProviderOptions & {
     readonly audience: string;
     readonly clientId: string;
     readonly issuer: string;
@@ -291,13 +379,38 @@ export const runRegistryAuth0ConfigureCommand = Effect.fn('codeGraph.sharing.reg
     readonly json: boolean;
   },
 ) {
-  const result = yield* configureRegistryAuth0User(config, options);
+  const selection = yield* Effect.try({
+    try: () => {
+      const explicit = explicitOAuthProvider(options);
+      return {
+        profile: explicit === undefined ? ('legacy-auth0' as const) : ('generic' as const),
+        provider: explicit ?? legacyAuth0Provider(options.issuer, options.audience),
+      };
+    },
+    catch: error => error as ReturnType<typeof graphSharingFailure>,
+  });
+  const legacy = {
+    audience: options.audience,
+    clientId: options.clientId,
+    issuer: options.issuer,
+    organization: options.organization,
+    origin: options.origin,
+    subject: options.subject,
+  };
+  const result = yield* configureRegistryOAuthUser(
+    config,
+    {
+      ...legacy,
+      ...selection.provider,
+    },
+    {profile: selection.profile},
+  );
   if (options.json) yield* writeFinalCliOutput(JSON.stringify(result));
   else
-    yield* Console.log('Configured the public Auth0 registry reader. Run `threadnote graph auth registry login` once.');
+    yield* Console.log('Configured the public OAuth registry reader. Run `threadnote graph auth registry login` once.');
 });
 
-export const runRegistryAuth0LoginCommand = Effect.fn('codeGraph.sharing.registryAuth0LoginCommand')(function* (
+export const runRegistryOAuthLoginCommand = Effect.fn('codeGraph.sharing.registryOAuthLoginCommand')(function* (
   config: RuntimeConfig,
   options: {readonly origin?: string; readonly organization?: string},
 ) {
@@ -307,11 +420,11 @@ export const runRegistryAuth0LoginCommand = Effect.fn('codeGraph.sharing.registr
     options.origin === undefined || options.organization === undefined
       ? undefined
       : {coordinatorUrl: options.origin, organization: options.organization};
-  yield* loginRegistryAuth0User(config.agentContextHome, undefined, selector);
-  yield* Console.log('Registry Auth0 login complete. Verified registry reads can refresh silently.');
+  yield* loginRegistryOAuthUser(config.agentContextHome, undefined, selector);
+  yield* Console.log('Registry OAuth login complete. Verified registry reads can refresh silently.');
 });
 
-export const runRegistryAuth0LogoutCommand = Effect.fn('codeGraph.sharing.registryAuth0LogoutCommand')(function* (
+export const runRegistryOAuthLogoutCommand = Effect.fn('codeGraph.sharing.registryOAuthLogoutCommand')(function* (
   config: RuntimeConfig,
   options: {readonly origin?: string; readonly organization?: string},
 ) {
@@ -321,8 +434,8 @@ export const runRegistryAuth0LogoutCommand = Effect.fn('codeGraph.sharing.regist
     options.origin === undefined || options.organization === undefined
       ? undefined
       : {coordinatorUrl: options.origin, organization: options.organization};
-  yield* logoutRegistryAuth0User(config.agentContextHome, undefined, selector);
+  yield* logoutRegistryOAuthUser(config.agentContextHome, undefined, selector);
   yield* Console.log(
-    'Removed the local registry Auth0 session. Run `threadnote graph auth registry login` to reconnect.',
+    'Removed the local registry OAuth session. Run `threadnote graph auth registry login` to reconnect.',
   );
 });

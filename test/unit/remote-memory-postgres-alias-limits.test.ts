@@ -1,6 +1,6 @@
 import type {Sql} from 'postgres';
 import {describe, expect, it} from 'vitest';
-import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator_postgres.js';
+import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator/postgres.js';
 import type {RemoteMemoryPortableRecordV1} from '../../src/remote_memory/portability.js';
 
 describe('remote memory PostgreSQL alias admission limits', () => {

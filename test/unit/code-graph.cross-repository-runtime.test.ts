@@ -4,11 +4,11 @@ import {describe, expect, it, vi} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import type {CodeGraphEvidenceCardV1} from '../../src/code_graph/workset_evidence.js';
+import type {CodeGraphEvidenceCardV1} from '../../src/code_graph/workset/evidence.js';
 import {
   normalizeCodeGraphWorksetRouterQuery,
   type CodeGraphWorksetRouterResultV1,
-} from '../../src/code_graph/workset_router.js';
+} from '../../src/code_graph/workset/router.js';
 import {
   attachCodeGraphWorksetBridgeRelationships,
   expandCodeGraphWorksetRouterWithBridges,

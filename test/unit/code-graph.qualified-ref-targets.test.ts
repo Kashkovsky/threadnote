@@ -13,7 +13,7 @@ import {
 } from '../../src/code_graph/workset_catalog/store.js';
 import {CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION} from '../../src/code_graph/workset_catalog/types.js';
 import {codeGraphWorksetManifestDigest} from '../../src/code_graph/workset_catalog/workset.js';
-import {resolveCodeGraphQualifiedRefTargets} from '../../src/code_graph/workset_query_v2.js';
+import {resolveCodeGraphQualifiedRefTargets} from '../../src/code_graph/workset/query_v2.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

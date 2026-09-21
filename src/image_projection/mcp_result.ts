@@ -1,5 +1,5 @@
 import {Encoding} from 'effect';
-import {memoryReadBoundedWarnings, type MemoryReadMode, type MemoryReadResource} from '../memory/read_projection.js';
+import {memoryReadBoundedWarnings, type MemoryReadMode, type MemoryReadResource} from '../memory/read/projection.js';
 import {extractExactMemoryTokens, renderExactTokenAppendix} from './exact_tokens.js';
 import type {RenderedMemoryImages} from './render.js';
 

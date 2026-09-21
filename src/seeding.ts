@@ -3,7 +3,7 @@ import * as yaml from 'js-yaml';
 import {
   inspectContainedStableRegularFile,
   materializeContainedStableRegularFile,
-} from './code_graph/inventory_contained_file.js';
+} from './code_graph/inventory/contained_file.js';
 import {DEFAULT_SEED_PATTERNS, SEED_STATE_FILE, USER_MANIFEST_NAME} from './constants.js';
 import {buildGraphDocument, type DependencyFacts, extractDependencyFacts, resolveGraphEdges} from './graph.js';
 import {applicationError} from './effect/errors.js';
@@ -21,6 +21,7 @@ import type {
   SeedOptions,
   SkillCandidate,
 } from './types.js';
+import {withSetupMutationLock} from './setup/lock.js';
 import {
   exists,
   expandPath,
@@ -549,7 +550,7 @@ function writeSeedState(path: string, state: SeedStateFile) {
 }
 
 export function runInitManifest(config: RuntimeConfig, options: InitManifestOptions) {
-  return Effect.gen(function* () {
+  const operation = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const system = yield* SystemInfo;
@@ -583,6 +584,15 @@ export function runInitManifest(config: RuntimeConfig, options: InitManifestOpti
     const outputManifest: Record<string, unknown> = {
       version: 1,
       projects: projects.map(project => ({
+        ...(project.graph === undefined
+          ? {}
+          : {
+              graph: {
+                closure: project.graph.closure,
+                ...(project.graph.include === undefined ? {} : {include: [...project.graph.include]}),
+                roots: [...project.graph.roots],
+              },
+            }),
         name: project.name,
         path: project.path,
         uri: project.uri,
@@ -620,6 +630,9 @@ export function runInitManifest(config: RuntimeConfig, options: InitManifestOpti
     yield* log('  threadnote seed --dry-run');
     yield* log('  threadnote seed');
   });
+  return options.dryRun === true || options.setupLockHeld === true
+    ? operation
+    : withSetupMutationLock(config.agentContextHome, operation);
 }
 
 export function runWorksetList(config: RuntimeConfig) {

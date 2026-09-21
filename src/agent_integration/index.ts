@@ -2,11 +2,13 @@ import {Console, Effect, FileSystem, Path, Schema} from 'effect';
 import {
   AGENT_CLIENTS,
   AGENT_INTEGRATION_ARTIFACT_VERSION,
+  artifactHasOtherConsumers,
   agentIntegrationRegistryPath,
   emptyAgentIntegrationRegistry,
   readAgentIntegrationRegistry,
   registeredAgentClients,
   repairableAgentClients,
+  type AgentIntegrationRegistry,
   type AgentIntegrationHostReceipt,
   type AgentIntegrationMcpReceipt,
   withAgentIntegrationHost,
@@ -20,38 +22,16 @@ import {
 } from '../constants.js';
 import {isCursorMarketplacePluginInstalled} from '../cursor/plugin.js';
 import {sha256Hex} from '../effect/digest.js';
+import {SystemInfo} from '../effect/system.js';
 import type {McpToolset} from '../mcp/toolset.js';
 import {getThreadnoteVersion} from '../release/runtime_version.js';
 import type {AgentClient, ClaudeMcpScope, DoctorCheck, RuntimeConfig} from '../types.js';
 import {expandPath, getInvocationCwd, readFileIfExists, toolRoot} from '../utils.js';
 import {resolveAgentHostPaths} from './host_paths.js';
+import {LEGACY_ARTIFACT_TARGETS as HOST_TARGETS} from './adapters/legacy_targets.js';
 
 const AGENT_SKILLS = ['threadnote-context', 'threadnote-code-graph', 'threadnote-memory'] as const;
-
-const HOST_TARGETS = {
-  claude: {
-    instruction: {kind: 'block', path: '~/.claude/CLAUDE.md'},
-    skillRoot: '~/.claude/skills',
-  },
-  codex: {
-    instruction: {kind: 'block', path: '~/.codex/AGENTS.md'},
-    skillRoot: '~/.agents/skills',
-  },
-  copilot: {
-    instruction: {kind: 'file', path: '~/.copilot/instructions/threadnote.instructions.md'},
-    skillRoot: '~/.copilot/skills',
-  },
-  cursor: {
-    instruction: {kind: 'file', path: '~/.cursor/rules/threadnote.mdc'},
-    skillRoot: '~/.cursor/skills',
-  },
-} as const satisfies Record<
-  Exclude<AgentClient, 'omp'>,
-  {
-    readonly instruction: {readonly kind: 'block' | 'file'; readonly path: string};
-    readonly skillRoot: string;
-  }
->;
+const CURSOR_CLOUD_PERSONAL_AGENT_SKILLS = ['threadnote-context', 'threadnote-memory'] as const;
 
 interface InstallAgentIntegrationOptions {
   readonly cwd?: string;
@@ -61,7 +41,7 @@ interface InstallAgentIntegrationOptions {
   readonly toolset: McpToolset;
 }
 
-interface AgentArtifact {
+export interface AgentArtifact {
   readonly content: string;
   readonly hash: string;
   readonly kind: 'block' | 'file';
@@ -240,8 +220,17 @@ export const removeAgentIntegrationsInTransaction = Effect.fn('agentIntegrations
     const receipt = registry?.hosts[agent];
     const plan = yield* agentArtifacts(agent, receipt?.mcp.artifactProfile, receipt?.mcp.hostRoot);
     for (const artifact of plan.artifacts) {
+      if (Object.values(registry?.surfaces ?? {}).some(surface => surface.artifacts[artifact.path] !== undefined))
+        continue;
       yield* removeArtifact(artifact, dryRun);
     }
+    yield* removeObsoleteCursorCloudPersonalGraphSkill(
+      plan,
+      receipt?.mcp.artifactProfile,
+      dryRun,
+      registry,
+      `legacy:${agent}`,
+    );
   }
   for (const legacyPath of LEGACY_CURSOR_INSTRUCTION_PATHS) {
     const target = yield* expandPath(legacyPath);
@@ -249,6 +238,10 @@ export const removeAgentIntegrationsInTransaction = Effect.fn('agentIntegrations
   }
   const target = yield* agentIntegrationRegistryPath(config);
   const fs = yield* FileSystem.FileSystem;
+  if (registry !== undefined && Object.keys(registry.surfaces ?? {}).length > 0) {
+    if (!dryRun) yield* writeAgentIntegrationRegistry(config, {...registry, hosts: {}});
+    return;
+  }
   if (yield* fs.exists(target)) {
     if (dryRun) yield* Console.log(`Would remove agent integration registry: ${target}`);
     else {
@@ -275,7 +268,10 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
       : undefined;
   if (dryRun) {
     if (previousPlan !== undefined) {
-      for (const artifact of previousPlan.artifacts) yield* removeArtifact(artifact, true);
+      for (const artifact of previousPlan.artifacts) {
+        if (!artifactHasOtherConsumers(currentRegistry, artifact.path, `legacy:${agent}`))
+          yield* removeArtifact(artifact, true);
+      }
     }
     if (agent === 'cursor' && !plan.artifacts.some(artifact => artifact.name === 'instructions')) {
       yield* removeManagedPath(
@@ -286,13 +282,30 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
       );
     }
     for (const artifact of plan.artifacts) yield* logArtifactPlan(artifact);
+    yield* removeObsoleteCursorCloudPersonalGraphSkill(
+      plan,
+      mcp.artifactProfile,
+      true,
+      currentRegistry,
+      `legacy:${agent}`,
+    );
     yield* Console.log(`Would register ${agent} agent integration in ${yield* agentIntegrationRegistryPath(config)}.`);
     return;
   }
 
   if (previousPlan !== undefined) {
-    for (const artifact of previousPlan.artifacts) yield* removeArtifact(artifact, false);
+    for (const artifact of previousPlan.artifacts) {
+      if (!artifactHasOtherConsumers(currentRegistry, artifact.path, `legacy:${agent}`))
+        yield* removeArtifact(artifact, false);
+    }
   }
+  yield* removeObsoleteCursorCloudPersonalGraphSkill(
+    plan,
+    mcp.artifactProfile,
+    false,
+    currentRegistry,
+    `legacy:${agent}`,
+  );
   yield* writeAgentIntegrationRegistry(config, withAgentIntegrationHost(currentRegistry, agent, receipt));
   if (agent === 'cursor' && !plan.artifacts.some(artifact => artifact.name === 'instructions')) {
     yield* removeManagedPath(
@@ -310,6 +323,24 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
   );
   yield* Console.log(`Registered ${agent} agent integration.`);
 });
+
+function removeObsoleteCursorCloudPersonalGraphSkill(
+  plan: AgentArtifactPlan,
+  profile: AgentArtifactProfile | undefined,
+  dryRun: boolean,
+  registry: AgentIntegrationRegistry | undefined,
+  consumer: string,
+) {
+  return Effect.gen(function* () {
+    if (profile !== 'cursor-cloud-personal') return;
+    const contextSkill = plan.artifacts.find(artifact => artifact.name === 'skill threadnote-context');
+    if (contextSkill === undefined) return;
+    const path = yield* Path.Path;
+    const target = path.join(path.dirname(path.dirname(contextSkill.path)), 'threadnote-code-graph', 'SKILL.md');
+    if (registry !== undefined && artifactHasOtherConsumers(registry, target, consumer)) return;
+    yield* removeManagedPath(target, 'obsolete Personal Cursor Cloud graph skill', dryRun, true);
+  });
+}
 
 function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProfile, hostRoot?: string) {
   return Effect.gen(function* () {
@@ -340,7 +371,8 @@ function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProf
           },
         ];
     const skillRoot = ompPaths?.skillRoot ?? (yield* expandPath(host!.skillRoot));
-    for (const skill of AGENT_SKILLS) {
+    const skills = profile === 'cursor-cloud-personal' ? CURSOR_CLOUD_PERSONAL_AGENT_SKILLS : AGENT_SKILLS;
+    for (const skill of skills) {
       const content = `${(yield* (yield* FileSystem.FileSystem).readFileString(
         path.join(profileRoot, 'agent-skills', skill, 'SKILL.md'),
       )).trim()}\n`;
@@ -400,7 +432,7 @@ function logArtifactPlan(artifact: AgentArtifact) {
   );
 }
 
-const writeArtifact = Effect.fn('agentIntegrations.writeArtifact')(function* (artifact: AgentArtifact) {
+export const writeArtifact = Effect.fn('agentIntegrations.writeArtifact')(function* (artifact: AgentArtifact) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const current = yield* readFileIfExists(artifact.path);
@@ -438,7 +470,7 @@ const writeArtifact = Effect.fn('agentIntegrations.writeArtifact')(function* (ar
     return;
   }
   yield* fs.makeDirectory(path.dirname(artifact.path), {recursive: true, mode: 0o700});
-  yield* fs.writeFileString(artifact.path, next, {mode: 0o644});
+  yield* atomicAgentWrite(artifact.path, next, 0o644, {content: current});
   yield* Console.log(`${current === undefined ? 'Wrote' : 'Updated'} ${artifact.name}: ${artifact.path}`);
 });
 
@@ -456,7 +488,7 @@ function removeOrphanedLegacyInstructions(selected: readonly AgentClient[], dryR
   });
 }
 
-function removeArtifact(artifact: AgentArtifact, dryRun: boolean) {
+export function removeArtifact(artifact: AgentArtifact, dryRun: boolean) {
   return removeManagedPath(artifact.path, artifact.name, dryRun, artifact.kind === 'file', artifact.content);
 }
 
@@ -467,7 +499,6 @@ const removeManagedPath = Effect.fn('agentIntegrations.removeManagedPath')(funct
   removeWholeFile: boolean,
   expectedContent?: string,
 ) {
-  const fs = yield* FileSystem.FileSystem;
   const current = yield* readFileIfExists(target);
   if (current === undefined) return;
   const next = removeManagedBlock(current);
@@ -483,10 +514,10 @@ const removeManagedPath = Effect.fn('agentIntegrations.removeManagedPath')(funct
   if (dryRun) {
     yield* Console.log(`${shouldRemove ? 'Would remove' : 'Would update'} ${label}: ${target}`);
   } else if (shouldRemove) {
-    yield* fs.remove(target);
+    yield* removeAgentTargetIfUnchanged(target, current);
     yield* Console.log(`Removed ${label}: ${target}`);
   } else {
-    yield* fs.writeFileString(target, next, {mode: 0o644});
+    yield* atomicAgentWrite(target, next, 0o644, {content: current});
     yield* Console.log(`Updated ${target}`);
   }
 });
@@ -509,14 +540,14 @@ function isGeneratedSkillFrontmatter(content: string): boolean {
   );
 }
 
-function extractManagedBlock(content: string): string | undefined {
+export function extractManagedBlock(content: string): string | undefined {
   const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
   const endIndex = content.indexOf(USER_INSTRUCTIONS_END_MARKER);
   if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) return undefined;
   return content.slice(startIndex, endIndex + USER_INSTRUCTIONS_END_MARKER.length);
 }
 
-function upsertManagedBlock(content: string, block: string): string | undefined {
+export function upsertManagedBlock(content: string, block: string): string | undefined {
   const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
   const endIndex = content.indexOf(USER_INSTRUCTIONS_END_MARKER);
   if ((startIndex === -1) !== (endIndex === -1) || endIndex < startIndex) return undefined;
@@ -541,3 +572,57 @@ function removeManagedBlock(content: string): string | undefined {
 function joinMarkdownSections(sections: readonly string[]): string {
   return `${sections.filter(section => section.length > 0).join('\n\n')}\n`;
 }
+
+export const atomicAgentWrite = Effect.fn('agentIntegrations.atomicWrite')(function* (
+  target: string,
+  content: string,
+  mode = 0o600,
+  expected?: {readonly content: string | undefined},
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  yield* fs.makeDirectory(path.dirname(target), {recursive: true, mode: 0o700});
+  yield* assertAgentTargetNotSymlink(target);
+  const temporary = `${target}.threadnote-${system.processId}.tmp`;
+  yield* fs.writeFileString(temporary, content, {mode, flag: 'wx'});
+  yield* Effect.gen(function* () {
+    if (expected !== undefined && (yield* readFileIfExists(target)) !== expected.content) {
+      return yield* AgentIntegrationError.make({
+        message: `${target} changed while Threadnote was preparing an update; no changes were written.`,
+      });
+    }
+    yield* assertAgentTargetNotSymlink(target);
+    yield* fs.rename(temporary, target);
+  }).pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
+});
+
+export const removeAgentTargetIfUnchanged = Effect.fn('agentIntegrations.removeTargetIfUnchanged')(function* (
+  target: string,
+  expected: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* assertAgentTargetNotSymlink(target);
+  if ((yield* readFileIfExists(target)) !== expected) {
+    return yield* AgentIntegrationError.make({
+      message: `${target} changed while Threadnote was preparing its removal; no changes were written.`,
+    });
+  }
+  yield* assertAgentTargetNotSymlink(target);
+  yield* fs.remove(target);
+});
+
+export const assertAgentTargetNotSymlink = Effect.fn('agentIntegrations.assertTargetNotSymlink')(function* (
+  target: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const symbolicLink = yield* fs.readLink(target).pipe(
+    Effect.as(true),
+    Effect.orElseSucceed(() => false),
+  );
+  if (symbolicLink) {
+    return yield* AgentIntegrationError.make({
+      message: `${target} is a symbolic link; Threadnote will not replace or remove it.`,
+    });
+  }
+});

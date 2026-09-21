@@ -1,5 +1,5 @@
 import {Effect, FileSystem, Path} from 'effect';
-import {readOptionalText} from './inventory_contained_file.js';
+import {readOptionalText} from './inventory/contained_file.js';
 
 export const THREADNOTE_IGNORE_FILE = '.threadnoteignore';
 export const THREADNOTE_IGNORE_LOCAL_FILE = '.threadnoteignore.local';

@@ -3,18 +3,18 @@ import {Clock, Crypto, DateTime, Effect, FileSystem, Layer, Option, Path, Result
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {LocalModelRuntime} from '../effect/ai/local-model-runtime.js';
 import {sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
 import {LocalModelStore} from '../models/store.js';
 import {readModelSelection} from '../models/selection.js';
 import {normalizeRecallProject, type RecallEligibilityPolicy} from '../recall/eligibility.js';
-import {recallApprovedAuthoritative, recallEligibilityPredicate} from '../recall/index_eligibility.js';
+import {recallApprovedAuthoritative, recallEligibilityPredicate} from '../recall/index/eligibility.js';
 import {
   combineRecallSqlPredicates,
   recallUriMatchesScopes,
   recallUriScopePredicate,
   type RecallSqlPredicate,
-} from '../recall/index_scope.js';
+} from '../recall/index/scope.js';
 import type {RecallCandidate} from '../recall/rank.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {chunkRecallDocument, RECALL_CHUNKER_VERSION, type RecallChunk} from './chunker.js';

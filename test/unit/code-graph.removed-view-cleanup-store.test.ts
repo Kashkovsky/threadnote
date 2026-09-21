@@ -1,5 +1,6 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Clock, DateTime, Effect, FileSystem, Path} from 'effect';
@@ -103,6 +104,7 @@ describe('removed code graph view cleanup queue', () => {
             database
               .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
               .run(WORKTREE_ID, SNAPSHOT_ID, DateTime.formatIso(DateTime.makeUnsafe(0)));
+            for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
             database.exec('DROP TABLE IF EXISTS removed_view_cleanup');
             database.exec('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete');
             database.exec('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert');
@@ -137,7 +139,7 @@ describe('removed code graph view cleanup queue', () => {
           }
         });
 
-        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(17);
+        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(18);
         expect(observed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
         expect(observed.ready).toEqual({state: 'ready'});
         expect(observed.building).toEqual({state: 'building'});
@@ -602,7 +604,7 @@ describe('removed code graph view cleanup queue', () => {
                 .query(
                   `INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
                    VALUES (?, ?, ?)
-                   ON CONFLICT(worktree_id) DO UPDATE SET
+                   ON CONFLICT(worktree_id, scope_id) DO UPDATE SET
                      snapshot_id = excluded.snapshot_id, activated_at = excluded.activated_at`,
                 )
                 .run(WORKTREE_ID, SNAPSHOT_ID, new Date(0).toISOString());
@@ -1064,6 +1066,7 @@ describe('removed code graph view cleanup queue', () => {
             for (const mutate of mutations) expect(mutate).toThrow(/no such table.*removed_view_cleanup/iu);
             database.exec(`CREATE TABLE removed_view_cleanup (
               worktree_id TEXT NOT NULL,
+              scope_id TEXT NOT NULL DEFAULT 'full-repository',
               expected_snapshot_id TEXT NOT NULL,
               removed_at TEXT NOT NULL,
               epoch INTEGER PRIMARY KEY NOT NULL,
@@ -1092,7 +1095,12 @@ describe('removed code graph view cleanup queue', () => {
             }
 
             expect(database.query('SELECT * FROM removed_views').all()).toEqual([
-              {expected_snapshot_id: SNAPSHOT_ID, removed_at: removedAt, worktree_id: WORKTREE_ID},
+              {
+                expected_snapshot_id: SNAPSHOT_ID,
+                removed_at: removedAt,
+                worktree_id: WORKTREE_ID,
+                scope_id: 'full-repository',
+              },
             ]);
             expect(
               database
@@ -1510,7 +1518,7 @@ function legacyPromote(databasePath: string, worktreeId: string, snapshotId: str
       .query(
         `INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
          VALUES (?, ?, ?)
-         ON CONFLICT(worktree_id) DO UPDATE SET snapshot_id = excluded.snapshot_id, activated_at = excluded.activated_at`,
+         ON CONFLICT(worktree_id, scope_id) DO UPDATE SET snapshot_id = excluded.snapshot_id, activated_at = excluded.activated_at`,
       )
       .run(worktreeId, snapshotId, new Date(0).toISOString());
   } finally {

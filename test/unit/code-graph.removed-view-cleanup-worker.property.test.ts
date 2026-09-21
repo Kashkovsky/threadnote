@@ -8,7 +8,7 @@ import {
   makeCodeGraphRemovedViewCleanupWorker,
   type CodeGraphRemovedViewCleanupPageResult,
   type CodeGraphRemovedViewCleanupWorkerDependencies,
-} from '../../src/code_graph/removed_view_cleanup.js';
+} from '../../src/code_graph/removed_view/cleanup.js';
 import {
   CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES,
   type CodeGraphRemovedViewCleanupBlockedCode,

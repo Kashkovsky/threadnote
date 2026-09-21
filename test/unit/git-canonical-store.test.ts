@@ -5,13 +5,14 @@ import {mkdir, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
+  GIT_REF_UPDATE_TIMEOUT_MILLISECONDS,
   GitCanonicalMemoryStore,
   ensureLiveGitShareWorktree,
   gitCanonicalSharePath,
   gitIngestProjectsToEnsure,
   gitRemoteUrlsMatch,
   parseGitCanonicalSharePath,
-} from '../../src/remote_memory/git_canonical_store.js';
+} from '../../src/remote_memory/git/canonical_store.js';
 import {cloneGitShareWorktree, createGitShareWorktreeFixture, git} from '../helpers/git-share-worktree.js';
 
 const portableSegment = FC.stringMatching(/^[a-z][a-z0-9-]{0,15}$/u).map(value => `project-${value}`);
@@ -199,6 +200,34 @@ describe('git canonical memory store', () => {
       const clone = join(fixture.root, 'laptop');
       await cloneGitShareWorktree(fixture.remote, clone);
       expect(await git(['show', `HEAD:${path}`], clone)).toBe(content);
+    } finally {
+      await rm(fixture.root, {force: true, recursive: true});
+    }
+  });
+
+  it('authorizes a local ref update after preflight with the complete merge time budget', async () => {
+    const fixture = await createGitShareWorktreeFixture();
+    try {
+      const store = new GitCanonicalMemoryStore({
+        worktreeLock: testGitWorktreeLock,
+        push: false,
+        worktree: fixture.worktree,
+      });
+      const base = (await git(['rev-parse', 'HEAD'], fixture.worktree)).trim();
+      let authorizationCalls = 0;
+      const committed = await store.commit({
+        authorizeRefUpdate: async requiredValidityMilliseconds => {
+          authorizationCalls += 1;
+          expect(requiredValidityMilliseconds).toBe(GIT_REF_UPDATE_TIMEOUT_MILLISECONDS);
+          expect((await git(['rev-parse', 'HEAD'], fixture.worktree)).trim()).toBe(base);
+          expect(await git(['status', '--porcelain=v1', '--untracked-files=all'], fixture.worktree)).toBe('');
+        },
+        content: '# MEMORY\n\nLocally authorized.\n',
+        message: 'remember locally authorized',
+        path: gitCanonicalSharePath('durable', 'threadnote', 'local-authority'),
+      });
+      expect(authorizationCalls).toBe(1);
+      expect((await git(['rev-parse', 'HEAD'], fixture.worktree)).trim()).toBe(committed.gitCommit);
     } finally {
       await rm(fixture.root, {force: true, recursive: true});
     }

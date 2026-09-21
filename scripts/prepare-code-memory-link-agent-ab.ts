@@ -89,7 +89,7 @@ import {
   type CodeMemoryLinkClientImplementationDescriptorV1,
 } from '../src/evaluation/code-memory-link-client-descriptor.js';
 import {parseMemoryDocument, type MemoryRecord} from '../src/memory/document.js';
-import {MEMORY_SCHEMA_VERSION} from '../src/memory/code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from '../src/memory/code/citation.js';
 import {parseContextBriefV1} from '../src/context_brief/projector.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {verifyCodeMemoryLinkEvaluatedSubject} from './code-memory-link-evaluated-subject.js';

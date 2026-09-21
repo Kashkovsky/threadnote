@@ -1,5 +1,5 @@
 import {Schema} from 'effect';
-import type {CodeGraphEvidenceCardV1, CodeGraphWorksetQueryResultV2} from '../workset_evidence.js';
+import type {CodeGraphEvidenceCardV1, CodeGraphWorksetQueryResultV2} from '../workset/evidence.js';
 
 export const CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION = 2 as const;
 
@@ -87,7 +87,15 @@ export interface CodeGraphWorksetRoutingSymbolV1 {
   readonly terms: readonly CodeGraphWorksetRoutingTermV1[];
 }
 
-export interface CodeGraphWorksetRoutingProjectionDraftV1 {
+/** Absent fields are the v1 full-repository receipt, never a scoped wildcard. */
+export interface CodeGraphWorksetScopeReceiptV1 {
+  readonly scopeId?: string;
+  readonly definitionDigest?: string;
+  readonly closureDigest?: string;
+  readonly completeness?: 'complete' | 'partial' | 'legacy-full';
+}
+
+export interface CodeGraphWorksetRoutingProjectionDraftV1 extends CodeGraphWorksetScopeReceiptV1 {
   readonly checkoutId: string;
   readonly commitId: string;
   readonly componentCount: number;
@@ -138,7 +146,7 @@ export interface CodeGraphWorksetCatalogGenerationIdentityV1 {
   readonly members: readonly CodeGraphWorksetCatalogGenerationMemberV1[];
 }
 
-export interface CodeGraphWorksetCatalogGenerationDigestMemberV1 {
+export interface CodeGraphWorksetCatalogGenerationDigestMemberV1 extends CodeGraphWorksetScopeReceiptV1 {
   readonly projectionDigest: string;
   readonly repositoryId: string;
   readonly repositoryKey: string;
@@ -167,7 +175,7 @@ export interface CodeGraphWorksetCatalogGenerationReceiptV1 {
   readonly worksetName: string;
 }
 
-export interface CodeGraphWorksetCatalogPublishedMemberV1 {
+export interface CodeGraphWorksetCatalogPublishedMemberV1 extends CodeGraphWorksetScopeReceiptV1 {
   readonly checkoutId: string;
   readonly commitId: string;
   readonly ordinal: number;

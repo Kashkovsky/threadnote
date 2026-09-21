@@ -7,12 +7,21 @@ import {
   remoteProposalReviewRequestHash,
   REMOTE_MEMORY_PROPOSAL_PAYLOAD_MAX_BYTES,
 } from '../../src/remote_memory/proposals.js';
+import {validatePortableSegment} from '../../src/storage/resource-id.js';
+
+const canonicalTopic = FC.stringMatching(/^[a-z]{1,12}$/u).filter(topic => {
+  try {
+    return validatePortableSegment(topic) === topic;
+  } catch {
+    return false;
+  }
+});
 
 describe('remote durable proposal canonicalization', () => {
   it('keeps the request hash invariant under relation permutation', () => {
     const relation = FC.record({
       type: FC.constantFrom(...MEMORY_RELATION_TYPES),
-      uri: FC.stringMatching(/^threadnote:\/\/share\/share-1\/memories\/durable\/project\/[a-z]{1,12}\.md$/u),
+      uri: canonicalTopic.map(topic => `threadnote://share/share-1/memories/durable/project/${topic}.md`),
     });
     FC.assert(
       FC.property(

@@ -6,7 +6,7 @@ import {
   estimatedCodeGraphSnapshotRetentionBytes,
   selectCodeGraphSnapshotRetention,
   type CodeGraphSnapshotRetentionCandidate,
-} from '../../src/code_graph/snapshot_retention.js';
+} from '../../src/code_graph/snapshot/retention.js';
 
 const candidateArbitrary: fc.Arbitrary<CodeGraphSnapshotRetentionCandidate> = fc.record({
   commit: fc.stringMatching(/^[0-9a-f]{40}$/u),

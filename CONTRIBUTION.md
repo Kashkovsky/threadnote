@@ -10,7 +10,7 @@ open an issue first so the intended contract can be agreed before substantial im
 
 You need:
 
-- Bun `1.3.14`.
+- The exact Bun version pinned by the `packageManager` field in [`package.json`](./package.json).
 
 Install dependencies and run the fast validation set:
 
@@ -60,8 +60,9 @@ Keep these invariants intact:
   Application and build-script code must not import `node:*` modules.
 - Keep `effect`, `@effect/platform-bun`, `@effect/sql-sqlite-bun`, `@effect/vitest`, and
   `@effect/ai-openai-compat` pinned to the same exact beta.
-- Effectful tests use `it.effect`, `it.scoped`, or their property variants from `@effect/vitest`. Do not convert an
-  Effect to a Promise or run it synchronously inside a Vitest callback.
+- Effectful tests use `it.effect` and its property variants from `@effect/vitest`; `it.effect` already scopes each
+  test. When an example explicitly needs a nested sub-scope, use `Effect.scoped` inside the returned Effect. Do not
+  convert an Effect to a Promise or run it synchronously inside a Vitest callback.
 
 Threadnote intentionally uses `effect/unstable/*`. API instability is acceptable, but an upgrade must update its
 adapters and compatibility tests together.

@@ -28,9 +28,10 @@ export const ciLongRunningTestGroups = {
     'test/integration/code-graph.disk-reservation.test.ts',
     'test/unit/code-graph.maintenance-residual-live.test.ts',
   ],
-  'heavy-integration': [
-    'test/integration/cli.effect.test.ts',
-    'test/integration/mcp.native-tools.test.ts',
+  // Recent release-branch PR timing keeps these runtime-boundary suites close
+  // to the combined graph-heavy suites below without mixing their fixtures.
+  'heavy-integration-runtime': ['test/integration/cli.effect.test.ts', 'test/integration/mcp.native-tools.test.ts'],
+  'heavy-integration-graph': [
     'test/integration/code-graph.performance-evidence.test.ts',
     'test/integration/code-graph.snapshot-repair.property.test.ts',
     'test/integration/code-graph.cross-session-incremental.test.ts',
@@ -74,7 +75,8 @@ export const ciRequiredLongRunningTestGroupNames = ciLongRunningTestGroupNames.f
 // These groups exercise parser processes or shared state heavily enough that
 // cross-file Vitest workers can starve otherwise fast fixtures on hosted runners.
 export const ciSerializedLongRunningTestGroups = new Set<CiLongRunningTestGroupName>([
-  'heavy-integration',
+  'heavy-integration-runtime',
+  'heavy-integration-graph',
   'heavy-state',
   'incremental-property',
   'load-evidence',

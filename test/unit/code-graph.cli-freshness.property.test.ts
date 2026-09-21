@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   codeGraphCliReadPlan,
+  codeGraphCliUsesBorrowedContinuity,
   defaultCodeGraphCliFreshness,
   type CodeGraphCliFreshnessPolicy,
 } from '../../src/code_graph/commands.js';
@@ -76,6 +77,30 @@ describe('code graph CLI freshness properties', () => {
         expect(result).toEqual({refresh: false, strictFreshness: false, unavailable: false});
       }),
       {numRuns: 50},
+    );
+  });
+
+  it('serves borrowed current-policy continuity only for stale-safe ordinary reads', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('query', 'node', 'neighbors', 'explain', 'path', 'impact'),
+        fc.boolean(),
+        fc.boolean(),
+        (operation, borrowedSnapshot, stale) => {
+          const continuity = codeGraphCliUsesBorrowedContinuity(
+            'current',
+            operation,
+            {readySnapshot, stale},
+            borrowedSnapshot,
+          );
+          expect(continuity).toBe(borrowedSnapshot && stale && operation !== 'path' && operation !== 'impact');
+        },
+      ),
+      {numRuns: 100},
+    );
+    expect(codeGraphCliUsesBorrowedContinuity('ready', 'query', {readySnapshot, stale: true}, true)).toBe(false);
+    expect(codeGraphCliUsesBorrowedContinuity('current', 'query', {readySnapshot: undefined, stale: true}, true)).toBe(
+      false,
     );
   });
 });

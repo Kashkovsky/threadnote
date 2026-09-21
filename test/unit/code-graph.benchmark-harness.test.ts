@@ -41,7 +41,7 @@ import {
   summarizeEmbeddingContextArtifacts,
 } from '../../scripts/benchmark-code-graph-embedding-contexts.js';
 import {git, prepareGeneratedCodeGraphFixture} from '../../scripts/code-graph-fixture.js';
-import {codeGraphAnalysisLimitsForView} from '../../src/code_graph/analysis_render.js';
+import {codeGraphAnalysisLimitsForView} from '../../src/code_graph/analysis/render.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   CodeGraphStoreBusyError,

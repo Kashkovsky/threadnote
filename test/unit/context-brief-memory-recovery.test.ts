@@ -4,8 +4,8 @@ import {Effect, Result} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {beforeEach, describe, expect, vi} from 'vitest';
-import type {MemoryCodeCitationV1} from '../../src/memory/code_citation.js';
-import type {DeferredCodeAnchorRouteFinalizationReceiptV1} from '../../src/memory/deferred_code_anchor.js';
+import type {MemoryCodeCitationV1} from '../../src/memory/code/citation.js';
+import type {DeferredCodeAnchorRouteFinalizationReceiptV1} from '../../src/memory/deferred/code_anchor.js';
 import type {MemoryRecord} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import type {ContextBriefPlanV1} from '../../src/context_brief/types.js';
@@ -24,8 +24,8 @@ const mocks = vi.hoisted(() => ({
   withCodeAnchorFinalizationAnonymousTelemetry: vi.fn(),
 }));
 
-vi.mock('../../src/memory/code_citation_capture.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/memory/code_citation_capture.js')>();
+vi.mock('../../src/memory/code/citation_capture.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/memory/code/citation_capture.js')>();
   return {...actual, captureMemoryCodeCitations: mocks.captureMemoryCodeCitations};
 });
 
@@ -42,7 +42,7 @@ vi.mock('../../src/code_graph/repository.js', () => ({
   resolveRepositoryIdentity: mocks.resolveRepositoryIdentity,
 }));
 
-vi.mock('../../src/memory/deferred_code_anchor.js', () => ({
+vi.mock('../../src/memory/deferred/code_anchor.js', () => ({
   finalizeDeferredCodeAnchorsForRoute: mocks.finalizeDeferredCodeAnchorsForRoute,
 }));
 
@@ -51,7 +51,7 @@ vi.mock('../../src/telemetry/code_anchor_finalization.js', () => ({
 }));
 
 import {retrieveContextBriefCodeLinkedMemoryEvidence} from '../../src/context_brief/index.js';
-import {MemoryCodeCitationCaptureError} from '../../src/memory/code_citation_capture.js';
+import {MemoryCodeCitationCaptureError} from '../../src/memory/code/citation_capture.js';
 
 const MEMORY_URI = 'threadnote://user/tester/memories/durable/projects/threadnote/recovery.md';
 const CONFIG: RuntimeConfig = {

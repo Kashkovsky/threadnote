@@ -10,7 +10,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {hasAgentSkillCatalogIntent, runRecall, stripAdvancedSearchFlags} from '../../src/memory/index.js';
 import {projectRecallCliResponse} from '../../src/recall/cli_response.js';
-import type {RecallMemoryConnectionsResult} from '../../src/recall/memory_connections.js';
+import type {RecallMemoryConnectionsResult} from '../../src/recall/memory/connections.js';
 import type {RecallOptions, RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 vi.mock('../../src/utils.js', async importOriginal => {
@@ -88,6 +88,8 @@ describe('runRecall native index', () => {
     expect(projected.sections.join('\n')).toContain('threadnote://memory/tn_neighbor');
     expect(projected.sections.join('\n')).not.toContain('explicit-memory-connection');
     expect(projected.sections.join('\n')).not.toContain('Next: threadnote read');
+    expect(projected.sections.join('\n')).toContain('threadnote recall-feedback');
+    expect(projected.sections.join('\n')).toContain('applied');
   });
 
   effectIt.effect('uses the native recall index without a repair subprocess', () =>

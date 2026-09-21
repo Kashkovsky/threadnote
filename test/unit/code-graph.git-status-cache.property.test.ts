@@ -4,7 +4,7 @@ import {
   CODE_GRAPH_GIT_STATUS_CACHE_INDEX_BYTES_MAXIMUM,
   CODE_GRAPH_GIT_STATUS_CACHE_RECEIPT_VERSION,
   parseCodeGraphGitStatusCacheReceipt,
-} from '../../src/code_graph/git_status_cache.js';
+} from '../../src/code_graph/git/status_cache.js';
 
 describe('code graph private Git status cache receipt', () => {
   it('round-trips every bounded source-index identity', () => {

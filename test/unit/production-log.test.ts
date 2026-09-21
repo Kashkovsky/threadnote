@@ -29,7 +29,7 @@ import {
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {captureConsole} from '../../src/effect/console.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 interface ParsedProductionLogEntry {

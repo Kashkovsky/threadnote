@@ -1,4 +1,5 @@
 import type {TraceScenario} from '../components/AgentTrace.js';
+import {lifecycleProTips} from './proTipsLifecycle.js';
 
 export type ProTip = {
   id: string;
@@ -11,23 +12,23 @@ export type ProTip = {
   scenario: TraceScenario;
 };
 
-export const proTips: ProTip[] = [
+const establishedProTips: ProTip[] = [
   {
     id: 'share-before-pr',
-    number: '01',
+    number: '06',
     category: 'team',
-    title: 'Share the feature memory before the PR.',
+    title: 'Review the feature delta, then share its Git proposal before the PR.',
     summary: 'Give reviewers the design constraints and trade-offs that cannot fit cleanly in the diff.',
-    why: 'A curated durable memory makes intent discoverable before review begins, while the PR remains the source of truth for code.',
+    why: 'A reviewed Knowledge Delta makes intent discoverable before review begins, while the PR remains the source of truth for code and the Git proposal keeps team publication under normal review.',
     practice: [
-      'Update one stable feature memory instead of creating a timeline of duplicates.',
-      'Preview the exact shared bytes and resolve any reported leak before publishing.',
+      'Review the Knowledge Delta and update one stable feature memory instead of creating a timeline of duplicates.',
+      'Materialize an approved Git proposal and preview the exact shared bytes before publishing.',
       'Reference the team, project, and topic in the PR; another user’s local threadnote:// URI is not portable.',
     ],
     scenario: {
       eyebrow: 'Review with context',
       title: 'The reviewer sees why—not only what',
-      description: 'A durable feature record is curated, previewed, and shared before review.',
+      description: 'A reviewed Knowledge Delta becomes a Git proposal before the feature record is shared.',
       steps: [
         {
           kind: 'user',
@@ -36,38 +37,44 @@ export const proTips: ProTip[] = [
         },
         {
           kind: 'tool',
-          actor: 'remember_context',
-          text: '{"kind":"durable","project":"mobile","topic":"auth-refresh","replaceUri":"threadnote://user/alice/memories/durable/projects/mobile/auth-refresh.md","text":"Refresh tokens rotate inside one coordinator. Review callers against the rotation window and staged rollout constraints."}',
-          meta: 'stable identity · updated in place',
+          actor: 'review_session_context',
+          text: '{"task":"Prepare auth refresh for review","outcome":"The rotation contract is ready for review.","project":"mobile","topic":"auth-refresh","evidence":["auth refresh tests passed"],"decisions":["Refresh tokens rotate inside one coordinator."]}',
+          meta: 'reviewed Knowledge Delta · stable topic',
         },
         {
           kind: 'result',
           actor: 'Threadnote',
-          text: 'Updated durable feature memory',
-          evidence: ['threadnote://…/mobile/auth-refresh.md'],
+          text: 'Knowledge Delta review created',
+          evidence: ['review review-a1b2c3 · revision 1', 'candidate decision-01 · create'],
         },
         {
           kind: 'tool',
-          actor: 'share_publish',
-          text: '{"uri":"threadnote://user/alice/memories/durable/projects/mobile/auth-refresh.md","team":"mobile-team","preview":true}',
-          meta: 'exact shared bytes · no write',
+          actor: 'apply_memory_candidates',
+          text: '{"reviewId":"review-a1b2c3","revision":1,"candidateId":"decision-01","action":"approve","operation":"create","approved":true}',
+          meta: 'approved durable decision · exact review revision',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Candidate applied; review advanced',
+          evidence: ['review review-a1b2c3 · revision 2', 'candidate decision-01 · applied'],
+        },
+        {
+          kind: 'tool',
+          actor: 'share_propose',
+          text: '{"reviewId":"review-a1b2c3","revision":2,"candidateIds":["decision-01"],"team":"mobile-team","approved":true}',
+          meta: 'approved Git proposal · no write',
         },
         {
           kind: 'action',
           actor: 'You',
-          text: 'Approve the exact preview for publication.',
-        },
-        {
-          kind: 'tool',
-          actor: 'share_publish',
-          text: '{"uri":"threadnote://user/alice/memories/durable/projects/mobile/auth-refresh.md","team":"mobile-team","preview":false}',
-          meta: 'approved publish · committed and pushed',
+          text: 'Review and materialize the proposed Git change through the team’s normal policy.',
         },
         {
           kind: 'result',
           actor: 'Threadnote',
-          text: 'Published mobile-team · mobile · auth-refresh',
-          evidence: ['threadnote://user/alice/memories/shared/mobile-team/durable/projects/mobile/auth-refresh.md'],
+          text: 'Git proposal for mobile-team · mobile · auth-refresh',
+          evidence: ['knowledge-delta-proposal.json'],
         },
         {
           kind: 'tool',
@@ -78,20 +85,22 @@ export const proTips: ProTip[] = [
         {
           kind: 'assistant',
           actor: 'Reviewer agent',
-          text: 'The PR names mobile-team · mobile · auth-refresh. I recalled the shared decision locally and will review the diff against its rotation-window and rollout invariants.',
+          text: 'After the Git proposal is merged and synced, I recalled the shared decision locally and will review the diff against its rotation-window and rollout invariants.',
         },
       ],
     },
   },
   {
     id: 'parallel-team',
-    number: '02',
+    number: '07',
     category: 'team',
     title: 'Work in parallel without losing the shared edge.',
-    summary: 'Publish reusable decisions while keeping branch-specific handoffs local to each teammate.',
-    why: 'Shared durable memory synchronizes the contract; local handoffs preserve the mechanics of each worktree.',
+    summary:
+      'Review reusable decisions into a Git proposal while keeping branch-specific handoffs local to each teammate.',
+    why: 'A reviewed Knowledge Delta and its Git proposal synchronize the contract; local handoffs preserve the mechanics of each worktree.',
     practice: [
-      'Use the same project and topic identity for the shared contract.',
+      'Use the same project and topic identity for the reviewed shared contract.',
+      'Apply the reviewed durable candidate, then use a Git proposal for normal team review.',
       'Never publish handoffs, private logs, or raw customer material.',
       'Recall at task start so auto-sync pulls the newest curated team memory.',
     ],
@@ -103,30 +112,42 @@ export const proTips: ProTip[] = [
         {
           kind: 'user',
           actor: 'Alice',
-          text: 'Publish the finalized session envelope for the mobile team.',
+          text: 'Review the finalized session envelope for the mobile team.',
         },
         {
           kind: 'tool',
-          actor: 'share_publish',
-          text: '{"uri":"threadnote://user/alice/memories/durable/projects/mobile/session-envelope.md","team":"mobile-team","preview":true}',
-          meta: 'exact shared bytes · no write',
-        },
-        {
-          kind: 'action',
-          actor: 'Alice',
-          text: 'Approve this preview for the mobile team.',
-        },
-        {
-          kind: 'tool',
-          actor: 'share_publish',
-          text: '{"uri":"threadnote://user/alice/memories/durable/projects/mobile/session-envelope.md","team":"mobile-team","preview":false}',
-          meta: 'approved publish · Git-backed',
+          actor: 'review_session_context',
+          text: '{"task":"Share the session envelope","outcome":"The contract is ready for team review.","project":"mobile","topic":"session-envelope","evidence":["session-envelope contract and focused tests"],"decisions":["Rotate the nonce with every session envelope."]}',
+          meta: 'reviewed Knowledge Delta · stable topic',
         },
         {
           kind: 'result',
           actor: 'Threadnote',
-          text: 'Published revision 8f2c1d',
-          evidence: ['threadnote://user/alice/memories/shared/mobile-team/durable/projects/mobile/session-envelope.md'],
+          text: 'Knowledge Delta review created',
+          evidence: ['review review-d4e5f6 · revision 1', 'candidate contract-01 · create'],
+        },
+        {
+          kind: 'tool',
+          actor: 'apply_memory_candidates',
+          text: '{"reviewId":"review-d4e5f6","revision":1,"candidateId":"contract-01","action":"approve","operation":"create","approved":true}',
+          meta: 'approved durable contract · exact review revision',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Candidate applied; review advanced',
+          evidence: ['review review-d4e5f6 · revision 2', 'candidate contract-01 · applied'],
+        },
+        {
+          kind: 'tool',
+          actor: 'share_propose',
+          text: '{"reviewId":"review-d4e5f6","revision":2,"candidateIds":["contract-01"],"team":"mobile-team","approved":true}',
+          meta: 'approved Git proposal · no write',
+        },
+        {
+          kind: 'action',
+          actor: 'Alice',
+          text: 'Review, merge, and sync the Git proposal through the mobile team’s normal policy.',
         },
         {
           kind: 'user',
@@ -137,7 +158,7 @@ export const proTips: ProTip[] = [
           kind: 'tool',
           actor: 'recall_context',
           text: '{"project":"mobile","query":"session envelope Android","callerCwd":"/repo/android"}',
-          meta: 'auto-sync then recall',
+          meta: 'after merge and sync · scoped recall',
         },
         {
           kind: 'assistant',
@@ -149,7 +170,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'orchestrated-worktrees',
-    number: '03',
+    number: '08',
     category: 'continuity',
     title: 'Give every parallel agent its own worktree.',
     summary: 'Share local memory while keeping each agent’s dirty source graph isolated to its checkout.',
@@ -211,14 +232,15 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'on-call',
-    number: '04',
+    number: '09',
     category: 'operations',
     title: 'Turn an incident into the next on-caller’s head start.',
-    summary: 'Preserve the privacy-safe diagnosis, signals, mitigations, and follow-up—not the production transcript.',
+    summary:
+      'Review the privacy-safe diagnosis into a Knowledge Delta, then share it through Git—not the production transcript.',
     why: 'The next incident starts with known failure modes and verified commands instead of institutional archaeology.',
     practice: [
       'Remove customer data, credentials, raw logs, and ephemeral identifiers.',
-      'Publish only a sanitized durable pattern or runbook amendment; keep the incident record and handoff personal.',
+      'Review and approve only a sanitized durable pattern or runbook amendment before its Git proposal; keep the incident record and handoff personal.',
       'Record what ruled hypotheses in or out, what mitigation worked, and which repository runbook remains authoritative.',
     ],
     scenario: {
@@ -233,26 +255,38 @@ export const proTips: ProTip[] = [
         },
         {
           kind: 'tool',
-          actor: 'remember_context',
-          text: '{"kind":"durable","project":"checkout","topic":"retry-storm-pattern","text":"A deploy-time latency spike plus a draining queue and doubled retries previously indicated retry amplification. Verify the three safe checks in the current repository runbook before mitigating."}',
-          meta: 'sanitized learning · no raw incident log',
+          actor: 'review_session_context',
+          text: '{"task":"Preserve the retry-storm diagnosis","outcome":"Sanitized incident learning is ready for review.","project":"checkout","topic":"retry-storm-pattern","evidence":["sanitized incident summary","current repository runbook"],"decisions":["Verify the repository runbook’s three safe checks before mitigating retry amplification."]}',
+          meta: 'sanitized Knowledge Delta · no raw incident log',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Knowledge Delta review created',
+          evidence: ['review review-g7h8i9 · revision 1', 'candidate incident-01 · create'],
         },
         {
           kind: 'tool',
-          actor: 'share_publish',
-          text: '{"uri":"threadnote://user/alice/memories/durable/projects/checkout/retry-storm-pattern.md","team":"platform-on-call","preview":true}',
-          meta: 'exact shared bytes · no write',
+          actor: 'apply_memory_candidates',
+          text: '{"reviewId":"review-g7h8i9","revision":1,"candidateId":"incident-01","action":"approve","operation":"create","approved":true}',
+          meta: 'approved sanitized durable pattern',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Candidate applied; review advanced',
+          evidence: ['review review-g7h8i9 · revision 2', 'candidate incident-01 · applied'],
+        },
+        {
+          kind: 'tool',
+          actor: 'share_propose',
+          text: '{"reviewId":"review-g7h8i9","revision":2,"candidateIds":["incident-01"],"team":"platform-on-call","approved":true}',
+          meta: 'approved Git proposal · no write',
         },
         {
           kind: 'action',
           actor: 'Previous on-caller',
-          text: 'Approve the sanitized durable pattern.',
-        },
-        {
-          kind: 'tool',
-          actor: 'share_publish',
-          text: '{"uri":"threadnote://user/alice/memories/durable/projects/checkout/retry-storm-pattern.md","team":"platform-on-call","preview":false}',
-          meta: 'approved durable publish',
+          text: 'Review, merge, and sync the proposal through the on-call team’s normal policy.',
         },
         {
           kind: 'user',
@@ -288,7 +322,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'switch-agents',
-    number: '05',
+    number: '10',
     category: 'continuity',
     title: 'Start in one agent. Continue in another.',
     summary: 'A concise handoff carries exact status, checks, blockers, and next steps across agent boundaries.',
@@ -300,12 +334,12 @@ export const proTips: ProTip[] = [
     ],
     scenario: {
       eyebrow: 'Agent portability',
-      title: 'Codex hands a live branch to Claude',
+      title: 'One coding agent hands a live branch to another',
       description: 'The next agent begins from a structured handoff rather than a copied transcript.',
       steps: [
         {
           kind: 'user',
-          actor: 'You · Codex',
+          actor: 'You · first agent',
           text: 'Save the current state. I’m continuing in another agent.',
         },
         {
@@ -322,7 +356,7 @@ export const proTips: ProTip[] = [
         },
         {
           kind: 'user',
-          actor: 'You · Claude',
+          actor: 'You · next agent',
           text: 'Continue the billing retry-policy work.',
         },
         {
@@ -332,7 +366,7 @@ export const proTips: ProTip[] = [
         },
         {
           kind: 'assistant',
-          actor: 'Claude',
+          actor: 'Next agent',
           text: 'The parser and unit tests pass. One property test still exposes a jitter-boundary bug; I’ll start there.',
         },
       ],
@@ -340,7 +374,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'resume-later',
-    number: '06',
+    number: '11',
     category: 'continuity',
     title: 'Resume a feature a month later.',
     summary:
@@ -383,7 +417,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'graph-operations',
-    number: '07',
+    number: '12',
     category: 'graph',
     title: 'Choose the graph operation that matches the question.',
     summary:
@@ -438,7 +472,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'memory-plus-graph',
-    number: '08',
+    number: '13',
     category: 'graph',
     title: 'Cite the code behind consequential memory.',
     summary:
@@ -513,7 +547,7 @@ export const proTips: ProTip[] = [
   },
   {
     id: 'portable-graph-checkpoints',
-    number: '09',
+    number: '14',
     category: 'graph',
     title: 'Carry a verified graph across machines.',
     summary:
@@ -588,3 +622,5 @@ export const proTips: ProTip[] = [
     },
   },
 ];
+
+export const proTips: ProTip[] = [...lifecycleProTips, ...establishedProTips];

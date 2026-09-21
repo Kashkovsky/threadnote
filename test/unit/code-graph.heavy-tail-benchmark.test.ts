@@ -3,9 +3,11 @@ import {describe, expect, it} from 'vitest';
 import {join, mkdtemp, readFile, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {
   codeGraphHeavyTailRatchetArtifact,
+  assertHeavyTailReleaseRatchet,
   createCodeGraphHeavyTailRatchet,
   parseCodeGraphHeavyTailBenchmarkArguments,
   parseCodeGraphHeavyTailBenchmarkArtifact,
+  parseCodeGraphHeavyTailReleaseEvidence,
   parseHeavyTailChildRun,
   type CodeGraphHeavyTailBenchmarkArtifact,
   type HeavyTailChildRun,
@@ -28,6 +30,11 @@ import {
   codeGraphHeavyTailTextlessSvg,
   parseCodeGraphHeavyTailProfile,
 } from '../../scripts/code-graph-heavy-tail-fixture.js';
+
+const RELEASE_CAPTURE_START = Date.parse('2026-09-18T12:00:00.000Z');
+const RELEASE_OBSERVED_AT = '2026-09-18T12:00:01.000Z';
+const RELEASE_RUNNER_CLASS = 'apple-m1-max-64g-internal';
+const HEAVY_TAIL_GRAPH_DIGEST = '862c4f7e69cda68d59679d6b052cccfca01c35a2e13086333c631f2286b02c93';
 
 describe('code graph large-monorepo heavy-tail benchmark', () => {
   it('uses the centralized process maxRSS byte normalizer', async () => {
@@ -214,6 +221,15 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
       /requires --governed/u,
     );
     expect(() => parseCodeGraphHeavyTailBenchmarkArguments(['--child', '--governed'])).toThrow(/parent-only/iu);
+    expect(() =>
+      parseCodeGraphHeavyTailBenchmarkArguments([
+        '--governed',
+        '--candidate-commit',
+        'a'.repeat(40),
+        '--output',
+        '/tmp/a',
+      ]),
+    ).toThrow(/candidate-commit requires --ratchet/iu);
     expect(
       parseCodeGraphHeavyTailBenchmarkArguments([
         '--governed',
@@ -281,13 +297,220 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
     expect(() => enforceCodeGraphBenchmarkRatchet(regressed, ratchet)).toThrow(/parallel-duration/u);
   });
 
+  it('requires exactly three governed performance runs and rejects correctness-only evidence', () => {
+    const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)];
+    expect(() => createCodeGraphHeavyTailRatchet([...artifacts, heavyTailArtifact(30)])).toThrow(/exactly three/u);
+    const correctnessOnly = {
+      ...artifacts[0],
+      evidenceClass: 'correctness-only' as const,
+      ratchetArtifact: {
+        ...artifacts[0].ratchetArtifact,
+        metadata: {...artifacts[0].ratchetArtifact.metadata, evidenceClass: 'correctness-only'},
+      },
+    };
+    expect(() => createCodeGraphHeavyTailRatchet([correctnessOnly, artifacts[1], artifacts[2]])).toThrow(
+      /governed-performance/u,
+    );
+    const weakened = artifacts.map(artifact => ({
+      ...artifact,
+      ratchetArtifact: {
+        ...artifact.ratchetArtifact,
+        metadata: {...artifact.ratchetArtifact.metadata, thresholdPolicy: 'relative-50-percent'},
+      },
+    }));
+    expect(() => createCodeGraphHeavyTailRatchet(weakened)).toThrow(/governed-performance|threshold/u);
+  });
+
+  it('matches release admission against an independent model across generated evidence records', () => {
+    fc.assert(
+      fc.property(fc.tuple(validReleaseAdmissionRecordArbitrary, rejectedReleaseAdmissionRecordArbitrary), records => {
+        for (const record of records) {
+          const {artifacts, options} = releaseAdmissionCase(record);
+          const expected = expectedReleaseAdmission(record);
+          let admitted = true;
+          try {
+            assertHeavyTailReleaseRatchet(artifacts, options);
+          } catch {
+            admitted = false;
+          }
+          expect(admitted).toBe(expected);
+        }
+      }),
+      {numRuns: 64},
+    );
+  });
+
+  it('accepts freshness boundaries and rejects stale, future, and over-span evidence', () => {
+    const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)];
+    const options = releaseOptions(artifacts);
+    const admitted = assertHeavyTailReleaseRatchet(artifacts, options);
+    expect(admitted.metadata).toMatchObject({
+      releaseFutureSkewMilliseconds: 1_000,
+      releaseMaximumEvidenceAgeMilliseconds: 60_000,
+      releaseMaximumRunSpanMilliseconds: 20,
+      releaseNotBefore: new Date(RELEASE_CAPTURE_START).toISOString(),
+      releaseObservedAt: RELEASE_OBSERVED_AT,
+    });
+    expect(() =>
+      assertHeavyTailReleaseRatchet(artifacts, {
+        ...options,
+        freshness: {...options.freshness, observedAt: new Date(RELEASE_CAPTURE_START + 60_000).toISOString()},
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertHeavyTailReleaseRatchet(artifacts, {
+        ...options,
+        freshness: {
+          ...options.freshness,
+          notBefore: new Date(RELEASE_CAPTURE_START - 1_000).toISOString(),
+          observedAt: new Date(RELEASE_CAPTURE_START - 980).toISOString(),
+        },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertHeavyTailReleaseRatchet(artifacts, {
+        ...options,
+        freshness: {...options.freshness, notBefore: new Date(RELEASE_CAPTURE_START + 1).toISOString()},
+      }),
+    ).toThrow(/freshness window/iu);
+    expect(() =>
+      assertHeavyTailReleaseRatchet(artifacts, {
+        ...options,
+        freshness: {
+          ...options.freshness,
+          notBefore: new Date(RELEASE_CAPTURE_START - 2_000).toISOString(),
+          observedAt: new Date(RELEASE_CAPTURE_START - 1_001).toISOString(),
+        },
+      }),
+    ).toThrow(/future skew/iu);
+    expect(() =>
+      assertHeavyTailReleaseRatchet(artifacts, {
+        ...options,
+        freshness: {...options.freshness, maximumSpanMilliseconds: 19},
+      }),
+    ).toThrow(/span/iu);
+  });
+
+  it('rejects fallback runner bindings and candidate evidence that weakens the checked ratchet', () => {
+    const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)];
+    const options = releaseOptions(artifacts);
+    expect(() => assertHeavyTailReleaseRatchet(artifacts, options)).not.toThrow();
+    expect(() => assertHeavyTailReleaseRatchet(artifacts, {...options, runnerClass: 'local-unclassified'})).toThrow(
+      /explicit runner class/iu,
+    );
+    expect(() => assertHeavyTailReleaseRatchet(artifacts, {...options, runnerIdentity: 'local'})).toThrow(
+      /explicit runner identity/iu,
+    );
+    const slower = artifacts.map((artifact, index) =>
+      heavyTailArtifactWithMeasurement(
+        artifact.ratchetArtifact.measurements.find(measurement => measurement.name === 'parallel-duration')!.p50 +
+          10_000,
+        'parallel-duration',
+        0,
+        'parallel-language-mixed-request',
+        index * 10,
+      ),
+    );
+    expect(() => assertHeavyTailReleaseRatchet(slower, options)).toThrow(/checked ratchet|parallel-duration/iu);
+    const checkedLimit = createCodeGraphHeavyTailRatchet(artifacts).measurements['parallel-duration'].p95Maximum!;
+    const nearLimit = artifacts.map((_, index) => {
+      const artifact = heavyTailArtifactWithMeasurement(
+        checkedLimit,
+        'parallel-duration',
+        0,
+        'parallel-language-mixed-request',
+        index * 10,
+      );
+      return withRecomputedHeavyTailRatchet({
+        ...artifact,
+        runs: {
+          ...artifact.runs,
+          single: {...artifact.runs.single, durationMilliseconds: checkedLimit / 0.89},
+        },
+      });
+    });
+    expect(() => assertHeavyTailReleaseRatchet(nearLimit, options)).toThrow(/weaker.*parallel-duration/iu);
+  });
+
+  it('strictly parses release evidence and rejects outer/inner provenance mutations', () => {
+    const artifact = heavyTailArtifact(0);
+    expect(parseCodeGraphHeavyTailReleaseEvidence(artifact)).toEqual(artifact);
+    for (const mutate of [
+      (value: CodeGraphHeavyTailBenchmarkArtifact) => ({
+        ...value,
+        createdAt: new Date(RELEASE_CAPTURE_START + 1).toISOString(),
+      }),
+      (value: CodeGraphHeavyTailBenchmarkArtifact) => ({
+        ...value,
+        environment: {...value.environment, runnerIdentity: 'mismatched-runner'},
+      }),
+      (value: CodeGraphHeavyTailBenchmarkArtifact) => ({
+        ...value,
+        environment: {...value.environment, storage: undefined},
+      }),
+      (value: CodeGraphHeavyTailBenchmarkArtifact) => ({
+        ...value,
+        environment: {
+          ...value.environment,
+          provenance: {...value.environment.provenance!, executableSha256: undefined} as never,
+        },
+      }),
+      (value: CodeGraphHeavyTailBenchmarkArtifact) => ({
+        ...value,
+        assertions: {...value.assertions, resumeMatchesClean: false as never},
+      }),
+      (value: CodeGraphHeavyTailBenchmarkArtifact) => ({
+        ...value,
+        runs: {
+          ...value.runs,
+          parallel: {...value.runs.parallel, durationMilliseconds: value.runs.parallel.durationMilliseconds + 1},
+        },
+      }),
+      (value: CodeGraphHeavyTailBenchmarkArtifact) => ({
+        ...value,
+        runs: {
+          ...value.runs,
+          sixWorkers: {
+            ...value.runs.sixWorkers,
+            graph: {...value.runs.sixWorkers.graph!, digest: '1'.repeat(64)},
+          },
+        },
+      }),
+      (value: CodeGraphHeavyTailBenchmarkArtifact) => ({
+        ...value,
+        ratchetArtifact: {
+          ...value.ratchetArtifact,
+          metadata: {...value.ratchetArtifact.metadata, profile: 'different-profile'},
+        },
+      }),
+    ]) {
+      expect(() => parseCodeGraphHeavyTailReleaseEvidence(mutate(artifact))).toThrow(/release evidence|inconsistent/iu);
+    }
+  });
+
+  it('rejects resumed language telemetry mutations without a regenerated embedded contract', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('factsBytes' as const, 'requestMilliseconds' as const),
+        fc.integer({max: 1_000, min: 1}),
+        (field, delta) => {
+          const mutated = structuredClone(heavyTailArtifact(0)) as Mutable<CodeGraphHeavyTailBenchmarkArtifact>;
+          mutated.runs.resumed.languages.typescript[field] += delta;
+
+          expect(() => parseCodeGraphHeavyTailReleaseEvidence(mutated)).toThrow(/release evidence|inconsistent/iu);
+        },
+      ),
+      {numRuns: 16},
+    );
+  });
+
   it('gives nonzero sub-10ms timers bounded absolute noise headroom without relaxing exact zero timers', () => {
     const timer = 'parallel-language-typescript-config-request';
     const zeroTimer = 'parallel-language-mixed-request';
     const artifacts = [
-      heavyTailArtifactWithMeasurement(2.884, timer, 0, zeroTimer),
-      heavyTailArtifactWithMeasurement(3.246, timer, 0, zeroTimer),
-      heavyTailArtifactWithMeasurement(3.124, timer, 0, zeroTimer),
+      heavyTailArtifactWithMeasurement(2.884, timer, 0, zeroTimer, 0),
+      heavyTailArtifactWithMeasurement(3.246, timer, 0, zeroTimer, 10),
+      heavyTailArtifactWithMeasurement(3.124, timer, 0, zeroTimer, 20),
     ];
     const ratchet = createCodeGraphHeavyTailRatchet(artifacts);
 
@@ -395,10 +618,15 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
   it('executes the checked ratchet generator through its Bun process boundary', async () => {
     const root = await mkdtemp('threadnote-heavy-tail-ratchet-generator-');
     try {
+      const checkedRatchetPath = join(
+        process.cwd(),
+        'test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json',
+      );
+      const checkedRatchet = JSON.parse(await readFile(checkedRatchetPath, 'utf8')) as CheckedHeavyTailRatchet;
       const artifactPaths: string[] = [];
       for (const [index, artifact] of [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)].entries()) {
         const artifactPath = join(root, `artifact-${index}.json`);
-        await writeFile(artifactPath, `${JSON.stringify(artifact)}\n`);
+        await writeFile(artifactPath, `${JSON.stringify(artifactMatchingCheckedRatchet(artifact, checkedRatchet))}\n`);
         artifactPaths.push(artifactPath);
       }
       const outputPath = join(root, 'ratchet.json');
@@ -408,6 +636,24 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
           'scripts/generate-code-graph-heavy-tail-ratchet.ts',
           '--output',
           outputPath,
+          '--candidate-commit',
+          'a'.repeat(40),
+          '--runner-class',
+          RELEASE_RUNNER_CLASS,
+          '--runner-identity',
+          'local-apple-m1-max',
+          '--ratchet',
+          checkedRatchetPath,
+          '--release-observed-at',
+          RELEASE_OBSERVED_AT,
+          '--release-not-before',
+          new Date(RELEASE_CAPTURE_START).toISOString(),
+          '--maximum-evidence-age-ms',
+          '60000',
+          '--maximum-run-span-ms',
+          '20',
+          '--future-skew-ms',
+          '1000',
           ...artifactPaths,
         ],
         {cwd: process.cwd(), stderr: 'pipe', stdout: 'pipe'},
@@ -419,7 +665,7 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
       ]);
 
       expect(stderr).toBe('');
-      expect(exitCode).toBe(0);
+      expect(exitCode, stdout).toBe(0);
       expect(stdout).toContain('threadnote-code-graph-heavy-tail');
       const ratchet = JSON.parse(await readFile(outputPath, 'utf8')) as {readonly measurements: object};
       expect(Object.keys(ratchet.measurements)).toHaveLength(254);
@@ -429,18 +675,421 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
   });
 });
 
+interface CheckedHeavyTailRatchet {
+  readonly environment: Readonly<Record<string, boolean | number | string>>;
+  readonly measurements: Readonly<
+    Record<
+      string,
+      {
+        readonly maximum?: number;
+        readonly meanMaximum?: number;
+        readonly minimum?: number;
+        readonly p50Maximum?: number;
+        readonly p95Maximum?: number;
+        readonly p99Maximum?: number;
+      }
+    >
+  >;
+  readonly metadata: Readonly<Record<string, boolean | number | string>>;
+}
+
+type Mutable<T> = {-readonly [Key in keyof T]: Mutable<T[Key]>};
+
+interface ReleaseAdmissionRecord {
+  readonly actualCandidate: string;
+  readonly candidateCommit: string;
+  readonly evidenceClass: 'correctness-only' | 'governed-performance';
+  readonly freshness: {
+    readonly futureSkewMilliseconds: number;
+    readonly maximumAgeMilliseconds: number;
+    readonly maximumSpanMilliseconds: number;
+    readonly notBefore: number;
+    readonly observedAt: number;
+  };
+  readonly outerEmbeddedConsistent: boolean;
+  readonly provenanceCommit: string;
+  readonly runnerClass: string;
+  readonly runnerIdentity: string;
+  readonly selectedRunnerClass: string;
+  readonly selectedRunnerIdentity: string;
+  readonly timestamps: readonly [number, number, number];
+}
+
+const releaseCommitArbitrary = fc
+  .array(fc.constantFrom(...'0123456789abcdef'), {maxLength: 40, minLength: 40})
+  .map(characters => characters.join(''));
+const releaseRunnerArbitrary = fc
+  .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789-'), {maxLength: 18, minLength: 3})
+  .map(characters => characters.join(''))
+  .filter(value => value !== 'local' && value !== 'local-unclassified');
+
+const validReleaseAdmissionRecordArbitrary = fc
+  .record({
+    actualCandidate: releaseCommitArbitrary,
+    beforeSlack: fc.integer({max: 50, min: 0}),
+    firstOffset: fc.integer({max: 1_000, min: 0}),
+    firstStep: fc.integer({max: 20, min: 1}),
+    futureSkewMilliseconds: fc.integer({max: 50, min: 0}),
+    observedLag: fc.integer({max: 50, min: 0}),
+    runnerClass: releaseRunnerArbitrary,
+    runnerIdentity: releaseRunnerArbitrary,
+    secondStep: fc.integer({max: 20, min: 1}),
+  })
+  .map(values => {
+    const first = RELEASE_CAPTURE_START + values.firstOffset;
+    const second = first + values.firstStep;
+    const third = second + values.secondStep;
+    const observedAt = third + values.observedLag;
+    return {
+      actualCandidate: values.actualCandidate,
+      candidateCommit: values.actualCandidate,
+      evidenceClass: 'governed-performance' as const,
+      freshness: {
+        futureSkewMilliseconds: values.futureSkewMilliseconds,
+        maximumAgeMilliseconds: observedAt - first,
+        maximumSpanMilliseconds: third - first,
+        notBefore: first - values.beforeSlack,
+        observedAt,
+      },
+      outerEmbeddedConsistent: true,
+      provenanceCommit: values.actualCandidate,
+      runnerClass: values.runnerClass,
+      runnerIdentity: values.runnerIdentity,
+      selectedRunnerClass: values.runnerClass,
+      selectedRunnerIdentity: values.runnerIdentity,
+      timestamps: [first, second, third] as const,
+    } satisfies ReleaseAdmissionRecord;
+  });
+
+const rejectedReleaseAdmissionRecordArbitrary = fc
+  .tuple(
+    validReleaseAdmissionRecordArbitrary,
+    fc.constantFrom(
+      'candidate',
+      'runner-class',
+      'runner-identity',
+      'timestamp-order',
+      'freshness',
+      'provenance',
+      'evidence',
+      'outer-embedded',
+    ),
+  )
+  .map(([record, rejection]): ReleaseAdmissionRecord => {
+    switch (rejection) {
+      case 'candidate':
+        return {...record, candidateCommit: differentCommit(record.actualCandidate)};
+      case 'runner-class':
+        return {...record, selectedRunnerClass: `${record.runnerClass}-other`};
+      case 'runner-identity':
+        return {...record, selectedRunnerIdentity: `${record.runnerIdentity}-other`};
+      case 'timestamp-order':
+        return {...record, timestamps: [record.timestamps[0], record.timestamps[0], record.timestamps[2]]};
+      case 'freshness':
+        return {
+          ...record,
+          freshness: {
+            ...record.freshness,
+            maximumAgeMilliseconds: record.freshness.observedAt - record.timestamps[0] - 1,
+          },
+        };
+      case 'provenance':
+        return {...record, provenanceCommit: differentCommit(record.actualCandidate)};
+      case 'evidence':
+        return {...record, evidenceClass: 'correctness-only'};
+      case 'outer-embedded':
+        return {...record, outerEmbeddedConsistent: false};
+    }
+  });
+
+function releaseAdmissionCase(record: ReleaseAdmissionRecord) {
+  const checkedArtifacts = releaseArtifacts({
+    ...record,
+    evidenceClass: 'governed-performance',
+    outerEmbeddedConsistent: true,
+    provenanceCommit: record.actualCandidate,
+    timestamps: [RELEASE_CAPTURE_START, RELEASE_CAPTURE_START + 10, RELEASE_CAPTURE_START + 20],
+  });
+  return {
+    artifacts: releaseArtifacts(record),
+    options: {
+      candidateCommit: record.candidateCommit,
+      checkedRatchet: createCodeGraphHeavyTailRatchet(checkedArtifacts),
+      freshness: {
+        futureSkewMilliseconds: record.freshness.futureSkewMilliseconds,
+        maximumAgeMilliseconds: record.freshness.maximumAgeMilliseconds,
+        maximumSpanMilliseconds: record.freshness.maximumSpanMilliseconds,
+        notBefore: new Date(record.freshness.notBefore).toISOString(),
+        observedAt: new Date(record.freshness.observedAt).toISOString(),
+      },
+      runnerClass: record.selectedRunnerClass,
+      runnerIdentity: record.selectedRunnerIdentity,
+    },
+  };
+}
+
+function releaseArtifacts(record: ReleaseAdmissionRecord): CodeGraphHeavyTailBenchmarkArtifact[] {
+  const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)].map((artifact, index) => {
+    const outer = {
+      ...artifact,
+      createdAt: new Date(record.timestamps[index]).toISOString(),
+      evidenceClass: record.evidenceClass,
+      environment: {
+        ...artifact.environment,
+        commit: record.actualCandidate,
+        provenance: {...artifact.environment.provenance!, sourceCommit: record.provenanceCommit},
+        runnerClass: record.runnerClass,
+        runnerIdentity: record.runnerIdentity,
+      },
+    };
+    return withRecomputedHeavyTailRatchet(outer);
+  });
+  if (!record.outerEmbeddedConsistent) {
+    const first = artifacts[0];
+    artifacts[0] = {
+      ...first,
+      runs: {
+        ...first.runs,
+        parallel: {...first.runs.parallel, durationMilliseconds: first.runs.parallel.durationMilliseconds + 1},
+      },
+    };
+  }
+  return artifacts;
+}
+
+function expectedReleaseAdmission(record: ReleaseAdmissionRecord): boolean {
+  const {freshness, timestamps} = record;
+  return (
+    /^[0-9a-f]{40}$/u.test(record.candidateCommit) &&
+    record.candidateCommit === record.actualCandidate &&
+    record.selectedRunnerClass.trim().length > 0 &&
+    record.selectedRunnerClass !== 'local-unclassified' &&
+    record.selectedRunnerClass === record.runnerClass &&
+    record.selectedRunnerIdentity.trim().length > 0 &&
+    record.selectedRunnerIdentity !== 'local' &&
+    record.selectedRunnerIdentity === record.runnerIdentity &&
+    timestamps[0] < timestamps[1] &&
+    timestamps[1] < timestamps[2] &&
+    freshness.notBefore <= freshness.observedAt &&
+    freshness.maximumAgeMilliseconds > 0 &&
+    freshness.maximumSpanMilliseconds > 0 &&
+    timestamps.every(
+      timestamp =>
+        timestamp >= freshness.notBefore &&
+        freshness.observedAt - timestamp <= freshness.maximumAgeMilliseconds &&
+        timestamp <= freshness.observedAt + freshness.futureSkewMilliseconds,
+    ) &&
+    Math.max(...timestamps) - Math.min(...timestamps) <= freshness.maximumSpanMilliseconds &&
+    record.provenanceCommit === record.actualCandidate &&
+    record.evidenceClass === 'governed-performance' &&
+    record.outerEmbeddedConsistent
+  );
+}
+
+function differentCommit(commit: string): string {
+  return `${commit[0] === '0' ? '1' : '0'}${commit.slice(1)}`;
+}
+
+function withRecomputedHeavyTailRatchet(
+  artifact: CodeGraphHeavyTailBenchmarkArtifact,
+): CodeGraphHeavyTailBenchmarkArtifact {
+  const {ratchetArtifact: _ratchetArtifact, ...outer} = artifact;
+  const governance = {
+    availableBytes: outer.environment.availableBytes!,
+    minimumFreeBytes: outer.environment.minimumFreeBytes!,
+    runtimeProvenance: outer.environment.provenance!,
+    storage: outer.environment.storage!,
+  } satisfies HeavyTailGovernanceEvidence;
+  return {
+    ...outer,
+    ratchetArtifact: codeGraphHeavyTailRatchetArtifact(outer, 'darwin', governance),
+  };
+}
+
+function artifactMatchingCheckedRatchet(
+  artifact: CodeGraphHeavyTailBenchmarkArtifact,
+  checked: CheckedHeavyTailRatchet,
+): CodeGraphHeavyTailBenchmarkArtifact {
+  const outer = structuredClone(artifact) as Mutable<CodeGraphHeavyTailBenchmarkArtifact>;
+  for (const [name, limit] of Object.entries(checked.measurements)) {
+    if (
+      name === 'parallel-duration-reduction' ||
+      name === 'parallel-active-wall-reduction' ||
+      name === 'resume-retained-cache-coverage'
+    ) {
+      continue;
+    }
+    const value =
+      limit.minimum !== undefined && name.endsWith('-extraction-average-concurrency')
+        ? limit.minimum / 0.9
+        : (limit.minimum ?? 0);
+    setHeavyTailMeasurement(outer, name, value);
+  }
+  outer.runs.single.durationMilliseconds = 100;
+  outer.runs.parallel.durationMilliseconds = 0;
+  outer.runs.single.extraction.activeWallMilliseconds = 100;
+  outer.runs.single.extraction.requestMilliseconds = 100;
+  outer.runs.parallel.extraction.activeWallMilliseconds = 0;
+  return withRecomputedHeavyTailRatchet(outer);
+}
+
+function setHeavyTailMeasurement(
+  artifact: Mutable<CodeGraphHeavyTailBenchmarkArtifact>,
+  name: string,
+  value: number,
+): void {
+  const runPrefix = [
+    ['eight-workers', 'eightWorkers'],
+    ['six-workers', 'sixWorkers'],
+    ['interrupted', 'interrupted'],
+    ['parallel', 'parallel'],
+    ['resumed', 'resumed'],
+    ['single', 'single'],
+  ] as const;
+  const match = runPrefix.find(([prefix]) => name.startsWith(`${prefix}-`));
+  if (match === undefined) return;
+  const run = artifact.runs[match[1]];
+  const metric = name.slice(match[0].length + 1);
+  switch (metric) {
+    case 'duration':
+      run.durationMilliseconds = value;
+      return;
+    case 'cpu':
+      run.cpuMilliseconds = value;
+      return;
+    case 'peak-rss':
+      run.peakRssBytes = value;
+      return;
+    case 'reading':
+      run.readingMilliseconds = value;
+      return;
+    case 'extraction-active-wall':
+      run.extraction.activeWallMilliseconds = value;
+      return;
+    case 'extraction-average-concurrency':
+      run.extraction.averageConcurrency = value;
+      return;
+    case 'extraction-peak-concurrency':
+      run.extraction.peakConcurrency = value;
+      return;
+    case 'extraction-request':
+      run.extraction.requestMilliseconds = value;
+      return;
+    case 'cache-files':
+      run.cache.files = value;
+      return;
+    case 'cache-facts-bytes':
+      run.cache.factsBytes = value;
+      return;
+    case 'cache-low-signal-json-facts-bytes':
+      run.cache.lowSignalJsonFactsBytes = value;
+      return;
+    case 'interrupted-after-persisted-files':
+      run.interruptedAfterPersistedFiles = value;
+      return;
+    case 'reused-files':
+      run.reusedFiles = value;
+      return;
+  }
+  if (metric.startsWith('graph-') && run.graph !== undefined) {
+    const graphMetric = metric.slice('graph-'.length);
+    switch (graphMetric) {
+      case 'edges':
+        run.graph.edges = value;
+        return;
+      case 'files':
+        run.graph.files = value;
+        return;
+      case 'generated-tail-preserved':
+        run.graph.generatedTypeScriptTailPreserved = value === 1;
+        return;
+      case 'low-signal-json-symbols':
+        run.graph.lowSignalJsonSymbols = value;
+        return;
+      case 'pathological-typescript-tails':
+        run.graph.pathologicalTypeScriptTails = value;
+        return;
+      case 'symbols':
+        run.graph.symbols = value;
+        return;
+      case 'textless-svg-symbols':
+        run.graph.textlessSvgSymbols = value;
+        return;
+    }
+  }
+  for (const language of Object.keys(run.languages).sort((left, right) => right.length - left.length)) {
+    const languagePrefix = `language-${language}-`;
+    if (!metric.startsWith(languagePrefix)) continue;
+    const telemetry = run.languages[language];
+    const languageMetric = metric.slice(languagePrefix.length);
+    switch (languageMetric) {
+      case 'degraded-files':
+        telemetry.degradedFiles = value;
+        return;
+      case 'facts-bytes':
+        telemetry.factsBytes = value;
+        return;
+      case 'files':
+        telemetry.files = value;
+        return;
+      case 'parse':
+        telemetry.parseMilliseconds = value;
+        return;
+      case 'persistence':
+        telemetry.persistenceMilliseconds = value;
+        return;
+      case 'request':
+        telemetry.requestMilliseconds = value;
+        if (telemetry.parseMilliseconds > value) telemetry.parseMilliseconds = value;
+        return;
+      case 'relations':
+        telemetry.relations = value;
+        return;
+      case 'source-bytes':
+        telemetry.sourceBytes = value;
+        return;
+      case 'symbols':
+        telemetry.symbols = value;
+        return;
+    }
+  }
+}
+
+function releaseOptions(artifacts: readonly CodeGraphHeavyTailBenchmarkArtifact[]) {
+  return {
+    candidateCommit: 'a'.repeat(40),
+    checkedRatchet: createCodeGraphHeavyTailRatchet(artifacts),
+    freshness: {
+      futureSkewMilliseconds: 1_000,
+      maximumAgeMilliseconds: 60_000,
+      maximumSpanMilliseconds: 20,
+      notBefore: new Date(RELEASE_CAPTURE_START).toISOString(),
+      observedAt: RELEASE_OBSERVED_AT,
+    },
+    runnerClass: RELEASE_RUNNER_CLASS,
+    runnerIdentity: 'local-apple-m1-max',
+  };
+}
+
 function heavyTailArtifact(offset: number): CodeGraphHeavyTailBenchmarkArtifact {
   const governance: HeavyTailGovernanceEvidence = {
     availableBytes: 200 * 1_073_741_824,
     minimumFreeBytes: 120 * 1_073_741_824,
     runtimeProvenance: {
-      mode: 'github-actions-clean-source',
-      runnerArchitecture: 'X64',
-      runnerEnvironment: 'github-hosted',
-      runnerOperatingSystem: 'Linux',
+      dependencyInstallation: 'bun install --frozen-lockfile',
+      executableSha256: 'd'.repeat(64),
+      mode: 'managed-exact-head',
+      payloadBytes: 1,
+      payloadFileCount: 1,
+      payloadManifestSha256: 'e'.repeat(64),
+      processLeaseInspection: 'complete',
+      releaseMetadataSha256: 'f'.repeat(64),
+      runtime: 'bun/1.3.14',
       sourceCommit: 'a'.repeat(40),
       sourceLockfileSha256: 'b'.repeat(64),
       sourcePackageManifestSha256: 'c'.repeat(64),
+      target: 'darwin-arm64',
+      version: 'threadnote-test',
     },
     storage: {filesystem: 'apfs', location: 'internal', medium: 'solid-state'},
   };
@@ -467,7 +1116,8 @@ function heavyTailArtifact(offset: number): CodeGraphHeavyTailBenchmarkArtifact 
       textlessSvgExcluded: true,
       eightWorkersMatchSingle: true,
     },
-    createdAt: new Date(offset).toISOString(),
+    createdAt: new Date(RELEASE_CAPTURE_START + offset).toISOString(),
+    evidenceClass: 'governed-performance',
     environment: {
       architecture: 'arm64',
       availableBytes: governance.availableBytes,
@@ -479,7 +1129,7 @@ function heavyTailArtifact(offset: number): CodeGraphHeavyTailBenchmarkArtifact 
       operatingSystem: 'macOS 27.0',
       provenance: governance.runtimeProvenance,
       runtime: 'bun/1.3.14',
-      runnerClass: 'pinned-apple-m1-max',
+      runnerClass: RELEASE_RUNNER_CLASS,
       runnerIdentity: 'local-apple-m1-max',
       storage: governance.storage,
     },
@@ -496,39 +1146,19 @@ function heavyTailArtifactWithMeasurement(
   name: string,
   secondValue: number,
   secondName: string,
+  offset = 0,
 ): CodeGraphHeavyTailBenchmarkArtifact {
-  const artifact = heavyTailArtifact(0);
-  const values = new Map([
-    [name, value],
-    [secondName, secondValue],
-  ]);
-  return {
-    ...artifact,
-    ratchetArtifact: {
-      ...artifact.ratchetArtifact,
-      measurements: artifact.ratchetArtifact.measurements.map(measurement => {
-        const replacement = values.get(measurement.name);
-        return replacement === undefined
-          ? measurement
-          : {
-              ...measurement,
-              maximum: replacement,
-              mean: replacement,
-              minimum: replacement,
-              p50: replacement,
-              p95: replacement,
-              p99: replacement,
-            };
-      }),
-    },
-  };
+  const artifact = structuredClone(heavyTailArtifact(offset)) as Mutable<CodeGraphHeavyTailBenchmarkArtifact>;
+  setHeavyTailMeasurement(artifact, name, value);
+  setHeavyTailMeasurement(artifact, secondName, secondValue);
+  return withRecomputedHeavyTailRatchet(artifact);
 }
 
 function completeRun(workerCount: number, durationMilliseconds: number, concurrency: number, offset: number) {
   return {
     ...baseRun(workerCount, durationMilliseconds, concurrency, offset),
     graph: {
-      digest: 'd'.repeat(64),
+      digest: HEAVY_TAIL_GRAPH_DIGEST,
       edges: 327,
       files: 268,
       generatedTypeScriptTailPreserved: true,
@@ -565,8 +1195,8 @@ function baseRun(workerCount: number, durationMilliseconds: number, concurrency:
       requestMilliseconds: 4_300 + offset,
     },
     languages: {
-      mixed: compactLanguage,
-      'npm-manifest': compactLanguage,
+      mixed: {...compactLanguage},
+      'npm-manifest': {...compactLanguage},
       typescript: {
         degradedFiles: 0,
         factsBytes: 552_458,
@@ -578,7 +1208,7 @@ function baseRun(workerCount: number, durationMilliseconds: number, concurrency:
         sourceBytes: 5_952_842,
         symbols: 549,
       },
-      'typescript-config': compactLanguage,
+      'typescript-config': {...compactLanguage},
     },
     peakRssBytes: 390_000_000 + offset,
     readingMilliseconds: 60 + offset,

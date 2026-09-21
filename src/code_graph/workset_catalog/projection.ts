@@ -1,4 +1,5 @@
 import {sha256HexSync} from '../../crypto/sha256.js';
+import {normalizeWorksetScopeReceipt, worksetScopeDigestFields} from './scope_receipt.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_LIMITS,
   CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
@@ -133,6 +134,7 @@ export function codeGraphWorksetRoutingProjectionDigestComplete(
       metadata.componentCount,
       metadata.symbolCount,
       state.chainDigest,
+      ...worksetScopeDigestFields(metadata),
     ]),
   );
 }
@@ -164,6 +166,7 @@ export function codeGraphWorksetCatalogGenerationIdentity(
     worksetName,
     input.manifestDigest,
     members.map(member => ({
+      ...normalizeWorksetScopeReceipt(member.projection),
       projectionDigest: member.projection.projectionDigest,
       repositoryId: member.projection.repositoryId,
       repositoryKey: member.repositoryKey,
@@ -199,6 +202,7 @@ export function codeGraphWorksetCatalogGenerationDigest(
         member.repositoryId,
         member.snapshotId,
         member.projectionDigest,
+        ...worksetScopeDigestFields(member),
       ]),
     ]),
   );
@@ -254,6 +258,7 @@ function normalizeProjectionDraft(
     }
   }
   return {
+    ...normalizeWorksetScopeReceipt(input),
     checkoutId: input.checkoutId,
     commitId: input.commitId,
     componentCount: input.componentCount,
@@ -413,6 +418,7 @@ function normalizeGenerationDigestMember(
   assertSha256(member.repositoryId, 'repository identity');
   assertSha256(member.projectionDigest, 'projection digest');
   return {
+    ...normalizeWorksetScopeReceipt(member),
     projectionDigest: member.projectionDigest,
     repositoryId: member.repositoryId,
     repositoryKey: boundedText(member.repositoryKey, 'repository key', 512),

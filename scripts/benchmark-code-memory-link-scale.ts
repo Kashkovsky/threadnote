@@ -7,7 +7,7 @@ import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
 import {sha256Hex} from '../src/effect/digest.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
-import {scriptArguments} from './effect/script.js';
+import {hasScriptHelpFlag, scriptArguments} from './effect/script.js';
 
 const TARGET = new URL('./benchmark-code-memory-link-scale-target.ts', import.meta.url);
 
@@ -76,6 +76,10 @@ const program = Effect.scoped(
     const fs = yield* FileSystem.FileSystem;
     const system = yield* SystemInfo;
     const args = yield* scriptArguments();
+    if (hasScriptHelpFlag(args)) {
+      yield* Console.log(usage());
+      return;
+    }
     if (args.includes('--built-artifact-sha256')) {
       return yield* ScriptError.make({message: '--built-artifact-sha256 is reserved for the benchmark wrapper.'});
     }
@@ -93,5 +97,16 @@ const program = Effect.scoped(
 const systemLayer = SystemInfo.layer;
 const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
 const wrapperLayer = Layer.mergeAll(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
+
+function usage(): string {
+  return [
+    'Usage: bun run bench:code-memory-link-scale -- [options]',
+    '',
+    'Builds and runs the code-memory-link inverse-selector scale benchmark.',
+    'Required: --candidate-commit <40-hex>',
+    'Optional: --budget <json> --output <json> --development-smoke',
+    '  --memory-candidates <count> --samples <count> --warmups <count>',
+  ].join('\n');
+}
 
 if (import.meta.main) BunRuntime.runMain(provideScriptLayer(program, wrapperLayer));

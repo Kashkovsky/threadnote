@@ -19,9 +19,9 @@ import type {
   RemoteMemoryReadResult,
   RemoteMemoryRecallResult,
   RemoteMemoryStatusResult,
-} from './postgres_repository.js';
-import type {RemoteMemoryContextBriefResult} from './context_brief_repository.js';
-import type {RemoteContextBriefInputV1} from './context_brief.js';
+} from './postgres/repository.js';
+import type {RemoteMemoryContextBriefResult} from './context/brief_repository.js';
+import type {RemoteContextBriefInputV1} from './context/brief.js';
 
 export interface RemoteMemoryListInput {
   readonly afterUri?: string;

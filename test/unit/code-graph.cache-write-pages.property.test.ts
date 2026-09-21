@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {CODE_GRAPH_CACHE_TRANSACTION_LIMITS} from '../../src/code_graph/cache_capacity.js';
-import {codeGraphCacheWritePages} from '../../src/code_graph/store_cache.js';
+import {codeGraphCacheWritePages} from '../../src/code_graph/store/cache.js';
 
 describe('code graph cache write page properties', () => {
   it('partitions without loss, reordering, mutation, or oversized SQLite statements', () => {

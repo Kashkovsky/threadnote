@@ -6,7 +6,7 @@ import {
   publishCodeGraphWorksetCatalogGeneration,
   stageCodeGraphWorksetCatalogGenerationFromReceipts,
 } from '../../src/code_graph/workset_catalog/store.js';
-import {stageCodeGraphWorksetRoutingProjectionScoped} from '../../src/code_graph/workset_catalog/projection_builder.js';
+import {stageCodeGraphWorksetRoutingProjectionScoped} from '../../src/code_graph/workset_catalog/projection/builder.js';
 import {
   codeGraphWorksetManifestDigest,
   prepareCodeGraphWorksetBridgesForGeneration,
@@ -14,12 +14,12 @@ import {
 import {
   executeCodeGraphWorksetV2,
   type CodeGraphWorksetQueryV2ExecutionV1,
-} from '../../src/code_graph/workset_query_v2.js';
+} from '../../src/code_graph/workset/query_v2.js';
 import type {
   CodeGraphEvidenceCardV1,
   CodeGraphWorksetQueryResultV2,
   ProjectedCodeGraphWorksetEvidenceV1,
-} from '../../src/code_graph/workset_evidence.js';
+} from '../../src/code_graph/workset/evidence.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {requireWorkset} from '../../src/manifest.js';
 import type {RuntimeConfig} from '../../src/types.js';

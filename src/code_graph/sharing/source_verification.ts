@@ -1,13 +1,13 @@
 import {Effect} from 'effect';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
-import {serializeBoundedCodeGraphFact} from '../fact_budget.js';
-import type {CodeGraphSourceVerification} from '../indexer_types.js';
+import {serializeBoundedCodeGraphFact} from '../fact/budget.js';
+import type {CodeGraphSourceVerification} from '../indexer/types.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
 import {graphShareLanguageAndRole, graphShareParseActionKey} from './action.js';
 import type {Sha256Digest} from './digest.js';
 import {sha256Digest} from './digest.js';
 import {graphSharingFailure} from './errors.js';
-import type {VerifiedGraphShareParseReceipt} from './parse_cache.js';
+import type {VerifiedGraphShareParseReceipt} from './parse/cache.js';
 
 export interface GraphShareSourceUseEvidence {
   readonly consumedActions: number;

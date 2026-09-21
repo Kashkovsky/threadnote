@@ -9,13 +9,15 @@ import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {CodeGraphEmbeddingIndex, selectGraphEmbeddingSymbols} from '../../src/code_graph/embedding.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {codeGraphVectorViewId} from '../../src/code_graph/vector/identity.js';
+import {cleanupCodeGraphVectorPointers} from '../../src/code_graph/vector/maintenance.js';
 import type {CodeGraphSnapshot, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {
   CODE_GRAPH_VECTOR_GENERATIONS_TABLE_SQL,
   CODE_GRAPH_VECTOR_POINTERS_TABLE_SQL,
   CODE_GRAPH_VECTOR_REUSE_INDEX_SQL,
   CODE_GRAPH_VECTORS_TABLE_SQL,
-} from '../../src/code_graph/vector_retirement.js';
+} from '../../src/code_graph/vector/retirement.js';
 import {LocalModelRuntime, type LocalModelRuntimeShape} from '../../src/effect/ai/local-model-runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
@@ -25,6 +27,77 @@ import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store
 import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
 const manifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-small-en-v1.5-q8')!;
 describe('native code graph vector generations', () => {
+  effectIt.effect('isolates scoped vector build, status, search, force rebuild, and cleanup in one worktree', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-scoped-vectors-'});
+      const catalog = yield* LocalModelCatalog;
+      yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+      const vectors = yield* CodeGraphEmbeddingIndex;
+      const scopeA = `code-graph-scope:${'a'.repeat(64)}`;
+      const scopeB = `code-graph-scope:${'b'.repeat(64)}`;
+      const full = codeGraphLayout(path, home, 'a'.repeat(64), 'b'.repeat(64));
+      const a = {...full, scopeId: scopeA};
+      const b = {...full, scopeId: scopeB};
+      const source = [symbol('alpha', 'AlphaCoordinator', 'Coordinates alpha deployments.')];
+      expect(yield* vectors.ensure(home, full, snapshot('full-snapshot'), source)).toMatchObject({
+        embedded: 1,
+        reused: 0,
+      });
+      expect(yield* vectors.ensure(home, a, {...snapshot('a-snapshot'), scopeId: scopeA}, source)).toMatchObject({
+        embedded: 1,
+        reused: 0,
+      });
+      expect(yield* vectors.ensure(home, b, {...snapshot('b-snapshot'), scopeId: scopeB}, source)).toMatchObject({
+        embedded: 1,
+        reused: 0,
+      });
+      expect(yield* vectors.check(home, full, 'full-snapshot')).toMatchObject({state: 'ready'});
+      expect(yield* vectors.check(home, a, 'a-snapshot')).toMatchObject({state: 'ready'});
+      expect(yield* vectors.check(home, b, 'b-snapshot')).toMatchObject({state: 'ready'});
+      expect(yield* vectors.check(home, a, 'b-snapshot')).toMatchObject({state: 'stale'});
+      expect((yield* vectors.search(home, a, 'b-snapshot', 'alpha deployment', 2)).size).toBe(0);
+      const mismatch = yield* vectors
+        .ensure(home, a, {...snapshot('wrong-snapshot'), scopeId: scopeB}, source)
+        .pipe(Effect.flip);
+      expect(String(mismatch)).toContain('scope does not match');
+      yield* vectors.ensure(home, a, {...snapshot('a-snapshot'), scopeId: scopeA}, source, {force: true});
+      const removed = yield* cleanupCodeGraphVectorPointers(
+        home,
+        full.checkoutId,
+        full.worktreeId,
+        'a-snapshot',
+        scopeA,
+      );
+      expect(removed).toMatchObject({pointersRemoved: 1, warnings: []});
+      expect(yield* vectors.check(home, a, 'a-snapshot')).toMatchObject({state: 'stale'});
+      expect(yield* vectors.check(home, b, 'b-snapshot')).toMatchObject({state: 'ready'});
+      expect(yield* vectors.check(home, full, 'full-snapshot')).toMatchObject({state: 'ready'});
+      expect((yield* vectors.search(home, b, 'b-snapshot', 'alpha deployment', 2)).get('alpha')).toBeCloseTo(1);
+      yield* Effect.sync(() => {
+        const database = new Database(path.join(full.vectorRoot, manifest.id, 'vectors-v2.sqlite'));
+        try {
+          expect(database.query('SELECT worktree_id FROM vector_pointers ORDER BY worktree_id').all()).toEqual(
+            [full.worktreeId, codeGraphVectorViewId(full.worktreeId, scopeB)]
+              .sort()
+              .map(worktree_id => ({worktree_id})),
+          );
+          expect(database.query('SELECT snapshot_id FROM vector_generation_retirements').all()).toEqual([
+            {snapshot_id: 'a-snapshot'},
+            {snapshot_id: 'a-snapshot'},
+          ]);
+        } finally {
+          database.close();
+        }
+      });
+    }).pipe(
+      provideTestLayer(
+        Layer.mergeAll(testEmbeddingLayer([]), LocalModelCatalog.layer(BUILTIN_MODEL_MANIFESTS), SystemInfo.layer),
+      ),
+      provideTestLayer(BunServices.layer),
+    ),
+  );
   it('keeps every eligible symbol instead of truncating vectors at the former 20k cap', () => {
     const symbols = Array.from(
       {

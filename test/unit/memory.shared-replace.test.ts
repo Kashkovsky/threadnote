@@ -161,6 +161,28 @@ describe('remember shared replacement', () => {
       }),
   );
 
+  effectIt.effect('routes a stable shared memory alias to its canonical shared replacement target', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
+      const alias = 'threadnote://memory/tn_shared_lease';
+      const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+
+      const captured = yield* captureConsole(
+        runRemember(config, {
+          dryRun: true,
+          kind: 'durable',
+          replace: alias,
+          sourceAgentClient: 'codex',
+          text: 'Updated shared lease through its stable identity.',
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      );
+
+      expect(captured.output).toContain(`Updated shared memory: ${sharedUri}`);
+      expect(captured.output).toContain('share: update durable/projects/orion-worker/lease.md');
+    }),
+  );
+
   effectIt.effect('keeps the project from the storage path when the caller requests a different one', () =>
     Effect.gen(function* () {
       const config = yield* Effect.promise(makeRuntime);

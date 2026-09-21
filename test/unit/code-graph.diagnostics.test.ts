@@ -14,7 +14,7 @@ import {runCodeGraphDiagnostics} from '../../src/code_graph/commands.js';
 import {deepDiagnosticsWorkerEnvironment} from '../../src/code_graph/deep_diagnostics.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
-import {observeManagerGraphCatalogRevision} from '../../src/code_graph/manager_catalog_revision.js';
+import {observeManagerGraphCatalogRevision} from '../../src/code_graph/manager/catalog_revision.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {
   managerGraphBuildCatalog,

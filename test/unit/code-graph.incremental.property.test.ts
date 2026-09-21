@@ -3,11 +3,11 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'fast-check';
 import {createResolutionAttributor} from '../../src/code_graph/extractor.js';
 import {hasSameCodeGraphResolutionSurface} from '../../src/code_graph/indexer.js';
-import {sameEffectiveCodeGraphInventory} from '../../src/code_graph/indexer_shared.js';
+import {sameEffectiveCodeGraphInventory} from '../../src/code_graph/indexer/shared.js';
 import {
   assessCodeGraphResolutionSymbolPublication,
   hasSameCodeGraphReexportResolutionSurface,
-} from '../../src/code_graph/resolution_surface.js';
+} from '../../src/code_graph/resolution/surface.js';
 import type {
   CodeGraphFileFacts,
   CodeGraphInventoryFile,

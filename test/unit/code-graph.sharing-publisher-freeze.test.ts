@@ -11,8 +11,8 @@ import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
   graphShareParseResultArtifact,
   graphShareParseResultSemanticDigest,
-} from '../../src/code_graph/sharing/parse_result.js';
-import {verifyGraphShareParseReceipt} from '../../src/code_graph/sharing/parse_cache.js';
+} from '../../src/code_graph/sharing/parse/result.js';
+import {verifyGraphShareParseReceipt} from '../../src/code_graph/sharing/parse/cache.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const sharingLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);

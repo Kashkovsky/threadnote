@@ -10,6 +10,7 @@ import {
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionObservesWorktree,
   codeGraphInspectionObservation,
+  codeGraphInspectionRequestsBackgroundRefresh,
   codeGraphInspectionStartsRefresh,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,
@@ -26,7 +27,7 @@ import {
 import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
-import type {CodeGraphStatusObservation} from '../../src/code_graph/query_contract.js';
+import type {CodeGraphStatusObservation} from '../../src/code_graph/query/contract.js';
 import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
 import {formatCodeGraphMcpResponse} from '../../src/mcp/code_graph_projection.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
@@ -67,12 +68,16 @@ describe('MCP code graph indexing progress', () => {
           worktreeId: 'worktree',
         },
         ...(borrowedSnapshotId === undefined ? {} : {borrowedSnapshotId}),
+        projectScope: {
+          project: {name: 'fixture-project', uri: 'threadnote://projects/fixture-project'},
+        },
         ...(observed ? {overlay: {dirty, fingerprint}} : {}),
       };
       const before = JSON.stringify(observation);
       const projected = codeGraphInspectionObservation(observation, operation);
       expect(projected?.identity).toBe(observation.identity);
       expect(projected?.borrowedSnapshotId).toBe(borrowedSnapshotId);
+      expect(projected?.projectScope).toBe(observation.projectScope);
       if (operation === 'path' || operation === 'impact') expect(projected).toBe(observation);
       else expect(projected?.overlay).toBeUndefined();
       expect(codeGraphInspectionObservation(projected, operation)).toEqual(projected);
@@ -91,6 +96,18 @@ describe('MCP code graph indexing progress', () => {
         ]),
       ),
     ).toEqual({explain: true, impact: false, neighbors: true, node: true, path: false, query: true});
+  });
+
+  it('requests durable background refresh only for compatible stale ready evidence', () => {
+    for (const operation of ['query', 'node', 'neighbors', 'explain', 'path', 'impact'] as const) {
+      expect(codeGraphInspectionRequestsBackgroundRefresh({readySnapshot: {id: 'ready'}, stale: true}, operation)).toBe(
+        codeGraphInspectionAllowsStaleReady(operation),
+      );
+      expect(codeGraphInspectionRequestsBackgroundRefresh({stale: true}, operation)).toBe(false);
+      expect(
+        codeGraphInspectionRequestsBackgroundRefresh({readySnapshot: {id: 'ready'}, stale: false}, operation),
+      ).toBe(false);
+    }
   });
 
   fcProp(
@@ -261,14 +278,41 @@ describe('MCP code graph indexing progress', () => {
     expect(codeGraphResultWithRefreshContinuity(continued, indexingStatus(60_000))).toBe(continued);
   });
 
-  it('labels stale ready evidence when background refresh is intentionally suppressed', () => {
+  it('labels stale ready evidence with bounded background-discovery guidance', () => {
     const result = {...verboseCodeGraphResult(), freshness: 'stale' as const, warnings: []};
     const continued = codeGraphResultWithRefreshContinuity(result, undefined);
 
     expect(continued.warnings).toEqual([
-      'Serving the existing stale ready snapshot without starting a background rebuild. Run `threadnote graph index`, or use `path` or `impact`, when current graph evidence is required.',
+      'Serving the existing stale ready snapshot while background refresh discovery is pending; continue bounded discovery and use `path` or `impact` when current graph evidence is required.',
     ]);
   });
+
+  fcProp(
+    it,
+    'keeps optional refresh continuity deterministic, budgeted, and text-dual equivalent',
+    {
+      state: FC.constantFrom('active' as const, 'queued' as const, 'deferred' as const, 'idle' as const),
+      budgetTokens: FC.integer({min: 300, max: 1_500}),
+    },
+    ({state, budgetTokens}) => {
+      const refresh = {
+        type: 'code-graph-refresh-continuity' as const,
+        version: 1 as const,
+        state,
+        ...(state === 'idle' ? {} : {queueToken: `cgdq_${'a'.repeat(32)}`}),
+        ...(state === 'deferred' ? {retryAfterMilliseconds: 1_000} : {}),
+      };
+      const result = verboseCodeGraphResult();
+      const first = codeGraphMcpResponse(result, budgetTokens, refresh);
+      const second = codeGraphMcpResponse(result, budgetTokens, refresh);
+      expect(first.structuredContent).toEqual(second.structuredContent);
+      expect(first.structuredContent.refresh).toEqual(refresh);
+      const text = formatCodeGraphMcpResponse(first, 'text');
+      expect(JSON.parse((text.content[0] as {readonly text: string}).text)).toEqual(first.structuredContent);
+      expect(measureAgentToolResponse(first).totalBytes).toBeLessThanOrEqual(budgetTokens * 4);
+    },
+    {fastCheck: {numRuns: 50}},
+  );
 
   it('keeps path, impact, and whole-graph analysis strict when refresh is deferred', () => {
     const deferred = deferredStatus('permission');
@@ -362,7 +406,9 @@ describe('MCP code graph indexing progress', () => {
       type: 'code-graph-query-state',
     });
     expect(JSON.stringify(readyReadTimedOut.structuredContent)).not.toContain('retryAfterMilliseconds');
-    expect((readyReadTimedOut.content[0] as {readonly text: string}).text).toContain('--freshness ready');
+    const readyReadTimeoutText = (readyReadTimedOut.content[0] as {readonly text: string}).text;
+    expect(readyReadTimeoutText).toContain('55-second MCP budget');
+    expect(readyReadTimeoutText).toContain('--freshness ready --read-timeout-ms 120000');
     expect(readAnonymousTelemetryReportedOutcome(readyReadTimedOut)).toBe('timed-out');
 
     const indexing = codeGraphQueryTimeoutResult('query', indexingStatus(60_000));
@@ -486,6 +532,19 @@ describe('MCP code graph indexing progress', () => {
     expect(compactCodeGraphMcpProgress({phase: 'waiting', reason: 'database-writer'})).toEqual({
       phase: 'waiting',
       reason: 'database-writer',
+      type: 'code-graph-progress',
+      version: 1,
+    });
+    const admission = {
+      admissionClass: 'background' as const,
+      enqueuedAt: '2026-09-17T12:00:00.000Z',
+      position: 3,
+      size: 4,
+    };
+    expect(compactCodeGraphMcpProgress({phase: 'waiting', reason: 'home-builder-cap', admission})).toEqual({
+      phase: 'waiting',
+      reason: 'home-builder-cap',
+      admission,
       type: 'code-graph-progress',
       version: 1,
     });

@@ -5,7 +5,7 @@ import {
   exactCasedCodeIdentifier,
   hasExactCasedCodeIdentifierMatch,
 } from '../../src/recall/identifier.js';
-import {identifiers} from '../../src/recall/index_lexical.js';
+import {identifiers} from '../../src/recall/index/lexical.js';
 import {rankRecallCandidates, type RecallRankContext} from '../../src/recall/rank.js';
 
 const TARGET_IDENTIFIER = 'rankRecallCandidates';

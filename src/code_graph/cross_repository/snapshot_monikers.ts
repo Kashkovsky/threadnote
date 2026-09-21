@@ -1,8 +1,8 @@
 import {Effect, Path, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {codeGraphLayout} from '../layout.js';
-import {useReadOnlyDatabase} from '../store_session.js';
-import {CODE_GRAPH_SNAPSHOT_ID} from '../store_reconciliation_core.js';
+import {useReadOnlyDatabase} from '../store/session.js';
+import {CODE_GRAPH_SNAPSHOT_ID} from '../store/reconciliation/core.js';
 import type {RepositoryIdentity} from '../types.js';
 import {parseCodeGraphMonikerV1} from './monikers.js';
 import type {CodeGraphMonikerV1} from './types.js';

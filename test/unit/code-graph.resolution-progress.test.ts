@@ -9,8 +9,8 @@ import {
   type CodeGraphWriterGate,
   PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES,
   PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES,
-} from '../../src/code_graph/store_build_core.js';
-import {resolveActivationReferences} from '../../src/code_graph/store_resolution.js';
+} from '../../src/code_graph/store/build/core.js';
+import {resolveActivationReferences} from '../../src/code_graph/store/resolution.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {

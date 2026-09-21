@@ -11,9 +11,9 @@ import {
   codeGraphDiskCapacityFailure,
   codeGraphVectorRetirementCapacityDemand,
   evaluateCodeGraphDiskCapacity,
-} from '../../src/code_graph/disk_capacity.js';
+} from '../../src/code_graph/disk/capacity.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {
   type CodeGraphVectorRetirementCapacityProtector,
   type CodeGraphOrdinaryVectorMaintenanceUnitInput,
@@ -23,7 +23,7 @@ import {
   deleteCodeGraphVectorPointerWithRetirement,
   prepareCodeGraphVectorRetirement,
   runCodeGraphOrdinaryVectorMaintenanceUnit,
-} from '../../src/code_graph/vector_maintenance.js';
+} from '../../src/code_graph/vector/maintenance.js';
 import {
   codeGraphDiskReservationRoot,
   codeGraphVectorRetirementCursorLockPath,

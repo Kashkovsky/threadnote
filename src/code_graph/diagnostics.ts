@@ -1,13 +1,13 @@
 import {DateTime, Effect, Path} from 'effect';
 import {analyzeCodeGraph, type CodeGraphAnalysisCoverage, type CodeGraphAnalysisStatistics} from './analysis.js';
-import {codeGraphAnalysisLimitsForView} from './analysis_render.js';
+import {codeGraphAnalysisLimitsForView} from './analysis/render.js';
 import {
   readAllCodeGraphBuildStatuses,
   selectCodeGraphBuildStatuses,
   type ObservedCodeGraphBuildStatus,
 } from './build_status.js';
 import {inspectObsoleteCodeGraphStores, codeGraphDatabasePaths} from './maintenance.js';
-import {codeGraphRepositoryLockActive, codeGraphWorktreeBuildActive} from './maintenance_gate.js';
+import {codeGraphRepositoryLockActive, codeGraphWorktreeBuildActive} from './maintenance/gate.js';
 import {
   CodeGraphStore,
   sanitizeCodeGraphStoreDiagnostic,
@@ -16,15 +16,15 @@ import {
   type CodeGraphVisualizationCatalog,
 } from './store.js';
 import {inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
-import {codeGraphStorageAccounting, type CodeGraphStorageAccounting} from './storage_pressure.js';
+import {codeGraphStorageAccounting, type CodeGraphStorageAccounting} from './storage/pressure.js';
 import {
   codeGraphLocalAssociationLabel,
   readCodeGraphLocalAssociation,
   type CodeGraphLocalAssociation,
 } from './local_provenance.js';
-import {classifyCodeGraphLifecycle, type CodeGraphLifecycleClassification} from './lifecycle_classification.js';
-import {runCodeGraphLifecycleOpportunity, type CodeGraphLifecycleOpportunityResult} from './lifecycle_opportunity.js';
-import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {classifyCodeGraphLifecycle, type CodeGraphLifecycleClassification} from './lifecycle/classification.js';
+import {runCodeGraphLifecycleOpportunity, type CodeGraphLifecycleOpportunityResult} from './lifecycle/opportunity.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
 import {CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC} from './orphan_provenance_cleanup.js';
 import {diagnoseCodeGraphDatabase} from './deep_diagnostics.js';
 
@@ -83,6 +83,7 @@ export interface CodeGraphDiagnosticsView {
   readonly projectsTruncated: boolean;
   readonly repository: CodeGraphVisualizationCatalog['repository'];
   readonly snapshot: CodeGraphVisualizationCatalog['snapshot'];
+  readonly viewScopeId?: string;
   readonly viewWorktreeId: string;
   readonly workspaceCount: number;
   readonly workspacesTruncated: boolean;
@@ -283,6 +284,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
             managementAvailable: [...buildSelection.builds, ...buildSelection.waiters].some(
               status =>
                 status.identity.checkoutId === checkoutId &&
+                status.identity.scopeId === catalog.viewScopeId &&
                 status.identity.worktreeId === catalog.viewWorktreeId &&
                 status.managerContext !== undefined,
             ),
@@ -292,6 +294,7 @@ export const inspectAllCodeGraphs = Effect.fn('codeGraph.inspectAllDiagnostics')
             projectsTruncated: catalog.projectsTruncated,
             repository: catalog.repository,
             snapshot: catalog.snapshot,
+            ...(catalog.viewScopeId === undefined ? {} : {viewScopeId: catalog.viewScopeId}),
             viewWorktreeId: catalog.viewWorktreeId,
             workspaceCount: catalog.workspaceCount,
             workspacesTruncated: catalog.workspacesTruncated,
@@ -365,6 +368,7 @@ export const inspectAllCodeGraphsLocal = Effect.fn('codeGraph.inspectAllDiagnost
             const liveStatus = buildStatuses.find(
               status =>
                 status.identity.checkoutId === database.checkoutId &&
+                status.identity.scopeId === view.viewScopeId &&
                 status.identity.worktreeId === view.viewWorktreeId &&
                 status.identity.repositoryId === view.repository.repositoryId &&
                 status.managerContext !== undefined,

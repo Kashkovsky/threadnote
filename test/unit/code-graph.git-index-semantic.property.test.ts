@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {codeGraphGitIndexSemanticSha256} from '../../src/code_graph/git_index_semantic.js';
+import {codeGraphGitIndexSemanticSha256} from '../../src/code_graph/git/index_semantic.js';
 
 const SHA1_BYTES = 20;
 const REGULAR_FILE_MODE = 0o100644;

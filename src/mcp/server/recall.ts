@@ -38,7 +38,7 @@ import {
   type MemoryMetadata,
 } from '../../memory/document.js';
 import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
-import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
+import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code/citation.js';
 import {
   MEMORY_READ_MAXIMUM_CONTENT_BYTES,
   MemoryReadProjectionError,
@@ -46,23 +46,29 @@ import {
   memoryReadMcpStructuredContent,
   projectMemoryRead,
   type MemoryReadResource,
-} from '../../memory/read_projection.js';
+} from '../../memory/read/projection.js';
 import {
   buildCandidateReview,
+  assessReplacementSafety,
   candidateReviewWithAuditEvent,
   candidateReviewWithApplyStage,
   candidateReviewWithApplying,
   candidateReviewWithState,
   loadCandidateReview,
   readActiveProjectMemories,
+  prepareCandidateReplacementRecovery,
+  replacementSafetyReviewRequiredWarning,
+  replacementSafetyBaseline,
   saveCandidateReview,
   type CandidateReview,
   type CandidateApplyOperation,
   type MemoryCandidate,
   type SessionCloseoutInput,
+  structuredCloseoutFromInput,
   validateSessionCloseoutInput,
   withCandidateReviewLock,
 } from '../../memory/candidate.js';
+import {projectKnowledgeDeltaV1, replacementSafetyWarning} from '../../memory/knowledge_delta.js';
 import {recordRecallFeedback} from '../../recall/feedback.js';
 import {AgentResponseBudgetTooSmallError} from '../../evaluation/agent-response.js';
 import {
@@ -75,18 +81,18 @@ import {
   type CursorCloudMemoryScope,
 } from '../../cursor/cloud.js';
 import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
-import {memoryReadRecoveryForRequestedUri, memoryReadRecoveryText} from '../../memory/read_recovery.js';
+import {memoryReadRecoveryForRequestedUri, memoryReadRecoveryText} from '../../memory/read/recovery.js';
 import {RECALL_RANKER_VERSION} from '../../recall/rank.js';
 import {
   parseRecallMemoryConnectionInput,
   type ParsedRecallMemoryConnectionInput,
-} from '../../recall/memory_connections.js';
+} from '../../recall/memory/connections.js';
 import type {MemoryRelationType} from '../../memory/document.js';
 import {
   projectRecallMcpResponse,
   RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
   RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
-} from '../../recall/mcp_response.js';
+} from '../../recall/mcp/response.js';
 import {mergeRecallOperationalWarnings} from '../../recall/warning.js';
 import {syncObsidianSourcesBeforeRecall} from '../../obsidian/source.js';
 import {withProductionPhaseTiming} from '../../effect/production_log.js';
@@ -147,30 +153,39 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
       description:
-        'After routine durable and handoff writes, form up to three additional reviewable candidates; persists pending review only.',
+        'Review an optional five-field Knowledge Delta (decisions + rationale, constraints, verificationPerformed, knowledgeInvalidated, unresolvedRisks); handoff is separate and required. Preview only; explicit approval is required to apply, and nothing is auto-shared.',
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd'),
-        codeRefs: McpInput.stringOrStrings(
-          `Graph-indexed repository-relative path/cgs_/cgr_; max ${MAX_MEMORY_CODE_CITATIONS}`,
-          {maximumItems: MAX_MEMORY_CODE_CITATIONS},
-        ),
+        codeRefs: McpInput.stringOrStrings(`Graph-indexed repository-relative path; max ${MAX_MEMORY_CODE_CITATIONS}`, {
+          maximumItems: MAX_MEMORY_CODE_CITATIONS,
+        }),
+        rationale: McpInput.string('Why'),
+        constraints: McpInput.stringOrStrings('Limits'),
+        verificationPerformed: McpInput.stringOrStrings('Checks'),
+        knowledgeInvalidated: McpInput.stringOrStrings('Invalidated'),
+        unresolvedRisks: McpInput.stringOrStrings('Risks'),
         decisions: McpInput.stringOrStrings('Decisions'),
-        evidence: McpInput.stringOrStrings('Evidence pointers'),
+        evidence: McpInput.stringOrStrings('Evidence'),
         handoff: McpInput.stringOrStrings('Handoff'),
-        invariants: McpInput.stringOrStrings('Stable contracts'),
+        invariants: McpInput.stringOrStrings('Invariants'),
         outcome: McpInput.string('Task outcome'),
         preferences: McpInput.stringOrStrings('User preferences'),
         project: McpInput.string('Project; infer from cwd'),
         sourceAgentClient: McpInput.string('Client'),
         sourceCommit: McpInput.string('Commit'),
-        sourceSessionId: McpInput.string('Session/thread'),
+        sourceSessionId: McpInput.string('Session'),
         task: McpInput.string('Task'),
-        topic: McpInput.string('Topic; defaults from task'),
+        topic: McpInput.string('Topic'),
       },
     },
     ({
       callerCwd,
       codeRefs,
+      rationale,
+      constraints,
+      verificationPerformed,
+      knowledgeInvalidated,
+      unresolvedRisks,
       decisions,
       evidence,
       handoff,
@@ -230,10 +245,20 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
         const codeCitations = captured.citations;
         const rawCloseout: SessionCloseoutInput = {
           ...(codeCitations.length === 0 ? {} : {codeCitations}),
+          ...(candidatePolicy === 'handoff-only' || rationale === undefined ? {} : {rationale}),
+          ...(candidatePolicy === 'handoff-only' || constraints === undefined
+            ? {}
+            : {constraints: stringList(constraints)}),
           decisions: candidatePolicy === 'handoff-only' ? [] : stringList(decisions),
           evidence: stringList(evidence),
           handoff: stringList(handoff),
           invariants: candidatePolicy === 'handoff-only' ? [] : stringList(invariants),
+          ...(candidatePolicy === 'handoff-only' || verificationPerformed === undefined
+            ? {}
+            : {verificationPerformed: stringList(verificationPerformed)}),
+          ...(candidatePolicy === 'handoff-only' || knowledgeInvalidated === undefined
+            ? {}
+            : {knowledgeInvalidated: stringList(knowledgeInvalidated)}),
           outcome: checkedOutcome.value,
           preferences: candidatePolicy === 'handoff-only' ? [] : stringList(preferences),
           project: inferredProject,
@@ -242,6 +267,9 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
           sourceSessionId: normalizeOptionalMetadata(sourceSessionId),
           task: checkedTask.value,
           topic: normalizeOptionalMetadata(topic) ?? uriSegment(checkedTask.value),
+          ...(candidatePolicy === 'handoff-only' || unresolvedRisks === undefined
+            ? {}
+            : {unresolvedRisks: stringList(unresolvedRisks)}),
         };
         const closeoutSizeError = validateSessionCloseoutInput(rawCloseout);
         if (closeoutSizeError) {
@@ -272,6 +300,9 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
       description: 'Apply an explicit user decision to one pending candidate with revision checking.',
       inputSchema: {
         action: McpInput.literals(['approve', 'defer', 'reject'], 'User decision'),
+        allowDestructiveReplacement: McpInput.boolean(
+          'Required true only to approve a replacement flagged as destructive content loss',
+        ),
         approved: McpInput.boolean('Required true for approved writes'),
         candidateId: McpInput.string('Candidate ID from review'),
         editedText: McpInput.string('User-edited memory text'),
@@ -281,387 +312,518 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
         revision: McpInput.integer('Review revision', {minimum: 1}),
       },
     },
-    ({action, approved, candidateId, editedText, operation, replaceUri, reviewId, revision}) => {
-      const checkedReviewId = requiredText(reviewId, 'apply_memory_candidates', 'reviewId', {
-        reviewId: 'review-0123456789abcdef',
-      });
-      if (!checkedReviewId.ok) {
-        return checkedReviewId.error;
+    ({
+      action,
+      allowDestructiveReplacement,
+      approved,
+      candidateId,
+      editedText,
+      operation,
+      replaceUri,
+      reviewId,
+      revision,
+    }) =>
+      applyMemoryCandidate(config, {
+        action,
+        allowDestructiveReplacement,
+        approved,
+        candidateId,
+        editedText,
+        operation,
+        replaceUri,
+        reviewId,
+        revision,
+      }),
+  );
+}
+
+export interface ApplyMemoryCandidateInput {
+  readonly action?: 'approve' | 'defer' | 'reject';
+  readonly allowDestructiveReplacement?: boolean;
+  readonly approved?: boolean;
+  readonly candidateId?: string;
+  readonly editedText?: string;
+  readonly operation?: CandidateApplyOperation;
+  readonly replaceUri?: string;
+  readonly reviewId?: string;
+  readonly revision?: number;
+}
+
+interface ApplyMemoryCandidateOptions {
+  readonly reviewLockHeld?: boolean;
+}
+
+export function applyMemoryCandidate(
+  config: RuntimeConfig,
+  {
+    action,
+    allowDestructiveReplacement,
+    approved,
+    candidateId,
+    editedText,
+    operation,
+    replaceUri,
+    reviewId,
+    revision,
+  }: ApplyMemoryCandidateInput,
+  options: ApplyMemoryCandidateOptions = {},
+) {
+  const checkedReviewId = requiredText(reviewId, 'apply_memory_candidates', 'reviewId', {
+    reviewId: 'review-0123456789abcdef',
+  });
+  if (!checkedReviewId.ok) {
+    return Effect.succeed(checkedReviewId.error);
+  }
+  const checkedCandidateId = requiredText(candidateId, 'apply_memory_candidates', 'candidateId', {
+    candidateId: 'review-0123456789abcdef-1',
+  });
+  if (!checkedCandidateId.ok) {
+    return Effect.succeed(checkedCandidateId.error);
+  }
+  const checkedReplaceUri = optionalResourceUri(replaceUri, 'apply_memory_candidates');
+  if (!checkedReplaceUri.ok) {
+    return Effect.succeed(checkedReplaceUri.error);
+  }
+  if (!action) {
+    return Effect.succeed(argumentError('apply_memory_candidates requires action: approve, defer, or reject.'));
+  }
+  if (revision === undefined) {
+    return Effect.succeed(argumentError('apply_memory_candidates requires the current review revision.'));
+  }
+  if (action === 'approve' && approved !== true) {
+    return Effect.succeed(argumentError('approve requires approved=true after explicit user approval.'));
+  }
+  return withOptionalCandidateReviewLock(
+    config.agentContextHome,
+    checkedReviewId.value,
+    options.reviewLockHeld === true,
+    Effect.gen(function* () {
+      const review = yield* loadCandidateReview(config.agentContextHome, checkedReviewId.value);
+      const candidate = review.candidates.find(item => item.candidateId === checkedCandidateId.value);
+      if (!candidate) {
+        return argumentError(`Candidate ${checkedCandidateId.value} is not part of ${checkedReviewId.value}.`);
       }
-      const checkedCandidateId = requiredText(candidateId, 'apply_memory_candidates', 'candidateId', {
-        candidateId: 'review-0123456789abcdef-1',
-      });
-      if (!checkedCandidateId.ok) {
-        return checkedCandidateId.error;
+      if (
+        action === 'approve' &&
+        candidate.state === 'applied' &&
+        (review.revision === revision || review.revision === revision + 1)
+      ) {
+        const memoryMessage = candidate.applyTargetUri ? ` at ${candidate.applyTargetUri}` : '';
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Candidate ${candidate.candidateId} was already approved${memoryMessage}.`,
+            },
+          ],
+          structuredContent: candidateReviewStructuredContent(review, {
+            action: candidate.applyTargetUri ? 'approve' : 'no_action',
+            candidateId: candidate.candidateId,
+            memoryUri: candidate.applyTargetUri,
+            reviewId: review.reviewId,
+            revision: review.revision,
+          }),
+        };
       }
-      const checkedReplaceUri = optionalResourceUri(replaceUri, 'apply_memory_candidates');
-      if (!checkedReplaceUri.ok) {
-        return checkedReplaceUri.error;
+      if (review.revision !== revision) {
+        return argumentError(
+          `Candidate review revision changed: expected ${revision}, current ${review.revision}. Review it again before applying.`,
+        );
       }
-      if (!action) {
-        return argumentError('apply_memory_candidates requires action: approve, defer, or reject.');
-      }
-      if (revision === undefined) {
-        return argumentError('apply_memory_candidates requires the current review revision.');
-      }
-      if (action === 'approve' && approved !== true) {
-        return argumentError('approve requires approved=true after explicit user approval.');
-      }
-      return withCandidateReviewLock(
-        config.agentContextHome,
-        checkedReviewId.value,
-        Effect.gen(function* () {
-          const review = yield* loadCandidateReview(config.agentContextHome, checkedReviewId.value);
-          const candidate = review.candidates.find(item => item.candidateId === checkedCandidateId.value);
-          if (!candidate) {
-            return argumentError(`Candidate ${checkedCandidateId.value} is not part of ${checkedReviewId.value}.`);
-          }
+      if (candidate.state === 'applying' && candidate.applyTargetUri) {
+        const [appliedRecord] = yield* readMemoryRecordsByUri(config, [candidate?.applyTargetUri]);
+        if (appliedRecord?.metadata.candidateId === candidate.candidateId) {
           if (
-            action === 'approve' &&
-            candidate.state === 'applied' &&
-            (review.revision === revision || review.revision === revision + 1)
+            !candidate.applyContentHash ||
+            (yield* sha256Hex(canonicalMemoryDocumentContent(appliedRecord.content))) !== candidate.applyContentHash
           ) {
-            const memoryMessage = candidate.applyTargetUri ? ` at ${candidate.applyTargetUri}` : '';
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `Candidate ${candidate.candidateId} was already approved${memoryMessage}.`,
-                },
-              ],
-              structuredContent: {
-                action: candidate.applyTargetUri ? 'approve' : 'no_action',
-                candidateId: candidate.candidateId,
-                memoryUri: candidate.applyTargetUri,
-                reviewId: review.reviewId,
-                revision: review.revision,
-              },
-            };
-          }
-          if (review.revision !== revision) {
-            return argumentError(
-              `Candidate review revision changed: expected ${revision}, current ${review.revision}. Review it again before applying.`,
-            );
-          }
-          if (candidate.state === 'applying' && candidate.applyTargetUri) {
-            const [appliedRecord] = yield* readMemoryRecordsByUri(config, [candidate?.applyTargetUri]);
-            if (appliedRecord?.metadata.candidateId === candidate.candidateId) {
-              if (
-                !candidate.applyContentHash ||
-                (yield* sha256Hex(canonicalMemoryDocumentContent(appliedRecord.content))) !== candidate.applyContentHash
-              ) {
-                return yield* persistCandidateConflict(
-                  config,
-                  review,
-                  candidate,
-                  `Candidate ${candidate.candidateId} found mismatched content at ${candidate.applyTargetUri}. The partial apply is recorded as a conflict.`,
-                );
-              }
-              const cleanup = yield* reconcileCandidateReplacementCleanup(config, candidate);
-              if (cleanup === 'conflict') {
-                return yield* persistCandidateConflict(
-                  config,
-                  review,
-                  candidate,
-                  `Candidate ${candidate.candidateId} was written at ${candidate.applyTargetUri}, but its reviewed replacement target changed before cleanup. The partial apply is recorded as a conflict; review both memories before continuing.`,
-                );
-              }
-              if (cleanup === 'pending') {
-                const pendingCleanup = candidateReviewWithApplyStage(review, candidate.candidateId, 'cleanup_pending');
-                yield* saveCandidateReview(config.agentContextHome, pendingCleanup);
-                return {
-                  content: [
-                    {
-                      type: 'text' as const,
-                      text: `Candidate ${candidate.candidateId} is stored at ${candidate.applyTargetUri}, but its reviewed replacement still exists. Retry this approval to finish cleanup.`,
-                    },
-                  ],
-                  isError: true,
-                  structuredContent: {
-                    action: 'cleanup_pending',
-                    candidateId: candidate.candidateId,
-                    memoryUri: candidate.applyTargetUri,
-                    reviewId: review.reviewId,
-                    revision: review.revision,
-                  },
-                };
-              }
-              const withBeginAudit = candidateReviewWithAuditEvent(review, {
-                action: 'begin_apply',
-                at: appliedRecord.metadata.timestamp,
-                candidateId: candidate.candidateId,
-                memoryUri: candidate.applyTargetUri,
-                reviewId: review.reviewId,
-                revision: review.revision,
-              });
-              const recovered = candidateReviewWithState(withBeginAudit, candidate.candidateId, 'applied', {
-                action: 'apply',
-                at: appliedRecord.metadata.timestamp,
-                memoryUri: candidate.applyTargetUri,
-              });
-              yield* saveCandidateReview(config.agentContextHome, recovered);
-              return {
-                content: [
-                  {
-                    type: 'text' as const,
-                    text: `Recovered approved candidate ${candidate.candidateId} at ${candidate.applyTargetUri}.`,
-                  },
-                ],
-                structuredContent: {
-                  action: 'approve',
-                  candidateId: candidate.candidateId,
-                  memoryUri: candidate.applyTargetUri,
-                  reviewId: review.reviewId,
-                  revision: recovered.revision,
-                },
-              };
-            }
-          }
-          if (candidate.state === 'applied' || candidate.state === 'conflict' || candidate.state === 'rejected') {
-            return argumentError(`Candidate ${candidate.candidateId} is already ${candidate.state}.`);
-          }
-          const at = DateTime.formatIso(yield* DateTime.now);
-          if (action === 'defer' || action === 'reject') {
-            if (candidate.state === 'applying') {
-              return argumentError(
-                `Candidate ${candidate.candidateId} has an interrupted approval in progress. Retry approve to recover it before recording another decision.`,
-              );
-            }
-            if (action === 'defer' && candidate.state === 'deferred') {
-              return {
-                content: [
-                  {
-                    type: 'text' as const,
-                    text: `Candidate ${candidate.candidateId} is already deferred in review ${review.reviewId}.`,
-                  },
-                ],
-                structuredContent: {
-                  action,
-                  candidateId: candidate.candidateId,
-                  reviewId: review.reviewId,
-                  revision: review.revision,
-                },
-              };
-            }
-            const updated = candidateReviewWithState(
+            return yield* persistCandidateConflict(
+              config,
               review,
-              candidate.candidateId,
-              action === 'defer' ? 'deferred' : 'rejected',
-              {action, at},
+              candidate,
+              `Candidate ${candidate.candidateId} found mismatched content at ${candidate.applyTargetUri}. The partial apply is recorded as a conflict.`,
             );
-            yield* saveCandidateReview(config.agentContextHome, updated);
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text:
-                    action === 'defer'
-                      ? `Deferred candidate ${candidate.candidateId}. It remains available in review ${review.reviewId}.`
-                      : `Rejected candidate ${candidate.candidateId}. No memory was written.`,
-                },
-              ],
-              structuredContent: {
-                action,
-                candidateId: candidate.candidateId,
-                reviewId: review.reviewId,
-                revision: updated.revision,
-              },
-            };
           }
-          if (candidate.recommendation === 'no_action') {
-            if (!(yield* reviewedCandidateTargetIsCurrent(config, candidate))) {
-              return argumentError(
-                `Duplicate candidate ${candidate.candidateId} is stale because its reviewed target changed or disappeared. Run review_session_context again.`,
-              );
-            }
-            const updated = candidateReviewWithState(review, candidate.candidateId, 'applied', {
-              action: 'apply',
-              at,
-            });
-            yield* saveCandidateReview(config.agentContextHome, updated);
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `Confirmed no action for duplicate candidate ${candidate.candidateId}. No memory was written.`,
-                },
-              ],
-              structuredContent: {
-                action: 'no_action',
-                candidateId: candidate.candidateId,
-                reviewId: review.reviewId,
-                revision: updated.revision,
-              },
-            };
-          }
-          const text = normalizeOptionalMetadata(editedText) ?? candidate.proposedText;
-          const scrub = applyScrubber(text, {redact: true});
-          if (scrub.blocker) {
+          const cleanupTargetUri =
+            candidate.applyReplaceUri !== candidate.applyTargetUri ? candidate.applyReplaceUri : undefined;
+          const [cleanupTarget] = cleanupTargetUri ? yield* readMemoryRecordsByUri(config, [cleanupTargetUri]) : [];
+          const cleanupTargetHash = cleanupTarget
+            ? yield* sha256Hex(canonicalMemoryDocumentContent(cleanupTarget.content))
+            : undefined;
+          const recovery = prepareCandidateReplacementRecovery(
+            review,
+            candidate.candidateId,
+            allowDestructiveReplacement === true,
+            candidate.applyApprovedAt ?? appliedRecord.metadata.timestamp,
+            cleanupTarget?.body,
+            cleanupTargetHash,
+          );
+          if (recovery.status === 'unavailable') {
             return argumentError(
-              `Refusing to store candidate ${candidate.candidateId}: possible ${scrub.blocker}. Remove the sensitive value first.`,
+              `Candidate ${candidate.candidateId} cannot safely recover replacement cleanup because its approved body or target hash is missing. Review both memories before continuing.`,
             );
           }
-          const reviewedTargetUri = candidate.targetUri;
-          const effectiveOperation = operation ?? candidate.applyOperation;
-          const effectiveReplaceUri = checkedReplaceUri.value ?? candidate.applyReplaceUri;
-          const requiresExplicitOperation =
-            candidate.recommendation === 'replace' || candidate.recommendation === 'manual_review';
-          if (requiresExplicitOperation && effectiveOperation === undefined) {
+          if (recovery.status === 'destructive-approval-required') {
             return argumentError(
-              `Candidate ${candidate.candidateId} requires an explicit operation: create or replace.`,
+              `${replacementSafetyWarning(recovery.assessment)} Read ${candidate.applyReplaceUri}, then retry with allowDestructiveReplacement=true after explicit approval.`,
             );
           }
-          if (candidate.applyOperation && operation && operation !== candidate.applyOperation) {
-            return argumentError(
-              `Candidate ${candidate.candidateId} is recovering an approved ${candidate.applyOperation} operation; the retry cannot change it to ${operation}.`,
+          const {candidate: recoveryCandidate, review: recoveryReview} = recovery;
+          if (recoveryReview !== review) {
+            yield* saveCandidateReview(config.agentContextHome, recoveryReview);
+          }
+          const cleanup = yield* reconcileCandidateReplacementCleanup(config, recoveryCandidate);
+          if (cleanup === 'conflict') {
+            return yield* persistCandidateConflict(
+              config,
+              recoveryReview,
+              recoveryCandidate,
+              `Candidate ${candidate.candidateId} was written at ${candidate.applyTargetUri}, but its reviewed replacement target changed before cleanup. The partial apply is recorded as a conflict; review both memories before continuing.`,
             );
           }
-          if (
-            candidate.applyReplaceUri &&
-            checkedReplaceUri.value &&
-            checkedReplaceUri.value !== candidate.applyReplaceUri
-          ) {
-            return argumentError(
-              `Candidate ${candidate.candidateId} is recovering approved target ${candidate.applyReplaceUri}; the retry cannot change it.`,
+          if (cleanup === 'pending') {
+            const pendingCleanup = candidateReviewWithApplyStage(
+              recoveryReview,
+              recoveryCandidate.candidateId,
+              'cleanup_pending',
             );
-          }
-          const reviewedTargetIsShared = reviewedTargetUri !== undefined && isSharedMemoryUri(reviewedTargetUri);
-          if (
-            effectiveOperation === 'create' &&
-            !reviewedTargetIsShared &&
-            (candidate.recommendation === 'replace' || candidate.comparison === 'contradiction')
-          ) {
-            return argumentError(
-              `Candidate ${candidate.candidateId} has the same stable identity as active memory and cannot be created separately; choose operation=replace with its reviewed target.`,
-            );
-          }
-          if (effectiveOperation === 'replace' && reviewedTargetUri === undefined) {
-            return argumentError(`Candidate ${candidate.candidateId} has no reviewed replacement target.`);
-          }
-          if (
-            effectiveOperation === 'replace' &&
-            (effectiveReplaceUri === undefined || effectiveReplaceUri !== reviewedTargetUri)
-          ) {
-            return argumentError(
-              `Candidate ${candidate.candidateId} requires replaceUri=${reviewedTargetUri} for the reviewed replacement.`,
-            );
-          }
-          if (effectiveOperation !== 'replace' && effectiveReplaceUri !== undefined) {
-            return argumentError(`Candidate ${candidate.candidateId} cannot use replaceUri without operation=replace.`);
-          }
-          const targetUri = effectiveOperation === 'replace' ? reviewedTargetUri : undefined;
-          if (targetUri && isSharedMemoryUri(targetUri)) {
-            return argumentError(
-              `Candidate ${candidate.candidateId} targets shared memory. Choose operation=create to store the reviewed candidate personally without overwriting the shared source.`,
-            );
-          }
-          if (targetUri) {
-            if (!candidate.targetContentHash) {
-              return argumentError(`Candidate ${candidate.candidateId} has no reviewed content hash for ${targetUri}.`);
-            }
-          }
-          const approvedOperation: CandidateApplyOperation = effectiveOperation ?? 'create';
-          const approvedAt = candidate.applyApprovedAt ?? at;
-          const metadata = approvedCandidateMetadata(review, candidate, approvedAt);
-          const writeParams: WriteDurableMemoryParams = {
-            bodyText: scrub.cleaned,
-            expectedReplaceContentHash: targetUri ? candidate.targetContentHash : undefined,
-            metadata,
-            operation: approvedOperation,
-            replaceUri: targetUri,
-          };
-          const preparedWrite = yield* preparePersonalMemoryWrite(config, writeParams);
-          const intendedMemoryUri = preparedWrite.memoryUri;
-          const approvedContentHash = yield* sha256Hex(canonicalMemoryDocumentContent(preparedWrite.memory));
-          if (candidate.applyContentHash && candidate.applyContentHash !== approvedContentHash) {
-            return argumentError(
-              `Candidate ${candidate.candidateId} retry does not match the previously approved content. Retry with the same editedText or start a new review.`,
-            );
-          }
-          const applying =
-            candidate.state === 'applying'
-              ? review
-              : candidateReviewWithApplying(
-                  review,
-                  candidate.candidateId,
-                  {
-                    contentHash: approvedContentHash,
-                    operation: approvedOperation,
-                    replaceUri: targetUri,
-                    targetUri: intendedMemoryUri,
-                  },
-                  approvedAt,
-                );
-          if (candidate.state !== 'applying') {
-            yield* saveCandidateReview(config.agentContextHome, applying);
-          }
-          const result = yield* writeDurableMemory(config, {
-            ...writeParams,
-            prepared: preparedWrite,
-          });
-          if (result.isError === true) {
-            const resultText = textFromCallToolResult(result);
-            if (resultText.includes('Candidate replacement is stale')) {
-              return yield* persistCandidateConflict(
-                config,
-                applying,
-                applying.candidates.find(item => item.candidateId === candidate?.candidateId) ?? candidate,
-                `${resultText} The approval is recorded as a conflict; start a new review against the current target.`,
-              );
-            }
-            const [possiblyWritten] = yield* readMemoryRecordsByUri(config, [intendedMemoryUri]);
-            const destinationCanConflict = approvedOperation === 'create' || intendedMemoryUri !== targetUri;
-            if (
-              (destinationCanConflict &&
-                possiblyWritten &&
-                possiblyWritten.metadata.candidateId !== candidate.candidateId) ||
-              resultText.includes('Create conflict')
-            ) {
-              return yield* persistCandidateConflict(
-                config,
-                applying,
-                applying.candidates.find(item => item.candidateId === candidate?.candidateId) ?? candidate,
-                `Candidate ${candidate.candidateId} could not be created because ${intendedMemoryUri} contains another memory. The apply is recorded as a conflict.`,
-              );
-            }
-            return result;
-          }
-          if (replacementCleanupIsPending(result)) {
-            const pendingCleanup = candidateReviewWithApplyStage(applying, candidate.candidateId, 'cleanup_pending');
             yield* saveCandidateReview(config.agentContextHome, pendingCleanup);
             return {
-              ...result,
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Candidate ${candidate.candidateId} is stored at ${candidate.applyTargetUri}, but its reviewed replacement still exists. Retry this approval to finish cleanup.`,
+                },
+              ],
               isError: true,
-              structuredContent: {
+              structuredContent: candidateReviewStructuredContent(pendingCleanup, {
                 action: 'cleanup_pending',
                 candidateId: candidate.candidateId,
-                memoryUri: intendedMemoryUri,
+                memoryUri: candidate.applyTargetUri,
                 reviewId: review.reviewId,
                 revision: review.revision,
-              },
+              }),
             };
           }
-          const memoryUri = storedMemoryUri(result) ?? intendedMemoryUri;
-          const updated = candidateReviewWithState(applying, candidate.candidateId, 'applied', {
-            action: 'apply',
-            at,
-            memoryUri,
+          const withBeginAudit = candidateReviewWithAuditEvent(recoveryReview, {
+            action: 'begin_apply',
+            ...(recoveryCandidate.applyAllowDestructiveReplacement ? {allowDestructiveReplacement: true} : {}),
+            at: appliedRecord.metadata.timestamp,
+            candidateId: recoveryCandidate.candidateId,
+            memoryUri: recoveryCandidate.applyTargetUri,
+            reviewId: recoveryReview.reviewId,
+            revision: recoveryReview.revision,
           });
-          yield* saveCandidateReview(config.agentContextHome, updated);
+          const recovered = candidateReviewWithState(withBeginAudit, recoveryCandidate.candidateId, 'applied', {
+            action: 'apply',
+            ...(recoveryCandidate.applyAllowDestructiveReplacement ? {allowDestructiveReplacement: true} : {}),
+            at: appliedRecord.metadata.timestamp,
+            memoryUri: recoveryCandidate.applyTargetUri,
+          });
+          yield* saveCandidateReview(config.agentContextHome, recovered);
           return {
-            ...result,
-            structuredContent: {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Recovered approved candidate ${candidate.candidateId} at ${candidate.applyTargetUri}.`,
+              },
+            ],
+            structuredContent: candidateReviewStructuredContent(recovered, {
               action: 'approve',
               candidateId: candidate.candidateId,
-              memoryUri,
+              memoryUri: candidate.applyTargetUri,
               reviewId: review.reviewId,
-              revision: updated.revision,
-            },
+              revision: recovered.revision,
+            }),
           };
+        }
+      }
+      if (candidate.state === 'applied' || candidate.state === 'conflict' || candidate.state === 'rejected') {
+        return argumentError(`Candidate ${candidate.candidateId} is already ${candidate.state}.`);
+      }
+      const at = DateTime.formatIso(yield* DateTime.now);
+      if (action === 'defer' || action === 'reject') {
+        if (candidate.state === 'applying') {
+          return argumentError(
+            `Candidate ${candidate.candidateId} has an interrupted approval in progress. Retry approve to recover it before recording another decision.`,
+          );
+        }
+        if (action === 'defer' && candidate.state === 'deferred') {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Candidate ${candidate.candidateId} is already deferred in review ${review.reviewId}.`,
+              },
+            ],
+            structuredContent: candidateReviewStructuredContent(review, {
+              action,
+              candidateId: candidate.candidateId,
+              reviewId: review.reviewId,
+              revision: review.revision,
+            }),
+          };
+        }
+        const updated = candidateReviewWithState(
+          review,
+          candidate.candidateId,
+          action === 'defer' ? 'deferred' : 'rejected',
+          {action, at},
+        );
+        yield* saveCandidateReview(config.agentContextHome, updated);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text:
+                action === 'defer'
+                  ? `Deferred candidate ${candidate.candidateId}. It remains available in review ${review.reviewId}.`
+                  : `Rejected candidate ${candidate.candidateId}. No memory was written.`,
+            },
+          ],
+          structuredContent: candidateReviewStructuredContent(updated, {
+            action,
+            candidateId: candidate.candidateId,
+            reviewId: review.reviewId,
+            revision: updated.revision,
+          }),
+        };
+      }
+      if (candidate.recommendation === 'no_action') {
+        if (!(yield* reviewedCandidateTargetIsCurrent(config, candidate))) {
+          return argumentError(
+            `Duplicate candidate ${candidate.candidateId} is stale because its reviewed target changed or disappeared. Run review_session_context again.`,
+          );
+        }
+        const updated = candidateReviewWithState(review, candidate.candidateId, 'applied', {
+          action: 'apply',
+          at,
+        });
+        yield* saveCandidateReview(config.agentContextHome, updated);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Confirmed no action for duplicate candidate ${candidate.candidateId}. No memory was written.`,
+            },
+          ],
+          structuredContent: candidateReviewStructuredContent(updated, {
+            action: 'no_action',
+            candidateId: candidate.candidateId,
+            reviewId: review.reviewId,
+            revision: updated.revision,
+          }),
+        };
+      }
+      const text = normalizeOptionalMetadata(editedText) ?? candidate.proposedText;
+      const scrub = applyScrubber(text, {redact: true});
+      if (scrub.blocker) {
+        return argumentError(
+          `Refusing to store candidate ${candidate.candidateId}: possible ${scrub.blocker}. Remove the sensitive value first.`,
+        );
+      }
+      const reviewedTargetUri = candidate.targetUri;
+      const effectiveOperation = operation ?? candidate.applyOperation;
+      const effectiveReplaceUri = checkedReplaceUri.value ?? candidate.applyReplaceUri;
+      const requiresExplicitOperation =
+        candidate.recommendation === 'replace' || candidate.recommendation === 'manual_review';
+      if (requiresExplicitOperation && effectiveOperation === undefined) {
+        return argumentError(`Candidate ${candidate.candidateId} requires an explicit operation: create or replace.`);
+      }
+      if (candidate.applyOperation && operation && operation !== candidate.applyOperation) {
+        return argumentError(
+          `Candidate ${candidate.candidateId} is recovering an approved ${candidate.applyOperation} operation; the retry cannot change it to ${operation}.`,
+        );
+      }
+      if (
+        candidate.applyReplaceUri &&
+        checkedReplaceUri.value &&
+        checkedReplaceUri.value !== candidate.applyReplaceUri
+      ) {
+        return argumentError(
+          `Candidate ${candidate.candidateId} is recovering approved target ${candidate.applyReplaceUri}; the retry cannot change it.`,
+        );
+      }
+      const reviewedTargetIsShared = reviewedTargetUri !== undefined && isSharedMemoryUri(reviewedTargetUri);
+      if (
+        effectiveOperation === 'create' &&
+        !reviewedTargetIsShared &&
+        (candidate.recommendation === 'replace' || candidate.comparison === 'contradiction')
+      ) {
+        return argumentError(
+          `Candidate ${candidate.candidateId} has the same stable identity as active memory and cannot be created separately; choose operation=replace with its reviewed target.`,
+        );
+      }
+      if (effectiveOperation === 'replace' && reviewedTargetUri === undefined) {
+        return argumentError(`Candidate ${candidate.candidateId} has no reviewed replacement target.`);
+      }
+      if (
+        effectiveOperation === 'replace' &&
+        (effectiveReplaceUri === undefined || effectiveReplaceUri !== reviewedTargetUri)
+      ) {
+        return argumentError(
+          `Candidate ${candidate.candidateId} requires replaceUri=${reviewedTargetUri} for the reviewed replacement.`,
+        );
+      }
+      if (effectiveOperation !== 'replace' && effectiveReplaceUri !== undefined) {
+        return argumentError(`Candidate ${candidate.candidateId} cannot use replaceUri without operation=replace.`);
+      }
+      if (allowDestructiveReplacement === true && effectiveOperation !== 'replace') {
+        return argumentError(
+          `Candidate ${candidate.candidateId} cannot allow a destructive replacement without operation=replace.`,
+        );
+      }
+      const targetUri = effectiveOperation === 'replace' ? reviewedTargetUri : undefined;
+      if (targetUri && isSharedMemoryUri(targetUri)) {
+        return argumentError(
+          `Candidate ${candidate.candidateId} targets shared memory. Choose operation=create to store the reviewed candidate personally without overwriting the shared source.`,
+        );
+      }
+      if (targetUri) {
+        if (!candidate.targetContentHash) {
+          return argumentError(`Candidate ${candidate.candidateId} has no reviewed content hash for ${targetUri}.`);
+        }
+      }
+      const destructiveReplacementApproved =
+        candidate.applyAllowDestructiveReplacement === true || allowDestructiveReplacement === true;
+      if (targetUri && candidate.targetContentHash) {
+        if (!candidate.replacementSafetyBaseline) {
+          return argumentError(replacementSafetyReviewRequiredWarning(candidate));
+        }
+        const [currentTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
+        const currentTargetHash = currentTarget
+          ? yield* sha256Hex(canonicalMemoryDocumentContent(currentTarget.content))
+          : undefined;
+        if (!currentTarget || currentTargetHash !== candidate.targetContentHash) {
+          return argumentError(
+            `Candidate ${candidate.candidateId} replacement target changed or disappeared after review. Review it again before applying.`,
+          );
+        }
+        const replacementSafety = assessReplacementSafety(
+          candidate.kind,
+          replacementSafetyBaseline(currentTarget.body),
+          scrub.cleaned,
+        );
+        if (replacementSafety.destructiveLossRisk && !destructiveReplacementApproved) {
+          return argumentError(
+            `${replacementSafetyWarning(replacementSafety)} Read ${targetUri}, then either supply editedText that preserves ` +
+              'the needed state or retry with allowDestructiveReplacement=true after explicit approval.',
+          );
+        }
+      }
+      const approvedOperation: CandidateApplyOperation = effectiveOperation ?? 'create';
+      const approvedAt = candidate.applyApprovedAt ?? at;
+      const metadata = approvedCandidateMetadata(review, candidate, approvedAt);
+      const writeParams: WriteDurableMemoryParams = {
+        bodyText: scrub.cleaned,
+        expectedReplaceContentHash: targetUri ? candidate.targetContentHash : undefined,
+        metadata,
+        operation: approvedOperation,
+        replaceUri: targetUri,
+      };
+      const preparedWrite = yield* preparePersonalMemoryWrite(config, writeParams);
+      const intendedMemoryUri = preparedWrite.memoryUri;
+      const approvedContentHash = yield* sha256Hex(canonicalMemoryDocumentContent(preparedWrite.memory));
+      if (candidate.applyContentHash && candidate.applyContentHash !== approvedContentHash) {
+        return argumentError(
+          `Candidate ${candidate.candidateId} retry does not match the previously approved content. Retry with the same editedText or start a new review.`,
+        );
+      }
+      const applying =
+        candidate.state === 'applying'
+          ? review
+          : candidateReviewWithApplying(
+              review,
+              candidate.candidateId,
+              {
+                allowDestructiveReplacement: destructiveReplacementApproved,
+                bodyText: scrub.cleaned,
+                contentHash: approvedContentHash,
+                operation: approvedOperation,
+                replaceUri: targetUri,
+                targetUri: intendedMemoryUri,
+              },
+              approvedAt,
+            );
+      if (candidate.state !== 'applying') {
+        yield* saveCandidateReview(config.agentContextHome, applying);
+      }
+      const result = yield* writeDurableMemory(config, {
+        ...writeParams,
+        prepared: preparedWrite,
+      });
+      if (result.isError === true) {
+        const resultText = textFromCallToolResult(result);
+        if (resultText.includes('Candidate replacement is stale')) {
+          return yield* persistCandidateConflict(
+            config,
+            applying,
+            applying.candidates.find(item => item.candidateId === candidate?.candidateId) ?? candidate,
+            `${resultText} The approval is recorded as a conflict; start a new review against the current target.`,
+          );
+        }
+        const [possiblyWritten] = yield* readMemoryRecordsByUri(config, [intendedMemoryUri]);
+        const destinationCanConflict = approvedOperation === 'create' || intendedMemoryUri !== targetUri;
+        if (
+          (destinationCanConflict &&
+            possiblyWritten &&
+            possiblyWritten.metadata.candidateId !== candidate.candidateId) ||
+          resultText.includes('Create conflict')
+        ) {
+          return yield* persistCandidateConflict(
+            config,
+            applying,
+            applying.candidates.find(item => item.candidateId === candidate?.candidateId) ?? candidate,
+            `Candidate ${candidate.candidateId} could not be created because ${intendedMemoryUri} contains another memory. The apply is recorded as a conflict.`,
+          );
+        }
+        return result;
+      }
+      if (replacementCleanupIsPending(result)) {
+        const pendingCleanup = candidateReviewWithApplyStage(applying, candidate.candidateId, 'cleanup_pending');
+        yield* saveCandidateReview(config.agentContextHome, pendingCleanup);
+        return {
+          ...result,
+          isError: true,
+          structuredContent: candidateReviewStructuredContent(pendingCleanup, {
+            action: 'cleanup_pending',
+            candidateId: candidate.candidateId,
+            memoryUri: intendedMemoryUri,
+            reviewId: review.reviewId,
+            revision: review.revision,
+          }),
+        };
+      }
+      const memoryUri = storedMemoryUri(result) ?? intendedMemoryUri;
+      const updated = candidateReviewWithState(applying, candidate.candidateId, 'applied', {
+        action: 'apply',
+        ...(destructiveReplacementApproved ? {allowDestructiveReplacement: true} : {}),
+        at,
+        memoryUri,
+      });
+      yield* saveCandidateReview(config.agentContextHome, updated);
+      return {
+        ...result,
+        structuredContent: candidateReviewStructuredContent(updated, {
+          action: 'approve',
+          candidateId: candidate.candidateId,
+          memoryUri,
+          reviewId: review.reviewId,
+          revision: updated.revision,
         }),
-      ).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
-    },
-  );
+      };
+    }),
+  ).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
+}
+
+function withOptionalCandidateReviewLock<A, E, R>(
+  agentContextHome: string,
+  reviewId: string,
+  lockHeld: boolean,
+  effect: Effect.Effect<A, E, R>,
+) {
+  const locked = withCandidateReviewLock(agentContextHome, reviewId, effect);
+  return lockHeld ? (effect as typeof locked) : locked;
 }
 
 export function registerSearchTool(
@@ -1438,7 +1600,10 @@ function canonicalReadMetadata(result: CallToolResult):
 }
 
 function sessionCloseoutHasCandidateMaterial(input: SessionCloseoutInput): boolean {
-  return [input.decisions, input.handoff, input.invariants, input.preferences].some(items => (items?.length ?? 0) > 0);
+  return (
+    [input.decisions, input.handoff, input.invariants, input.preferences].some(items => (items?.length ?? 0) > 0) ||
+    structuredCloseoutFromInput(input) !== undefined
+  );
 }
 
 function sessionCloseoutHasEvidence(input: SessionCloseoutInput): boolean {
@@ -1473,6 +1638,7 @@ function scrubSessionCloseout(
     ['sourceAgentClient', input.sourceAgentClient],
     ['sourceCommit', input.sourceCommit],
     ['sourceSessionId', input.sourceSessionId],
+    ['rationale', input.rationale],
   ] as const;
   const scrubbedScalars = new Map<string, string | undefined>();
   for (const [key, value] of scalarValues) {
@@ -1504,6 +1670,7 @@ function scrubSessionCloseout(
     const outcome = scrubbedScalars.get('outcome');
     const project = scrubbedScalars.get('project');
     const sourceAgentClient = scrubbedScalars.get('sourceAgentClient');
+    const rationale = scrubbedScalars.get('rationale');
     const task = scrubbedScalars.get('task');
     const topic = scrubbedScalars.get('topic');
     if (!outcome || !project || !sourceAgentClient || !task || !topic) {
@@ -1512,10 +1679,13 @@ function scrubSessionCloseout(
     return {
       input: {
         codeCitations: input.codeCitations,
+        ...(rationale === undefined ? {} : {rationale}),
+        constraints: scrubList('constraints', input.constraints),
         decisions: scrubList('decisions', input.decisions),
         evidence: scrubList('evidence', input.evidence),
         handoff: scrubList('handoff', input.handoff),
         invariants: scrubList('invariants', input.invariants),
+        knowledgeInvalidated: scrubList('knowledgeInvalidated', input.knowledgeInvalidated),
         outcome,
         preferences: scrubList('preferences', input.preferences),
         project,
@@ -1524,6 +1694,8 @@ function scrubSessionCloseout(
         sourceSessionId: scrubbedScalars.get('sourceSessionId'),
         task,
         topic,
+        unresolvedRisks: scrubList('unresolvedRisks', input.unresolvedRisks),
+        verificationPerformed: scrubList('verificationPerformed', input.verificationPerformed),
       },
       ok: true,
     };
@@ -1534,6 +1706,11 @@ function scrubSessionCloseout(
 
 function candidateReviewResult(review: CandidateReview): CallToolResult {
   const actionable = review.candidates.filter(candidate => candidate.recommendation !== 'no_action');
+  const replacementWarnings = new Map(
+    projectKnowledgeDeltaV1(review)
+      .items.filter(item => item.mutationPreview.replacementSafety?.warning)
+      .map(item => [item.candidateId, item.mutationPreview.replacementSafety?.warning]),
+  );
   const lines =
     review.candidates.length === 0
       ? ['No additional memory candidates found in this task closeout. No candidate memory was written.']
@@ -1547,6 +1724,9 @@ function candidateReviewResult(review: CandidateReview): CallToolResult {
                 `${index + 1}. [${candidate.recommendation}] ${candidate.kind}/${candidate.topic} · ${candidate.reason}\n` +
                 `   candidate: ${candidate.candidateId}` +
                 (candidate.targetUri ? `\n   target: ${candidate.targetUri}` : '') +
+                (replacementWarnings.get(candidate.candidateId)
+                  ? `\n   WARNING: ${replacementWarnings.get(candidate.candidateId)}`
+                  : '') +
                 `\n${candidate.proposedText
                   .split('\n')
                   .map(line => `   ${line}`)
@@ -1555,13 +1735,20 @@ function candidateReviewResult(review: CandidateReview): CallToolResult {
           ];
   return {
     content: [{type: 'text', text: lines.join('\n')}],
-    structuredContent: {
+    structuredContent: candidateReviewStructuredContent(review, {
       candidates: review.candidates,
       noAction: actionable.length === 0,
       reviewId: review.reviewId,
       revision: review.revision,
-    },
+    }),
   };
+}
+
+function candidateReviewStructuredContent(
+  review: CandidateReview,
+  fields: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  return {...fields, knowledgeDelta: projectKnowledgeDeltaV1(review)};
 }
 
 function approvedCandidateMetadata(
@@ -1689,9 +1876,9 @@ export function registerRecallFeedbackTool(server: EffectMcpServerAdapter, confi
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
       description:
-        'Record bounded local feedback for one recall result. Stores a query fingerprint, never the full query. Feedback cannot bypass topical relevance and decays over time.',
+        'Record bounded local feedback for one recall result. Applied means the item materially informed a plan or change and is distinct from useful. Stores a query fingerprint, never the full query. Feedback cannot bypass topical relevance and decays over time.',
       inputSchema: {
-        action: McpInput.literals(['dismiss', 'pin', 'useful', 'wrong']),
+        action: McpInput.literals(['dismiss', 'pin', 'useful', 'wrong', 'applied']),
         project: McpInput.string('Optional project scope; pin is never global'),
         query: McpInput.string('The recall query; only its SHA-256 fingerprint is stored'),
         uri: McpInput.string('The threadnote:// result URI receiving feedback'),
@@ -1711,7 +1898,7 @@ export function registerRecallFeedbackTool(server: EffectMcpServerAdapter, confi
         return checkedUri.error;
       }
       if (!action) {
-        return argumentError('recall_feedback requires action: useful, wrong, pin, or dismiss.');
+        return argumentError('recall_feedback requires action: useful, wrong, pin, dismiss, or applied.');
       }
       const normalizedProject = normalizeOptionalMetadata(project);
       if (action === 'pin' && normalizedProject === undefined) {

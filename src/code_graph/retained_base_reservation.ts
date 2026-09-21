@@ -1,6 +1,6 @@
 import {Clock, Effect, FileSystem, Path, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {runtimeTextDirectoryNamePage} from '../effect/system.js';
 import {codeGraphRetainedBaseReservationLockPath, codeGraphRetainedBaseReservationRoot} from './layout.js';
 

@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {classifyCodeGraphBuildOwner, type CodeGraphBuildOwnerLiveness} from '../../src/code_graph/build_owner.js';
+import {classifyCodeGraphBuildOwner, type CodeGraphBuildOwnerLiveness} from '../../src/code_graph/build/owner.js';
 
 describe('code graph build owner liveness', () => {
   it.each([

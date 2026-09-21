@@ -14,7 +14,7 @@ import {
   type CodeGraphEvidenceCardV1,
   type CodeGraphWorksetQueryResultV2,
   type RepositoryEvidenceReceiptV1,
-} from '../../src/code_graph/workset_evidence.js';
+} from '../../src/code_graph/workset/evidence.js';
 
 describe('code graph workset evidence', () => {
   it('strictly parses repository-qualified cards and exact relationship provenance', () => {
@@ -170,6 +170,50 @@ describe('code graph workset evidence', () => {
     expect(projected.structuredContent.output.truncated).toBe(false);
     expect(projected.structuredContent.continuation).toBeUndefined();
     expect(reversedReceipts).toEqual(projected);
+  });
+
+  it('preserves project coverage through scoped repository receipt projection', () => {
+    const result = relationshipResult();
+    const projectCoverage = {
+      project: 'producer-app',
+      kind: 'project' as const,
+      configuredRoots: ['apps/producer'],
+      rootComponents: 1,
+      dependencyComponents: 2,
+      completeness: 'partial' as const,
+      negativeProof: 'unavailable' as const,
+      observedWorktreeCommit: digest('observed-commit'),
+      reusedEquivalentSnapshot: true,
+    };
+    const scoped = {
+      ...result,
+      coverage: {...result.coverage, complete: false},
+      repositories: {
+        ...result.repositories,
+        producer: {...result.repositories.producer, projectCoverage},
+      },
+    };
+    const projected = projectCodeGraphWorksetEvidence(scoped, {maximumEstimatedTokens: 1_500});
+
+    expect(parseCodeGraphWorksetQueryResultV2(scoped).repositories.producer.projectCoverage).toEqual(projectCoverage);
+    expect(
+      parseCodeGraphWorksetEvidenceProjectionV2(projected.structuredContent).repositories.producer.projectCoverage,
+    ).toEqual(projectCoverage);
+    expect(() =>
+      parseCodeGraphWorksetQueryResultV2({...scoped, coverage: {...scoped.coverage, complete: true}}),
+    ).toThrow(/partial project coverage/u);
+    expect(() =>
+      parseCodeGraphWorksetQueryResultV2({
+        ...scoped,
+        repositories: {
+          ...scoped.repositories,
+          producer: {
+            ...scoped.repositories.producer,
+            projectCoverage: {...projectCoverage, rootComponents: Number.POSITIVE_INFINITY},
+          },
+        },
+      }),
+    ).toThrow();
   });
 
   it('creates deterministic opaque handles that remain repository and page isolated', () => {

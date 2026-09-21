@@ -1,6 +1,6 @@
 import {Cause, Crypto, Effect, Exit, FileSystem, Option, Path, Queue} from 'effect';
 import {fromPromiseInterruptibleAwaiting} from './errors.js';
-import {withExclusiveFileLock} from './file_lock.js';
+import {withExclusiveFileLock} from './file/lock.js';
 import {SystemInfo} from './system.js';
 import {publicRemoteMemoryError, remoteMemoryError} from '../remote_memory/errors.js';
 

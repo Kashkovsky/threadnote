@@ -1,6 +1,6 @@
 import type {TransactionSql} from 'postgres';
 import {deriveIndexedRecallCodeLinks, type RecallCodeLinkMatchKind} from '../recall/code_links.js';
-import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import type {MemoryCodeCitationV1} from '../memory/code/citation.js';
 
 /** Replace the current-head projection with opaque selectors for one canonical revision. */
 export async function replaceRemoteCodeLinkBacklinks(

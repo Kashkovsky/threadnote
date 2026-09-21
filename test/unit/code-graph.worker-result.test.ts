@@ -6,18 +6,18 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {graphShareParseActionKey} from '../../src/code_graph/sharing/action.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
-import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
+import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker/signing.js';
 import {
   signGraphWorkerResultAnnouncement,
   verifyGraphWorkerResultAnnouncement,
-} from '../../src/code_graph/sharing/worker_announcement.js';
+} from '../../src/code_graph/sharing/worker/announcement.js';
 import {
   createGraphWorkerResultArtifact,
   readGraphWorkerResultArtifact,
   verifyGraphWorkerResultIntegrity,
-} from '../../src/code_graph/sharing/worker_result.js';
-import {verifyPublisherWorkerReceipt} from '../../src/code_graph/sharing/worker_publisher_receipt.js';
+} from '../../src/code_graph/sharing/worker/result.js';
+import {verifyPublisherWorkerReceipt} from '../../src/code_graph/sharing/worker/publisher_receipt.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';
 

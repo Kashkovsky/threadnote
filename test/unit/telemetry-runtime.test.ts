@@ -7,7 +7,7 @@ import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {completeAutoUpdateWorkerExit} from '../../src/release/auto_update.js';
 import {CodeGraphStoreError} from '../../src/code_graph/types.js';
-import {FileLockTimeout} from '../../src/effect/file_lock.js';
+import {FileLockTimeout} from '../../src/effect/file/lock.js';
 import {HttpRequestFailed} from '../../src/effect/http.js';
 import {
   anonymousTelemetryTestLayer,

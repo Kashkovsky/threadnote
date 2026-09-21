@@ -1,6 +1,6 @@
 import {Context, Effect, Layer, Option} from 'effect';
 import {createCachedCodeGraphContractHash} from '../cached_contract_hash.js';
-import {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact_budget.js';
+import {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact/budget.js';
 import {BUILTIN_CODE_GRAPH_LANGUAGE_PACKS} from './catalog.generated.js';
 import {
   CodeGraphLanguagePackError,
@@ -12,7 +12,7 @@ import {
   type CodeGraphWorkspaceProject,
 } from './types.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
-import type {CodeGraphLanguagePackProvenance} from '../store_models.js';
+import type {CodeGraphLanguagePackProvenance} from '../store/models.js';
 import {TREE_SITTER_RUNTIME_CACHE_IDENTITY, type TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import {mergeCodeGraphWorkspaces, projectForPath} from '../workspace.js';
 import {
@@ -22,10 +22,11 @@ import {
   CODE_GRAPH_RATIONALE_INPUT_VERSION,
 } from '../rationale.js';
 
-export {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact_budget.js';
+export {CODE_GRAPH_PARSER_FACTS_VERSION} from '../fact/budget.js';
 
 const cacheIdentityHash = createCachedCodeGraphContractHash();
 const derivationIdentityHash = createCachedCodeGraphContractHash();
+const basenamePatterns = new Map<string, RegExp>();
 
 export interface CodeGraphLanguagePackRegistryShape {
   readonly activeCacheIdentities: (paths: readonly string[]) => readonly string[];
@@ -72,7 +73,14 @@ export function createCodeGraphLanguagePackRegistry(
         cacheIdentity: packCacheIdentity(pack),
         matcher,
         pack,
-        priority: matcher.kind === 'extension' ? 1 : matcher.kind === 'basename' ? 2 : 3,
+        priority:
+          matcher.kind === 'extension'
+            ? 1
+            : matcher.kind === 'basename-pattern'
+              ? 2
+              : matcher.kind === 'basename'
+                ? 3
+                : 4,
       })),
     )
     .sort((left, right) => right.priority - left.priority);
@@ -225,6 +233,14 @@ function validatePacks(packs: readonly CodeGraphLanguagePack[]): void {
       });
     }
     for (const matcher of pack.files) {
+      if (
+        matcher.kind === 'basename-pattern' &&
+        (!matcher.value.includes('*') || matcher.value.includes('**') || /[/\\]/u.test(matcher.value))
+      ) {
+        throw CodeGraphLanguagePackError.make({
+          message: `Invalid code graph basename pattern: ${matcher.value}.`,
+        });
+      }
       const key = `${matcher.kind}:${matcher.value.toLowerCase()}`;
       if (matchers.has(key)) {
         throw CodeGraphLanguagePackError.make({message: `Duplicate code graph file matcher: ${key}.`});
@@ -237,8 +253,21 @@ function validatePacks(packs: readonly CodeGraphLanguagePack[]): void {
 function matches(matcher: CodeGraphFileMatcher, path: string, basename: string): boolean {
   const value = matcher.value.toLowerCase();
   if (matcher.kind === 'basename') return basename === value;
+  if (matcher.kind === 'basename-pattern') return basenamePattern(value).test(basename);
   if (matcher.kind === 'path-suffix') return path.toLowerCase().endsWith(value);
   return basename.endsWith(value);
+}
+
+function basenamePattern(value: string): RegExp {
+  const cached = basenamePatterns.get(value);
+  if (cached !== undefined) return cached;
+  const source = value
+    .split('*')
+    .map(part => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+    .join('[^/]+');
+  const compiled = new RegExp(`^${source}$`, 'u');
+  basenamePatterns.set(value, compiled);
+  return compiled;
 }
 
 function normalizeRepositoryPath(value: string): string {

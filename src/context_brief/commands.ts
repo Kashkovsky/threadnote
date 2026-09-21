@@ -1,9 +1,13 @@
 import {Effect} from 'effect';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
 import {SystemInfo} from '../effect/system.js';
 import type {RuntimeConfig} from '../types.js';
 import {compileContextBrief} from './index.js';
 import type {ContextBriefMode} from './types.js';
+
+export const CONTEXT_BRIEF_CWD_OPTION = {
+  name: 'cwd',
+} as const;
 
 export interface RunContextBriefOptionsV1 {
   readonly budgetTokens?: number;
@@ -12,6 +16,7 @@ export interface RunContextBriefOptionsV1 {
   readonly json?: boolean;
   readonly mode?: ContextBriefMode;
   readonly project?: string;
+  readonly surface?: string;
   readonly task: string;
   readonly workset?: string;
 }
@@ -29,6 +34,7 @@ export const runContextBrief = Effect.fn('contextBrief.command.compile')(functio
     scope: workset
       ? {kind: 'workset', name: workset, ...(options.project?.trim() ? {project: options.project.trim()} : {})}
       : {callerCwd: cwd, kind: 'repository', ...(options.project?.trim() ? {project: options.project.trim()} : {})},
+    ...(options.surface?.trim() ? {surface: options.surface.trim()} : {}),
     task: options.task,
   });
   yield* writeFinalCliOutput(options.json ? JSON.stringify(projected.structuredContent) : projected.text.trimEnd());

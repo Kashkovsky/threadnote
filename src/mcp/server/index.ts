@@ -23,8 +23,9 @@ import {monitorSharedRepositories} from '../../effect/share.js';
 import {
   monitorGraphShareContributions,
   monitorGraphShareSignedContributions,
-} from '../../code_graph/sharing/contribution_retry.js';
-import {refreshPendingDeferredCodeAnchorWorkspaces} from '../../memory/deferred_code_anchor_refresh.js';
+} from '../../code_graph/sharing/contribution/retry.js';
+import {runCodeGraphAutomaticCompactionScheduler} from '../../code_graph/automatic/compaction.js';
+import {refreshPendingDeferredCodeAnchorWorkspaces} from '../../memory/deferred/code_anchor_refresh.js';
 import {runObsidianProjectionPublish} from '../../obsidian/projection.js';
 import {withProductionLogging} from '../../effect/production_log.js';
 import {withAnonymousTelemetry} from '../../effect/telemetry.js';
@@ -69,6 +70,12 @@ import {
   runNativeHealthTool,
   runNativeRemoveTool,
 } from './memory.js';
+import {registerContextHealthTool} from './context/health.js';
+import {registerContextHealthRepairTools} from './context/health_repair.js';
+import {registerMaintenanceMetadataTools} from './maintenance_metadata.js';
+import {registerKnowledgeDeltaGitProposalTool} from './git_proposal.js';
+import {registerProcedurePublicationTools} from './procedure.js';
+import {registerActivationProofTool} from './activation.js';
 import {
   runInstallSharedSkillTool,
   runListSharedSkillsTool,
@@ -116,10 +123,10 @@ export const mcpServerEffect = withAnonymousTelemetry(
           : undefined;
         setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.orElseSucceed(() => undefined)));
         const instructions = memoryScope
-          ? `Personal Cursor Cloud uses one MCP bounded to these Git memory shares: ${memoryScope.shares.map(share => `${share.team} (${share.root})`).join(', ')}. Call recall_context with an absolute callerCwd; optionally pass team to narrow recall. Results are unread pointers, not evidence, so read relevant threadnote:// URIs with read_context. With multiple shares, durable remember_context writes require team; writes are committed and pushed only to that share. Memory tools reject URIs outside the configured share set. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled.`
+          ? `Personal Cursor Cloud uses one MCP bounded to these Git memory shares: ${memoryScope.shares.map(share => `${share.team} (${share.root})`).join(', ')}. Call recall_context with an absolute callerCwd; optionally pass team to narrow recall. Results are unread pointers, not evidence, so read relevant threadnote:// URIs with read_context. With multiple shares, durable remember_context writes require team; writes are committed and pushed only to that share. Memory tools reject URIs outside the configured share set.`
           : toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET
             ? 'Cursor Cloud remote-hybrid mode uses this local server only for checkout-specific code graph evidence, diagnostics, and workload attestation. All historical memory reads and writes belong to the managed threadnote-memory HTTP server. Never fall back to local personal memory or a Git memory share.'
-            : 'Call `recall_context` with absolute `callerCwd`. `project` excludes others; omit it for global recall. Nested cwd prefers its package; repo-wide/sibling evidence remains eligible. Results are unread `threadnote://` pointers, not evidence; read them via `read_context`. Use `inspect_code_graph` before broad search and `analyze_code_graph` for architecture. Retry indexing when advised; exact search remains useful. Store durable knowledge/handoffs under project/topic; replace duplicates. `review_session_context` only adds user-approved candidates. Do not store sensitive data. Confirm publishes; never publish handoffs/preferences.';
+            : 'For non-trivial local repo work, call MCP `context_brief` with task + absolute `callerCwd`; graph, decisions, handoffs. CLI: `threadnote context brief --cwd <cwd> --task <task>`. `recall_context` + `read_context`: memory alternative; `threadnote://` pointers unread, not evidence. Use `inspect_code_graph`/`analyze_code_graph`, then exact source. Close with private `remember_context(kind=handoff)`. Optional five-field KD: `review_session_context`, then `apply_memory_candidates` with `approve` (optional `editedText`), `defer`, or `reject`. Never auto-apply/share. No sensitive data; confirm publishes; never publish handoffs/preferences.';
         const server = new EffectMcpServerAdapter(
           'threadnote-local-adapter',
           '0.2.0',
@@ -139,6 +146,7 @@ export const mcpServerEffect = withAnonymousTelemetry(
           yield* Effect.forkScoped(monitorSharedRepositories(config));
         }
         if (mcpToolCapabilities(toolset).graphLocal) {
+          yield* Effect.forkScoped(runCodeGraphAutomaticCompactionScheduler(config.agentContextHome));
           yield* Effect.forkScoped(monitorGraphShareContributions(config.agentContextHome));
           yield* Effect.forkScoped(monitorGraphShareSignedContributions(config.agentContextHome));
         }
@@ -259,6 +267,7 @@ function registerTools(
 ): void {
   const capabilities = mcpToolCapabilities(toolset);
   if (capabilities.memoryRead) {
+    registerActivationProofTool(server, config);
     registerSearchTool(
       server,
       config,
@@ -278,7 +287,7 @@ function registerTools(
     );
   }
 
-  registerCodeGraphTool(server, config, {allowWorkset: capabilities.graphWorkset});
+  if (capabilities.graphLocal) registerCodeGraphTool(server, config, {allowWorkset: capabilities.graphWorkset});
   if (capabilities.contextBrief) registerContextBriefTool(server, config);
 
   if (capabilities.memoryRead) {
@@ -371,6 +380,13 @@ function registerTools(
       },
     );
 
+  if (capabilities.lifecycle) {
+    registerContextHealthTool(server, config);
+    registerContextHealthRepairTools(server, config);
+    registerMaintenanceMetadataTools(server, config);
+    registerRecallFeedbackTool(server, config);
+  }
+
   if (capabilities.maintenance) {
     registerArchiveTool(
       server,
@@ -380,7 +396,6 @@ function registerTools(
     );
     registerArchiveTool(server, config, 'archive', 'Compatibility alias for archive_context.');
     registerCompactTool(server, config);
-    registerRecallFeedbackTool(server, config);
   }
 
   server.registerTool(
@@ -394,6 +409,11 @@ function registerTools(
       return yield* runThreadnoteGuideTool(config, toolset);
     }),
   );
+
+  if (capabilities.memoryPublish) {
+    registerKnowledgeDeltaGitProposalTool(server, config);
+    if (capabilities.lifecycle) registerProcedurePublicationTools(server, config);
+  }
 
   if (capabilities.memoryPublish)
     server.registerTool(
@@ -777,6 +797,7 @@ export {
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionObservesWorktree,
   codeGraphInspectionObservation,
+  codeGraphInspectionRequestsBackgroundRefresh,
   codeGraphInspectionStartsRefresh,
   codeGraphMcpAnalysisBudget,
   codeGraphMcpAnalysisLimits,

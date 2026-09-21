@@ -34,6 +34,10 @@ const MIGRATIONS = [
   {name: '003_git_ingest_observations.sql', version: 3},
   {name: '004_durable_memory_proposals.sql', version: 4},
   {name: '005_code_link_backlinks.sql', version: 5},
+  {name: '006_identity_client_grant_expiry.sql', version: 6},
+  {name: '007_cloud_admission_profile.sql', version: 7},
+  {name: '008_hosted_context_health.sql', version: 8},
+  {name: '009_hosted_context_ci.sql', version: 9},
 ] as const;
 const MIGRATION_LOCK = 7_427_190_041;
 

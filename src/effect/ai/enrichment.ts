@@ -27,6 +27,10 @@ export interface MemoryEnrichmentInput {
   readonly topic?: string;
 }
 
+export function isMemoryKeywordEnrichmentEligible(kind: MemoryKind): boolean {
+  return kind !== 'handoff' && kind !== 'smoke';
+}
+
 export class AiMemoryEnrichmentFailed extends Schema.TaggedError<AiMemoryEnrichmentFailed>()(
   'AiMemoryEnrichmentFailed',
   {
@@ -175,26 +179,40 @@ export const runNativeMemoryEnrichment = Effect.fn('MemoryEnricher.runNative')(f
   return normalizeMemoryKeywords(input, draft.searchPhrases);
 });
 
+export function enrichMemoryMetadataWith<E, R>(
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+  metadata: MemoryMetadata,
+  body: string,
+  enrich: (
+    config: Pick<RuntimeConfig, 'agentContextHome'>,
+    input: MemoryEnrichmentInput,
+  ) => Effect.Effect<readonly string[] | undefined, E, R>,
+): Effect.Effect<MemoryMetadata, E, R> {
+  return Effect.gen(function* () {
+    if (
+      !isMemoryKeywordEnrichmentEligible(metadata.kind) ||
+      metadata.keywords !== undefined ||
+      metadata.status !== 'active' ||
+      metadata.topic === 'auto-precompact'
+    ) {
+      return metadata;
+    }
+    const keywords = yield* enrich(config, {
+      body,
+      kind: metadata.kind,
+      project: metadata.project,
+      topic: metadata.topic,
+    });
+    return keywords && keywords.length > 0 ? {...metadata, keywords} : metadata;
+  });
+}
+
 export const enrichMemoryMetadataWithConfiguredLocalAi = Effect.fn('MemoryEnricher.enrichMetadata')(function* (
   config: Pick<RuntimeConfig, 'agentContextHome'>,
   metadata: MemoryMetadata,
   body: string,
 ) {
-  if (
-    metadata.keywords !== undefined ||
-    metadata.status !== 'active' ||
-    metadata.kind === 'smoke' ||
-    metadata.topic === 'auto-precompact'
-  ) {
-    return metadata;
-  }
-  const keywords = yield* enrichMemoryWithConfiguredLocalAi(config, {
-    body,
-    kind: metadata.kind,
-    project: metadata.project,
-    topic: metadata.topic,
-  });
-  return keywords && keywords.length > 0 ? {...metadata, keywords} : metadata;
+  return yield* enrichMemoryMetadataWith(config, metadata, body, enrichMemoryWithConfiguredLocalAi);
 });
 
 export function normalizeMemoryKeywords(input: MemoryEnrichmentInput, keywords: readonly string[]): readonly string[] {

@@ -39,8 +39,8 @@ import {
   graphShareControlGetTag,
   graphShareControlPostJson,
   graphShareControlPutCas,
-} from '../../src/code_graph/sharing/control_client.js';
-import {recordPublishedFrontier, runGraphShareControlServer} from '../../src/code_graph/sharing/control_server.js';
+} from '../../src/code_graph/sharing/control/client.js';
+import {recordPublishedFrontier, runGraphShareControlServer} from '../../src/code_graph/sharing/control/server.js';
 import {
   graphShareFrontierPointerFromOciDescriptor,
   graphShareOciLayerMediaTypes,

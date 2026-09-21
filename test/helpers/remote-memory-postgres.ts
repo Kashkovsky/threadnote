@@ -1,7 +1,7 @@
 import postgres, {type Sql} from 'postgres';
 import {migrateRemoteMemoryDatabase} from '../../src/remote_memory/migrations.js';
 import {randomUuidV4} from '../../src/crypto/uuid.js';
-import {createRemoteMemorySql} from '../../src/remote_memory/postgres_control_plane.js';
+import {createRemoteMemorySql} from '../../src/remote_memory/postgres/control_plane.js';
 
 export interface RemoteMemoryPostgresFixture {
   readonly databaseName: string;
@@ -98,6 +98,9 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
   await migratorSql.unsafe('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA remote_memory FROM PUBLIC');
   await migratorSql.unsafe(`REVOKE CREATE ON SCHEMA remote_memory FROM ${runtimeRole}`);
   await migratorSql.unsafe(`GRANT USAGE ON SCHEMA remote_memory TO ${runtimeRole}`);
+  await migratorSql.unsafe(
+    `GRANT EXECUTE ON FUNCTION remote_memory.lock_context_health_target(text, text, text, text) TO ${runtimeRole}`,
+  );
 
   // Keep this matrix in lockstep with deploy/remote-memory/grants/001-runtime.sql.
   const tablePrivileges = [
@@ -125,6 +128,11 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
         'search_documents',
         'code_link_backlinks',
         'durable_memory_proposals',
+        'context_health_policies',
+        'context_health_schedules',
+        'context_health_receipts',
+        'context_health_due_directory',
+        'context_health_worker_state',
       ],
     },
     {
@@ -143,6 +151,7 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
         'code_link_backlinks',
         'projects',
         'durable_memory_proposals',
+        'context_health_receipts',
       ],
     },
     {
@@ -157,7 +166,7 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
   const selectGrants = [
     {columns: ['id', 'status'], table: 'tenants'},
     {columns: ['tenant_id', 'id', 'status'], table: 'principals'},
-    {columns: ['tenant_id', 'issuer', 'subject', 'principal_id'], table: 'external_identities'},
+    {columns: ['tenant_id', 'issuer', 'subject', 'client_id', 'principal_id'], table: 'external_identities'},
   ] as const;
   for (const grant of selectGrants) {
     const columns = grant.columns.map(quoteIdentifier).join(', ');
@@ -166,6 +175,38 @@ async function grantRuntimePrivileges(migratorSql: Sql, databaseName: string, ru
     );
   }
   const updateGrants = [
+    {
+      columns: [
+        'next_due_at',
+        'consecutive_failures',
+        'consecutive_stale_runs',
+        'last_attempt_at',
+        'last_success_at',
+        'last_success_receipt_id',
+        'last_failure_at',
+        'last_failure_receipt_id',
+        'updated_at',
+      ],
+      table: 'context_health_schedules',
+    },
+    {
+      columns: ['next_due_at', 'claim_token', 'claim_expires_at', 'claim_generation', 'updated_at'],
+      table: 'context_health_due_directory',
+    },
+    {
+      columns: [
+        'heartbeat_at',
+        'last_success_at',
+        'last_failure_at',
+        'failure_class',
+        'backlog_depth',
+        'scheduler_lag_minutes',
+        'tenant_cursor_ordinal',
+        'generation',
+        'updated_at',
+      ],
+      table: 'context_health_worker_state',
+    },
     {
       columns: [
         'share_generation',

@@ -4,7 +4,7 @@ import {
   type CodeGraphEvidenceCardV1,
   type CodeGraphWorksetQueryResultV2,
   type CompactEvidenceRelationshipV1,
-} from '../workset_evidence.js';
+} from '../workset/evidence.js';
 import {CODE_GRAPH_WORKSET_CATALOG_LIMITS, CodeGraphWorksetCatalogError} from './types.js';
 import {Predicate} from 'effect';
 

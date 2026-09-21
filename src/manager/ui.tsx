@@ -1,12 +1,12 @@
 import React, {useEffect, useMemo, useReducer, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import type {CodeGraphLocalDiagnosticsReport} from '../code_graph/diagnostics.js';
-import {ContextPanel} from './context_view.js';
+import {ContextPanel} from './context/view.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './dialog.js';
 import {WorksetsPanel} from './worksets_view.js';
 import {ProcessesPanel} from './processes_view.js';
 import {settleManagerRefreshTasks} from './refresh.js';
-import {DropdownSelect, MarkdownViewer, Metadata, TargetFields} from './ui_controls.js';
+import {DropdownSelect, MarkdownViewer, Metadata, TargetFields} from './ui/controls.js';
 import {
   initialManagerAvailability,
   managerActionsAreAvailable,
@@ -22,7 +22,7 @@ import {
   type ManagerGraphViewRemovalResponse,
   withoutRemovedGraphCatalogView,
   withoutRemovedGraphDiagnosticsView,
-} from './graph_removal.js';
+} from './graph/removal.js';
 import {
   GraphWorkspace,
   graphBuildIsActive,
@@ -77,14 +77,14 @@ import {
   tabTitle,
   treeItemClass,
   uniqueSelectorValues,
-} from './ui_support.js';
+} from './ui/support.js';
 
 export {
   graphAdministrationActionLabel,
   managerProjectOptions,
   pruneSelectedMemoryUris,
   selectableMemoryUris,
-} from './ui_support.js';
+} from './ui/support.js';
 
 export type PanelName = 'context' | 'doctor' | 'graph' | 'memory' | 'processes' | 'shares' | 'tools' | 'worksets';
 type NavTreeTab = 'memories' | 'resources';

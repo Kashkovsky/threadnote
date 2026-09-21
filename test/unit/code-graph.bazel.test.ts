@@ -167,7 +167,7 @@ describe('Bazel/Starlark code graph language pack', () => {
   );
 
   effectIt.effect(
-    'keeps integrated and isolated nested Bazel workspaces visible alongside the outer Node workspace',
+    'merges colocated Node and Bazel components while retaining Bazel attribution and isolated roots',
     () =>
       Effect.gen(function* () {
         const files = [
@@ -184,12 +184,7 @@ describe('Bazel/Starlark code graph language pack', () => {
           bazelFile('packages/shared/BUILD', 'ts_library(name = "shared", srcs = ["index.ts"])'),
         ];
         const workspace = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.discoverWorkspace(files);
-        const mobileNode = workspace.projects.find(
-          project => project.root === 'apps/mobile' && project.resolutionDomain === 'typescript',
-        )!;
-        const mobileBazel = workspace.projects.find(
-          project => project.root === 'apps/mobile' && project.resolutionDomain === 'bazel',
-        )!;
+        const mobile = workspace.projects.find(project => project.root === 'apps/mobile')!;
         const nestedBazel = workspace.projects.find(
           project => project.root === 'apps/mobile/vendor/tool' && project.resolutionDomain === 'bazel',
         )!;
@@ -197,19 +192,33 @@ describe('Bazel/Starlark code graph language pack', () => {
           project => project.root === 'packages/shared' && project.resolutionDomain === 'bazel',
         )!;
 
-        expect(mobileNode.workspaceRoots).toEqual(['']);
-        expect(mobileBazel.workspaceRoots).toEqual(['apps/mobile']);
+        expect(workspace.projects.filter(project => project.root === 'apps/mobile')).toHaveLength(1);
+        expect(mobile).toMatchObject({
+          buildSystem: 'node',
+          name: '@acme/mobile',
+          resolutionDomain: 'typescript',
+        });
+        expect(mobile.languages).toEqual(expect.arrayContaining(['bazel', 'starlark', 'typescript']));
+        expect(mobile.workspaceRoots).toEqual(['', 'apps/mobile']);
         expect(nestedBazel.workspaceRoots).toEqual(['apps/mobile/vendor/tool']);
         expect(integratedBazel.workspaceRoots).toEqual(['']);
-        expect(new Set([mobileNode.id, mobileBazel.id, nestedBazel.id, integratedBazel.id]).size).toBe(4);
+        expect(new Set([mobile.id, nestedBazel.id, integratedBazel.id]).size).toBe(3);
         expect(workspace.workspaces).toEqual(
           expect.arrayContaining([
             expect.objectContaining({buildSystem: 'bazel', root: ''}),
-            expect.objectContaining({buildSystem: 'bazel', root: 'apps/mobile'}),
             expect.objectContaining({buildSystem: 'bazel', root: 'apps/mobile/vendor/tool'}),
             expect.objectContaining({buildSystem: 'node', root: ''}),
           ]),
         );
+
+        const mobileBuild = files.find(file => file.path === 'apps/mobile/BUILD.bazel')!;
+        const extracted = yield* runExtraction(mobileBuild, workspace.projects);
+        const [attributed] = createWorkspaceAttributor(workspace)([extracted]);
+        expect(attributed.symbols.find(symbol => symbol.kind === 'target' && symbol.name === 'mobile')).toMatchObject({
+          packageName: '@acme/mobile',
+          resolutionDomain: 'bazel',
+          resolutionScopeId: mobile.id,
+        });
       }),
   );
 

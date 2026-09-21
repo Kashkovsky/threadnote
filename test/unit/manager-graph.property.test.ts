@@ -16,13 +16,13 @@ import {
   representativeManagerGraphEdges,
   type ManagerGraphEdge,
 } from '../../src/code_graph/visualization.js';
-import {managerGraphCatalogRevision} from '../../src/code_graph/manager_catalog_revision.js';
+import {managerGraphCatalogRevision} from '../../src/code_graph/manager/catalog_revision.js';
 import type {CodeGraphEdge, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
   MANAGER_GRAPH_MAX_NODE_LIMIT,
   managerGraphVisualizationLimits,
-} from '../../src/manager/graph_limits.js';
+} from '../../src/manager/graph/limits.js';
 
 describe('Manager graph properties', () => {
   it('keeps catalog revisions order-independent and sensitive to lifecycle changes', () => {
@@ -36,10 +36,14 @@ describe('Manager graph properties', () => {
               fc.record({
                 activatedAt: fc.integer({min: 0, max: 2_000_000_000}).map(String),
                 repositoryId: fc.uuid(),
+                scopeId: fc.option(
+                  fc.uuid().map(value => `code-graph-scope:${value}`),
+                  {nil: undefined},
+                ),
                 snapshotId: fc.uuid(),
                 worktreeId: fc.uuid(),
               }),
-              {maxLength: 12, selector: view => view.worktreeId},
+              {maxLength: 12, selector: view => `${view.worktreeId}\0${view.scopeId ?? ''}`},
             ),
             viewsTruncated: fc.boolean(),
           }),
@@ -58,6 +62,25 @@ describe('Manager graph properties', () => {
                   index === 0 ? {...database, viewsTruncated: !database.viewsTruncated} : database,
                 );
           expect(managerGraphCatalogRevision(changed)).not.toBe(managerGraphCatalogRevision(databases));
+
+          const targetDatabaseIndex = databases.findIndex(database => database.views.length > 0);
+          if (targetDatabaseIndex >= 0) {
+            const scopeChanged = databases.map((database, databaseIndex) => ({
+              ...database,
+              views: database.views.map((candidate, viewIndex) =>
+                databaseIndex === targetDatabaseIndex && viewIndex === 0
+                  ? {
+                      ...candidate,
+                      scopeId:
+                        candidate.scopeId === 'code-graph-scope:scope-change'
+                          ? 'code-graph-scope:scope-change-2'
+                          : 'code-graph-scope:scope-change',
+                    }
+                  : candidate,
+              ),
+            }));
+            expect(managerGraphCatalogRevision(scopeChanged)).not.toBe(managerGraphCatalogRevision(databases));
+          }
         },
       ),
       {numRuns: 120},

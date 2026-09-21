@@ -1,9 +1,11 @@
 import {Crypto, Effect, FileSystem, Option, Path, Predicate} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {RECALL_RANKER_VERSION} from './rank.js';
 
-export type RecallFeedbackAction = 'dismiss' | 'pin' | 'useful' | 'wrong';
+export const RECALL_FEEDBACK_ACTIONS = ['useful', 'wrong', 'pin', 'dismiss', 'applied'] as const;
+
+export type RecallFeedbackAction = (typeof RECALL_FEEDBACK_ACTIONS)[number];
 
 export interface RecallFeedbackEvent {
   readonly action: RecallFeedbackAction;
@@ -25,7 +27,8 @@ export interface RecordRecallFeedbackInput {
 
 const FEEDBACK_FILE = 'recall-events-v1.jsonl';
 const DUPLICATE_EVENT_WINDOW_MILLISECONDS = 60 * 60 * 1_000;
-const FEEDBACK_RETENTION_MILLISECONDS = 365 * 24 * 60 * 60 * 1_000;
+export const RECALL_FEEDBACK_RETENTION_DAYS = 365 as const;
+const FEEDBACK_RETENTION_MILLISECONDS = RECALL_FEEDBACK_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 const FEEDBACK_LOCK_STALE_MILLISECONDS = 5 * 60 * 1_000;
 const FEEDBACK_LOCK_RETRY_MILLISECONDS = 25;
 const FEEDBACK_LOCK_WAIT_TIMEOUT_MILLISECONDS = 5_000;
@@ -34,7 +37,8 @@ const FEEDBACK_LOCK_OPTIONS = {
   staleAfterMilliseconds: FEEDBACK_LOCK_STALE_MILLISECONDS,
   waitTimeoutMilliseconds: FEEDBACK_LOCK_WAIT_TIMEOUT_MILLISECONDS,
 } as const;
-const MAX_FEEDBACK_EVENTS = 5_000;
+export const RECALL_FEEDBACK_MAXIMUM_EVENTS = 5_000 as const;
+const MAX_FEEDBACK_EVENTS = RECALL_FEEDBACK_MAXIMUM_EVENTS;
 const FEEDBACK_HALF_LIFE_DAYS = 90;
 const MILLISECONDS_PER_DAY = 86_400_000;
 const HALF_LIFE_DECAY_BASE = 2;
@@ -42,6 +46,7 @@ const FEEDBACK_MINIMUM = -1;
 const FEEDBACK_MAXIMUM = 1;
 
 const FEEDBACK_ACTION_WEIGHTS: Readonly<Record<RecallFeedbackAction, number>> = {
+  applied: 0.3,
   dismiss: -0.25,
   pin: 0.4,
   useful: 0.15,
@@ -102,6 +107,40 @@ export const loadRecallFeedback = Effect.fn('recall.loadFeedback')(function* (
   return yield* aggregateRecallFeedback(events, input);
 });
 
+/** Read bounded local feedback events for aggregate reporting without recording or rewriting them. */
+export const readRecallFeedbackEvents = Effect.fn('recall.readFeedbackEvents')(function* (agentContextHome: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  return yield* readFeedbackEvents(fs, feedbackPath(pathService, agentContextHome));
+});
+
+export interface RecallFeedbackStorageResultV1 {
+  readonly after: number;
+  readonly applied: boolean;
+  readonly before: number;
+  readonly removed: number;
+}
+
+export const pruneRecallFeedbackEvents = Effect.fn('recall.pruneFeedbackEvents')(function* (
+  agentContextHome: string,
+  input: {readonly apply: boolean; readonly now: Date; readonly retentionDays: number},
+) {
+  if (!Number.isSafeInteger(input.retentionDays) || input.retentionDays < 1) {
+    throw new RangeError('Recall feedback retention days must be a positive whole number.');
+  }
+  const cutoff = input.now.getTime() - input.retentionDays * MILLISECONDS_PER_DAY;
+  return yield* mutateFeedbackEvents(agentContextHome, input.apply, events =>
+    events.filter(event => Date.parse(event.timestamp) >= cutoff),
+  );
+});
+
+export const clearRecallFeedbackEvents = Effect.fn('recall.clearFeedbackEvents')(function* (
+  agentContextHome: string,
+  apply: boolean,
+) {
+  return yield* mutateFeedbackEvents(agentContextHome, apply, () => []);
+});
+
 export const aggregateRecallFeedback = Effect.fn('recall.aggregateFeedback')(function* (
   events: readonly RecallFeedbackEvent[],
   input: {readonly now: Date; readonly project?: string; readonly query: string},
@@ -109,10 +148,7 @@ export const aggregateRecallFeedback = Effect.fn('recall.aggregateFeedback')(fun
   const queryFingerprint = yield* recallQueryFingerprint(input.query);
   const scores = new Map<string, number>();
   for (const event of events) {
-    const projectMatches =
-      event.action === 'pin'
-        ? event.project !== undefined && event.project === input.project
-        : event.project === undefined || event.project === input.project;
+    const projectMatches = feedbackProjectMatchesForRanking(event, input.project);
     const queryMatches = event.queryFingerprint === queryFingerprint;
     if (!projectMatches || (!queryMatches && event.action !== 'pin')) {
       continue;
@@ -128,6 +164,34 @@ export const aggregateRecallFeedback = Effect.fn('recall.aggregateFeedback')(fun
   }
   return scores;
 });
+
+/** Count feedback actions without projecting query, URI, or fingerprint fields. */
+export function summarizeRecallFeedback(
+  events: readonly RecallFeedbackEvent[],
+  options: {readonly from?: Date; readonly project?: string; readonly to?: Date} = {},
+): Readonly<Record<RecallFeedbackAction, number>> {
+  const counts: Record<RecallFeedbackAction, number> = {applied: 0, dismiss: 0, pin: 0, useful: 0, wrong: 0};
+  for (const event of events) {
+    if (options.project !== undefined && !feedbackProjectMatches(event, options.project)) continue;
+    const timestamp = Date.parse(event.timestamp);
+    if (!Number.isFinite(timestamp)) continue;
+    if (options.from !== undefined && timestamp < options.from.getTime()) continue;
+    if (options.to !== undefined && timestamp > options.to.getTime()) continue;
+    counts[event.action] += 1;
+  }
+  return counts;
+}
+
+function feedbackProjectMatchesForRanking(event: RecallFeedbackEvent, project: string | undefined): boolean {
+  if (project === undefined) return event.action !== 'pin' && event.project === undefined;
+  return feedbackProjectMatches(event, project);
+}
+
+function feedbackProjectMatches(event: RecallFeedbackEvent, project: string): boolean {
+  return event.action === 'pin'
+    ? event.project !== undefined && event.project === project
+    : event.project === undefined || event.project === project;
+}
 
 export const recallQueryFingerprint = Effect.fn('recall.queryFingerprint')((query: string) =>
   sha256Hex(query.replace(/\s+/g, ' ').trim().toLowerCase()),
@@ -172,6 +236,23 @@ function writeFeedbackEvents(
   });
 }
 
+const mutateFeedbackEvents = Effect.fn('recall.mutateFeedbackEvents')(function* (
+  agentContextHome: string,
+  apply: boolean,
+  retain: (events: readonly RecallFeedbackEvent[]) => readonly RecallFeedbackEvent[],
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const path = feedbackPath(pathService, agentContextHome);
+  const inspect = Effect.gen(function* () {
+    const before = yield* readFeedbackEvents(fs, path);
+    const after = retain(before).slice(-MAX_FEEDBACK_EVENTS);
+    if (apply) yield* writeFeedbackEvents(fs, path, after);
+    return {after: after.length, applied: apply, before: before.length, removed: before.length - after.length};
+  });
+  return yield* apply ? withExclusiveFileLock(fs, `${path}.lock`, FEEDBACK_LOCK_OPTIONS, inspect) : inspect;
+});
+
 function parseFeedbackEvent(line: string): RecallFeedbackEvent | undefined {
   if (!line.trim()) {
     return undefined;
@@ -206,5 +287,5 @@ function parseFeedbackEvent(line: string): RecallFeedbackEvent | undefined {
 }
 
 function isFeedbackAction(value: unknown): value is RecallFeedbackAction {
-  return value === 'dismiss' || value === 'pin' || value === 'useful' || value === 'wrong';
+  return RECALL_FEEDBACK_ACTIONS.some(action => action === value);
 }

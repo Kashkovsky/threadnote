@@ -9,7 +9,7 @@ import {
   createMemoryCodeCitation,
   MEMORY_SCHEMA_VERSION,
   type MemoryCodeCitationV1,
-} from '../../src/memory/code_citation.js';
+} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import {
   buildBoundedRecallCodeLinkRawQueries,

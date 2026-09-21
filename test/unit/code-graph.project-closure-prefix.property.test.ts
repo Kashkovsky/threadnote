@@ -5,7 +5,7 @@ import * as FC from 'fast-check';
 import {
   boundedSnapshotProjectPrefixes,
   codeGraphSnapshotProjectClosureStatement,
-} from '../../src/code_graph/store_project_closure.js';
+} from '../../src/code_graph/store/project_closure.js';
 
 describe('bounded snapshot project prefixes', () => {
   fcProp(

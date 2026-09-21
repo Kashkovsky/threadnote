@@ -5,7 +5,7 @@ import {
   graphControlGrantAllowsRead,
   makeGraphControlRateLimit,
   parseGraphControlPolicy,
-} from '../../src/code_graph/sharing/control_authorization.js';
+} from '../../src/code_graph/sharing/control/authorization.js';
 
 const scope = {organization: 'acme', profileDigest: `sha256:${'b'.repeat(64)}`, repositoryId: 'a'.repeat(64)};
 const principal = {issuer: 'https://identity.example.test/', scopes: new Set(['graph:read']), subject: 'reader'};

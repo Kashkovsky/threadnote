@@ -47,7 +47,7 @@ interface TelemetrySchema {
 const root = process.cwd();
 const effectTelemetrySource = sourceFile('src/effect/telemetry.ts');
 const diagnosticSource = sourceFile('src/telemetry/diagnostic.ts');
-const diskCapacitySource = sourceFile('src/code_graph/disk_capacity.ts');
+const diskCapacitySource = sourceFile('src/code_graph/disk/capacity.ts');
 const operationsSource = sourceFile('src/telemetry/operations.ts');
 const schemaV1 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v1.json'), 'utf8'),

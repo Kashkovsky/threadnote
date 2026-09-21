@@ -10,8 +10,26 @@ on:
         type: boolean
   push:
     branches: [main]
+    paths:
+      - '.dockerignore'
+      - 'fly.toml'
+      - '.github/workflows/telemetry-delivery-canary.yml'
+      - '.github/workflows/telemetry-gateway.yml'
+      - 'docs/operations/telemetry-production.md'
+      - 'docs/telemetry.md'
+      - 'infra/telemetry-gateway/**'
+      - 'test/unit/telemetry-gateway-*.test.ts'
   pull_request:
-    branches: [main, codex/4.0.0]
+    branches: [main, codex/4.0.0, release/5.0.0]
+    paths:
+      - '.dockerignore'
+      - 'fly.toml'
+      - '.github/workflows/telemetry-delivery-canary.yml'
+      - '.github/workflows/telemetry-gateway.yml'
+      - 'docs/operations/telemetry-production.md'
+      - 'docs/telemetry.md'
+      - 'infra/telemetry-gateway/**'
+      - 'test/unit/telemetry-gateway-*.test.ts'
 
 permissions:
   contents: read

@@ -20,9 +20,75 @@ describe('CLI production log policy', () => {
       writeProductionLog: true,
     });
     expect(inspectCliInvocation(['ls'])).toMatchObject({operation: 'list', writeProductionLog: true});
+    expect(inspectCliInvocation(['closeout', 'apply', '--approved'])).toMatchObject({
+      operation: 'closeout',
+      writeProductionLog: true,
+    });
   });
 
   it('does not log explicit or implicit preview operations', () => {
+    expect(inspectCliInvocation(['setup', 'gemini-cli'])).toMatchObject({
+      operation: 'setup',
+      writeProductionLog: false,
+    });
+    expect(inspectCliInvocation(['setup', 'gemini-cli', '--apply'])).toMatchObject({
+      operation: 'setup',
+      writeProductionLog: true,
+    });
+    expect(inspectCliInvocation(['setup', 'gemini-cli', '--undo'])).toMatchObject({
+      operation: 'setup',
+      writeProductionLog: false,
+    });
+    expect(inspectCliInvocation(['setup', 'gemini-cli', '--undo', '--apply'])).toMatchObject({
+      operation: 'setup',
+      writeProductionLog: true,
+    });
+    for (const action of ['import', 'project', 'remove']) {
+      expect(inspectCliInvocation(['guidance', action, 'codex-cli', '--project', 'threadnote'])).toMatchObject({
+        operation: 'guidance',
+        writeProductionLog: false,
+      });
+      expect(
+        inspectCliInvocation(['guidance', action, 'codex-cli', '--project', 'threadnote', '--apply']),
+      ).toMatchObject({
+        operation: 'guidance',
+        writeProductionLog: true,
+      });
+    }
+    expect(inspectCliInvocation(['guidance', 'status', 'codex-cli', '--project', 'threadnote'])).toMatchObject({
+      operation: 'guidance',
+      writeProductionLog: false,
+    });
+    for (const action of ['install', 'repair', 'remove']) {
+      expect(inspectCliInvocation(['agents', action, 'gemini-cli'])).toMatchObject({
+        operation: 'agents',
+        writeProductionLog: false,
+      });
+      expect(inspectCliInvocation(['agents', action, 'gemini-cli', '--apply'])).toMatchObject({
+        operation: 'agents',
+        writeProductionLog: true,
+      });
+    }
+    expect(inspectCliInvocation(['agents', 'list', '--json'])).toMatchObject({
+      operation: 'agents',
+      writeProductionLog: false,
+    });
+    expect(inspectCliInvocation(['agents', 'status', '--json'])).toMatchObject({
+      operation: 'agents',
+      writeProductionLog: false,
+    });
+    expect(inspectCliInvocation(['value', 'report', '--json'])).toMatchObject({
+      operation: 'value',
+      writeProductionLog: false,
+    });
+    expect(inspectCliInvocation(['value', 'report', 'export'])).toMatchObject({
+      operation: 'value',
+      writeProductionLog: false,
+    });
+    expect(inspectCliInvocation(['value', 'report', 'export', '--apply'])).toMatchObject({
+      operation: 'value',
+      writeProductionLog: true,
+    });
     expect(inspectCliInvocation(['remember', '--dry-run', '--text', 'preview'])).toMatchObject({
       operation: 'remember',
       writeProductionLog: false,

@@ -1,6 +1,6 @@
 import {Effect} from 'effect';
 import {readSeedManifest} from './manifest.js';
-import type {McpToolset} from './mcp/toolset.js';
+import {DEFAULT_MCP_TOOLSET, mcpToolCapabilities, type McpToolset} from './mcp/toolset.js';
 import {readTeamsFile} from './share/index.js';
 
 // Minimal config shape the onboarding probes need, structurally satisfied by
@@ -72,9 +72,6 @@ export function buildOnboardingGuide(state: OnboardingState): string {
       'Its results are unread pointers, not evidence; use read_context before relying on relevant URIs.',
       'Read only the threadnote:// URIs it returns. Pass team to narrow recall or select a list root.',
       '',
-      'The code graph is local to the current cloud checkout. Use inspect_code_graph before broad text',
-      'search and analyze_code_graph for repository-wide structure. Named worksets are unavailable.',
-      '',
       'Store durable knowledge with remember_context. When several shares are configured, pass team explicitly.',
       'Each write is committed and pushed only to that share. A kind=handoff write stays local and may not survive',
       'a new cloud session; all other personal/local memory kinds stay inaccessible.',
@@ -100,7 +97,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
       : 'No seeded project guidance yet — recall draws on personal memories and shared team memories.';
 
   const hasTeam = state.teams.length > 0;
-  const fullToolset = state.toolset === 'full';
+  const capabilities = mcpToolCapabilities(state.toolset ?? DEFAULT_MCP_TOOLSET);
 
   return [
     '# Threadnote — what you can do here',
@@ -117,20 +114,22 @@ export function buildOnboardingGuide(state: OnboardingState): string {
     '',
     '## Capabilities to offer',
     '',
-    'Recall context — pull back the last handoff and durable knowledge for the current',
-    'repo+branch before starting work, so the session continues where the last one left off.',
-    '  Run: recall_context({"query":"<repo> latest handoff","callerCwd":"<abs cwd>"}).',
-    '  Treat the result as an unread pointer queue, not evidence; read_context the most relevant',
-    '  threadnote:// URI before relying on it.',
+    'Start with a Context Brief for non-trivial local repo work: run it with the task and absolute callerCwd;',
+    'it combines bounded graph evidence with freshness, decisions, and handoffs. Recall is the memory-focused alternative.',
+    '  Run context_brief({"task":"<task>","callerCwd":"<abs cwd>","mode":"locate"}); otherwise use',
+    '  recall_context({"query":"<repo> latest handoff","callerCwd":"<abs cwd>"}), then read the most relevant',
+    '  threadnote:// URI with read_context. Results are unread pointers, not evidence.',
+    '  Next inspect_code_graph/analyze_code_graph, then verify exact source; use the CLI `threadnote context check`',
+    '  and `threadnote procedure status` / `threadnote procedure verify <manifest>` for maintenance and procedures.',
+    '  Use `threadnote guidance import` / `threadnote guidance project`, `threadnote activate start` /',
+    '  `threadnote activate continue`, and `threadnote value report` for the corresponding workflows.',
     '',
-    'Capture work — Store routine durable feature knowledge and handoffs directly at meaningful',
-    'task closeout; these writes do not need user approval.',
-    '  Run: remember_context({"kind":"durable","project":"<repo>","topic":"<feature>","text":"..."}),',
-    '  then remember_context({"kind":"handoff","project":"<repo>","topic":"<feature>","text":"..."}).',
-    'Review only additional session-extracted candidates against current memory and show at most three.',
-    '  Run: review_session_context({"task":"...","outcome":"...","project":"<repo>","topic":"<feature>",',
-    '  "decisions":["Additional decision..."],"sourceSessionId":"<session-id>"}),',
-    '  then apply_memory_candidates only after the user approves, edits, defers, or rejects each candidate.',
+    'Close out with a required handoff. Separately, optionally review a five-field Knowledge Delta:',
+    'decisions + rationale, constraints, verificationPerformed, knowledgeInvalidated, and unresolvedRisks.',
+    'The required handoff is a private direct write; optional Knowledge Delta proposals are never auto-applied or auto-shared,',
+    'and durable sharing requires explicit user confirmation. Preview candidates and get an explicit disposition.',
+    '  Record the required handoff with remember_context(kind=handoff, ...). Durable memories may include owner,',
+    '  review_after, and optional validTo/valid_to; review deltas separately with review_session_context(...) then use apply_memory_candidates with approve (optional editedText), defer, or reject.',
     '',
     'Share with your team — publish a durable memory teammates’ agents can recall. Secrets are',
     'scrubbed/blocked; handoffs/preferences/local-path notes are never shared.',
@@ -138,29 +137,32 @@ export function buildOnboardingGuide(state: OnboardingState): string {
       ? '  Run: share_publish({"uri":"threadnote://user/<you>/memories/durable/projects/<p>/<m>.md"}).'
       : '  First (one-time): `threadnote share init git@github.com:org/team-memories.git`, then share_publish({"uri":"..."}).',
     '',
-    ...(fullToolset
+    ...(capabilities.lifecycle
+      ? [
+          'Health and repair are available here: inspect health/metadata, preview repair, then apply only after confirmation.',
+          '  Run: context_health({"project":"<repo>","callerCwd":"<abs cwd>"}), context_health_aggregate({"project":"<repo>","callerCwd":"<abs cwd>"}),',
+          '  context_health_schedule({"project":"<repo>","cadenceMinutes":60}), context_health_repair_preview({"project":"<repo>","callerCwd":"<abs cwd>"}),',
+          '  context_health_repair_apply({"project":"<repo>","callerCwd":"<abs cwd>","proposalId":"<preview id>","revision":"<preview revision>","approved":true}),',
+          '  context_metadata_preview({"uri":"threadnote://...","owner":"<owner>"}), or context_metadata_apply({"uri":"threadnote://...","owner":"<owner>","approved":true,"expectedContentHash":"<preview hash>","proposalId":"<preview id>","revision":"<preview revision>"}).',
+          '  Record recall feedback with recall_feedback({"action":"useful","query":"<recall query>","uri":"threadnote://..."}). Publish verified procedures with',
+          '  procedure_publish_preview({"artifact":"<path>","manifest":"<path>","receipt":"<path>"}) then explicit procedure_publish_apply({"artifact":"<path>","manifest":"<path>","receipt":"<path>","proposalId":"<preview id>","approved":true}); they are admitted only when compatible and never auto-execute.',
+          'Use complete_activation_retrieval_proof for activation proof. Use the CLI only for workflows that do not have an MCP call.',
+          '',
+        ]
+      : []),
+    ...(capabilities.maintenance
       ? [
           'Tidy memory — when recall surfaces overlapping notes for one topic, preview a scoped merge.',
           '  Run: compact_context({"project":"<repo>","topic":"<topic>","dryRun":true}) and review before applying.',
           '',
-          'Share skills & packs — publish a Codex/Claude/Cursor skill, or a multi-skill pack (skills + shared',
+          'Share skills & packs — publish a skill, or a multi-skill pack (skills + shared',
           'scripts), into the team catalog; teammates install them on demand.',
-          '  Run: share_skill({"path":"~/.claude/skills/<name>/SKILL.md"}) or',
+          '  Run: share_skill({"path":"<agent-skill-dir>/<name>/SKILL.md"}) or',
           '  share_bundle({"path":"<repo>/threadnote-bundle.json"}). Teammates: list_shared_skills({})',
           '  then install_shared_skill({"name":"<name>"}).',
           '',
         ]
-      : [
-          '## Advanced capabilities',
-          '',
-          'Memory maintenance — archive and compact overlapping context.',
-          'Native resource utilities — resource import, grep/glob, health, and recall-index operations.',
-          'Advanced sharing and artifacts — conflict resolution plus skill and bundle publishing or installation.',
-          'Use the equivalent `threadnote` CLI command when one of these is needed now. To expose their',
-          'MCP tools in future sessions, run `threadnote mcp-install <agent> --toolset full --apply` and',
-          'start a fresh agent session.',
-          '',
-        ]),
+      : []),
     'Setup & health — verify the local home, indexes, and optional model files.',
     state.runtimeReady === false
       ? '  Run: `threadnote install`, then `threadnote doctor`.'
@@ -168,7 +170,7 @@ export function buildOnboardingGuide(state: OnboardingState): string {
     '',
     '## How to proceed',
     'Pick the single most useful step for right now given the setup above (if the runtime is',
-    'not ready, fix that first; otherwise recall for the current repo is the usual starting point),',
+    'not ready, fix that first; otherwise a Context Brief is the usual starting point),',
     'describe it in one sentence, and ask whether to run it. Then chain into the others as the',
     'user shows interest. Keep it interactive — one offer at a time, not a wall of options.',
   ].join('\n');

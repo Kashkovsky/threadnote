@@ -10,7 +10,7 @@ import {
   mergeRecallIndexCanonicalMutationContinuity,
   recallIndexCanonicalMutationContinuityAllowsIncrementalRefresh,
   recallIndexForegroundRefreshRequired,
-} from '../../src/recall/index_freshness.js';
+} from '../../src/recall/index/freshness.js';
 
 const RecallIndexTestLayer = Layer.merge(BunServices.layer, SystemInfo.layer);
 

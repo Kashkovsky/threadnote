@@ -14,7 +14,7 @@ import {
   copyAnonymousTelemetryMetadata,
   readAnonymousTelemetryReportedOutcome,
 } from '../../telemetry/diagnostic.js';
-import {isMemoryReadRecoveryV1, type MemoryReadRecoveryV1} from '../../memory/read_recovery.js';
+import {isMemoryReadRecoveryV1, type MemoryReadRecoveryV1} from '../../memory/read/recovery.js';
 import {omitAnonymousTelemetryRecorder, withAnonymousTelemetry} from '../telemetry.js';
 
 // Windows antivirus and filesystem scheduling can make an otherwise healthy
@@ -1193,6 +1193,8 @@ export const McpInput = {
     Schema.optionalKey(numberSchema(description, {...options, integer: true})),
   literals: <const Values extends readonly [string, ...string[]]>(values: Values, description?: string) =>
     Schema.optionalKey(annotate(Schema.Literals(values), description)),
+  requiredLiterals: <const Values extends readonly [string, ...string[]]>(values: Values, description?: string) =>
+    annotate(Schema.Literals(values), description),
   literalsOrLiterals: <const Values extends readonly [string, ...string[]]>(
     values: Values,
     description?: string,

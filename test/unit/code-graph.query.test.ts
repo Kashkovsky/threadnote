@@ -6,13 +6,16 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
-import {Effect, Fiber, Layer, Path, Ref} from 'effect';
+import {Effect, FileSystem, Fiber, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {describe} from 'vitest';
 import type {CodeGraphEmbeddingIndexShape} from '../../src/code_graph/embedding.js';
 import {CodeGraphEmbeddingIndex} from '../../src/code_graph/embedding.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
+import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {CodeGraphIndexer, extractorSetIdentityFromPackProvenance} from '../../src/code_graph/indexer.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout, type CodeGraphLayout} from '../../src/code_graph/layout.js';
@@ -20,7 +23,7 @@ import {
   observeCodeGraphAdmissionEnvironment,
   recordCodeGraphSnapshotAdmission,
 } from '../../src/code_graph/admission_freshness.js';
-import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance/coordinator.js';
 import {
   CodeGraphQueryService,
   exactNodeQuery,
@@ -31,7 +34,12 @@ import {
 } from '../../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
-import type {CodeGraphEdge, CodeGraphQueryNode, CodeGraphSnapshot} from '../../src/code_graph/types.js';
+import {
+  CodeGraphStoreTransientIoError,
+  type CodeGraphEdge,
+  type CodeGraphQueryNode,
+  type CodeGraphSnapshot,
+} from '../../src/code_graph/types.js';
 
 const seed: CodeGraphQueryNode = {
   contentHash: 'seed-hash',
@@ -185,6 +193,7 @@ describe('code graph query budgets', () => {
           }),
         );
         const snapshotRef = yield* Ref.make<CodeGraphSnapshot | undefined>(undefined);
+        const readySnapshotFailure = yield* Ref.make<'commit' | 'none' | 'recent' | 'worktree'>('none');
         const readyBaseRef = yield* Ref.make<CodeGraphSnapshot | undefined>(undefined);
         const baseLookups = yield* Ref.make<readonly {databasePath: string; repositoryId: string; commit: string}[]>(
           [],
@@ -203,6 +212,9 @@ describe('code graph query budgets', () => {
         });
         const storeReads = yield* Ref.make(emptyStoreReads());
         const sessionCalls = yield* Ref.make(0);
+        const readSql = {
+          withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
+        } as unknown as SqlClient.SqlClient;
         const recordStoreRead = (
           field: 'leasesAcquired' | 'leasesReleased' | 'provenance' | 'readyById' | 'readyByWorktree',
         ) => Ref.update(storeReads, current => ({...current, [field]: current[field] + 1}));
@@ -216,11 +228,32 @@ describe('code graph query budgets', () => {
               ),
             edgesForNodes: (_databasePath: string, snapshotId: string, ids: readonly string[]) =>
               Effect.succeed(snapshotId === readyBaseSnapshotId && ids.includes(stableSeed.id) ? [stableEdge] : []),
-            readySnapshot: () => recordStoreRead('readyByWorktree').pipe(Effect.andThen(Ref.get(snapshotRef))),
+            readySnapshot: () =>
+              recordStoreRead('readyByWorktree').pipe(
+                Effect.andThen(Ref.get(readySnapshotFailure)),
+                Effect.flatMap(failure =>
+                  failure === 'worktree'
+                    ? Effect.fail(CodeGraphStoreTransientIoError.of('transient worktree ready snapshot read'))
+                    : Ref.get(snapshotRef),
+                ),
+              ),
             readySnapshotById: () => recordStoreRead('readyById').pipe(Effect.andThen(Ref.get(snapshotRef))),
             readySnapshotForCommit: (databasePath: string, repositoryId: string, commit: string) =>
               Ref.update(baseLookups, current => [...current, {commit, databasePath, repositoryId}]).pipe(
-                Effect.andThen(Ref.get(readyBaseRef)),
+                Effect.andThen(Ref.get(readySnapshotFailure)),
+                Effect.flatMap(failure =>
+                  failure === 'commit'
+                    ? Effect.fail(CodeGraphStoreTransientIoError.of('transient commit ready snapshot read'))
+                    : Ref.get(readyBaseRef),
+                ),
+              ),
+            recentReadySnapshotsForRepository: () =>
+              Ref.get(readySnapshotFailure).pipe(
+                Effect.flatMap(failure =>
+                  failure === 'recent'
+                    ? Effect.fail(CodeGraphStoreTransientIoError.of('transient recent ready snapshot read'))
+                    : Effect.succeed([]),
+                ),
               ),
             releaseSnapshotLease: (_databasePath: string, leaseToken: string) =>
               recordStoreRead('leasesReleased').pipe(
@@ -239,7 +272,9 @@ describe('code graph query budgets', () => {
             symbolsByIds: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
               Effect.succeed([stableSeed, stableDependent].filter(node => ids.includes(node.id))),
             withSession: (_databasePath: string, effect: Effect.Effect<unknown, unknown, unknown>) =>
-              Ref.update(sessionCalls, value => value + 1).pipe(Effect.andThen(effect)),
+              Ref.update(sessionCalls, value => value + 1).pipe(
+                Effect.andThen(effect.pipe(Effect.provideService(SqlClient.SqlClient, readSql))),
+              ),
           } as unknown as CodeGraphStoreShape),
         );
         const dependencies = Layer.mergeAll(
@@ -385,6 +420,73 @@ describe('code graph query budgets', () => {
               stage: 'query-worktree-observation',
             },
           ]);
+          const worktreeLayout = codeGraphLayout(
+            yield* Path.Path,
+            fixtureRoot.home,
+            identity.checkoutId,
+            identity.worktreeId,
+          );
+          const fs = yield* FileSystem.FileSystem;
+          const activeBuilderLockOptions = {
+            retryIntervalMilliseconds: 1,
+            staleAfterMilliseconds: 1_000,
+            waitTimeoutMilliseconds: 1_000,
+          } as const;
+          const builder = yield* makeCodeGraphBuildReporter(identity, worktreeLayout);
+          yield* withExclusiveFileLock(
+            fs,
+            worktreeLayout.lockPath,
+            activeBuilderLockOptions,
+            builder.markWorktreeLockHeld(true).pipe(
+              Effect.andThen(
+                Effect.gen(function* () {
+                  yield* Ref.set(readySnapshotFailure, 'worktree');
+                  const transientStatus = yield* query.statusForIdentity(fixtureRoot.home, identity, {
+                    observeWorktree: false,
+                    requestMaintenance: false,
+                  });
+                  expect(transientStatus).toMatchObject({readySnapshot: undefined, stale: true});
+
+                  yield* Ref.set(readySnapshotFailure, 'commit');
+                  const transientAttach = yield* query.attachSharedReadySnapshot(
+                    fixtureRoot.home,
+                    identity,
+                    transientStatus,
+                    {requestMaintenance: false},
+                  );
+                  expect(transientAttach).toMatchObject({readySnapshot: undefined, stale: true});
+
+                  yield* Ref.set(readySnapshotFailure, 'recent');
+                  const transientBorrow = yield* query.attachSharedReadySnapshot(
+                    fixtureRoot.home,
+                    identity,
+                    transientStatus,
+                    {allowBorrowedStale: true, requestMaintenance: false},
+                  );
+                  expect(transientBorrow).toMatchObject({readySnapshot: undefined, stale: true});
+                }),
+              ),
+              Effect.ensuring(builder.markWorktreeLockHeld(false)),
+            ),
+          );
+          yield* Ref.set(readySnapshotFailure, 'worktree');
+          const nonBuilderReadFailure = yield* withExclusiveFileLock(
+            fs,
+            worktreeLayout.lockPath,
+            activeBuilderLockOptions,
+            query
+              .statusForIdentity(fixtureRoot.home, identity, {
+                observeWorktree: false,
+                requestMaintenance: false,
+              })
+              .pipe(Effect.flip),
+          );
+          expect(nonBuilderReadFailure).toBeInstanceOf(CodeGraphStoreTransientIoError);
+          const unlockedReadFailure = yield* query
+            .statusForIdentity(fixtureRoot.home, identity, {observeWorktree: false, requestMaintenance: false})
+            .pipe(Effect.flip);
+          expect(unlockedReadFailure).toBeInstanceOf(CodeGraphStoreTransientIoError);
+          yield* Ref.set(readySnapshotFailure, 'none');
           yield* Ref.set(snapshotRef, snapshot);
 
           yield* Ref.set(commandCalls, []);
@@ -410,8 +512,8 @@ describe('code graph query budgets', () => {
           expect(deferredHotInspection.freshness).toBe('deferred');
           expect(yield* Ref.get(commandCalls)).toEqual([]);
           expect(yield* Ref.get(storeReads)).toEqual({
-            leasesAcquired: 1,
-            leasesReleased: 1,
+            leasesAcquired: 0,
+            leasesReleased: 0,
             provenance: 1,
             readyById: 0,
             readyByWorktree: 1,
@@ -430,8 +532,8 @@ describe('code graph query budgets', () => {
             });
             expect(refreshedInspection.freshness).toBe('current');
             expect(yield* Ref.get(storeReads)).toEqual({
-              leasesAcquired: 1,
-              leasesReleased: 1,
+              leasesAcquired: 0,
+              leasesReleased: 0,
               provenance: refresh === true ? 2 : 1,
               readyById: 0,
               readyByWorktree: 2,
@@ -472,8 +574,8 @@ describe('code graph query budgets', () => {
             {phase: 'graph.query.execute', stage: 'query-strict-reobservation'},
           ]);
           expect(yield* Ref.get(storeReads)).toEqual({
-            leasesAcquired: 1,
-            leasesReleased: 1,
+            leasesAcquired: 0,
+            leasesReleased: 0,
             provenance: 1,
             readyById: 0,
             readyByWorktree: 1,
@@ -541,14 +643,12 @@ describe('code graph query budgets', () => {
           expect(yield* Ref.get(searchedSnapshotIds)).toEqual([snapshot.id, readyBaseSnapshotId]);
           expect(yield* Ref.get(leaseEvents)).toEqual([
             `acquire:${readyBaseSnapshotId}`,
-            `acquire:${snapshot.id}`,
-            `release:lease:${snapshot.id}`,
             `release:lease:${readyBaseSnapshotId}`,
           ]);
           expect(yield* Ref.get(ensureCommitCalls)).toBe(0);
           expect(yield* Ref.get(storeReads)).toEqual({
-            leasesAcquired: 2,
-            leasesReleased: 2,
+            leasesAcquired: 1,
+            leasesReleased: 1,
             provenance: 2,
             readyById: 0,
             readyByWorktree: 1,
@@ -573,8 +673,6 @@ describe('code graph query budgets', () => {
           expect(failedReadyBaseImpact).toEqual(TestError.make({message: 'bounded impact read failed'}));
           expect(yield* Ref.get(leaseEvents)).toEqual([
             `acquire:${readyBaseSnapshotId}`,
-            `acquire:${snapshot.id}`,
-            `release:lease:${snapshot.id}`,
             `release:lease:${readyBaseSnapshotId}`,
           ]);
           expect(yield* Ref.get(ensureCommitCalls)).toBe(0);
@@ -602,8 +700,8 @@ describe('code graph query budgets', () => {
             {disposition: 'skipped', phase: 'graph.query.execute', stage: 'query-strict-reobservation'},
           ]);
           expect(yield* Ref.get(storeReads)).toEqual({
-            leasesAcquired: 1,
-            leasesReleased: 1,
+            leasesAcquired: 0,
+            leasesReleased: 0,
             provenance: 1,
             readyById: 0,
             readyByWorktree: 1,

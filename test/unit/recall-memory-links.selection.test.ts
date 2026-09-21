@@ -9,7 +9,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {formatMemoryDocument, MEMORY_RELATION_TYPES} from '../../src/memory/document.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {loadRecallIndexData, recallIndexDatabaseFilename} from '../../src/recall/index.js';
-import {buildBoundedRecallMemoryLinkRawQuery} from '../../src/recall/memory_links.js';
+import {buildBoundedRecallMemoryLinkRawQuery} from '../../src/recall/memory/links.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const RecallIndexTestLayer = Layer.merge(BunServices.layer, SystemInfo.layer);

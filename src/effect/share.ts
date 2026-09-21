@@ -1,7 +1,7 @@
 import {Console, Effect, FileSystem} from 'effect';
-import {isFileLockTimeout} from './file_lock.js';
+import {isFileLockTimeout} from './file/lock.js';
 import {withMemoryUriLocks} from './memory_lock.js';
-import {observeSharedRepositoryHomeLock, withSharedRepositoryLock} from './share_lock.js';
+import {observeSharedRepositoryHomeLock, withSharedRepositoryLock} from './share/lock.js';
 import {
   installSharedAgentArtifacts as installSharedAgentArtifactsEffect,
   listSharedAgentArtifacts as listSharedAgentArtifactsEffect,

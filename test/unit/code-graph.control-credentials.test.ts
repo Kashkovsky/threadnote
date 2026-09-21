@@ -5,7 +5,7 @@ import {TestClock} from 'effect/testing';
 import * as FC from 'fast-check';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {makeGraphControlCredentialLoader} from '../../src/code_graph/sharing/control_credentials.js';
+import {makeGraphControlCredentialLoader} from '../../src/code_graph/sharing/control/credentials.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';
@@ -13,7 +13,7 @@ import {fcEffectProp} from '../helpers/fast-check-property.js';
 const layer = Layer.merge(BunServices.layer, SystemInfo.layer);
 
 const scope = {
-  coordinatorUrl: 'https://graph.example.test/team',
+  coordinatorUrl: 'https://graph.example.test/team.v1',
   organization: 'acme',
   profileDigest: sha256Digest('profile'),
   repositoryId: 'a'.repeat(64),
@@ -53,7 +53,9 @@ const fixture = Effect.fn('test.controlCredentials.fixture')(function* (
           calls++;
           expect(executable).toBe(`threadnote-credential-${options.helper ?? 'fixture'}`);
           expect(args).toEqual(['get']);
-          expect(options_?.timeoutMs).toBe(options.helper === 'auth0-m2m' ? 10000 : 5000);
+          expect(options_?.timeoutMs).toBe(
+            options.helper === 'auth0-m2m' || options.helper === 'oauth-m2m' ? 10000 : 5000,
+          );
           expect(options_?.maxOutputBytes).toBe(32768);
           expect(JSON.parse(new TextDecoder().decode(options_?.input))).toEqual({
             ...scope,
@@ -86,54 +88,58 @@ const fixture = Effect.fn('test.controlCredentials.fixture')(function* (
 });
 
 describe('graph control credential discovery', () => {
-  effectIt.effect('allows the packaged Auth0 helper a bounded token and cold-JWKS acquisition window', () =>
+  effectIt.effect('allows the packaged OAuth helpers a bounded token and cold-JWKS acquisition window', () =>
     Effect.gen(function* () {
-      const f = yield* fixture({helper: 'auth0-m2m'});
-      expect((yield* f.loader.load).expiresAt).toBeGreaterThan((yield* Clock.currentTimeMillis) / 1000);
-      expect(f.calls()).toBe(1);
+      for (const helper of ['auth0-m2m', 'oauth-m2m']) {
+        const f = yield* fixture({helper});
+        expect((yield* f.loader.load).expiresAt).toBeGreaterThan((yield* Clock.currentTimeMillis) / 1000);
+        expect(f.calls()).toBe(1);
+      }
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect('spawns the built-in Auth0 helper from the exact Threadnote executable with refresh headroom', () =>
+  effectIt.effect('spawns legacy and generic user OAuth helpers with refresh headroom', () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const home = yield* fs.makeTempDirectoryScoped({prefix: 'graph-auth0-helper-binding-'});
-      const directory = path.join(home, 'graph-sharing');
-      yield* fs.makeDirectory(directory);
-      yield* fs.writeFileString(
-        path.join(directory, 'control-credentials.json'),
-        JSON.stringify({
-          bindings: [{...binding, helper: 'auth0'}],
-          schemaVersion: 1,
-        }),
-      );
-      const loader = yield* makeGraphControlCredentialLoader(home, scope, 'graph:contribute').pipe(
-        Effect.provideService(CommandExecutor, {
-          execute: (executable, args, options) =>
-            Effect.gen(function* () {
-              expect(executable).toBe(process.execPath);
-              expect(args.at(-2)).toBe('__graph-auth0-helper');
-              expect(args.at(-1)).toBe('get');
-              expect(options?.timeoutMs).toBe(25_000);
-              expect(options?.env?.THREADNOTE_HOME).toBe(home);
-              return {
-                exitCode: 0,
-                stderr: '',
-                stdout: JSON.stringify({
-                  accessToken: 'synthetic.token',
-                  audience: binding.audience,
-                  expiresAt: Math.floor((yield* Clock.currentTimeMillis) / 1000) + 300,
-                  issuer: binding.issuer,
-                  schemaVersion: 1,
-                  subject: 'auth0|synthetic',
-                }),
-              };
-            }),
-          executeStreaming: () => Effect.succeed({exitCode: 1, stdout: '', stderr: ''}),
-        }),
-      );
-      expect((yield* loader.load).expiresAt).toBeGreaterThan(0);
+      for (const helper of ['auth0', 'oauth'] as const) {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: `graph-${helper}-helper-binding-`});
+        const directory = path.join(home, 'graph-sharing');
+        yield* fs.makeDirectory(directory);
+        yield* fs.writeFileString(
+          path.join(directory, 'control-credentials.json'),
+          JSON.stringify({bindings: [{...binding, helper}], schemaVersion: 1}),
+        );
+        const loader = yield* makeGraphControlCredentialLoader(home, scope, 'graph:contribute').pipe(
+          Effect.provideService(CommandExecutor, {
+            execute: (executable, args, options) =>
+              Effect.gen(function* () {
+                expect(executable).toBe(process.execPath);
+                expect(args).toEqual([
+                  new URL('../../src/standalone.ts', import.meta.url).pathname,
+                  `__graph-${helper}-helper`,
+                  'get',
+                ]);
+                expect(options?.timeoutMs).toBe(25_000);
+                expect(options?.env?.THREADNOTE_HOME).toBe(home);
+                return {
+                  exitCode: 0,
+                  stderr: '',
+                  stdout: JSON.stringify({
+                    accessToken: 'synthetic.token',
+                    audience: binding.audience,
+                    expiresAt: Math.floor((yield* Clock.currentTimeMillis) / 1000) + 300,
+                    issuer: binding.issuer,
+                    schemaVersion: 1,
+                    subject: 'oauth|synthetic',
+                  }),
+                };
+              }),
+            executeStreaming: () => Effect.succeed({exitCode: 1, stdout: '', stderr: ''}),
+          }),
+        );
+        expect((yield* loader.load).expiresAt).toBeGreaterThan(0);
+      }
     }).pipe(provideTestLayer(layer)),
   );
 

@@ -3,11 +3,12 @@ import type {RemoteMemoryReceiptV1} from '../../src/memory_domain/receipts.js';
 import type {AuthorizedRemotePrincipal} from '../../src/remote_memory/authorization.js';
 import type {RemoteMemoryServiceConfig} from '../../src/remote_memory/config.js';
 import {remoteMemoryError} from '../../src/remote_memory/errors.js';
+import {orgCloudRepositorySetDigest} from '../../src/remote_memory/cloud_admission.js';
 import {createRemoteMemoryHttpHandler} from '../../src/remote_memory/http_transport.js';
 import {createLocalIdp} from '../../src/remote_memory/local_idp.js';
 import type {LocalIdp} from '../../src/remote_memory/local_idp.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
-import type {RemoteMemoryRecallResult} from '../../src/remote_memory/postgres_repository.js';
+import type {RemoteMemoryRecallResult} from '../../src/remote_memory/postgres/repository.js';
 import type {
   RemoteMemoryServiceDependencies,
   RemoteMemoryServiceRepository,
@@ -27,7 +28,10 @@ function fixture(
     readonly allowedHosts?: readonly string[];
     readonly allowedOrigins?: readonly string[];
     readonly allowedProjects?: ReadonlySet<string> | 'all';
+    readonly attestationRequiredForWrites?: boolean;
     readonly capabilities?: readonly string[];
+    readonly cloudAdmissionRequired?: boolean;
+    readonly repositoryBindings?: readonly string[];
     readonly gitBinding?: RemoteMemoryServiceConfig['gitBinding'];
     readonly localIdp?: LocalIdp;
     readonly rateLimitFailure?: boolean;
@@ -51,8 +55,9 @@ function fixture(
   };
   const principal: AuthorizedRemotePrincipal = {
     allowedProjects: options.allowedProjects ?? 'all',
-    attestationRequiredForWrites: false,
+    attestationRequiredForWrites: options.attestationRequiredForWrites ?? false,
     capabilities: new Set(capabilities) as AuthorizedRemotePrincipal['capabilities'],
+    cloudAdmissionRequired: options.cloudAdmissionRequired ?? false,
     cursorOwnerIds: new Set(),
     cursorSubjects: new Set(),
     featureFlags: new Set([
@@ -65,7 +70,7 @@ function fixture(
     policyVersion: 'policy-v1',
     policyDigest: 'digest-v1',
     principalId: 'principal-1',
-    repositoryBindings: new Set(),
+    repositoryBindings: new Set(options.repositoryBindings ?? []),
     repositoriesByProject: new Map(),
     shareId: 'share-1',
     sharePolicyDigest: 'share-digest-v1',
@@ -291,6 +296,91 @@ async function json(response: Response): Promise<Record<string, unknown>> {
 }
 
 describe('remote memory HTTP transport', () => {
+  it('admits only current Git share/repository Cloud bindings before MCP dispatch', async () => {
+    const repositories = ['github.com/example/repo'];
+    for (const headers of [
+      {'threadnote-cloud-access': 'read-only'},
+      {'threadnote-repository-set': orgCloudRepositorySetDigest('share-1', repositories)},
+      {
+        'threadnote-cloud-access': 'read-only',
+        'threadnote-repository-set': orgCloudRepositorySetDigest('wrong', repositories),
+      },
+      {
+        'threadnote-cloud-access': 'read-only',
+        'threadnote-repository-set': orgCloudRepositorySetDigest('share-1', ['github.com/example/stale']),
+      },
+    ]) {
+      const test = fixture({gitBinding: {tenantId: 'tenant-1', shareId: 'share-1'}, repositoryBindings: repositories});
+      const request = mcpRequest({id: 1, method: 'tools/list', params: {}});
+      for (const [name, value] of Object.entries(headers)) request.headers.set(name, value);
+      expect((await test.handler(request)).status).toBe(403);
+      expect(test.calls).toEqual(['oauth:fixture-token', 'authorize:share-1']);
+    }
+    const test = fixture({gitBinding: {tenantId: 'tenant-1', shareId: 'share-1'}, repositoryBindings: repositories});
+    for (const access of ['read-only', 'contribute']) {
+      const request = mcpRequest({
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'remember_context',
+          arguments: {
+            kind: 'durable',
+            project: 'threadnote',
+            topic: 'test',
+            text: 'Synthetic body',
+            operationId: 'operation-1',
+            version: 1,
+          },
+        },
+      });
+      request.headers.set('threadnote-cloud-access', access);
+      request.headers.set('threadnote-repository-set', orgCloudRepositorySetDigest('share-1', repositories));
+      const response = await test.handler(request);
+      const body = await json(response);
+      expect(JSON.stringify(body)).toContain(access === 'read-only' ? 'forbidden' : 'attestation_required');
+      expect(test.calls.some(call => call.startsWith('remember:'))).toBe(false);
+    }
+  });
+
+  it('does not let a server-classified Cloud principal bypass admission by dropping both Cloud headers', async () => {
+    const test = fixture({
+      attestationRequiredForWrites: true,
+      capabilities: ['memory:read', 'memory:write:durable'],
+      cloudAdmissionRequired: true,
+      gitBinding: {tenantId: 'tenant-1', shareId: 'share-1'},
+      repositoryBindings: ['github.com/example/repo'],
+    });
+    const response = await test.handler(
+      mcpRequest({
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'remember_context',
+          arguments: {
+            kind: 'durable',
+            project: 'threadnote',
+            topic: 'test',
+            text: 'Synthetic body',
+            operationId: 'operation-1',
+            version: 1,
+          },
+        },
+      }),
+    );
+    expect(response.status).toBe(403);
+    expect(test.calls).toEqual(['oauth:fixture-token', 'authorize:share-1']);
+  });
+
+  it('keeps attestation-enabled desktop principals on the explicit headerless compatibility path', async () => {
+    const test = fixture({
+      attestationRequiredForWrites: true,
+      gitBinding: {tenantId: 'tenant-1', shareId: 'share-1'},
+      repositoryBindings: ['github.com/example/repo'],
+    });
+    expect((await test.handler(mcpRequest({id: 1, method: 'tools/list', params: {}}))).status).toBe(200);
+    expect(test.calls.slice(0, 2)).toEqual(['oauth:fixture-token', 'authorize:share-1']);
+  });
+
   it('rejects an authorized share outside the deployment before MCP dispatch', async () => {
     for (const gitBinding of [
       {tenantId: 'tenant-2', shareId: 'share-1'},

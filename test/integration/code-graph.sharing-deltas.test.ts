@@ -13,7 +13,7 @@ import {decodeJsonBytes, readJsonFile} from '../../src/code_graph/sharing/atomic
 import {readVerifiedCasBlob} from '../../src/code_graph/sharing/cas.js';
 import {maybeImportSharedGraphBase, runGraphShareJoin} from '../../src/code_graph/sharing/client.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
-import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
+import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher/cycle.js';
 import {runGraphPublisherBootstrap, runGraphShareInit} from '../../src/code_graph/sharing/publisher.js';
 import {loadSharedGraphQuerySource, writeSharedGraphProvenance} from '../../src/code_graph/sharing/provenance.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';

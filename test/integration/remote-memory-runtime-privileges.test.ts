@@ -5,8 +5,12 @@ import {
   createRemoteMemoryPostgresFixture,
   type RemoteMemoryPostgresFixture,
 } from '../helpers/remote-memory-postgres.js';
-import {assertRemoteMemoryRuntimePrivileges} from '../../src/remote_memory/runtime_privileges.js';
-import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator_postgres.js';
+import {randomUuidV4} from '../../src/crypto/uuid.js';
+import {
+  assertHostedContextHealthWorkerPrivileges,
+  assertRemoteMemoryRuntimePrivileges,
+} from '../../src/remote_memory/runtime_privileges.js';
+import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator/postgres.js';
 
 const databaseUrl = process.env.THREADNOTE_TEST_POSTGRES_URL;
 const postgresDescribe = databaseUrl ? describe : describe.skip;
@@ -17,11 +21,17 @@ const excessGrants = [
   'DELETE ON remote_memory.memory_revisions',
   'TRUNCATE ON remote_memory.memory_heads',
   'INSERT ON remote_memory.external_identities',
+  'INSERT ON remote_memory.context_health_policies',
+  'INSERT ON remote_memory.context_health_schedules',
+  'UPDATE (status) ON remote_memory.context_health_schedules',
+  'UPDATE (cadence_minutes) ON remote_memory.context_health_schedules',
 ] as const;
 
 postgresDescribe('remote runtime database privilege preflight', () => {
   let fixture: RemoteMemoryPostgresFixture;
   let admin: ReturnType<typeof postgres>;
+  let healthWorker: ReturnType<typeof postgres>;
+  let healthWorkerRoleName: string;
   beforeAll(async () => {
     fixture = await createRemoteMemoryPostgresFixture(databaseUrl!);
     admin = postgres(databaseUrl!, {max: 1, onnotice: () => undefined});
@@ -29,16 +39,40 @@ postgresDescribe('remote runtime database privilege preflight', () => {
       .replace(/^\\set .*$/gm, '')
       .replaceAll('threadnote_remote_runtime', fixture.runtimeRoleName);
     await fixture.migratorSql.unsafe(grants);
+    healthWorkerRoleName = fixture.runtimeRoleName.replace('runtime', 'context_health_worker');
+    const password = randomUuidV4().replaceAll('-', '');
+    await admin.unsafe(
+      `CREATE ROLE ${healthWorkerRoleName} LOGIN PASSWORD '${password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS`,
+    );
+    await admin.unsafe(`GRANT CONNECT ON DATABASE ${fixture.databaseName} TO ${healthWorkerRoleName}`);
+    const healthGrants = (await Bun.file('deploy/remote-memory/grants/002-context-health-worker.sql').text())
+      .replace(/^\\set .*$/gm, '')
+      .replaceAll('threadnote_context_health_worker', healthWorkerRoleName);
+    await fixture.migratorSql.unsafe(healthGrants);
+    const healthUrl = new URL(databaseUrl!);
+    healthUrl.pathname = `/${fixture.databaseName}`;
+    healthUrl.username = healthWorkerRoleName;
+    healthUrl.password = password;
+    healthWorker = postgres(healthUrl.toString(), {max: 1, onnotice: () => undefined});
   });
   afterAll(async () => {
-    await admin?.end({timeout: 5});
+    await healthWorker?.end({timeout: 5});
     await fixture?.dispose();
+    if (healthWorkerRoleName) await admin?.unsafe(`DROP ROLE IF EXISTS ${healthWorkerRoleName}`);
+    await admin?.end({timeout: 5});
   });
 
   it('accepts the deployed table/column allowlist and reports every applied migration', async () => {
     await expect(assertRemoteMemoryRuntimePrivileges(fixture.sql)).resolves.toBeUndefined();
+    await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).resolves.toBeUndefined();
+    await expect(
+      new PostgresRemoteMemoryOperatorAdapter(healthWorker).assertContextHealthWorkerPrivileges(),
+    ).resolves.toBeUndefined();
+    await expect(
+      new PostgresRemoteMemoryOperatorAdapter(fixture.sql).assertContextHealthWorkerPrivileges(),
+    ).rejects.toMatchObject({details: {reason: 'unsafe_context_health_worker_database_role'}});
     const receipt = await new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql).migrateSchema();
-    expect(receipt.readyVersions).toEqual([1, 2, 3, 4, 5]);
+    expect(receipt.readyVersions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   it('rejects the schema owner and the bootstrap superuser', async () => {
@@ -46,6 +80,103 @@ postgresDescribe('remote runtime database privilege preflight', () => {
       code: 'service_unavailable',
     });
     await expect(assertRemoteMemoryRuntimePrivileges(admin)).rejects.toMatchObject({code: 'service_unavailable'});
+    await expect(
+      new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql).assertContextHealthWorkerPrivileges(),
+    ).rejects.toMatchObject({
+      code: 'service_unavailable',
+      details: {reason: 'unsafe_context_health_worker_database_role'},
+    });
+  });
+
+  it('rejects routine ACL delegation, PUBLIC access, and security-definition drift', async () => {
+    const routine = 'remote_memory.lock_context_health_target(text, text, text, text)';
+    try {
+      await fixture.migratorSql.unsafe(`REVOKE EXECUTE ON FUNCTION ${routine} FROM ${healthWorkerRoleName}`);
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        code: 'service_unavailable',
+      });
+    } finally {
+      await fixture.migratorSql.unsafe(`GRANT EXECUTE ON FUNCTION ${routine} TO ${healthWorkerRoleName}`);
+    }
+    try {
+      await fixture.migratorSql.unsafe(`GRANT EXECUTE ON FUNCTION ${routine} TO PUBLIC`);
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        code: 'service_unavailable',
+      });
+    } finally {
+      await fixture.migratorSql.unsafe(`REVOKE ALL PRIVILEGES ON FUNCTION ${routine} FROM PUBLIC`);
+    }
+    try {
+      await fixture.migratorSql.unsafe(
+        `GRANT EXECUTE ON FUNCTION ${routine} TO ${healthWorkerRoleName} WITH GRANT OPTION`,
+      );
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        code: 'service_unavailable',
+      });
+    } finally {
+      await fixture.migratorSql.unsafe(
+        `REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION ${routine} FROM ${healthWorkerRoleName}`,
+      );
+    }
+    try {
+      await fixture.migratorSql.unsafe(`ALTER FUNCTION ${routine} SECURITY INVOKER`);
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        code: 'service_unavailable',
+      });
+    } finally {
+      await fixture.migratorSql.unsafe(`ALTER FUNCTION ${routine} SECURITY DEFINER`);
+    }
+    try {
+      await fixture.migratorSql.unsafe(`ALTER FUNCTION ${routine} SET search_path = public`);
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        code: 'service_unavailable',
+      });
+    } finally {
+      await fixture.migratorSql.unsafe(`ALTER FUNCTION ${routine} SET search_path = pg_catalog`);
+    }
+    try {
+      await fixture.migratorSql.unsafe(`ALTER FUNCTION ${routine} STABLE PARALLEL SAFE`);
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        code: 'service_unavailable',
+      });
+    } finally {
+      await fixture.migratorSql.unsafe(`ALTER FUNCTION ${routine} VOLATILE PARALLEL UNSAFE`);
+    }
+    const adminUrl = new URL(databaseUrl!);
+    adminUrl.pathname = `/${fixture.databaseName}`;
+    const fixtureAdmin = postgres(adminUrl.toString(), {max: 1, onnotice: () => undefined});
+    try {
+      await fixtureAdmin.unsafe(`ALTER FUNCTION ${routine} OWNER TO ${healthWorkerRoleName}`);
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        code: 'service_unavailable',
+      });
+    } finally {
+      await fixtureAdmin.unsafe(`ALTER FUNCTION ${routine} OWNER TO ${fixture.migratorRoleName}`);
+      await fixtureAdmin.unsafe(`REVOKE ALL PRIVILEGES ON FUNCTION ${routine} FROM PUBLIC`);
+      await fixtureAdmin.unsafe(`REVOKE ALL PRIVILEGES ON FUNCTION ${routine} FROM ${healthWorkerRoleName}`);
+      await fixtureAdmin.unsafe(`GRANT EXECUTE ON FUNCTION ${routine} TO ${healthWorkerRoleName}`);
+      await fixtureAdmin.end({timeout: 5});
+    }
+    await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).resolves.toBeUndefined();
+  });
+
+  it('rejects lifecycle-lock body drift when its signature and catalog flags are unchanged', async () => {
+    const migration = await Bun.file('src/remote_memory/migrations/008_hosted_context_health.sql').text();
+    const original = /CREATE FUNCTION remote_memory\.lock_context_health_target\([\s\S]*?\n\$\$;/u.exec(migration)?.[0];
+    if (!original) throw new Error('Lifecycle-lock definition is missing from migration 8.');
+    const replacement = original.replace('CREATE FUNCTION', 'CREATE OR REPLACE FUNCTION');
+    const drifted = replacement.replace(/AS \$\$[\s\S]*?\n\$\$;/u, () => 'AS $$\nBEGIN\n  RETURN false;\nEND;\n$$;');
+    const before = await lifecycleLockCatalogIdentity(fixture.migratorSql);
+    try {
+      await fixture.migratorSql.unsafe(drifted);
+      expect(await lifecycleLockCatalogIdentity(fixture.migratorSql)).toEqual(before);
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        code: 'service_unavailable',
+      });
+    } finally {
+      await fixture.migratorSql.unsafe(replacement);
+    }
+    await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).resolves.toBeUndefined();
   });
 
   it.each(['role', 'session_authorization', 'overridden-user'])(
@@ -112,6 +243,91 @@ postgresDescribe('remote runtime database privilege preflight', () => {
     }
   });
 
+  it('keeps hosted-health control-plane mutations off the general runtime role', async () => {
+    const [privileges] = await fixture.sql<
+      {
+        can_claim: boolean;
+        can_insert_policy: boolean;
+        can_insert_receipt: boolean;
+        can_insert_schedule: boolean;
+        can_pause_schedule: boolean;
+      }[]
+    >`
+      SELECT
+        has_column_privilege(current_user, 'remote_memory.context_health_due_directory', 'claim_token', 'UPDATE') AS can_claim,
+        has_table_privilege(current_user, 'remote_memory.context_health_policies', 'INSERT') AS can_insert_policy,
+        has_column_privilege(current_user, 'remote_memory.context_health_receipts', 'receipt_id', 'INSERT') AS can_insert_receipt,
+        has_table_privilege(current_user, 'remote_memory.context_health_schedules', 'INSERT') AS can_insert_schedule,
+        has_column_privilege(current_user, 'remote_memory.context_health_schedules', 'status', 'UPDATE') AS can_pause_schedule
+    `;
+    expect(privileges).toEqual({
+      can_claim: false,
+      can_insert_policy: false,
+      can_insert_receipt: false,
+      can_insert_schedule: false,
+      can_pause_schedule: false,
+    });
+  });
+
+  it('gives the dedicated health worker queue authority without memory or lifecycle mutation', async () => {
+    const [privileges] = await healthWorker<
+      {
+        can_claim: boolean;
+        can_insert_memory: boolean;
+        can_insert_receipt: boolean;
+        can_insert_schedule: boolean;
+        can_pause_schedule: boolean;
+        can_read_memory_body: boolean;
+        can_read_memory_digest: boolean;
+        can_update_memory: boolean;
+        can_update_share_generation: boolean;
+      }[]
+    >`
+      SELECT
+        has_column_privilege(current_user, 'remote_memory.context_health_due_directory', 'claim_token', 'UPDATE') AS can_claim,
+        has_column_privilege(current_user, 'remote_memory.context_health_receipts', 'receipt_id', 'INSERT') AS can_insert_receipt,
+        has_table_privilege(current_user, 'remote_memory.context_health_schedules', 'INSERT') AS can_insert_schedule,
+        has_column_privilege(current_user, 'remote_memory.context_health_schedules', 'status', 'UPDATE') AS can_pause_schedule,
+        has_table_privilege(current_user, 'remote_memory.memory_revisions', 'INSERT') AS can_insert_memory,
+        has_column_privilege(current_user, 'remote_memory.memory_revisions', 'markdown_body', 'SELECT') AS can_read_memory_body,
+        has_column_privilege(current_user, 'remote_memory.memory_revisions', 'content_hash', 'SELECT') AS can_read_memory_digest,
+        has_column_privilege(current_user, 'remote_memory.memory_heads', 'current_revision_id', 'UPDATE') AS can_update_memory,
+        has_column_privilege(current_user, 'remote_memory.shares', 'share_generation', 'UPDATE') AS can_update_share_generation
+    `;
+    expect(privileges).toEqual({
+      can_claim: true,
+      can_insert_memory: false,
+      can_insert_receipt: true,
+      can_insert_schedule: false,
+      can_pause_schedule: false,
+      can_read_memory_body: false,
+      can_read_memory_digest: true,
+      can_update_memory: false,
+      can_update_share_generation: false,
+    });
+    try {
+      await fixture.migratorSql.unsafe(`GRANT INSERT ON remote_memory.memory_revisions TO ${healthWorkerRoleName}`);
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        details: {reason: 'unsafe_context_health_worker_database_role'},
+      });
+    } finally {
+      await fixture.migratorSql.unsafe(`REVOKE INSERT ON remote_memory.memory_revisions FROM ${healthWorkerRoleName}`);
+    }
+    try {
+      await fixture.migratorSql.unsafe(
+        `GRANT USAGE ON SCHEMA remote_memory TO ${healthWorkerRoleName} WITH GRANT OPTION`,
+      );
+      await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).rejects.toMatchObject({
+        details: {reason: 'unsafe_context_health_worker_database_role'},
+      });
+    } finally {
+      await fixture.migratorSql.unsafe(
+        `REVOKE GRANT OPTION FOR USAGE ON SCHEMA remote_memory FROM ${healthWorkerRoleName}`,
+      );
+    }
+    await expect(assertHostedContextHealthWorkerPrivileges(healthWorker)).resolves.toBeUndefined();
+  });
+
   it('rejects every bounded combination of excess runtime grants', async () => {
     await FC.assert(
       FC.asyncProperty(FC.uniqueArray(FC.constantFrom(...excessGrants), {minLength: 1, maxLength: 3}), async grants => {
@@ -170,3 +386,14 @@ postgresDescribe('remote runtime database privilege preflight', () => {
     }
   });
 });
+
+async function lifecycleLockCatalogIdentity(sql: RemoteMemoryPostgresFixture['migratorSql']) {
+  const [identity] = await sql`
+    SELECT p.proowner, p.prosecdef, p.proconfig, p.provolatile, p.proparallel, p.proleakproof, p.proacl, p.prolang,
+      pg_get_function_identity_arguments(p.oid) AS arguments,
+      pg_get_function_result(p.oid) AS result
+    FROM pg_proc p
+    WHERE p.oid = to_regprocedure('remote_memory.lock_context_health_target(text,text,text,text)')
+  `;
+  return identity;
+}

@@ -50,6 +50,7 @@ interface RuntimeFileHandle {
     position: null,
   ) => Promise<{readonly bytesRead: number}>;
   readonly stat: (options: {readonly bigint: true}) => Promise<RuntimeBigIntStats>;
+  readonly utimes: (atime: Date | number | string, mtime: Date | number | string) => Promise<void>;
 }
 
 interface NativeFileSystemModuleShape {
@@ -57,6 +58,7 @@ interface NativeFileSystemModuleShape {
     readonly O_NOFOLLOW?: number;
     readonly O_NONBLOCK?: number;
     readonly O_RDONLY: number;
+    readonly O_RDWR: number;
   };
   readonly promises: NativeFileSystemPromisesShape;
   readonly fstatSync: (fd: number, options: {readonly bigint: true}) => RuntimeNativeFileStat;
@@ -248,6 +250,72 @@ export async function runtimeReadBoundedStableRegularFile(path: string, maximumB
   }
 }
 
+/**
+ * Refresh a lease through the verified file handle, never through a path that
+ * could be swapped to a symbolic link between validation and the timestamp
+ * write. The expected content binds the lease to its current owner token.
+ */
+export async function runtimeTouchBoundedStableRegularFile(
+  path: string,
+  maximumBytes: number,
+  expectedContent: Uint8Array,
+  timestamp: Date,
+): Promise<boolean> {
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 0 ||
+    maximumBytes >= Number.MAX_SAFE_INTEGER ||
+    expectedContent.byteLength > maximumBytes
+  ) {
+    throw SystemOperationError.make({message: 'Invalid touch bound.'});
+  }
+  const pathBefore = await nativeFileSystemPromises.lstat(path, {bigint: true});
+  if (!stableRegularFile(pathBefore) || pathBefore.size > BigInt(maximumBytes)) return false;
+  const flags =
+    nativeFileSystemModule.constants.O_RDWR |
+    (nativeFileSystemModule.constants.O_NONBLOCK ?? 0) |
+    (runtimePlatform === 'win32' ? 0 : (nativeFileSystemModule.constants.O_NOFOLLOW ?? 0));
+  const opened = await nativeFileSystemPromises.open(path, flags);
+  try {
+    const [openedBefore, pathOpened] = await Promise.all([
+      opened.stat({bigint: true}),
+      nativeFileSystemPromises.lstat(path, {bigint: true}),
+    ]);
+    if (!sameStableRegularFile(pathBefore, openedBefore) || !sameStableRegularFile(pathBefore, pathOpened))
+      return false;
+    const bytes = new Uint8Array(maximumBytes + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const {bytesRead} = await opened.read(bytes, offset, bytes.length - offset, null);
+      if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > bytes.length - offset) return false;
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const [openedBeforeTouch, pathBeforeTouch] = await Promise.all([
+      opened.stat({bigint: true}),
+      nativeFileSystemPromises.lstat(path, {bigint: true}),
+    ]);
+    if (
+      !sameStableRegularFile(pathBefore, openedBeforeTouch) ||
+      !sameStableRegularFile(pathBefore, pathBeforeTouch) ||
+      offset !== expectedContent.byteLength ||
+      !bytesEqual(bytes.subarray(0, offset), expectedContent)
+    ) {
+      return false;
+    }
+    await opened.utimes(timestamp, timestamp);
+    const [openedAfter, pathAfter] = await Promise.all([
+      opened.stat({bigint: true}),
+      nativeFileSystemPromises.lstat(path, {bigint: true}),
+    ]);
+    return (
+      sameRegularFileIdentity(openedBeforeTouch, openedAfter) && sameRegularFileIdentity(openedBeforeTouch, pathAfter)
+    );
+  } finally {
+    await opened.close();
+  }
+}
+
 /** Follows links while retaining exact device/inode identity beyond JavaScript's safe-integer range. */
 export function runtimeStat(path: string): Promise<RuntimeBigIntStats> {
   return nativeFileSystemPromises.stat(path, {bigint: true});
@@ -268,6 +336,25 @@ function sameStableRegularFile(left: RuntimeBigIntStats, right: RuntimeBigIntSta
     left.mtimeNs === right.mtimeNs &&
     left.ctimeNs === right.ctimeNs
   );
+}
+
+function sameRegularFileIdentity(left: RuntimeBigIntStats, right: RuntimeBigIntStats): boolean {
+  return (
+    stableRegularFile(left) &&
+    stableRegularFile(right) &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size
+  );
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 /** Raw POSIX directory names stay bytes; enumeration stops immediately after the first over-limit entry. */

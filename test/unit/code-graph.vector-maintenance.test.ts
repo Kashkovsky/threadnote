@@ -9,8 +9,9 @@ import * as FC from 'fast-check';
 import {
   cleanupCodeGraphVectorPointers,
   prepareCodeGraphVectorRetirement,
-} from '../../src/code_graph/vector_maintenance.js';
+} from '../../src/code_graph/vector/maintenance.js';
 import {makeCachedProcessStartIdentityResolver, SystemInfo} from '../../src/effect/system.js';
+import {codeGraphVectorViewId} from '../../src/code_graph/vector/identity.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
 const WORKTREE_ID = '1'.repeat(64);
@@ -20,6 +21,48 @@ const VectorMaintenanceTestLayer = Layer.mergeAll(BunServices.layer, SystemInfo.
 
 describe('code graph vector pointer maintenance', () => {
   effectIt.layer(VectorMaintenanceTestLayer)(layerIt => {
+    fcEffectProp(
+      layerIt,
+      'removes only the selected scope pointer, preserving full and sibling views',
+      {scopes: FC.uniqueArray(FC.integer({min: 0, max: 1000}), {minLength: 2, maxLength: 5})},
+      ({scopes}) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-vector-scope-cleanup-'});
+          const scopeIds = scopes.map(value => `code-graph-scope:${value.toString(16).padStart(64, '0')}`);
+          const views = [WORKTREE_ID, ...scopeIds.map(scopeId => codeGraphVectorViewId(WORKTREE_ID, scopeId))];
+          const databasePath = yield* seedVectorDatabase(
+            home,
+            'scoped-model',
+            [{generation: 'shared-snapshot-generation', snapshotId: EXPECTED_SNAPSHOT_ID}],
+            views.map(worktreeId => ({generation: 'shared-snapshot-generation', worktreeId})),
+          );
+          const first = yield* cleanupCodeGraphVectorPointers(
+            home,
+            CHECKOUT_ID,
+            WORKTREE_ID,
+            EXPECTED_SNAPSHOT_ID,
+            scopeIds[0],
+          );
+          const second = yield* cleanupCodeGraphVectorPointers(
+            home,
+            CHECKOUT_ID,
+            WORKTREE_ID,
+            EXPECTED_SNAPSHOT_ID,
+            scopeIds[0],
+          );
+          expect(first.pointersRemoved).toBe(1);
+          expect(first.warnings).toEqual([]);
+          expect(second.pointersRemoved).toBe(0);
+          expect(
+            readPointers(databasePath)
+              .map(row => row.worktree_id)
+              .sort(),
+          ).toEqual(views.filter(view => view !== views[1]).sort());
+          expect(readGenerations(databasePath)).toEqual(['shared-snapshot-generation']);
+        }),
+      {fastCheck: {numRuns: 8}},
+    );
     layerIt.effect('removes only the expected pointer and preserves shared generations and newer promotions', () =>
       Effect.scoped(
         Effect.gen(function* () {

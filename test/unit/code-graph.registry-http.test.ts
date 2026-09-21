@@ -6,10 +6,10 @@ import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {makeGraphShareRegistryHttp} from '../../src/code_graph/sharing/registry_http.js';
-import {parseGraphShareRegistryTarget} from '../../src/code_graph/sharing/registry_reference.js';
-import {makeGraphShareRegistryReader} from '../../src/code_graph/sharing/registry_reader.js';
-import {makeGraphShareRegistryWriter} from '../../src/code_graph/sharing/registry_writer.js';
+import {makeGraphShareRegistryHttp} from '../../src/code_graph/sharing/registry/http.js';
+import {parseGraphShareRegistryTarget} from '../../src/code_graph/sharing/registry/reference.js';
+import {makeGraphShareRegistryReader} from '../../src/code_graph/sharing/registry/reader.js';
+import {makeGraphShareRegistryWriter} from '../../src/code_graph/sharing/registry/writer.js';
 import {graphShareOciDescriptorFromLayers} from '../../src/code_graph/sharing/descriptor.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
@@ -94,7 +94,10 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
           expect(input?.timeoutMs).toBe(
             options.helperName === 'threadnote-auth0-user'
               ? 25000
-              : options.helperName === 'threadnote-auth0-m2m' || options.helperName === 'threadnote-auth0-publisher-m2m'
+              : options.helperName === 'threadnote-oauth-m2m' ||
+                  options.helperName === 'threadnote-oauth-publisher-m2m' ||
+                  options.helperName === 'threadnote-auth0-m2m' ||
+                  options.helperName === 'threadnote-auth0-publisher-m2m'
                 ? 10000
                 : 5000,
           );
@@ -106,6 +109,8 @@ const fixture = Effect.fn('test.registry.fixture')(function* (options: {
             stdout: JSON.stringify(
               options.helperResponse?.(helperCalls) ?? {
                 Username:
+                  options.helperName === 'threadnote-oauth-m2m' ||
+                  options.helperName === 'threadnote-oauth-publisher-m2m' ||
                   options.helperName === 'threadnote-auth0-m2m' ||
                   options.helperName === 'threadnote-auth0-publisher-m2m' ||
                   options.helperName === 'threadnote-auth0-user'
@@ -216,10 +221,12 @@ describe('registry authentication and bounded transport', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect('sends the scoped Auth0 registry secret only to the exact Zot bearer-token realm', () =>
+  effectIt.effect('sends the scoped OAuth registry secret only to the exact Zot bearer-token realm', () =>
     Effect.gen(function* () {
       const zotBasic = 'Basic ' + Buffer.from('zot:' + secret).toString('base64');
       for (const helperName of [
+        'threadnote-oauth-m2m',
+        'threadnote-oauth-publisher-m2m',
         'threadnote-auth0-m2m',
         'threadnote-auth0-publisher-m2m',
         'threadnote-auth0-user',
@@ -248,9 +255,11 @@ describe('registry authentication and bounded transport', () => {
     }).pipe(provideTestLayer(layer)),
   );
 
-  effectIt.effect('never sends Auth0 registry credentials to Basic or a different same-origin realm', () =>
+  effectIt.effect('never sends OAuth registry credentials to Basic or a different same-origin realm', () =>
     Effect.gen(function* () {
       for (const helperName of [
+        'threadnote-oauth-m2m',
+        'threadnote-oauth-publisher-m2m',
         'threadnote-auth0-m2m',
         'threadnote-auth0-publisher-m2m',
         'threadnote-auth0-user',

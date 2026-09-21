@@ -13,11 +13,11 @@ import {
   codeGraphDiskCapacityReservationProjection,
   codeGraphPersistentCapacityDemand,
   type CodeGraphDirectPersistentCapacityBoundary,
-} from '../../src/code_graph/disk_capacity.js';
+} from '../../src/code_graph/disk/capacity.js';
 import {
   parseCodeGraphDiskReservationReceipt,
   type CodeGraphDiskReservationReceipt,
-} from '../../src/code_graph/disk_reservation.js';
+} from '../../src/code_graph/disk/reservation.js';
 import {CodeGraphStore, materializedFileShardIdentity} from '../../src/code_graph/store.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';

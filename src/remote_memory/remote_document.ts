@@ -1,6 +1,6 @@
 import {randomUuidV4} from '../crypto/uuid.js';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {type MemoryCodeCitationV1, MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
+import {type MemoryCodeCitationV1, MEMORY_SCHEMA_VERSION} from '../memory/code/citation.js';
 import {
   formatMemoryDocument,
   parseMemoryDocument,

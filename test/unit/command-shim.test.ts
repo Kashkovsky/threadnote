@@ -1,9 +1,10 @@
 import {fcEffectProp} from '../helpers/fast-check-property.js';
+import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Effect, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
-import {describe, expect} from 'vitest';
+import {describe, expect, it} from 'vitest';
 import {
   commandLauncherPath,
   commandShimCheck,
@@ -18,6 +19,43 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 
 describe('Windows Git Bash command launchers', () => {
+  it('routes generic and legacy OAuth helpers through the standalone boundary', async () => {
+    const threadnoteHome = await mkdtemp('threadnote-oauth-helper-');
+    try {
+      for (const [command, input, error] of [
+        ['__credential-oauth-m2m', '{}', 'OAuth graph credential unavailable.\n'],
+        ['__credential-registry-oauth-m2m', 'registry.example.test\n', 'OAuth registry credential unavailable.\n'],
+        [
+          '__credential-registry-oauth-publisher-m2m',
+          'registry.example.test\n',
+          'OAuth registry credential unavailable.\n',
+        ],
+        ['__graph-oauth-helper', '{}\n', 'Graph OAuth credential helper is unavailable.\n'],
+        ['__graph-auth0-helper', '{}\n', 'Graph OAuth credential helper is unavailable.\n'],
+        ['__credential-registry-oauth-user', 'registry.example.test\n', 'OAuth registry credential unavailable.\n'],
+        ['__credential-registry-auth0-user', 'registry.example.test\n', 'OAuth registry credential unavailable.\n'],
+      ] as const) {
+        const child = Bun.spawn([process.execPath, 'src/standalone.ts', command, 'get'], {
+          cwd: process.cwd(),
+          env: {...process.env, THREADNOTE_HOME: threadnoteHome},
+          stdin: new Blob([input]),
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        const [exitCode, stdout, stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]);
+        expect(exitCode).toBe(1);
+        expect(stdout).toBe('');
+        expect(stderr).toBe(error);
+      }
+    } finally {
+      await rm(threadnoteHome, {force: true, recursive: true});
+    }
+  });
+
   effectIt.effect('installs cmd and extensionless POSIX launchers for CLI and MCP on Windows', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -55,6 +93,11 @@ describe('Windows Git Bash command launchers', () => {
             Effect.provideService(SystemInfo, testSystem),
           ),
         ).toMatch(/docker-credential-threadnote-auth0-publisher-m2m\.cmd$/);
+        expect(
+          yield* commandLauncherPath('credential-registry-oauth-user').pipe(
+            Effect.provideService(SystemInfo, testSystem),
+          ),
+        ).toMatch(/docker-credential-threadnote-oauth-user\.cmd$/);
         expect(
           yield* commandLauncherPath('credential-registry-auth0-user').pipe(
             Effect.provideService(SystemInfo, testSystem),
@@ -229,8 +272,22 @@ describe('Windows Git Bash command launchers', () => {
         const userRegistryPosix = yield* commandLauncherPath('credential-registry-auth0-user', 'posix').pipe(
           Effect.provideService(SystemInfo, testSystem),
         );
+        const oauthPaths: string[] = [];
+        for (const mode of [
+          'credential-oauth-m2m',
+          'credential-registry-oauth-m2m',
+          'credential-registry-oauth-publisher-m2m',
+          'credential-registry-oauth-user',
+        ] as const) {
+          for (const kind of managedCommandLauncherKinds('win32')) {
+            const launcher = yield* commandLauncherPath(mode, kind).pipe(Effect.provideService(SystemInfo, testSystem));
+            oauthPaths.push(launcher);
+            const content = yield* FileSystem.FileSystem.pipe(Effect.flatMap(fs => fs.readFileString(launcher)));
+            expect(content).toContain(`__${mode}`);
+          }
+        }
         expect(check.detail).toBe(
-          `${cliCmd}; ${cliPosix}; ${mcpCmd}; ${mcpPosix}; ${auth0Cmd}; ${auth0Posix}; ${registryCmd}; ${registryPosix}; ${publisherRegistryCmd}; ${publisherRegistryPosix}; ${userRegistryCmd}; ${userRegistryPosix}`,
+          `${cliCmd}; ${cliPosix}; ${mcpCmd}; ${mcpPosix}; ${oauthPaths.join('; ')}; ${auth0Cmd}; ${auth0Posix}; ${registryCmd}; ${registryPosix}; ${publisherRegistryCmd}; ${publisherRegistryPosix}; ${userRegistryCmd}; ${userRegistryPosix}`,
         );
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
@@ -312,9 +369,13 @@ describe('Windows Git Bash command launchers', () => {
         for (const mode of [
           'cli',
           'mcp',
+          'credential-oauth-m2m',
+          'credential-registry-oauth-m2m',
+          'credential-registry-oauth-publisher-m2m',
           'credential-auth0-m2m',
           'credential-registry-auth0-m2m',
           'credential-registry-auth0-publisher-m2m',
+          'credential-registry-oauth-user',
           'credential-registry-auth0-user',
         ] as const) {
           for (const kind of managedCommandLauncherKinds('win32')) {
@@ -333,6 +394,10 @@ describe('Windows Git Bash command launchers', () => {
       mode: fc.constantFrom(
         'cli' as const,
         'mcp' as const,
+        'credential-oauth-m2m' as const,
+        'credential-registry-oauth-m2m' as const,
+        'credential-registry-oauth-publisher-m2m' as const,
+        'credential-registry-oauth-user' as const,
         'credential-auth0-m2m' as const,
         'credential-registry-auth0-m2m' as const,
         'credential-registry-auth0-publisher-m2m' as const,
@@ -372,6 +437,14 @@ describe('Windows Git Bash command launchers', () => {
         if (mode === 'mcp') {
           expect(posix).toContain('mcp-broker');
           expect(cmd).toContain('mcp-broker');
+        } else if (
+          mode === 'credential-oauth-m2m' ||
+          mode === 'credential-registry-oauth-m2m' ||
+          mode === 'credential-registry-oauth-publisher-m2m' ||
+          mode === 'credential-registry-oauth-user'
+        ) {
+          expect(posix).toContain(`__${mode}`);
+          expect(cmd).toContain(`__${mode}`);
         } else if (mode === 'credential-auth0-m2m') {
           expect(posix).toContain('__credential-auth0-m2m');
           expect(cmd).toContain('__credential-auth0-m2m');

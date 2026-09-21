@@ -19,7 +19,7 @@ import {
   resourcesTree,
   runManage,
 } from '../../src/manager/index.js';
-import {removeManagerSharedMemorySource, storeManagerPersonalMemoryMove} from '../../src/manager/memory_move.js';
+import {removeManagerSharedMemorySource, storeManagerPersonalMemoryMove} from '../../src/manager/memory/move.js';
 import {
   managerProjectOptions,
   pruneSelectedMemoryUris,
@@ -32,9 +32,9 @@ import * as memory from '../../src/memory/index.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
-import {withSharedRepositoryLock} from '../../src/effect/share_lock.js';
-import * as automaticCompaction from '../../src/code_graph/automatic_compaction.js';
-import * as isolatedIndex from '../../src/code_graph/isolated_index.js';
+import {withSharedRepositoryLock} from '../../src/effect/share/lock.js';
+import * as automaticCompaction from '../../src/code_graph/automatic/compaction.js';
+import * as isolatedIndex from '../../src/code_graph/isolated/index.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
 import {
@@ -45,7 +45,7 @@ import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   withCodeGraphMaintenanceIntent,
   withCodeGraphTargetWorktreeLock,
-} from '../../src/code_graph/maintenance_gate.js';
+} from '../../src/code_graph/maintenance/gate.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {
@@ -57,7 +57,7 @@ import {
   type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {readMemoryWithRelocations} from '../../src/memory/relocation.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -96,13 +96,13 @@ vi.mock('../../src/seeding.js', async importOriginal => {
   };
 });
 
-vi.mock('../../src/code_graph/automatic_compaction.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/code_graph/automatic_compaction.js')>();
+vi.mock('../../src/code_graph/automatic/compaction.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/code_graph/automatic/compaction.js')>();
   return {...actual, compactCodeGraphStorageIsolated: vi.fn(actual.compactCodeGraphStorageIsolated)};
 });
 
-vi.mock('../../src/code_graph/isolated_index.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/code_graph/isolated_index.js')>();
+vi.mock('../../src/code_graph/isolated/index.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/code_graph/isolated/index.js')>();
   return {...actual, runIsolatedCodeGraphIndexSnapshot: vi.fn(actual.runIsolatedCodeGraphIndexSnapshot)};
 });
 
@@ -912,7 +912,10 @@ describe('manager http API', () => {
       expect(await rejectedIncoming.json()).toMatchObject({error: expect.stringContaining('newer than supported')});
       expect(await readFile(memoryPath, 'utf8')).toBe(original);
 
-      const futureExisting = original.replace('status: active', 'status: active\nschema_version: 5');
+      const futureExisting = original.replace(
+        'status: active',
+        `status: active\nschema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+      );
       await writeFile(memoryPath, futureExisting);
       const rejectedExisting = await requestSave(original.replace('feature notes', 'replacement notes'));
       expect(rejectedExisting.status).toBe(500);

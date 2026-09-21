@@ -1,6 +1,6 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import type {DoctorCheck} from '../types.js';
-import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file/lock.js';
 import {
   codeGraphMaintenanceLockPath,
   codeGraphRepositoriesRoot,
@@ -15,18 +15,18 @@ import {
   withCodeGraphReportedMaintenanceIntent,
   type CodeGraphMaintenanceProgress as CodeGraphReportedMaintenanceProgress,
   type CodeGraphMaintenanceProgressReporter,
-} from './maintenance_gate.js';
-import type {CodeGraphCliPurgeProgress} from './cli_progress.js';
+} from './maintenance/gate.js';
+import type {CodeGraphCliPurgeProgress} from './cli/progress.js';
 import {CodeGraphStore, type CodeGraphDatabaseHealth} from './store.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
-import {CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR} from './store/schema_revision.js';
+import {CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR} from './store/schema/revision.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
-import {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
+import {diagnoseCodeGraphDatabaseReadOnly} from './store/health.js';
 import {diagnoseCodeGraphDatabase} from './deep_diagnostics.js';
-import {CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT} from './store_reconciliation_preparation.js';
-import {codeGraphSchemaMigrationPreservesIncompleteSnapshots} from './store_schema_migration.js';
+import {CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT} from './store/reconciliation/preparation.js';
+import {codeGraphSchemaMigrationPreservesIncompleteSnapshots} from './store/schema/migration.js';
 
-export {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
+export {diagnoseCodeGraphDatabaseReadOnly} from './store/health.js';
 
 class CodeGraphMaintenanceError extends Schema.TaggedError<CodeGraphMaintenanceError>()('CodeGraphMaintenanceError', {
   cause: Schema.optionalKey(Schema.Defect()),
@@ -251,10 +251,10 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
   for (const [index, database] of databases.entries()) {
     yield* onProgress?.({current: index + 1, phase: 'checking', total: databases.length}) ?? Effect.void;
     const repositoryId = path.basename(path.dirname(database));
-    if (
+    const maintenanceDeferred =
       (yield* codeGraphRepositoryLockActive(threadnoteHome, repositoryId)) ||
-      (yield* codeGraphWorktreeBuildActive(threadnoteHome, repositoryId))
-    ) {
+      (yield* codeGraphWorktreeBuildActive(threadnoteHome, repositoryId));
+    if (maintenanceDeferred) {
       deferred += 1;
       yield* onProgress?.({
         current: index + 1,
@@ -262,7 +262,6 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
         reason: 'active-build',
         total: databases.length,
       }) ?? Effect.void;
-      continue;
     }
     const checked = yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(
       Effect.map(health => ({health, state: 'checked'})),

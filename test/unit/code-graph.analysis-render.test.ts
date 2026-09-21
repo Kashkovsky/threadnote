@@ -2,7 +2,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import {describe, expect} from 'vitest';
 import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
-import {renderCodeGraphAnalysis, renderCodeGraphReport} from '../../src/code_graph/analysis_render.js';
+import {renderCodeGraphAnalysis, renderCodeGraphReport} from '../../src/code_graph/analysis/render.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 
 describe('code graph analysis rendering', () => {

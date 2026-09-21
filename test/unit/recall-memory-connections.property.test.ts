@@ -6,7 +6,7 @@ import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {readMemoryRecordsByUri} from '../../src/memory/commands.js';
-import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, type MemoryMetadata, type MemoryRelation} from '../../src/memory/document.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {recordMemoryRelocation} from '../../src/memory/relocation.js';
@@ -15,7 +15,7 @@ import {
   classifyRecallMemoryPremiseState,
   parseRecallMemoryConnectionInput,
   retrieveRecallMemoryConnections,
-} from '../../src/recall/memory_connections.js';
+} from '../../src/recall/memory/connections.js';
 import {rankRecallCandidates, type RecallCandidate} from '../../src/recall/rank.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

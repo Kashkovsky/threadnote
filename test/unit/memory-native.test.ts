@@ -29,7 +29,7 @@ import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {loadRecallIndex} from '../../src/recall/index.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {readMemoryWithRelocations, recordMemoryRelocation} from '../../src/memory/relocation.js';
@@ -180,6 +180,34 @@ describe('native memory workflow', () => {
         const aliasRead = yield* captureConsole(runRead(config, memoryIdentityAlias(memoryId!), {}));
         expect(aliasRead.output).toContain('QX7 lease recovery');
 
+        const replacement = yield* captureConsole(
+          runRemember(config, {
+            kind: 'durable',
+            project: 'threadnote',
+            replace: memoryIdentityAlias(memoryId!),
+            sourceAgentClient: 'test',
+            text: 'QX7 lease recovery now retries stale ownership claims.',
+            topic: 'lease-recovery',
+          }),
+        );
+        expect(replacement.output).toContain(`Updated existing memory in place: ${uri}`);
+        expect(
+          yield* fs.readFileString(
+            path.join(
+              home,
+              'data',
+              'local',
+              'user',
+              'tester',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'lease-recovery.md',
+            ),
+          ),
+        ).toContain('QX7 lease recovery now retries stale ownership claims.');
+
         const recall = yield* captureConsole(
           runRecall(config, {
             inferScope: false,
@@ -253,6 +281,69 @@ describe('native memory workflow', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  it.effect('preserves a receipt-witnessed identity when replacing an id-less destination by alias', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* ResourceStore;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-replace-receipt-identity-'});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        yield* fs.writeFileString(config.manifestPath, 'version: 1\nprojects: []\n');
+        const location = {account: config.account, home, user: config.user};
+        const sourceUri = 'threadnote://user/tester/memories/durable/projects/threadnote/receipt-source.md';
+        const targetUri = 'threadnote://user/tester/memories/durable/projects/threadnote/receipt-target.md';
+        const memoryId = 'tn_receipt_replace_identity';
+        const original = formatMemoryDocument(
+          'MEMORY',
+          {
+            kind: 'durable',
+            memoryId,
+            project: 'threadnote',
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'test',
+            status: 'active',
+            timestamp: '2026-09-18T00:00:00.000Z',
+            topic: 'receipt-target',
+          },
+          'Receipt-witnessed replacement source.',
+        );
+        const missingIdentity = original.replace(`memory_id: ${memoryId}\n`, '');
+        yield* store.write(location, sourceUri, original, {mode: 'create'});
+        yield* store.write(location, targetUri, original, {mode: 'create'});
+        yield* recordMemoryRelocation(config, {
+          fromContent: original,
+          fromUri: sourceUri,
+          toContent: original,
+          toUri: targetUri,
+        });
+        yield* store.remove(location, sourceUri);
+        yield* store.write(location, targetUri, missingIdentity, {mode: 'upsert'});
+        yield* loadRecallIndex(config, {forceRefresh: true, includeInactive: false});
+
+        yield* runRemember(config, {
+          kind: 'durable',
+          project: 'threadnote',
+          replace: memoryIdentityAlias(memoryId),
+          sourceAgentClient: 'test',
+          text: 'Receipt-witnessed replacement keeps its stable identity.',
+          topic: 'receipt-target',
+        });
+
+        const updated = yield* store.read(location, targetUri);
+        expect(parseMemoryDocument(targetUri, updated)?.metadata.memoryId).toBe(memoryId);
+        const aliasRead = yield* captureConsole(runRead(config, memoryIdentityAlias(memoryId), {}));
+        expect(aliasRead.output).toContain('Receipt-witnessed replacement keeps its stable identity.');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('leaves pending-anchor memory revisions out of enrichment plans', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -292,6 +383,34 @@ describe('native memory workflow', () => {
         const preview = yield* captureConsole(runEnrichMemories(config, {apply: false, force: true}));
         expect(preview.output).toContain('Memory enrichment: 0 would be processed');
         expect(preview.output).toContain('1 pending-anchor memory file(s) skipped');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('skips handoffs in forced batch enrichment previews', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-enrichment-handoff-'});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        yield* runRemember(config, {
+          kind: 'handoff',
+          project: 'threadnote',
+          sourceAgentClient: 'test',
+          text: 'Handoff facts remain authoritative without generated search aliases.',
+          topic: 'handoff-enrichment',
+        });
+
+        const preview = yield* captureConsole(runEnrichMemories(config, {apply: false, force: true}));
+        expect(preview.output).toContain('Memory enrichment: 0 would be processed');
+        expect(preview.output).toContain('1 handoff/smoke memory record(s) skipped');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

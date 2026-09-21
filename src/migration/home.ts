@@ -9,7 +9,7 @@ import {
 } from '../storage/layout.js';
 import {validatePortableSegment} from '../storage/resource-id.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
-import {withSharedRepositoryHomeLock} from '../effect/share_lock.js';
+import {withSharedRepositoryHomeLock} from '../effect/share/lock.js';
 import {hasBoundedMigrationTreeContent, isIgnorableOperatingSystemMetadata} from './evidence.js';
 import {
   isThreadnoteStorageLayoutMigrationPending,

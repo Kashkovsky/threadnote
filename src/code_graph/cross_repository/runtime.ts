@@ -17,7 +17,7 @@ import type {
   CodeGraphWorksetCatalogPublishedMemberV1,
 } from '../workset_catalog/types.js';
 import {codeGraphWorksetCatalogGenerationMatches, codeGraphWorksetManifestDigest} from '../workset_catalog/workset.js';
-import {codeGraphQualifiedRefHandle} from '../workset_evidence.js';
+import {codeGraphQualifiedRefHandle} from '../workset/evidence.js';
 import {
   readCodeGraphWorksetCatalogBridgeGenerationPage,
   readCodeGraphWorksetCatalogBridgePage,
@@ -289,7 +289,11 @@ function prepareRuntime(config: RuntimeConfig, worksetName: string) {
         return Effect.gen(function* () {
           const cwd = yield* expandPath(project.path);
           if (!(yield* fs.exists(cwd))) return undefined;
-          const status = yield* query.status(config.agentContextHome, cwd, {requestMaintenance: false});
+          const status = yield* query.status(config.agentContextHome, cwd, {
+            requestMaintenance: false,
+            project: project.name,
+            manifestPath: config.manifestPath,
+          });
           if (!statusMatchesPublished(status, member)) return undefined;
           const lease = yield* Effect.acquireRelease(
             store.acquireSnapshotLease(status.databasePath, member.snapshotId, SNAPSHOT_LEASE_MILLISECONDS),
@@ -310,6 +314,18 @@ function prepareRuntime(config: RuntimeConfig, worksetName: string) {
 }
 
 function requireCompleteBridgeSet(config: RuntimeConfig, runtime: PreparedRuntime) {
+  if (
+    [...runtime.availableByRepositorySnapshot.values()].some(
+      member => member.status.projectCoverage?.completeness === 'partial',
+    )
+  ) {
+    return Effect.fail(
+      CodeGraphCrossRepositoryRuntimeError.make({
+        message:
+          'Project dependency coverage is partial; complete cross-repository path and impact traversal cannot be established.',
+      }),
+    );
+  }
   return readPublishedCodeGraphWorksetCatalogBridgeSetSummary(config.agentContextHome, runtime.published.id).pipe(
     Effect.flatMap(bridgeSet => {
       if (bridgeSet === undefined) {
@@ -390,7 +406,11 @@ function traversalDependencies(config: RuntimeConfig, runtime: PreparedRuntime) 
             store.renewSnapshotLease(member.databasePath, member.lease, SNAPSHOT_LEASE_MILLISECONDS),
           );
           if (Result.isFailure(renewed)) return {leased: false, ready: false};
-          const ready = yield* store.readySnapshot(member.databasePath, member.published.worktreeId);
+          const ready = yield* store.readySnapshot(
+            member.databasePath,
+            member.published.worktreeId,
+            member.status.readySnapshot?.scopeId,
+          );
           return {
             leased: true,
             ready:

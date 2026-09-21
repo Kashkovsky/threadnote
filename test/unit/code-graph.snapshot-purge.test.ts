@@ -7,17 +7,17 @@ import {Clock, Crypto, Deferred, Effect, Fiber, FileSystem, Layer, Path} from 'e
 import fc from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {codeGraphVectorWriteLockPath} from '../../src/code_graph/layout.js';
-import {observeCodeGraphMaintenanceStatus} from '../../src/code_graph/maintenance_gate.js';
+import {observeCodeGraphMaintenanceStatus} from '../../src/code_graph/maintenance/gate.js';
 import {
   codeGraphSnapshotPurgeApprovalDigest,
   purgeCodeGraphSnapshot,
   type CodeGraphSnapshotPurgeApprovalProjection,
-} from '../../src/code_graph/snapshot_purge.js';
+} from '../../src/code_graph/snapshot/purge.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
-import {prepareCodeGraphVectorRetirement} from '../../src/code_graph/vector_maintenance.js';
+import {prepareCodeGraphVectorRetirement} from '../../src/code_graph/vector/maintenance.js';
 import {CommandExecutor} from '../../src/effect/command.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);

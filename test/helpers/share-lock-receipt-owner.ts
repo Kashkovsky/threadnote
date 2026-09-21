@@ -2,7 +2,7 @@ import {TestError} from './test-error.js';
 import {provideTestLayer} from './effect-layer.js';
 import {Clock, Effect, FileSystem, Path} from 'effect';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {withSharedRepositoryHomeLock} from '../../src/effect/share_lock.js';
+import {withSharedRepositoryHomeLock} from '../../src/effect/share/lock.js';
 
 const [home, readyPath, releasePath, remote, worktree] = process.argv.slice(2);
 if (!home || !readyPath || !releasePath || !remote || !worktree) {

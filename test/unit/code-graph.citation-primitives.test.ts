@@ -21,16 +21,16 @@ import {
 } from '../../src/code_graph/content_identity.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {encodeCodeGraphInventoryReuseReceipt} from '../../src/code_graph/inventory_reuse.js';
-import {CODE_GRAPH_INVENTORY_EXCLUSION_REASONS} from '../../src/code_graph/inventory_policy.js';
+import {encodeCodeGraphInventoryReuseReceipt} from '../../src/code_graph/inventory/reuse.js';
+import {CODE_GRAPH_INVENTORY_EXCLUSION_REASONS} from '../../src/code_graph/inventory/policy.js';
 import {
   CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
-} from '../../src/code_graph/store_models.js';
+} from '../../src/code_graph/store/models.js';
 import {mergeCodeGraphWorkspaces} from '../../src/code_graph/workspace.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {validateContextBriefFileCitation} from '../../src/context_brief/citation_validation.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
 
 const baseSnapshotId = 'citation-base';
 const currentSnapshotId = 'citation-current';

@@ -8,9 +8,9 @@ import {
   formatCodeGraphIndexProgressLine,
   formatCodeGraphPurgeProgressLine,
   formatCodeGraphRepairProgressLine,
-} from '../../src/code_graph/cli_progress.js';
+} from '../../src/code_graph/cli/progress.js';
 import type {CodeGraphProgress} from '../../src/code_graph/types.js';
-import {graphMaintenanceRemainingMilliseconds} from '../../src/manager/graph_model.js';
+import {graphMaintenanceRemainingMilliseconds} from '../../src/manager/graph/model.js';
 
 describe('code graph compact CLI progress', () => {
   it('never includes a scanning activity path or newline', () => {
@@ -32,6 +32,18 @@ describe('code graph compact CLI progress', () => {
     expect(formatCodeGraphPurgeProgressLine({phase: 'quarantining', dryRun: true})).toBe(
       'Would purge · quarantining files',
     );
+    expect(
+      formatCodeGraphIndexProgressLine({
+        admission: {
+          admissionClass: 'current-required',
+          enqueuedAt: '2026-09-21T08:00:00.000Z',
+          position: 1,
+          size: 2,
+        },
+        phase: 'waiting',
+        reason: 'home-builder-cap',
+      }),
+    ).toBe('Waiting for graph builder slot · queue 1/2');
   });
 
   fcEffectProp(

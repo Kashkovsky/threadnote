@@ -3,7 +3,7 @@ import {Effect} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {isMemoryId, memoryIdentityAlias, memoryIdFromIdentityAlias} from '../../src/memory/identity_alias.js';
-import {verifyResolvedMemoryIdentity} from '../../src/recall/memory_identity.js';
+import {verifyResolvedMemoryIdentity} from '../../src/recall/memory/identity.js';
 
 describe('stable memory identity aliases', () => {
   it('round-trips every valid bounded memory identity deterministically', () => {

@@ -7,14 +7,14 @@ import {
   type CodeGraphEffectiveSnapshotCitationEvidence,
   type CodeGraphEffectiveSymbolLocatorMatches,
   type CodeGraphSymbolSemanticLocatorV1,
-} from '../code_graph/citation_primitives.js';
-import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_graph/citation_source.js';
+} from '../code_graph/citation/primitives.js';
+import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_graph/citation/source.js';
 import {worktreeOverlayState} from '../code_graph/inventory.js';
-import {decodeUtf8} from '../code_graph/inventory_content.js';
+import {decodeUtf8} from '../code_graph/inventory/content.js';
 import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js';
 import {codeGraphLayout} from '../code_graph/layout.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
-import {codeGraphSnapshotRuntimeCurrent} from '../code_graph/query_snapshot_runtime.js';
+import {codeGraphSnapshotRuntimeCurrent} from '../code_graph/query/snapshot_runtime.js';
 import {
   observeCleanRepositoryWorktree,
   resolvePublishedRepositoryReadFence,
@@ -38,7 +38,7 @@ import {sha256Hex} from '../effect/digest.js';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {requireWorkset} from '../manifest.js';
-import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import type {MemoryCodeCitationV1} from '../memory/code/citation.js';
 import type {ResolvedWorkset, RuntimeConfig} from '../types.js';
 import {expandPath} from '../utils.js';
 import type {

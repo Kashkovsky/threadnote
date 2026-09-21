@@ -24,7 +24,7 @@ import {
   readPublishedCodeGraphWorksetCatalogBridgeSetSummary,
 } from '../../src/code_graph/cross_repository/store.js';
 import {readPublishedCodeGraphWorksetCatalogGeneration} from '../../src/code_graph/workset_catalog/store.js';
-import {executeCodeGraphWorksetV2} from '../../src/code_graph/workset_query_v2.js';
+import {executeCodeGraphWorksetV2} from '../../src/code_graph/workset/query_v2.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const WORKSET_NAME = 'code-graph-workset-four-member-traversal';

@@ -2,16 +2,16 @@ import {Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect'
 import {succeedUndefined} from '../../effect/optional.js';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../../effect/command.js';
-import {writeFinalCliOutput} from '../../effect/cli_output.js';
+import {writeFinalCliOutput} from '../../effect/cli/output.js';
 import {SystemInfo} from '../../effect/system.js';
 import type {RuntimeConfig} from '../../types.js';
 import {codeGraphCommittedContentHash} from '../content_identity.js';
 import {CodeGraphIndexer, codeGraphDirectPersistentCapacityProtector} from '../indexer.js';
-import {withCodeGraphProcessLock} from '../indexer_build.js';
-import type {DirectPersistentCapacityProtection} from '../indexer_types.js';
+import {withCodeGraphProcessLock} from '../indexer/build.js';
+import type {DirectPersistentCapacityProtection} from '../indexer/types.js';
 import {CodeGraphLanguagePackRegistry, type CodeGraphLanguagePackRegistryShape} from '../languages/registry.js';
 import {codeGraphLayout} from '../layout.js';
-import {CodeGraphMaintenanceCoordinator} from '../maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../maintenance/coordinator.js';
 import {
   observeCleanRepositoryWorktree,
   resolveRepositoryIdentity,
@@ -22,7 +22,7 @@ import {
   hydrateCodeGraphCheckpointReusableBaseReceipt,
   type CodeGraphCheckpointImportReceiptInput,
 } from '../store.js';
-import {CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION} from '../store/schema_revision.js';
+import {CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION} from '../store/schema/revision.js';
 import type {CodeGraphSnapshot, RepositoryIdentity} from '../types.js';
 import {codeGraphCheckpointAbiInputV1, inspectCodeGraphCheckpointCompatibilityV1} from './compatibility.js';
 import {withCodeGraphCheckpointAuthorityVerification} from './authority.js';

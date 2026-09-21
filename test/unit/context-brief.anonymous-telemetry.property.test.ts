@@ -17,7 +17,7 @@ import {
 } from '../../src/context_brief/index.js';
 import {anonymousTelemetryTestLayer, withAnonymousTelemetry} from '../../src/effect/telemetry.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
-import type {MemoryCodeCitationV1} from '../../src/memory/code_citation.js';
+import type {MemoryCodeCitationV1} from '../../src/memory/code/citation.js';
 import {
   contextBriefCitationTelemetryFields,
   contextBriefCodeAnchorTelemetryFields,

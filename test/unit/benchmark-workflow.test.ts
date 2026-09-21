@@ -55,12 +55,44 @@ interface BenchmarkWorkflow {
   };
 }
 
+function expectBroadPullRequestTrigger(workflow: BenchmarkWorkflow): void {
+  expect(Object.prototype.hasOwnProperty.call(workflow.on, 'pull_request')).toBe(true);
+  const pullRequest = workflow.on.pull_request;
+  expect(Object.prototype.hasOwnProperty.call(pullRequest ?? {}, 'paths')).toBe(false);
+  expect(Object.prototype.hasOwnProperty.call(pullRequest ?? {}, 'paths-ignore')).toBe(false);
+}
+
 describe('platform benchmark workflow', () => {
+  it('signs the inverse scale capture before independently verifying and retaining release evidence', () => {
+    const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const job = workflow.jobs['code-memory-link-inverse-scale'];
+    const steps = job.steps ?? [];
+    const capture = steps.findIndex(step => step.run?.includes('bench:code-memory-link-scale'));
+    const attest = steps.findIndex(step => step.uses?.startsWith('actions/attest@'));
+    const verify = steps.findIndex(step => step.run?.includes('verify-code-memory-link-scale-provenance.ts'));
+    const stage = steps.findIndex(step => step.name === 'Stage the exact content-addressed G artifact');
+    expect(job.permissions).toMatchObject({
+      'id-token': 'write',
+      attestations: 'write',
+      actions: 'read',
+      contents: 'read',
+    });
+    expect(attest).toBeGreaterThan(capture);
+    expect(verify).toBeGreaterThan(attest);
+    expect(stage).toBeGreaterThan(verify);
+    expect(steps[attest].with?.['subject-path']).toContain('.subject.json');
+    expect(steps[verify].env?.GH_TOKEN).toBe('${{ github.token }}');
+    expect(steps[verify].run).toContain('--candidate-commit');
+    expect(steps.map(step => step.run ?? '').join('\n')).not.toContain('--runner-binding');
+  });
   it('runs only bounded lexical scale gates for graph and runtime pull requests', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const paths = workflow.on.pull_request?.paths ?? [];
+    expectBroadPullRequestTrigger(workflow);
+    const classifier = workflow.jobs['classify-platform-benchmark'];
     const pullRequestJob = workflow.jobs['code-graph-pr-scale'];
     const command = pullRequestJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const recallJob = workflow.jobs['recall-pr-10k'];
@@ -78,34 +110,35 @@ describe('platform benchmark workflow', () => {
       step => step.name === 'Adjudicate fixed hosted-runner replicas',
     );
 
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        '.github/workflows/benchmarks.yml',
-        'scripts/adjudicate-code-graph-windows-replicas.ts',
-        'scripts/benchmark-code-graph.ts',
-        'scripts/benchmark-code-graph-workset.ts',
-        'scripts/code-graph-benchmark-sampler.ts',
-        'scripts/benchmark-recall-vectors.ts',
-        'scripts/recall-vector-performance-budget.ts',
-        'scripts/evaluate-recall.ts',
-        'src/code_graph/**',
-        'src/effect/ai/**',
-        'src/effect/runtime.ts',
-        'src/models/**',
-        'src/recall/**',
-        'src/search/vector-index.ts',
-        'test/evaluation/baselines/code-graph-v1/**',
-        'test/evaluation/baselines/code-graph-workset-v1/**',
-      ]),
+    expect(classifier.if).toBe("github.event_name == 'pull_request'");
+    expect(classifier.outputs).toEqual({
+      run_code_graph_pr: '${{ steps.scope.outputs.run_code_graph_pr }}',
+      run_recall_pr: '${{ steps.scope.outputs.run_recall_pr }}',
+    });
+    expect(classifier.steps?.find(step => step.id === 'scope')?.run).toContain(
+      'test/ci/platform-benchmark-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"',
     );
-    expect(pullRequestJob.if).toBe("github.event_name == 'pull_request'");
+    const classifierCheckout = classifier.steps?.find(step => step.uses === 'actions/checkout@v7');
+    expect(classifierCheckout?.with?.['fetch-depth']).toBe(0);
+    const classifierScope = classifier.steps?.find(step => step.id === 'scope');
+    expect(classifierScope?.env).toEqual({
+      BASE_SHA: '${{ github.event.pull_request.base.sha }}',
+      HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
+    });
+    expect(pullRequestJob.needs).toBe('classify-platform-benchmark');
+    expect(pullRequestJob.if).toBe(
+      "${{ always() && github.event_name == 'pull_request' && (needs.classify-platform-benchmark.result != 'success' || needs.classify-platform-benchmark.outputs.run_code_graph_pr != 'false') }}",
+    );
     expect(pullRequestJob['runs-on']).toBe('ubuntu-latest');
     expect(pullRequestJob['timeout-minutes']).toBe(20);
     expect(pullRequestJob.strategy?.matrix?.scale).toEqual([10_000, 100_000]);
     expect(command).toContain('--scale-symbols ${{ matrix.scale }}');
     expect(command).toContain('--fail-on-budget');
     expect(command).not.toContain('--vectors');
-    expect(recallJob.if).toBe("github.event_name == 'pull_request'");
+    expect(recallJob.needs).toBe('classify-platform-benchmark');
+    expect(recallJob.if).toBe(
+      "${{ always() && github.event_name == 'pull_request' && (needs.classify-platform-benchmark.result != 'success' || needs.classify-platform-benchmark.outputs.run_recall_pr != 'false') }}",
+    );
     expect(recallJob['runs-on']).toBe('ubuntu-latest');
     expect(recallJob['timeout-minutes']).toBeLessThanOrEqual(15);
     expect(recallCommand).toContain('bun run eval:recall');
@@ -208,38 +241,18 @@ describe('platform benchmark workflow', () => {
     const ratchetWorkflow = load(readFileSync('.github/workflows/code-graph-production-ratchet.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
-    const paths = ratchetWorkflow.on.pull_request?.paths ?? [];
     const classifier = ratchetWorkflow.jobs.classify;
     const job = ratchetWorkflow.jobs.ratchet;
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
-    expect(paths).toEqual(
-      expect.arrayContaining([
-        '.github/workflows/code-graph-production-ratchet.yml',
-        'scripts/benchmark-code-graph.ts',
-        'test/ci/code-graph-production-ratchet-gate.ts',
-        'test/ci/code-graph-production-ratchet-scope.ts',
-        'src/code_graph/**',
-        'src/effect/errors.ts',
-        'src/effect/file_durability.ts',
-        'src/effect/time.ts',
-        'src/process/diagnostics.ts',
-        'src/telemetry/session.ts',
-        'src/utils.ts',
-        'src/worker_protocol.ts',
-        'test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json',
-        'test/unit/code-graph.production-ratchet-scope.property.test.ts',
-      ]),
-    );
-    expect(paths).not.toContain('src/recall/**');
-    expect(paths.join('\n').toLowerCase()).not.toContain('intellij');
+    expectBroadPullRequestTrigger(ratchetWorkflow);
     expect(job['runs-on']).toBe('ubuntu-24.04');
     expect(job['timeout-minutes']).toBe(40);
     expect(job.needs).toBe('classify');
     expect(job.if).toBe('always()');
-    expect(classifier.outputs?.release_metadata_only).toBe('${{ steps.scope.outputs.release_metadata_only }}');
+    expect(classifier.outputs?.run_benchmark).toBe('${{ steps.scope.outputs.run_benchmark }}');
     expect(classifier.steps?.find(step => step.id === 'scope')).toMatchObject({
-      name: 'Skip only a strict release-metadata diff',
+      name: 'Classify the production-ratchet diff',
       run: 'bun test/ci/code-graph-production-ratchet-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"',
     });
     const guardedSteps = job.steps?.filter(
@@ -252,9 +265,7 @@ describe('platform benchmark workflow', () => {
     );
     expect(guardedSteps).toHaveLength(5);
     for (const step of guardedSteps ?? []) {
-      expect(step.if).toBe(
-        "needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'",
-      );
+      expect(step.if).toBe("needs.classify.result != 'success' || needs.classify.outputs.run_benchmark != 'false'");
     }
     expect(job.steps?.find(step => step.uses === 'actions/checkout@v7')?.with).toMatchObject({'fetch-depth': '0'});
     const candidateMeasurement = job.steps?.find(
@@ -292,7 +303,7 @@ describe('platform benchmark workflow', () => {
     expect(pairedGate?.run).toContain('--initial-candidate artifacts/code-graph-production-ratchet-Linux-');
     expect(job.steps?.indexOf(pairedCandidateMeasurement!)).toBeLessThan(job.steps?.indexOf(pairedGate!) ?? 0);
     expect(job.steps?.find(step => step.uses === 'actions/upload-artifact@v7')?.if).toContain(
-      "needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'",
+      "needs.classify.result != 'success' || needs.classify.outputs.run_benchmark != 'false'",
     );
     expect(command.match(/--samples 1/g)).toHaveLength(3);
     expect(command.match(/--profile production-large/g)).toHaveLength(3);
@@ -479,7 +490,7 @@ describe('platform benchmark workflow', () => {
     const releaseCommand = release.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
     expect(evidence.needs).toBeUndefined();
-    expect(releaseEvidence.on.push?.tags).toEqual(['v4.*']);
+    expect(releaseEvidence.on.push?.tags).toEqual(['v4.*', 'v5.*']);
     expect(evidence.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(evidence.with).toMatchObject({
       release_ref: '${{ github.ref }}',

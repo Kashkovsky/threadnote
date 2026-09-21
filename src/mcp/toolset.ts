@@ -8,6 +8,7 @@ export interface McpToolCapabilities {
   readonly contextBrief: boolean;
   readonly graphLocal: boolean;
   readonly graphWorkset: boolean;
+  readonly lifecycle: boolean;
   readonly maintenance: boolean;
   readonly memoryPublish: boolean;
   readonly memoryRead: boolean;
@@ -20,6 +21,7 @@ const TOOLSET_CAPABILITIES = {
     contextBrief: true,
     graphLocal: true,
     graphWorkset: true,
+    lifecycle: true,
     maintenance: false,
     memoryPublish: true,
     memoryRead: true,
@@ -28,8 +30,9 @@ const TOOLSET_CAPABILITIES = {
   },
   'cursor-cloud': {
     contextBrief: false,
-    graphLocal: true,
+    graphLocal: false,
     graphWorkset: false,
+    lifecycle: false,
     maintenance: false,
     memoryPublish: false,
     memoryRead: true,
@@ -38,8 +41,9 @@ const TOOLSET_CAPABILITIES = {
   },
   'cursor-cloud-git-beta': {
     contextBrief: false,
-    graphLocal: true,
+    graphLocal: false,
     graphWorkset: false,
+    lifecycle: false,
     maintenance: false,
     memoryPublish: false,
     memoryRead: true,
@@ -50,6 +54,7 @@ const TOOLSET_CAPABILITIES = {
     contextBrief: false,
     graphLocal: true,
     graphWorkset: false,
+    lifecycle: false,
     maintenance: false,
     memoryPublish: false,
     memoryRead: false,
@@ -58,8 +63,9 @@ const TOOLSET_CAPABILITIES = {
   },
   'cursor-cloud-personal': {
     contextBrief: false,
-    graphLocal: true,
+    graphLocal: false,
     graphWorkset: false,
+    lifecycle: false,
     maintenance: false,
     memoryPublish: false,
     memoryRead: true,
@@ -70,6 +76,7 @@ const TOOLSET_CAPABILITIES = {
     contextBrief: true,
     graphLocal: true,
     graphWorkset: true,
+    lifecycle: true,
     maintenance: true,
     memoryPublish: true,
     memoryRead: true,

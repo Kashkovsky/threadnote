@@ -1,5 +1,5 @@
 import {Effect, FileSystem, Path} from 'effect';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {graphSharingFailure} from './errors.js';
 import {parseSha256Digest, SHA256_DIGEST, SHA256_HEX, type Sha256Digest} from './digest.js';

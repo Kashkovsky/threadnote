@@ -30,18 +30,18 @@ import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, CodeGraphIndexer} from '../../src/
 import {
   CodeGraphDiskCapacityObservationError,
   CodeGraphDiskCapacityPressureError,
-} from '../../src/code_graph/disk_capacity.js';
-import {ensureBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+} from '../../src/code_graph/disk/capacity.js';
+import {ensureBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js';
 import {
   decodeStoredCodeGraphFact,
   encodeStoredCodeGraphFact,
   storedCodeGraphFactRawBytesSql,
-} from '../../src/code_graph/fact_storage.js';
+} from '../../src/code_graph/fact/storage.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES,
-} from '../../src/code_graph/incremental_work.js';
+} from '../../src/code_graph/incremental/work.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {readPersistedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {
@@ -75,6 +75,7 @@ import {
 } from '../../src/code_graph/types.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {CommandExecutor} from '../../src/effect/command.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runDoctor, runRepair} from '../../src/lifecycle.js';
@@ -198,6 +199,59 @@ describe('native code graph lifecycle', () => {
         );
         expect(queryOnly).toBe(1);
 
+        const selectedBehindWriterGate = yield* Deferred.make<void>();
+        const writerGateLayout = codeGraphLayout(
+          yield* Path.Path,
+          home,
+          indexed.identity.checkoutId,
+          indexed.identity.worktreeId,
+        );
+        const fs = yield* FileSystem.FileSystem;
+        const queryBehindWriterGate = yield* withExclusiveFileLock(
+          fs,
+          writerGateLayout.databaseWriteLockPath,
+          {retryIntervalMilliseconds: 1, staleAfterMilliseconds: 5_000, waitTimeoutMilliseconds: 5_000},
+          Effect.gen(function* () {
+            const reader = yield* graph
+              .inspect({
+                cwd: root,
+                interlock: {
+                  afterSnapshotSelected: () => Deferred.succeed(selectedBehindWriterGate, undefined),
+                },
+                operation: 'query',
+                query: 'withExclusiveFileLock',
+                refresh: false,
+                threadnoteHome: home,
+              })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(selectedBehindWriterGate);
+            return yield* Fiber.join(reader).pipe(
+              Effect.timeoutOrElse({
+                duration: 1_000,
+                orElse: () =>
+                  Effect.fail(
+                    TestError.make({message: 'Ready-snapshot query waited behind the checkout database writer gate.'}),
+                  ),
+              }),
+            );
+          }),
+        );
+        expect(queryBehindWriterGate.nodes.some(node => node.name === 'withExclusiveFileLock')).toBe(true);
+
+        const queryAfterPreferredRetirement = yield* graph.inspect({
+          cwd: root,
+          operation: 'query',
+          query: 'withExclusiveFileLock',
+          refresh: false,
+          statusObservation: {
+            borrowedSnapshotId: `cgsn_${'f'.repeat(40)}`,
+            identity: indexed.identity,
+          },
+          threadnoteHome: home,
+        });
+        expect(queryAfterPreferredRetirement.snapshot.id).toBe(indexed.snapshot.id);
+        expect(queryAfterPreferredRetirement.nodes.some(node => node.name === 'withExclusiveFileLock')).toBe(true);
+
         const selected = yield* Ref.make(0);
         const allSelected = yield* Deferred.make<void>();
         const afterSnapshotSelected = () =>
@@ -239,10 +293,21 @@ describe('native code graph lifecycle', () => {
 
         const readCompleted = yield* Deferred.make<void>();
         const finish = yield* Deferred.make<void>();
+        const retiredSnapshots = yield* Ref.make(0);
         const query = yield* graph
           .inspect({
             cwd: root,
             interlock: {
+              afterSnapshotSelected: () =>
+                Effect.sync(() => {
+                  const database = new Database(databasePath);
+                  try {
+                    database.exec('PRAGMA foreign_keys = ON');
+                    return database.query('DELETE FROM snapshots WHERE id = ?').run(indexed.snapshot.id).changes;
+                  } finally {
+                    database.close();
+                  }
+                }).pipe(Effect.flatMap(changes => Ref.set(retiredSnapshots, changes))),
               beforeReadCompletion: () =>
                 Deferred.succeed(readCompleted, undefined).pipe(Effect.andThen(Deferred.await(finish))),
             },
@@ -255,9 +320,11 @@ describe('native code graph lifecycle', () => {
         yield* Deferred.await(readCompleted);
         const active = yield* Effect.sync(() => snapshotLeaseCount(databasePath));
         yield* Deferred.succeed(finish, undefined);
-        yield* Fiber.join(query);
+        const queryAfterRetirement = yield* Fiber.join(query);
         const released = yield* Effect.sync(() => snapshotLeaseCount(databasePath));
-        expect({active, released}).toEqual({active: 1, released: 0});
+        expect({active, released}).toEqual({active: 0, released: 0});
+        expect(yield* Ref.get(retiredSnapshots)).toBeGreaterThan(0);
+        expect(queryAfterRetirement.nodes.some(node => node.name === 'withExclusiveFileLock')).toBe(true);
       }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     // Suite-wide graph fixtures can delay setup; the in-test 5s barrier still
     // enforces that all eight selected readers bootstrap without contention.
@@ -5893,60 +5960,63 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  it('keeps default lifecycle repair bounded and points deep maintenance to an explicit command', async () => {
-    const root = createFixtureRepository();
-    const secondRoot = createFixtureRepository();
-    const home = join(root, '.threadnote-test-home');
-    const config: RuntimeConfig = {
-      account: 'local',
-      agentContextHome: home,
-      agentId: 'threadnote',
-      manifestPath: join(home, 'seed-manifest.yaml'),
-      user: 'tester',
-    };
-    const output = await runEffect(
-      Effect.gen(function* () {
-        const indexer = yield* CodeGraphIndexer;
-        const query = yield* CodeGraphQueryService;
-        const store = yield* CodeGraphStore;
-        const first = yield* indexer.index({cwd: root, threadnoteHome: home});
-        yield* indexer.index({cwd: secondRoot, threadnoteHome: home});
-        const firstStatus = yield* query.status(home, root);
-        const secondStatus = yield* query.status(home, secondRoot);
-        yield* store.markBuilding(firstStatus.databasePath, first.identity, {
-          ...first.snapshot,
-          id: `${first.snapshot.id}-interrupted`,
-          state: 'building',
-        });
-        yield* Effect.sync(() => setGraphSchemaVersion(secondStatus.databasePath, '999'));
-        const doctor = yield* captureConsole(runDoctor(config, {dryRun: true}));
-        const repair = yield* captureConsole(runRepair(config, {dryRun: true, mcp: 'none', postUpdate: false}));
-        return {doctor: doctor.output, repair: repair.output};
-      }),
-    );
-
-    expect(output.doctor).toMatch(/Checking · checking \d+\/\d+ databases/);
-    expect(output.doctor).not.toMatch(/Repairing · checking \d+\/\d+ databases/);
-    expect(output.doctor).not.toMatch(/Checking native code graph database \d+\/2\./);
-    expect(output.doctor).toContain(
-      'FAIL native code graph: 2 database(s); 1 ready snapshot(s); 1 incomplete snapshot(s); ' +
-        '1 database(s) need a disposable rebuild',
-    );
-    expect(output.repair).toMatch(/Would repair · /);
-    expect(output.repair).not.toMatch(/Checking native code graph database \d+\/2\./);
-    expect(output.repair).toMatch(/Would repair · deferred \d+\/2 databases/);
-    expect(output.repair).toContain(
-      'Would repair 2 native code graph database(s): 2 deferred, 0 disposable rebuild(s), 0 incomplete snapshot(s), ' +
-        '0 temporary graph file(s).',
-    );
-    expect(output.repair).toContain(
-      'WARN native code graph: 2 database(s); 1 ready snapshot(s); 0 incomplete snapshot(s); ' +
-        '2 database maintenance check(s) deferred',
-    );
-    expect(output.repair.indexOf('Running Threadnote doctor checks.')).toBeGreaterThan(
-      output.repair.search(/Would repair \d+ native code graph database/),
-    );
-  });
+  effectIt.effect('keeps default lifecycle repair bounded and points deep maintenance to an explicit command', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const home = join(root, '.threadnote-test-home');
+      const config: RuntimeConfig = {
+        account: 'local',
+        agentContextHome: home,
+        agentId: 'threadnote',
+        manifestPath: join(home, 'seed-manifest.yaml'),
+        user: 'tester',
+      };
+      const indexer = yield* CodeGraphIndexer;
+      const query = yield* CodeGraphQueryService;
+      const store = yield* CodeGraphStore;
+      const first = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const secondDatabasePath = join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        'a'.repeat(64),
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      yield* store.initialize(secondDatabasePath);
+      const firstStatus = yield* query.status(home, root);
+      yield* store.markBuilding(firstStatus.databasePath, first.identity, {
+        ...first.snapshot,
+        id: `${first.snapshot.id}-interrupted`,
+        state: 'building',
+      });
+      yield* Effect.sync(() => setGraphSchemaVersion(secondDatabasePath, '999'));
+      const doctor = yield* captureConsole(runDoctor(config, {dryRun: true}));
+      const repair = yield* captureConsole(runRepair(config, {dryRun: true, mcp: 'none', postUpdate: false}));
+      const output = {doctor: doctor.output, repair: repair.output};
+      expect(output.doctor).toMatch(/Checking · checking \d+\/\d+ databases/);
+      expect(output.doctor).not.toMatch(/Repairing · checking \d+\/\d+ databases/);
+      expect(output.doctor).not.toMatch(/Checking native code graph database \d+\/2\./);
+      expect(output.doctor).toContain(
+        'FAIL native code graph: 2 database(s); 1 ready snapshot(s); 1 incomplete snapshot(s); ' +
+          '1 database(s) need a disposable rebuild',
+      );
+      expect(output.repair).toMatch(/Would repair · /);
+      expect(output.repair).not.toMatch(/Checking native code graph database \d+\/2\./);
+      expect(output.repair).toMatch(/Would repair · deferred \d+\/2 databases/);
+      expect(output.repair).toContain(
+        'Would repair 2 native code graph database(s): 2 deferred, 0 disposable rebuild(s), 0 incomplete snapshot(s), ' +
+          '0 temporary graph file(s).',
+      );
+      expect(output.repair).toContain(
+        'WARN native code graph: 2 database(s); 1 ready snapshot(s); 0 incomplete snapshot(s); ' +
+          '2 database maintenance check(s) deferred',
+      );
+      expect(output.repair.indexOf('Running Threadnote doctor checks.')).toBeGreaterThan(
+        output.repair.search(/Would repair \d+ native code graph database/),
+      );
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
   effectIt.effect('holds the maintenance gate while the repair diagnosis is consumed', () =>
     Effect.gen(function* () {

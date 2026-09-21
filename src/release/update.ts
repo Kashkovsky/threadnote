@@ -12,9 +12,9 @@ import {installCommandShim} from '../command-shim.js';
 import {extractGzipTar} from '../effect/archive.js';
 import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from '../effect/command.js';
 import {applicationError, fromSync} from '../effect/errors.js';
-import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file_durability.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
+import {syncDirectoryBestEffort, syncWritableFile} from '../effect/file/durability.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
 import {getJsonEffect, HttpService} from '../effect/http.js';
 import {sha256FileHex} from '../effect/digest.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
@@ -37,7 +37,7 @@ import {sendSystemNotification} from '../system_notification.js';
 import {readTelemetryConsentRenewal} from '../telemetry/config.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions} from '../types.js';
 import {selectUpdateChannel, type UpdateChannel} from './channel.js';
-import {isDevelopmentBuildVersion} from './version_compare.js';
+import {isDevelopmentBuildVersion} from './version/compare.js';
 import {isStandaloneThreadnoteBuild} from './runtime_version.js';
 import {
   compareVersions,

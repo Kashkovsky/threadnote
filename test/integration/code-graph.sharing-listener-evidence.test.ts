@@ -11,7 +11,7 @@ import {
   runGraphPublisherListen,
   runGraphShareInit,
 } from '../../src/code_graph/sharing/publisher.js';
-import {readGraphPublisherRegistryStatus} from '../../src/code_graph/sharing/publisher_registry.js';
+import {readGraphPublisherRegistryStatus} from '../../src/code_graph/sharing/publisher/registry.js';
 import {readJsonFile, writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {graphSharingLayout, graphSharingPublisherEvidencePath} from '../../src/code_graph/sharing/layout.js';
 import {parseSha256Digest} from '../../src/code_graph/sharing/digest.js';

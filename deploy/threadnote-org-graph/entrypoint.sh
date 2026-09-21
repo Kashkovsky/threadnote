@@ -26,9 +26,9 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
 
 [[ -d "$THREADNOTE_GRAPH_CHECKOUT/.git" && -d "$THREADNOTE_HOME" ]] || fail
 bun /opt/threadnote/graph-publisher-preflight.js || fail
-command -v docker-credential-threadnote-auth0-publisher-m2m >/dev/null 2>&1 || fail
+command -v docker-credential-threadnote-oauth-publisher-m2m >/dev/null 2>&1 || fail
 registry_host="${THREADNOTE_GRAPH_REGISTRY_ORIGIN#https://}"
-printf '{"credHelpers":{"%s":"threadnote-auth0-publisher-m2m"}}\n' "$registry_host" > "$DOCKER_CONFIG/config.json"
+printf '{"credHelpers":{"%s":"threadnote-oauth-publisher-m2m"}}\n' "$registry_host" > "$DOCKER_CONFIG/config.json"
 chmod 600 "$DOCKER_CONFIG/config.json"
 nginx -c /etc/threadnote/graph-nginx.conf -t >/dev/null 2>&1 || fail
 

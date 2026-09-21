@@ -3,18 +3,25 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {BunCrypto, BunFileSystem, BunPath} from '@effect/platform-bun';
 import {ByteSize, DateTime, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
+import fc from 'fast-check';
 import {
   appendCandidateAudit,
+  assessReplacementSafety,
   buildCandidateReview,
   candidateReviewWithAuditEvent,
+  candidateReviewWithApplying,
   candidateReviewWithState,
   loadCandidateReview,
   readActiveProjectMemories,
+  replacementSafetyBaseline,
   saveCandidateReview,
+  type CandidateReview,
   type SessionCloseoutInput,
+  type StructuredCloseoutV1,
   validateSessionCloseoutInput,
   withCandidateReviewLock,
 } from '../../src/memory/candidate.js';
+import {projectKnowledgeDeltaV1} from '../../src/memory/knowledge_delta.js';
 import type {MemoryRecord} from '../../src/memory/document.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {join, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from '../helpers/effect-filesystem.js';
@@ -52,7 +59,178 @@ function existing(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
   };
 }
 
+function projectedReview(candidates: CandidateReview['candidates']): CandidateReview {
+  return {
+    auditEvents: [],
+    candidates,
+    codeCitations: [],
+    createdAt: '2026-09-17T10:00:00.000Z',
+    outcome: 'Projected reviewed knowledge.',
+    project: 'threadnote',
+    reviewId: 'review-0123456789abcdef',
+    revision: 2,
+    sourceAgentClient: 'codex',
+    task: 'Project a knowledge delta',
+    topic: 'knowledge-delta',
+    version: 2,
+  };
+}
+
+const structuredCloseout: StructuredCloseoutV1 = {
+  type: 'structured-closeout',
+  version: 1,
+  rationale: 'Keep reviewed context explicit.',
+  constraints: ['Private by default.'],
+  verificationPerformed: ['Focused unit tests passed.'],
+  knowledgeInvalidated: ['The unbounded closeout draft.'],
+  unresolvedRisks: ['A follow-up review may be needed.'],
+};
+
+function projectedCandidate(
+  candidateId: string,
+  overrides: Partial<CandidateReview['candidates'][number]> = {},
+): CandidateReview['candidates'][number] {
+  return {
+    candidateId,
+    categories: ['decision'],
+    comparison: 'new',
+    confidence: 0.82,
+    evidence: ['test/candidate-memory.test.ts'],
+    kind: 'durable',
+    project: 'threadnote',
+    proposedText: '## Decisions\n- Keep review output bounded.',
+    reason: 'No active memory with the same stable identity was found.',
+    recommendation: 'create',
+    state: 'pending',
+    topic: 'knowledge-delta',
+    ...overrides,
+  };
+}
+
 describe('candidate-memory formation', () => {
+  it('projects review candidates as a bounded KnowledgeDeltaV1 without mutating the review', () => {
+    const review = projectedReview([
+      projectedCandidate('review-0123456789abcdef-1'),
+      projectedCandidate('review-0123456789abcdef-2', {
+        categories: ['handoff'],
+        kind: 'handoff',
+        proposedText: '## Handoff state\n- Run focused checks.',
+        topic: 'knowledge-delta-handoff',
+      }),
+      projectedCandidate('review-0123456789abcdef-3', {
+        categories: ['preference'],
+        kind: 'preference',
+        proposedText: '## Preferences\n- Keep output concise.',
+        topic: 'knowledge-delta-preference',
+      }),
+    ]);
+    const before = structuredClone(review);
+
+    expect(projectKnowledgeDeltaV1(review)).toEqual({
+      items: [
+        expect.objectContaining({candidateId: 'review-0123456789abcdef-1', type: 'decision-or-invariant'}),
+        expect.objectContaining({candidateId: 'review-0123456789abcdef-2', type: 'handoff-state'}),
+        expect.objectContaining({candidateId: 'review-0123456789abcdef-3', type: 'preference'}),
+      ],
+      noAction: false,
+      reviewId: review.reviewId,
+      revision: review.revision,
+      type: 'knowledge-delta',
+      version: 1,
+    });
+    expect(
+      projectKnowledgeDeltaV1(
+        projectedReview([
+          projectedCandidate('review-0123456789abcdef-4', {
+            comparison: 'replacement',
+            recommendation: 'replace',
+            targetContentHash: 'a'.repeat(64),
+            targetUri: 'threadnote://user/me/memories/durable/projects/threadnote/knowledge-delta.md',
+          }),
+        ]),
+      ),
+    ).toMatchObject({
+      items: [expect.objectContaining({type: 'context-repair-or-retirement'})],
+    });
+    expect(review).toEqual(before);
+  });
+
+  it('projects revision-checked edited and persisted apply bodies without mutating the review', () => {
+    const candidate = projectedCandidate('review-0123456789abcdef-1');
+    const review = projectedReview([candidate]);
+    expect(
+      projectKnowledgeDeltaV1(review, {
+        bodyText: '## Decisions\n- Use the reviewed edit.',
+        candidateId: candidate.candidateId,
+        revision: review.revision,
+      }).items[0]?.mutationPreview.bodyText,
+    ).toContain('reviewed edit');
+    expect(() =>
+      projectKnowledgeDeltaV1(review, {
+        bodyText: 'stale',
+        candidateId: candidate.candidateId,
+        revision: review.revision + 1,
+      }),
+    ).toThrow('revision changed');
+    expect(
+      projectKnowledgeDeltaV1(
+        projectedReview([
+          {...candidate, applyBodyText: '## Decisions\n- Persist the exact applied edit.', state: 'applied'},
+        ]),
+      ).items[0]?.mutationPreview.bodyText,
+    ).toContain('exact applied edit');
+  });
+
+  it('orders KnowledgeDeltaV1 items deterministically by candidate identity', () => {
+    const candidates = [
+      projectedCandidate('review-0123456789abcdef-3'),
+      projectedCandidate('review-0123456789abcdef-1'),
+      projectedCandidate('review-0123456789abcdef-2'),
+    ];
+    fc.assert(
+      fc.property(
+        fc.shuffledSubarray(candidates, {minLength: candidates.length, maxLength: candidates.length}),
+        ordered => {
+          expect(projectKnowledgeDeltaV1(projectedReview(ordered))).toEqual(
+            projectKnowledgeDeltaV1(projectedReview(candidates)),
+          );
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('projects structured closeout context without mutation', () => {
+    const review = {...projectedReview([projectedCandidate('review-0123456789abcdef-1')]), structuredCloseout};
+    const before = structuredClone(review);
+    expect(projectKnowledgeDeltaV1(review).structuredCloseout).toEqual(structuredCloseout);
+    expect(review).toEqual(before);
+  });
+
+  it('keeps structured closeout projection deterministic across field ordering', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          rationale: fc.string({maxLength: 30}),
+          constraints: fc.array(fc.string({maxLength: 30}), {maxLength: 4}),
+          verificationPerformed: fc.array(fc.string({maxLength: 30}), {maxLength: 4}),
+          knowledgeInvalidated: fc.array(fc.string({maxLength: 30}), {maxLength: 4}),
+          unresolvedRisks: fc.array(fc.string({maxLength: 30}), {maxLength: 4}),
+        }),
+        fields => {
+          const review = {
+            ...projectedReview([projectedCandidate('review-0123456789abcdef-1')]),
+            structuredCloseout: {type: 'structured-closeout' as const, version: 1 as const, ...fields},
+          };
+          const before = structuredClone(review);
+          expect(projectKnowledgeDeltaV1(review).structuredCloseout).toEqual(review.structuredCloseout);
+          expect(review).toEqual(before);
+        },
+      ),
+      {numRuns: 20},
+    );
+  });
+
   it('forms at most three reviewed candidates from a session closeout', async () => {
     const review = await run(buildCandidateReview(input, [], new Date('2026-07-23T10:00:00.000Z')));
 
@@ -62,6 +240,61 @@ describe('candidate-memory formation', () => {
     expect(review.candidates[0]?.proposedText).toContain('## Decisions');
     expect(review.candidates[0]?.proposedText).toContain('## Invariants');
   });
+
+  effectIt.effect('carries structured closeout into the durable candidate body', () =>
+    Effect.gen(function* () {
+      const review = yield* buildCandidateReview(
+        {
+          ...input,
+          decisions: [],
+          invariants: [],
+          preferences: [],
+          handoff: [],
+          rationale: 'Explain why this contract is safe.',
+          constraints: ['Keep writes private.'],
+          verificationPerformed: ['Focused checks passed.'],
+          knowledgeInvalidated: ['The old draft.'],
+          unresolvedRisks: ['Follow-up review may refine this.'],
+        },
+        [],
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
+      expect(review.structuredCloseout).toEqual({
+        type: 'structured-closeout',
+        version: 1,
+        rationale: 'Explain why this contract is safe.',
+        constraints: ['Keep writes private.'],
+        verificationPerformed: ['Focused checks passed.'],
+        knowledgeInvalidated: ['The old draft.'],
+        unresolvedRisks: ['Follow-up review may refine this.'],
+      });
+      expect(review.candidates[0]?.proposedText).toContain('## Verification performed\n- Focused checks passed.');
+      expect(review.candidates[0]?.proposedText).toContain('## Unresolved risks\n- Follow-up review may refine this.');
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
+  );
+
+  effectIt.effect('omits an all-empty structured closeout instead of creating an empty durable candidate', () =>
+    Effect.gen(function* () {
+      const review = yield* buildCandidateReview(
+        {
+          ...input,
+          decisions: [],
+          invariants: [],
+          preferences: [],
+          handoff: [],
+          rationale: '   ',
+          constraints: [],
+          verificationPerformed: ['  '],
+          knowledgeInvalidated: [],
+          unresolvedRisks: [],
+        },
+        [],
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
+      expect(review.structuredCloseout).toBeUndefined();
+      expect(review.candidates).toEqual([]);
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
+  );
 
   it('recommends no action for a duplicate stable memory', async () => {
     const draft = await run(
@@ -97,6 +330,124 @@ describe('candidate-memory formation', () => {
       recommendation: 'replace',
       targetContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       targetUri: existing().uri,
+    });
+  });
+
+  effectIt.effect('warns when a handoff replacement would erase most multi-section continuity state', () =>
+    Effect.gen(function* () {
+      const targetBody = [
+        '## Current state',
+        '- Release branch and exact head are recorded for the next agent.',
+        '- Runtime ownership and active branch coordination are recorded here.',
+        '- Pull request status still needs a fresh remote check.',
+        '',
+        '## Verification evidence',
+        '- Focused tests, typecheck, lint, and exact-head smoke passed.',
+        '- The retained safety artifact and recovery path are documented.',
+        '',
+        '## Ordered next steps',
+        '- Refresh remote checks before merging.',
+        '- Transfer runtime ownership before the next install.',
+        '- Run final admission only after every slice is complete.',
+      ].join('\n');
+      const review = yield* buildCandidateReview(
+        {
+          ...input,
+          decisions: [],
+          handoff: ['Continue release coordination after the remaining checks finish.'],
+          invariants: [],
+          preferences: [],
+        },
+        [
+          existing({
+            body: targetBody,
+            metadata: {...existing().metadata, kind: 'handoff'},
+            uri: 'threadnote://user/me/memories/handoffs/active/threadnote/recall-memory-formation.md',
+          }),
+        ],
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
+
+      const projected = projectKnowledgeDeltaV1(review).items[0]?.mutationPreview.replacementSafety;
+      expect(projected).toMatchObject({
+        acknowledged: false,
+        classification: 'destructive-loss-risk',
+        destructiveLossRisk: true,
+        missingSections: ['Current state', 'Verification evidence', 'Ordered next steps'],
+        requiresExplicitApproval: true,
+        targetNonEmptyLines: 11,
+      });
+      expect(projected?.warning).toContain('Merge continuity-critical detail');
+
+      const edited = projectKnowledgeDeltaV1(review, {
+        bodyText: `${targetBody}\n- Continue release coordination after the remaining checks finish.`,
+        candidateId: review.candidates[0]?.candidateId ?? '',
+        revision: review.revision,
+      }).items[0]?.mutationPreview.replacementSafety;
+      expect(edited).toMatchObject({
+        classification: 'preserving',
+        destructiveLossRisk: false,
+        requiresExplicitApproval: false,
+      });
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
+  );
+
+  it('flags material character and line loss at compact boundaries monotonically', () => {
+    const compactLines = Array.from({length: 8}, (_unused, index) => `line-${index}`).join('\n');
+    expect(assessReplacementSafety('handoff', replacementSafetyBaseline(compactLines), 'line-0')).toMatchObject({
+      destructiveLossRisk: true,
+      targetBodyCharacters: compactLines.length,
+      targetNonEmptyLines: 8,
+    });
+
+    const characterTarget = 'x'.repeat(256);
+    expect(
+      assessReplacementSafety('handoff', replacementSafetyBaseline(characterTarget), 'x'.repeat(179)),
+    ).toMatchObject({
+      destructiveLossRisk: true,
+      retainedCharacterRatio: 179 / 256,
+    });
+    expect(assessReplacementSafety('handoff', replacementSafetyBaseline('x'.repeat(255)), 'x'.repeat(1))).toMatchObject(
+      {destructiveLossRisk: false},
+    );
+
+    fc.assert(
+      fc.property(fc.integer({min: 0, max: 8}), fc.integer({min: 0, max: 8}), (left, right) => {
+        const moreRetained = Math.max(left, right);
+        const lessRetained = Math.min(left, right);
+        const moreResult = assessReplacementSafety(
+          'handoff',
+          replacementSafetyBaseline(compactLines),
+          Array.from({length: moreRetained}, (_unused, index) => `line-${index}`).join('\n'),
+        );
+        const lessResult = assessReplacementSafety(
+          'handoff',
+          replacementSafetyBaseline(compactLines),
+          Array.from({length: lessRetained}, (_unused, index) => `line-${index}`).join('\n'),
+        );
+        if (moreResult.destructiveLossRisk) {
+          expect(lessResult.destructiveLossRisk).toBe(true);
+        }
+      }),
+      {numRuns: 40},
+    );
+  });
+
+  it('requires a fresh review when a legacy replacement has no safety baseline', () => {
+    const review = projectedReview([
+      projectedCandidate('review-0123456789abcdef-1', {
+        comparison: 'replacement',
+        recommendation: 'replace',
+        targetContentHash: 'a'.repeat(64),
+        targetUri: 'threadnote://user/me/memories/handoffs/active/threadnote/legacy.md',
+      }),
+    ]);
+
+    expect(projectKnowledgeDeltaV1(review).items[0]?.mutationPreview.replacementSafety).toMatchObject({
+      acknowledged: false,
+      classification: 'review-required',
+      requiresExplicitApproval: true,
+      warning: expect.stringContaining('Run review_session_context again'),
     });
   });
 
@@ -326,6 +677,55 @@ describe('candidate review persistence', () => {
         reviewId: review.reviewId,
         version: 2,
       });
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
+  );
+
+  effectIt.effect('retains destructive replacement approval in review and aggregate audit events', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const temporaryDirectory = yield* Effect.acquireRelease(
+        fs.makeTempDirectory({prefix: 'threadnote-candidate-audit-'}),
+        candidateDirectory => fs.remove(candidateDirectory, {force: true, recursive: true}).pipe(Effect.ignore),
+      );
+      const review = yield* buildCandidateReview(
+        input,
+        [],
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
+      const candidateId = review.candidates[0]?.candidateId ?? '';
+      const applying = candidateReviewWithApplying(
+        review,
+        candidateId,
+        {
+          allowDestructiveReplacement: true,
+          bodyText: '## Decisions\n- Keep the explicitly approved replacement.',
+          contentHash: 'a'.repeat(64),
+          operation: 'replace',
+          replaceUri: 'threadnote://user/me/memories/durable/projects/threadnote/old.md',
+          targetUri: 'threadnote://user/me/memories/durable/projects/threadnote/new.md',
+        },
+        '2026-07-23T10:01:00.000Z',
+      );
+      const applied = candidateReviewWithState(applying, candidateId, 'applied', {
+        action: 'apply',
+        allowDestructiveReplacement: true,
+        at: '2026-07-23T10:02:00.000Z',
+        memoryUri: 'threadnote://user/me/memories/durable/projects/threadnote/new.md',
+      });
+      yield* saveCandidateReview(temporaryDirectory, applied);
+
+      const loaded = yield* loadCandidateReview(temporaryDirectory, review.reviewId);
+      expect(loaded.auditEvents.filter(event => event.action === 'begin_apply' || event.action === 'apply')).toEqual([
+        expect.objectContaining({action: 'begin_apply', allowDestructiveReplacement: true}),
+        expect.objectContaining({action: 'apply', allowDestructiveReplacement: true}),
+      ]);
+      const auditPath = path.join(temporaryDirectory, 'threadnote', 'candidates', 'v1', 'audit.jsonl');
+      const auditEvents = (yield* fs.readFileString(auditPath))
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line) as {readonly allowDestructiveReplacement?: boolean});
+      expect(auditEvents.filter(event => event.allowDestructiveReplacement === true)).toHaveLength(2);
     }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
   );
 

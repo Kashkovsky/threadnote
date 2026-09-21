@@ -1,7 +1,7 @@
 import {Clock, Data, Effect, FileSystem, Path} from 'effect';
-import {codeGraphSourceSpanFragment} from '../code_graph/citation_primitives.js';
+import {codeGraphSourceSpanFragment} from '../code_graph/citation/primitives.js';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION, type MemoryCodeCitationV1} from '../memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION, type MemoryCodeCitationV1} from '../memory/code/citation.js';
 import {formatMemoryDocument} from '../memory/document.js';
 import {loadRecallCodeLinks, loadRecallIndexData, recallIndexStatus} from '../recall/index.js';
 import type {RuntimeConfig} from '../types.js';

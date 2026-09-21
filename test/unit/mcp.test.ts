@@ -154,23 +154,20 @@ describe('MCP toolsets', () => {
     );
   });
 
-  it('gives Cursor Cloud shared writes without review, publishing, maintenance, or worksets', () => {
-    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal'))).toEqual({
-      contextBrief: false,
-      graphLocal: true,
-      graphWorkset: false,
-      maintenance: false,
-      memoryPublish: false,
-      memoryRead: true,
-      memoryReview: false,
-      memoryWrite: true,
-    });
-    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-git-beta'))).toEqual(
-      mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal')),
-    );
-    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud'))).toEqual(
-      mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal')),
-    );
+  it('gives Personal Cursor Cloud shared writes without graph, review, publishing, maintenance, or worksets', () => {
+    for (const toolset of ['cursor-cloud-personal', 'cursor-cloud', 'cursor-cloud-git-beta'] as const) {
+      expect(mcpToolCapabilities(parseMcpToolset(toolset)), toolset).toEqual({
+        contextBrief: false,
+        graphLocal: false,
+        graphWorkset: false,
+        lifecycle: false,
+        maintenance: false,
+        memoryPublish: false,
+        memoryRead: true,
+        memoryReview: false,
+        memoryWrite: true,
+      });
+    }
   });
 
   it('keeps the Cursor Cloud local toolset graph-only', () => {
@@ -178,12 +175,18 @@ describe('MCP toolsets', () => {
       contextBrief: false,
       graphLocal: true,
       graphWorkset: false,
+      lifecycle: false,
       maintenance: false,
       memoryPublish: false,
       memoryRead: false,
       memoryReview: false,
       memoryWrite: false,
     });
+  });
+
+  it('gives local personal toolsets the lifecycle surface while retaining maintenance for full', () => {
+    expect(mcpToolCapabilities(parseMcpToolset('core'))).toMatchObject({lifecycle: true, maintenance: false});
+    expect(mcpToolCapabilities(parseMcpToolset('full'))).toMatchObject({lifecycle: true, maintenance: true});
   });
 
   effectIt.effect('launches the Windows MCP cmd adapter through ComSpec', () =>
@@ -249,6 +252,7 @@ describe('JSON MCP host configuration', () => {
                     THREADNOTE_MCP_TOOLSET: 'core',
                     THREADNOTE_HOME: testRuntime.agentContextHome,
                     THREADNOTE_MCP_CLIENT: agent,
+                    THREADNOTE_MCP_SURFACE: agent === 'cursor' ? 'cursor-desktop' : 'copilot-vscode',
                     THREADNOTE_AGENT_ID: 'threadnote',
                     THREADNOTE_ACCOUNT: 'local',
                     USER_EXTENSION: 'preserved',
@@ -1002,6 +1006,7 @@ describe('MCP agent executable resolution', () => {
         THREADNOTE_AGENT_ID: 'threadnote',
         THREADNOTE_HOME: testRuntime.agentContextHome,
         THREADNOTE_MCP_CLIENT: agent,
+        THREADNOTE_MCP_SURFACE: agent === 'codex' ? 'codex-cli' : 'claude-code',
         THREADNOTE_MCP_TOOLSET: 'core',
         THREADNOTE_USER: 'test-user',
       };

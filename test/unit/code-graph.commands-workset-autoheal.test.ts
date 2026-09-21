@@ -3,7 +3,7 @@ import {Effect} from 'effect';
 import {beforeEach, describe, expect, vi} from 'vitest';
 import type {CodeGraphWorksetPrepareResultV1} from '../../src/code_graph/workset_catalog/workset.js';
 import {runCodeGraphWorksetPrepare} from '../../src/code_graph/commands.js';
-import {CliOutput} from '../../src/effect/cli_output.js';
+import {CliOutput} from '../../src/effect/cli/output.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -18,8 +18,8 @@ vi.mock('../../src/code_graph/workset_catalog/workset.js', async importOriginal 
   prepareCodeGraphWorkset: mocks.prepareWorkset,
 }));
 
-vi.mock('../../src/memory/deferred_code_anchor_recovery.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../src/memory/deferred_code_anchor_recovery.js')>()),
+vi.mock('../../src/memory/deferred/code_anchor_recovery.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../src/memory/deferred/code_anchor_recovery.js')>()),
   healAnchorsAfterWorksetPrepare: mocks.healWorkset,
 }));
 

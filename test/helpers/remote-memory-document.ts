@@ -1,4 +1,4 @@
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import type {MemoryMetadata} from '../../src/memory/document.js';
 
 export function richRemoteMemoryMetadata(): MemoryMetadata {

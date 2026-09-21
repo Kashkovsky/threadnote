@@ -1,5 +1,7 @@
 import {cursorCloudPersonalDocsSection} from './docsCursorCloudPersonal.js';
+import {agentIntegrationDocsSection} from './docsAgentIntegrations.js';
 import {graphCheckpointsDocsArticle, graphCliCommand} from './docsGraphCheckpoints.js';
+import {codeGraphReadinessDocsArticle} from './docsCodeGraphReadiness.js';
 import {
   contextBriefMcpTool,
   finalizeCodeRefsMcpTool,
@@ -11,9 +13,24 @@ import {
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalImageProjectionCliCommand, optionalImageProjectionDocsArticle} from './docsImageProjection.js';
+import {connectAgentDocsArticle, firstWorkflowDocsArticle} from './docsGettingStarted.js';
+import {projectGuidanceDocsArticle} from './docsGuidance.js';
+import {
+  contextLifecycleConceptDocsArticle,
+  contextLifecycleDocsSection,
+  memorySchemaV5DocsArticle,
+  threadnote5JourneyDocsArticle,
+} from './docsLifecycle.js';
+import {
+  activationCliCommands,
+  activationMcpTools,
+  lifecycleCliCommands,
+  lifecycleMcpTools,
+} from './docsLifecycleReference.js';
 import {localAiDocsArticle} from './docsLocalAi.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
+import {upgradeFromThreadnote4DocsArticle} from './docsUpgradeV5.js';
 export type {
   CliCommandReference,
   DocsArticle,
@@ -27,8 +44,9 @@ export type {
   DocsVisualBlock,
   McpToolReference,
 } from './docsTypes.js';
-export const defaultDocId = 'what-is-threadnote';
+export const defaultDocId = 'threadnote-5-journey';
 export const cliCommands: CliCommandReference[] = [
+  ...activationCliCommands,
   {
     command: 'install',
     summary: 'Initialize the self-contained home, core embedding model, and indexes.',
@@ -38,6 +56,17 @@ export const cliCommands: CliCommandReference[] = [
     command: 'mcp-install',
     summary: 'Preview or install one host-specific MCP configuration, compact bootstrap, and Threadnote skill bundle.',
     examples: ['threadnote mcp-install codex --apply', 'threadnote mcp-install claude --toolset full --apply'],
+  },
+  {
+    command: 'guidance import / project / status / remove',
+    summary:
+      'Review existing project guidance and project explicitly selected durable knowledge into native agent instructions.',
+    examples: [
+      'threadnote guidance import <surface> --project <name>',
+      'threadnote guidance project <surface> --project <name> --memory <uri> --apply',
+      'threadnote guidance status <surface> --project <name> --json',
+      'threadnote guidance remove <surface> --project <name> --apply',
+    ],
   },
   {
     command: 'recall',
@@ -89,15 +118,7 @@ export const cliCommands: CliCommandReference[] = [
       'threadnote workset prepare commerce --concurrency 4',
     ],
   },
-  {
-    command: 'context brief',
-    summary:
-      'Compile task-relevant graph evidence, durable decisions, active handoffs, freshness, and gaps into one bounded agent brief.',
-    examples: [
-      'threadnote context brief --task "Trace checkout retries" --budget-tokens 1250',
-      'threadnote context brief --task "Trace checkout retries" --workset commerce --mode trace --json',
-    ],
-  },
+  ...lifecycleCliCommands,
   {
     command: 'models / index',
     summary: 'Inspect pinned local model state and rebuild or verify the selected vector generation.',
@@ -197,7 +218,6 @@ export const cliCommands: CliCommandReference[] = [
     examples: ['threadnote models list'],
   },
 ];
-
 export const mcpTools: McpToolReference[] = [
   {
     name: 'threadnote_guide',
@@ -275,6 +295,7 @@ export const mcpTools: McpToolReference[] = [
     summary: 'Preview and, after confirmation, publish an active durable personal memory to a configured team.',
     keyInputs: ['uri', 'preview', 'team', 'redact', 'push', 'message'],
   },
+  ...activationMcpTools,
   {
     name: 'obsidian_publish',
     toolset: 'core',
@@ -290,9 +311,10 @@ export const mcpTools: McpToolReference[] = [
   {
     name: 'recall_feedback',
     toolset: 'full',
-    summary: 'Record bounded useful, wrong, pin, or dismiss feedback without storing the full query.',
+    summary: 'Record bounded useful, wrong, pin, dismiss, or applied feedback without storing the full query.',
     keyInputs: ['query', 'uri', 'action', 'project'],
   },
+  ...lifecycleMcpTools,
   {
     name: 'health',
     toolset: 'full',
@@ -353,13 +375,14 @@ export const docsSections: DocsSection[] = [
   {
     id: 'getting-started',
     title: 'Getting started',
-    description: 'Install the standalone runtime, connect an agent, and complete the first recall-to-handoff loop.',
+    description:
+      'Start one task with local setup, a cited brief, exact code, and a reviewed closeout. Team reuse is optional.',
     articles: [
+      threadnote5JourneyDocsArticle,
       {
         id: 'what-is-threadnote',
         title: 'What is Threadnote?',
-        summary:
-          'A local-first memory and current-source intelligence layer shared by the coding agents your team already uses.',
+        summary: 'Help coding agents start with the decisions and current code they need, then review what they learn.',
         keywords: [
           'code search',
           'polyglot code graph',
@@ -371,25 +394,25 @@ export const docsSections: DocsSection[] = [
         body: [
           {
             type: 'paragraph',
-            text: 'Threadnote gives Codex, Claude Code, Cursor, and Copilot two complementary evidence systems without forcing the team into one chat product: durable engineering memory for what people learned, and a snapshot-aware polyglot code graph for what the current source actually contains. Personal working state and code indexes stay local. Curated durable knowledge can be published to a Git-backed team store, then recalled by another teammate using another agent.',
+            text: 'Threadnote gives [supported coding-agent environments](/agents/) a shared source of project context. A coding-agent environment is the editor, CLI, or hosted integration where an agent works; the catalog calls that declared integration a surface. Before a task, Threadnote finds the reviewed decisions, unfinished work, and current code that matter. After the task, it asks which new lessons are worth keeping. Private work and code indexes stay local; Git-backed team reuse is optional.',
           },
           {
             type: 'list',
             items: [
-              'Memory recall answers what the team learned, decided, or handed off.',
-              'Polyglot graph search finds current symbols and concepts across language and project boundaries, then follows definitions, calls, imports, inheritance, paths, and reverse impact.',
-              'Whole-repository graph analysis surfaces structural communities, groups, hubs, confidence, and surprising cross-boundary links without flooding an agent context window.',
-              'A pinned local embedding model improves recall without sending memory text to a hosted embedding service.',
-              'The Manager and Obsidian bridge provide visual and human-readable views while canonical files remain authoritative.',
+              'A Context Brief is the short, cited briefing an agent gets before a task.',
+              'A Knowledge Delta is the reviewable list of useful decisions, checks, outdated notes, and open risks learned during the task.',
+              'Git-backed sharing lets another supported agent reuse approved decisions without copying private chats.',
+              'Health checks show when saved context may be outdated, conflicting, expired, or disconnected from the code.',
+              'Private local reports show whether the workflow helps without collecting your code, saved context, repository name, or identity.',
             ],
           },
           {
             type: 'note',
-            text: 'Repository files remain authoritative. Threadnote is the operational context layer that helps an agent find the right file, memory, and current-code evidence at the right time.',
+            text: 'Your repository remains the source of truth for current code. Your team’s Git repository remains the source of truth for shared decisions. Threadnote brings the relevant pieces together and saves only what a person reviews.',
           },
           {
             type: 'heading',
-            text: 'Memory and current-source evidence stay separate',
+            text: 'Saved decisions and current code stay separate',
           },
           {
             type: 'paragraph',
@@ -397,11 +420,11 @@ export const docsSections: DocsSection[] = [
           },
           {
             type: 'heading',
-            text: 'Self-contained in 4.0',
+            text: 'Local and self-contained',
           },
           {
             type: 'paragraph',
-            text: 'Threadnote 4 is a standalone executable with an embedded Bun runtime. It owns canonical content, models, SQLite indexes, locks, logs, migration receipts, and share metadata below ~/.threadnote. It needs no Python, OpenViking service, separately installed Node or Bun runtime, database server, or background daemon.',
+            text: 'Threadnote 5 is a standalone executable with an embedded Bun runtime. It owns canonical content, models, SQLite indexes, locks, logs, migration receipts, and share metadata below ~/.threadnote. The complete local and Git-team workflow needs no Python, OpenViking service, separately installed Node or Bun runtime, database server, hosted organization account, or background daemon.',
           },
         ],
       },
@@ -439,7 +462,7 @@ threadnote doctor`,
           },
           {
             type: 'warning',
-            text: 'Threadnote 4.6 publishes unsigned Windows x64 and arm64 archives. The PowerShell installer verifies the immutable GitHub release and SHA-256 checksum and warns before activation; Windows may still show a SmartScreen warning.',
+            text: 'Threadnote publishes unsigned Windows x64 and arm64 archives. The PowerShell installer verifies the immutable GitHub release and SHA-256 checksum and warns before activation; Windows may still show a SmartScreen warning.',
           },
           {
             type: 'note',
@@ -447,58 +470,28 @@ threadnote doctor`,
           },
         ],
       },
-      {
-        id: 'connect-an-agent',
-        title: 'Connect your agent',
-        summary: 'Install the focused local stdio MCP toolset and start a fresh agent session.',
-        body: [
-          {
-            type: 'code',
-            language: 'sh',
-            code: `threadnote mcp-install codex --apply
-# Or: claude, cursor, copilot
-threadnote doctor`,
-          },
-          {
-            type: 'paragraph',
-            text: 'MCP runs as a local stdio child process. Applying mcp-install also registers only the selected host and installs its compact user-level bootstrap plus Threadnote skills. There is no HTTP endpoint, host, token, port, or daemon to configure. Restart the agent after changing its integration.',
-          },
-          {
-            type: 'paragraph',
-            text: 'The default core toolset includes recall, read, list, remember, candidate review, scoped code graph inspection, whole-graph analysis, selected-memory Obsidian publishing, team-memory publishing, and the guided tour. Use --toolset full only when the agent needs maintenance, conflict-resolution, artifact-sharing, or compatibility tools.',
-          },
-          {
-            type: 'code',
-            language: 'sh',
-            code: 'threadnote mcp-install claude --toolset full --apply',
-          },
-          {
-            type: 'note',
-            text: 'Ask your agent “what can I do with Threadnote?” to invoke threadnote_guide. The tour is loaded only on demand, so normal sessions do not pay its context cost.',
-          },
-          {
-            type: 'note',
-            text: 'For individual use, see [Personal Cursor Cloud setup](personal-cursor-cloud/): one personal stdio MCP can expose one or more private Git memory shares and bootstrap installs Cloud-specific Cursor skills.',
-          },
-        ],
-      },
+      upgradeFromThreadnote4DocsArticle,
+      connectAgentDocsArticle,
+      firstWorkflowDocsArticle,
+      projectGuidanceDocsArticle,
       {
         id: 'agent-instructions-and-hooks',
         title: 'Agent instructions and hooks',
-        summary: 'Teach agents when to recall, inspect the graph, store a handoff, and ask before publishing.',
+        summary:
+          'Teach agents when to compile a brief, inspect the graph, write a handoff, and propose reviewed knowledge.',
         body: [
           {
             type: 'paragraph',
-            text: 'Core install does not modify any agent host. Each applied mcp-install writes a compact bootstrap and progressively loaded Threadnote skills only for the selected Codex, Claude Code, Cursor, or Copilot integration. Checked-in AGENTS.md, CLAUDE.md, and equivalent repository guidance remain authoritative and take precedence.',
+            text: 'Core install does not modify any agent host. Each applied mcp-install writes a compact bootstrap and progressively loaded Threadnote skills only for the selected [supported agent surface](/agents/). Checked-in AGENTS.md, CLAUDE.md, and equivalent repository guidance remain authoritative and take precedence.',
           },
           {
             type: 'list',
             items: [
-              'Recall historical context with project and absolute callerCwd at the start of non-trivial work.',
+              'Start non-trivial work with Context Brief using the task and absolute callerCwd; use recall_context plus read_context as the memory-only alternative.',
               'Use context_brief codeRefs to round-trip from current code to citing memories and from memory citations back to verified current code.',
               'Use inspect_code_graph separately, before broad text search, for current source relationships.',
               'Use analyze_code_graph for repository-wide statistics, structural communities, hubs, and surprising links.',
-              'Store normal durable feature knowledge and a concise handoff at meaningful closeout.',
+              'Write the required private handoff at meaningful closeout and propose the optional five-field Knowledge Delta for review; never apply it automatically.',
               'Ask before publishing durable memory; never publish handoffs or preferences.',
               'If Threadnote fails, show a privacy-safe issue preview and create it only after explicit approval.',
             ],
@@ -599,52 +592,13 @@ bun run check:self-contained`,
         ],
       },
       {
-        id: 'first-workflow',
-        title: 'Your first memory loop',
-        summary: 'Recall before work, read selected evidence, and leave a stable handoff when the work pauses.',
-        body: [
-          {
-            type: 'heading',
-            text: 'From an agent',
-          },
-          {
-            type: 'list',
-            items: [
-              'At the start of a non-trivial task, call recall_context with a focused query, stable project, and absolute callerCwd.',
-              'Treat returned threadnote:// URIs as pointers. Read only the records that matter.',
-              'Use inspect_code_graph for a scoped current-source question and analyze_code_graph for whole-repository topology.',
-              'Store reusable decisions and contracts as durable memory. Store status, checks, blockers, and next steps as a handoff.',
-            ],
-          },
-          {
-            type: 'heading',
-            text: 'From the CLI',
-          },
-          {
-            type: 'code',
-            language: 'sh',
-            code: `threadnote recall --query "mobile auth latest handoff" --caller-cwd "$PWD"
-threadnote read threadnote://user/me/memories/handoffs/active/mobile/auth-rollout.md
-threadnote graph query --query "refresh token boundary"
-threadnote handoff --project mobile --topic auth-rollout \\
-  --task "Finish refresh-token rollout" \\
-  --tests "bun test auth" \\
-  --next-step "Update the iOS caller"`,
-          },
-          {
-            type: 'note',
-            text: 'Use a stable project/topic pair and replace the existing active record. Timestamped duplicates make currentness harder to judge and should be reserved for historical records.',
-          },
-        ],
-      },
-      {
         id: 'upgrade-from-3',
-        title: 'Upgrade from 3.x',
-        summary: 'Migrate legacy content once, without changing or deleting the rollback source.',
+        title: 'Migrate from 3.x',
+        summary: 'Move a legacy OpenViking home directly into Threadnote 5 without deleting the rollback source.',
         body: [
           {
             type: 'paragraph',
-            text: 'Threadnote 3 cannot cross the standalone-runtime boundary with threadnote update. Install Threadnote 4 with the bootstrap installer, then migrate the legacy ~/.openviking home.',
+            text: 'The stable `/docs/upgrade-from-3/` route remains the migration guide for existing links. Threadnote 3 cannot cross the standalone-runtime boundary with `threadnote update`; install Threadnote 5 with the bootstrap installer, then run the one-time, non-destructive migration from the legacy ~/.openviking home. Users already on Threadnote 4 should follow [Upgrade from Threadnote 4](upgrade-from-4/) instead.',
           },
           {
             type: 'code',
@@ -656,7 +610,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'Migration inventories, stages, hashes, validates, and atomically promotes canonical content into ~/.threadnote. It can recover an earlier beta home without overwriting different current content. A completed matching receipt makes reruns idempotent.',
+            text: 'Migration inventories, stages, hashes, validates, and atomically promotes canonical content into ~/.threadnote. Existing v4 memories remain readable; schema v5 migration does not invent ownership, review, or expiry metadata. A completed matching receipt makes reruns idempotent, and derived indexes rebuild from canonical content rather than being treated as migration authority.',
           },
           {
             type: 'warning',
@@ -669,8 +623,9 @@ threadnote index status`,
   {
     id: 'concepts',
     title: 'Core concepts',
-    description: 'Understand authority, lifecycle, stable identifiers, hybrid recall, and local inference.',
+    description: 'Understand the context lifecycle, authority, review, freshness, stable identity, and local evidence.',
     articles: [
+      contextLifecycleConceptDocsArticle,
       {
         id: 'authority-and-storage',
         title: 'Authority and storage',
@@ -743,6 +698,7 @@ threadnote index status`,
           },
         ],
       },
+      memorySchemaV5DocsArticle,
       {
         id: 'stable-uris',
         title: 'Stable URIs and replacement',
@@ -853,12 +809,13 @@ threadnote recall --query "checkout retry contract" --threshold 0.3 --caller-cwd
           },
           {
             type: 'note',
-            text: 'Concurrent sessions share the local memory home, not a chat transcript. Repository files remain authoritative, and every graph answer still identifies the worktree snapshot it used.',
+            text: 'Concurrent sessions share the local memory home, not a chat transcript. Repository files remain authoritative, and every graph answer still identifies the worktree snapshot it used. During a refresh, use the [code graph readiness](#graph-readiness) guidance: stale cards support bounded discovery, while strict relationship claims wait for current evidence.',
           },
         ],
       },
     ],
   },
+  contextLifecycleDocsSection,
   memoryWorkflowsDocsSection,
   cursorCloudPersonalDocsSection,
   {
@@ -1001,6 +958,7 @@ threadnote share conflict resolve <id> --take shared`,
     description:
       'Inspect and analyze the current Git snapshot and dirty worktree across code, schemas, documentation, and local project artifacts.',
     articles: [
+      codeGraphReadinessDocsArticle,
       {
         id: 'graph-operations',
         title: 'Query, exact nodes, neighbors, path, and impact',
@@ -1059,7 +1017,7 @@ threadnote share conflict resolve <id> --take shared`,
           },
           {
             type: 'note',
-            text: 'For non-trivial source investigation, agents should use inspect_code_graph before broad text search. Use analyze_code_graph when the question is about whole-repository topology. Use rg or grep afterward for exact literals, unsupported files, verification, or an explicitly reported graph failure.',
+            text: 'For non-trivial source investigation, agents should use inspect_code_graph before broad text search. Use analyze_code_graph when the question is about whole-repository topology. Use rg or grep afterward for exact literals, unsupported files, verification, or an explicitly reported graph failure. See [code graph readiness](#graph-readiness) for stale cards and bounded retry guidance.',
           },
         ],
       },
@@ -1145,7 +1103,7 @@ threadnote share conflict resolve <id> --take shared`,
           },
           {
             type: 'paragraph',
-            text: 'Graph query, node, neighbors, and explain read the latest ready snapshot by default, so ordinary semantic lookup does not queue behind a large refresh. Select --freshness current for a bounded current-worktree refresh, --freshness allow-stale to guarantee no indexing, and --read-timeout-ms to override the default 25-second foreground budget. Graph path remains current by default, and impact remains strict-current.',
+            text: 'Graph query, node, neighbors, and explain read the latest compatible ready snapshot by default, so ordinary semantic lookup can continue while a durable refresh is active, queued, or deferred. Verify exact literals in source, and retry only before strict current or relationship claims or when no usable cards survive. Select --freshness current for a bounded current-worktree refresh, --freshness allow-stale to guarantee no indexing, and --read-timeout-ms to override the default 25-second foreground budget. Graph path, impact, and whole-graph analysis remain current-only.',
           },
           {
             type: 'code',
@@ -1344,22 +1302,79 @@ threadnote graph export --format svg --output code-graph.svg`,
       {
         id: 'graph-monorepos',
         title: 'Monorepos and nested workspaces',
-        summary:
-          'One checkout is one graph scope; nested projects disambiguate resolution rather than partitioning the graph.',
+        summary: 'Keep a dependency-closed app graph small in a monorepo, while retaining the full-repository default.',
+        keywords: [
+          'monorepo graph scope',
+          'dependency closure',
+          'graph scope preview',
+          'outside project graph',
+          'worktree graph scope',
+        ],
         body: [
           {
             type: 'paragraph',
-            text: 'Symbols are assigned to the deepest containing project or source root. A nested app can remain its own workspace and also be an integrated module of an outer monorepo. It can cross into outer libs or inner modules only through declared project dependencies.',
+            text: 'Use a project graph scope when one agent works on one app in a large monorepo and needs that app plus the workspace libraries it depends on. It is a positive selection: choose repository-relative app roots, Threadnote follows declared forward dependencies, and you can add exceptional repository-relative include paths. A project without a graph block continues to index and query the full repository.',
+          },
+          {
+            type: 'table',
+            headers: ['Need', 'Use'],
+            rows: [
+              [
+                'One app and its declared workspace dependencies',
+                'A project graph scope. It keeps unrelated apps out of that project graph without turning them into ignored files.',
+              ],
+              [
+                'Generated, private, or otherwise unwanted files everywhere',
+                'Ignore rules. They are traversal policy, not a dependency-aware partition of a monorepo.',
+              ],
+              [
+                'A bounded task across configured repositories or projects',
+                'A Workset. It composes member project graphs; it does not define their roots or dependency closure.',
+              ],
+            ],
+          },
+          {
+            type: 'heading',
+            text: 'Configure, preview, then use the normal graph commands',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `# "storefront" is an existing manifest project for this monorepo.
+threadnote graph scope set storefront \\
+  --root apps/storefront \\
+  --include tools/storefront-generated
+threadnote graph scope preview storefront
+
+# From a cwd that resolves to this one configured project:
+threadnote graph index
+threadnote graph query --query "checkout session"`,
+          },
+          {
+            type: 'paragraph',
+            text: 'The preview is read-only. It lists the resolved root and dependency components, explicit includes, required control files, included and excluded file/byte counts, completeness, and diagnostics. Review it before indexing, especially after changing workspace manifests. Manager exposes the same roots, dependency-closure explanation, includes, coverage state, and preview-before-save flow. Remove the block with `threadnote graph scope clear storefront --confirm` to return that project to full-repository behavior.',
+          },
+          {
+            type: 'paragraph',
+            text: 'A scoped result always says which project, roots, component counts, completeness, source commit, observed worktree commit, and any equivalent-snapshot reuse it covers. A direct path outside the selected graph returns `outside-project-graph`, rather than claiming the path is absent; choose a project that includes it or use a full-repository project. Textual misses are likewise only evidence about the selected graph. If dependency discovery is partial, Threadnote makes that explicit and never treats a negative result as authoritative.',
+          },
+          {
+            type: 'paragraph',
+            text: 'Commands select a scoped project automatically only when the current directory belongs to exactly one configured graph project. If more than one applies, Threadnote reports the available project names instead of silently choosing a partial graph. Keep the same manifest definition with linked worktrees: compatible graph-equivalent commit content can be reused, but dirty overlays, active views, and observations remain worktree-local so uncommitted changes do not cross branches.',
           },
           {
             type: 'list',
             items: [
-              'Java and Kotlin share the JVM resolution domain.',
-              'Ambiguous and dynamic dependencies remain syntactic instead of becoming false resolved edges.',
+              'Forward dependencies are included; reverse dependents and unrelated workspace packages are not pulled in merely because they share a repository.',
+              'An edit or newly discovered package outside the selected graph does not make that scoped graph stale or take an indexing builder slot. An in-scope dependency or control-file change does.',
               'Nested Git repositories and submodules keep separate graph identities and are not traversed from the parent checkout.',
-              'Linked worktrees share graph-equivalent commit content and compatible full anchors, but every dirty overlay and active pointer is worktree-scoped so concurrent agents cannot leak uncommitted source state across branches.',
-              'Independent clones of the same remote keep separate operational stores.',
+              'Worksets preserve each member project’s graph definition and detect scope drift when a member definition changes.',
+              'Scoped graphs are local-only in this release. They are not an organization-hosted scope feature.',
             ],
+          },
+          {
+            type: 'warning',
+            text: 'Portable checkpoint v1 exports only a full-repository graph. Exporting a scoped graph fails closed until checkpoint transport carries a verified scope receipt. To move a graph today, clear the scope and create a full graph checkpoint, or rebuild the scoped graph locally on the receiving checkout.',
           },
           {
             type: 'paragraph',
@@ -1426,7 +1441,22 @@ threadnote manage --no-open`,
         body: [
           {
             type: 'paragraph',
-            text: 'Open threadnote manage and choose Worksets, then switch between Projects and Worksets. The seed manifest remains authoritative: Manager can maintain its repository projects and named cross-repository Worksets while preserving unrelated keys and supported YAML comments.',
+            text: 'Open threadnote manage and choose Worksets, then switch between Projects and Worksets. Manager is the visual editor for the authoritative seed manifest, preserving unrelated keys and supported YAML comments. For a CLI-first lifecycle, use workset create/list/show/update/delete; use --confirm for delete and --json for automation.',
+          },
+          {
+            type: 'code',
+            language: 'sh',
+            code: `threadnote workset create commerce --project api --project billing \\
+  --description "Checkout and billing services"
+threadnote workset list --json
+threadnote workset show commerce --json
+threadnote workset update commerce --name commerce-platform --project api --project billing --json
+threadnote workset show commerce-platform --json
+threadnote workset prepare commerce-platform --json
+threadnote workset status commerce-platform --json
+
+# Optional cleanup after the retained workflow is no longer needed.
+threadnote workset delete commerce-platform --confirm --json`,
           },
           {type: 'visual', visual: 'manager-onboarding'},
           {
@@ -1443,7 +1473,7 @@ projects:
     uri: threadnote://resources/repos/billing
     seed: []
 worksets:
-  - name: commerce
+  - name: commerce-platform
     description: Checkout and billing services
     projects: [api, billing]`,
           },
@@ -1677,7 +1707,7 @@ threadnote repair`,
           },
           {
             type: 'paragraph',
-            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, readable code-graph snapshots and pending maintenance, plus MCP, instructions, and skills for registered agent integrations only. Merely installing Codex, Claude Code, Cursor, or Copilot does not create a warning. A supported older graph that is still queryable is reported as migrating or maintenance-pending, not corrupt or incompatible. Strict mode exits non-zero when a check fails.',
+            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, readable code-graph snapshots and pending maintenance, plus MCP, instructions, and skills for registered [supported agent surfaces](/agents/) only. Merely installing an unrelated host does not create a warning. A supported older graph that is still queryable is reported as migrating or maintenance-pending, not corrupt or incompatible. Strict mode exits non-zero when a check fails.',
           },
           {
             type: 'paragraph',
@@ -1685,7 +1715,7 @@ threadnote repair`,
           },
           {
             type: 'note',
-            text: 'Threadnote 4 has no daemon to restart. start verifies on-demand readiness; stop is a compatibility no-op.',
+            text: 'Threadnote has no daemon to restart. start verifies on-demand readiness; stop is a compatibility no-op.',
           },
         ],
       },
@@ -1736,7 +1766,7 @@ threadnote update --check`,
           },
           {
             type: 'paragraph',
-            text: "The beta channel is an inclusive preview channel: it selects the newest immutable Threadnote release across stable and prerelease builds, so an invoked update can graduate an older beta to a fresher stable without --stable. After that graduation, ordinary updates follow stable; use --beta to re-enter preview selection. Use --stable to request stable explicitly, even when it is numerically lower than an installed prerelease. Add --json to --check for a versioned machine-readable result. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy.",
+            text: "The beta channel is an inclusive preview channel: it selects the newest immutable Threadnote release across stable and prerelease builds, so an invoked update can graduate an older beta to a fresher stable without --stable. After that graduation, ordinary updates follow stable; use --beta to re-enter preview selection. Use --stable to request stable explicitly, even when it is numerically lower than an installed prerelease. Add --json to --check for a versioned machine-readable result. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy. Existing 4.x users can follow the focused [Threadnote 5 upgrade guide](upgrade-from-4/).",
           },
           {
             type: 'paragraph',
@@ -1795,7 +1825,7 @@ threadnote report-issue \\
   {
     id: 'reference',
     title: 'Reference',
-    description: 'CLI, MCP, configuration, storage, and architecture contracts for Threadnote 4.',
+    description: 'CLI, MCP, configuration, storage, and architecture contracts for Threadnote 5.',
     articles: [
       {
         id: 'cli-reference',
@@ -1805,7 +1835,7 @@ threadnote report-issue \\
         body: [
           {
             type: 'paragraph',
-            text: 'Run threadnote <command> --help for the installed version’s exact flags. The groups below cover the stable 4.1 operator surface.',
+            text: 'Run threadnote <command> --help for the installed version’s exact flags. The groups below cover the stable Threadnote 5 operator surface.',
           },
           {
             type: 'table',
@@ -1962,4 +1992,5 @@ threadnote report-issue \\
       },
     ],
   },
+  agentIntegrationDocsSection,
 ];

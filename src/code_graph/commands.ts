@@ -1,7 +1,7 @@
 import {Clock, Console, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {startProgress, withProgressLine} from '../cli_ui.js';
-import {writeFinalCliOutput} from '../effect/cli_output.js';
-import {readExclusiveFileLockOwner} from '../effect/file_lock.js';
+import {writeFinalCliOutput} from '../effect/cli/output.js';
+import {readExclusiveFileLockOwner} from '../effect/file/lock.js';
 import {
   runtimeFileDescriptorStatSync,
   runtimePathStatSync,
@@ -9,7 +9,7 @@ import {
   SystemInfo,
   type RuntimeNativeFileStat,
 } from '../effect/system.js';
-import {healAnchorsAfterWorksetPrepare} from '../memory/deferred_code_anchor_recovery.js';
+import {healAnchorsAfterWorksetPrepare} from '../memory/deferred/code_anchor_recovery.js';
 import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer} from './indexer.js';
 import {
@@ -17,10 +17,10 @@ import {
   formatCodeGraphPurgeProgressLine,
   formatCodeGraphRepairProgressLine,
   makeCodeGraphHumanProgressReporter,
-} from './cli_progress.js';
+} from './cli/progress.js';
 import {makeCodeGraphJsonProgressReporter} from './json_progress.js';
 import {codeGraphLayout, codeGraphWorktreeLockPath} from './layout.js';
-import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
 import {
   repairCodeGraphIndexes,
   inspectObsoleteCodeGraphStores,
@@ -30,7 +30,7 @@ import {
   type CodeGraphRepairCompletion,
   type ObsoleteCodeGraphStoreInventory,
 } from './maintenance.js';
-import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './query.js';
+import {CodeGraphQueryService, renderCodeGraphResult} from './query.js';
 import {repositoryChangesSince, repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore} from './store.js';
 import type {
@@ -41,7 +41,8 @@ import type {
   CodeGraphStatus,
   RepositoryIdentityExpectation,
 } from './types.js';
-import {CodeGraphWatcher} from './watcher.js';
+export {runCodeGraphWatch} from './commands/watch.js';
+import {resolveCodeGraphScopeRoute} from './scope/routing.js';
 import {
   findCodeGraphWorksetPath,
   inspectCodeGraphWorksetTopology,
@@ -53,14 +54,14 @@ import {
   continueCodeGraphWorksetQueryV2,
   queryCodeGraphWorksetV2,
   resolveCodeGraphQualifiedRefTarget,
-} from './workset_query_v2.js';
+} from './workset/query_v2.js';
 import {
   inspectCodeGraphWorksetStatus,
   prepareCodeGraphWorkset,
   type CodeGraphWorksetPrepareResultV1,
   type CodeGraphWorksetStatusResultV1,
 } from './workset_catalog/workset.js';
-import {makeCodeGraphWorksetJsonProgressReporter} from './workset_progress.js';
+import {makeCodeGraphWorksetJsonProgressReporter} from './workset/progress.js';
 import {CODE_GRAPH_MANAGER_WORKSET_ORCHESTRATOR_ENV} from './workset_catalog/isolated_prepare.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {
@@ -68,36 +69,38 @@ import {
   renderCodeGraphAnalysis,
   renderCodeGraphReport,
   type CodeGraphAnalysisView,
-} from './analysis_render.js';
+} from './analysis/render.js';
 import {
   renderCodeGraphCliAnalysisState,
   resolveCodeGraphAnalysisSnapshot,
   type CodeGraphCliAnalysisState,
-} from './analysis_cli.js';
+} from './analysis/cli.js';
 import {
   CODE_GRAPH_CLI_READ_RETRY_MILLISECONDS,
   CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS,
+  codeGraphCliUsesBorrowedContinuity,
   codeGraphCliReadPlan,
   type CodeGraphCliFreshnessPolicy,
   type CodeGraphCliReadPlan,
-} from './cli_freshness.js';
+} from './cli/freshness.js';
 import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} from './export.js';
-import {materializationStorageShortfalls} from './indexer_materialization.js';
+import {materializationStorageShortfalls} from './indexer/materialization.js';
 import {readCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
 import {
   resolveCodeGraphStatusOptions,
   serializeCodeGraphStatusV5,
   type CodeGraphStatusObservedLock,
-} from './status_projection.js';
+} from './status/projection.js';
 import {
   codeGraphEtaBasisLabel as etaBasisLabel,
   formatCodeGraphStatusDuration as formatStatusDuration,
   renderCodeGraphBuildCounters as renderBuildCounters,
   renderCodeGraphReadySnapshotStatus as renderReadySnapshotStatus,
-} from './status_render.js';
+} from './status/render.js';
 import {inspectAllCodeGraphsLocal, renderCodeGraphDiagnostics} from './diagnostics.js';
-import {previewCodeGraphInventory, type CodeGraphInventoryPreview} from './inventory.js';
+import {resolveCodeGraphCliReadContinuity} from './commands/read_continuity.js';
+export {runCodeGraphInventory} from './commands/inventory.js';
 import {
   codeGraphViewRemovalTargetFailure,
   removeCodeGraphView,
@@ -109,12 +112,12 @@ import {
   purgeCodeGraphSnapshot,
   renderCodeGraphSnapshotPurgeResult,
   serializeCodeGraphSnapshotPurgeResult,
-} from './snapshot_purge.js';
+} from './snapshot/purge.js';
 
 interface CwdOption {
   readonly cwd?: string;
 }
-export {CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS, codeGraphCliReadPlan};
+export {CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS, codeGraphCliReadPlan, codeGraphCliUsesBorrowedContinuity};
 export type {CodeGraphCliFreshnessPolicy, CodeGraphCliReadPlan};
 
 class CodeGraphCommandError extends Schema.TaggedError<CodeGraphCommandError>()('CodeGraphCommandError', {
@@ -303,7 +306,12 @@ interface CodeGraphExportTemporaryIdentity {
 
 export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function* (
   config: RuntimeConfig,
-  options: CwdOption & {readonly buildLimit?: number; readonly json?: boolean; readonly languagePackLimit?: number},
+  options: CwdOption & {
+    readonly buildLimit?: number;
+    readonly json?: boolean;
+    readonly languagePackLimit?: number;
+    readonly project?: string;
+  },
 ) {
   const statusOptions = resolveCodeGraphStatusOptions(options);
   if (statusOptions.error !== undefined) {
@@ -312,9 +320,18 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   const cwd = yield* commandCwd(options.cwd);
   const path = yield* Path.Path;
   const query = yield* CodeGraphQueryService;
-  const ready = yield* query.status(config.agentContextHome, cwd);
+  const ready = yield* query.status(config.agentContextHome, cwd, {
+    manifestPath: config.manifestPath,
+    ...(options.project === undefined ? {} : {project: options.project}),
+  });
   const identity = ready.identity;
-  const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
+  const layout = codeGraphLayout(
+    path,
+    config.agentContextHome,
+    identity.checkoutId,
+    identity.worktreeId,
+    ready.readySnapshot?.scopeId,
+  );
   const obsoleteStores = yield* inspectObsoleteCodeGraphStores(config.agentContextHome, identity.checkoutId);
   const storage = yield* inspectCodeGraphStorage(config.agentContextHome, identity.checkoutId);
   const statuses = yield* readCodeGraphBuildStatuses(layout);
@@ -386,6 +403,7 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
           languagePacks: ready.languagePacks,
           ...(Object.keys(locks).length === 0 ? {} : {locks}),
           obsoleteStores,
+          ...(ready.projectCoverage === undefined ? {} : {projectCoverage: ready.projectCoverage}),
           readySnapshot: ready.readySnapshot ?? null,
           stale: ready.stale,
           storage,
@@ -411,6 +429,20 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
       `Owner: PID ${current.owner.processId} · Bun ${current.owner.runtimeVersion} · ` +
         `heartbeat ${formatStatusDuration(current.observation.heartbeatAgeMilliseconds)} ago`,
     );
+    if (current.scheduling?.queue) {
+      const queue = current.scheduling.queue;
+      yield* Console.log(
+        `Admission: ${queue.admissionClass} · ${current.scheduling.admittedAt ? 'admitted' : `queue ${queue.position}/${queue.size}`} · enqueued ${queue.enqueuedAt}`,
+      );
+    }
+    if (current.scheduling?.blocker) yield* Console.log(`Waiting for: ${current.scheduling.blocker}`);
+    if (current.scheduling?.phaseMilliseconds) {
+      yield* Console.log(
+        `Phase time: ${Object.entries(current.scheduling.phaseMilliseconds)
+          .map(([phase, milliseconds]) => `${phase} ${formatStatusDuration(milliseconds)}`)
+          .join(' · ')}`,
+      );
+    }
     if (locks.databaseWriter) {
       yield* Console.log(
         locks.databaseWriter.state === 'active'
@@ -689,41 +721,6 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   );
 });
 
-export const runCodeGraphInventory = Effect.fn('codeGraph.command.inventory')(function* (
-  _config: RuntimeConfig,
-  options: CwdOption & {readonly json?: boolean},
-) {
-  const identity = yield* resolveRepositoryIdentity(yield* commandCwd(options.cwd));
-  const preview = yield* previewCodeGraphInventory(identity);
-  yield* writeFinalCliOutput(options.json ? JSON.stringify(preview) : renderCodeGraphInventoryPreview(preview));
-});
-
-function renderCodeGraphInventoryPreview(preview: CodeGraphInventoryPreview): string {
-  const source = `${preview.commit.slice(0, 12)}${preview.dirty ? ' + worktree changes' : ' (clean)'}`;
-  const lines = [
-    'Code graph inventory admission preview',
-    `Source: ${source}`,
-    `Policy: v${preview.policyVersion} · aggregate metadata only · repository paths and content omitted`,
-    `Repository: ${preview.totals.repository.files} file(s) · ${preview.totals.repository.bytes} bytes (${formatBytes(preview.totals.repository.bytes)})`,
-    `Eligible: ${preview.totals.eligible.files} file(s) · ${preview.totals.eligible.bytes} bytes (${formatBytes(preview.totals.eligible.bytes)})`,
-    `Skipped: ${preview.totals.skipped.files} file(s) · ${preview.totals.skipped.bytes} bytes (${formatBytes(preview.totals.skipped.bytes)})`,
-  ];
-  if (preview.omittedUnsafeWorktreeFiles > 0) {
-    lines.push(
-      `Omitted: ${preview.omittedUnsafeWorktreeFiles} changed unsafe/non-regular worktree path(s) are outside byte totals.`,
-    );
-  }
-  lines.push('', 'DISPOSITION\tLANGUAGE\tROLE\tCLASSIFIER\tREASON\tFILES\tBYTES');
-  for (const group of preview.groups) {
-    lines.push(
-      [group.disposition, group.language, group.role, group.classifier, group.reason, group.files, group.bytes].join(
-        '\t',
-      ),
-    );
-  }
-  return `${lines.join('\n')}\n`;
-}
-
 function renderObsoleteStoreStatus(inventory: ObsoleteCodeGraphStoreInventory): Effect.Effect<void> {
   if (inventory.fileCount === 0 && inventory.unsafeEntryCount === 0) return Effect.void;
   const versions = inventory.checkouts.flatMap(checkout => checkout.versions);
@@ -806,10 +803,16 @@ function formatPercent(ratio: number): string {
 export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* (
   config: RuntimeConfig,
   options: CwdOption &
-    ExpectedRepositoryIdentityOption & {readonly full?: boolean; readonly json?: boolean; readonly noVectors?: boolean},
+    ExpectedRepositoryIdentityOption & {
+      readonly full?: boolean;
+      readonly json?: boolean;
+      readonly noVectors?: boolean;
+      readonly project?: string;
+    },
 ) {
   const indexer = yield* CodeGraphIndexer;
   const cwd = yield* commandCwd(options.cwd);
+  const route = yield* resolveCodeGraphScopeRoute(config.manifestPath, cwd, options.project);
   const identity = yield* resolveRepositoryIdentity(cwd);
   if (options.expectedIdentity && !repositoryIdentityMatchesExpectation(identity, options.expectedIdentity)) {
     return yield* CodeGraphCommandError.make({
@@ -828,6 +831,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
       ...(options.expectedIdentity ? {expectedIdentity: options.expectedIdentity} : {}),
       force: options.full,
       onProgress: reportProgress,
+      ...(route.state === 'selected' ? {project: route.project} : {}),
       threadnoteHome: config.agentContextHome,
     });
     yield* writeFinalCliOutput(JSON.stringify({type: 'code-graph-index', version: 1, ...summary}));
@@ -843,6 +847,7 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
         ...(options.expectedIdentity ? {expectedIdentity: options.expectedIdentity} : {}),
         force: options.full,
         onProgress: state => formatProgress(state).pipe(Effect.flatMap(update)),
+        ...(route.state === 'selected' ? {project: route.project} : {}),
         threadnoteHome: config.agentContextHome,
       })
       .pipe(
@@ -963,6 +968,7 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
     readonly includeModelAssociations?: boolean;
     readonly json?: boolean;
     readonly memberLimit?: number;
+    readonly project?: string;
     readonly readTimeoutMilliseconds?: number;
     readonly view: CodeGraphAnalysisView;
   },
@@ -982,6 +988,7 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
     freshness,
     options.view,
     options.readTimeoutMilliseconds,
+    options.project,
   );
   if (!resolution.ready) {
     yield* writeFinalCliOutput(
@@ -1153,21 +1160,24 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
     return yield* CodeGraphCommandError.make({message: 'A graph query requires --query.'});
   }
   const qualifiedTarget = options.nodeId?.startsWith('cgr_')
-    ? yield* resolveCodeGraphQualifiedRefTarget(config, options.nodeId, options.cwd)
+    ? yield* resolveCodeGraphQualifiedRefTarget(config, options.nodeId, options.cwd, options.project)
     : undefined;
   const effectiveOptions =
     qualifiedTarget === undefined ? options : {...options, cwd: qualifiedTarget.cwd, nodeId: qualifiedTarget.nodeId};
   const service = yield* CodeGraphQueryService;
   const cwd = yield* commandCwd(effectiveOptions.cwd);
   const freshness = options.freshness ?? defaultCodeGraphCliFreshness(options.operation);
-  let status = yield* service.status(config.agentContextHome, cwd);
-  const identity = status.identity;
-  if (status.stale || !status.readySnapshot) {
-    status = yield* service.attachSharedReadySnapshot(config.agentContextHome, identity, status, {
-      allowBorrowedStale: freshness !== 'current',
-    });
-  }
-  const readPlan = codeGraphCliReadPlan(freshness, status);
+  const initialStatus = yield* service.status(config.agentContextHome, cwd, {
+    manifestPath: config.manifestPath,
+    ...(options.project === undefined ? {} : {project: options.project}),
+  });
+  const {borrowedContinuity, readPlan, status, statusObservation} = yield* resolveCodeGraphCliReadContinuity(
+    config,
+    service,
+    initialStatus,
+    options.operation,
+    freshness,
+  );
   if (readPlan.unavailable) {
     const unavailable = codeGraphCliReadState(status, freshness, options.operation, 'no-ready-snapshot');
     yield* writeFinalCliOutput(
@@ -1175,11 +1185,11 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
     );
     return;
   }
-  const statusObservation = observationFromCodeGraphStatus(status);
   const inspect = (onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>) =>
     service.inspect({
       ...effectiveOptions,
       cwd,
+      manifestPath: config.manifestPath,
       onProgress,
       refresh: readPlan.refresh,
       statusObservation,
@@ -1216,9 +1226,16 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
     );
     return;
   }
-  yield* writeFinalCliOutput(
-    options.json ? JSON.stringify(result.value) : renderCodeGraphResult(result.value).trimEnd(),
-  );
+  const output = borrowedContinuity
+    ? {
+        ...result.value,
+        warnings: [
+          ...result.value.warnings,
+          'Serving compatible shared graph evidence. Run graph index to create a current snapshot for this worktree.',
+        ],
+      }
+    : result.value;
+  yield* writeFinalCliOutput(options.json ? JSON.stringify(output) : renderCodeGraphResult(output).trimEnd());
 });
 
 export const runCodeGraphWorksetTopology = Effect.fn('codeGraph.command.worksetTopology')(function* (
@@ -1285,6 +1302,7 @@ export const runCodeGraphImpact = Effect.fn('codeGraph.command.impact')(function
     readonly edgeLimit?: number;
     readonly json?: boolean;
     readonly nodeLimit?: number;
+    readonly project?: string;
     readonly query?: string;
     readonly workset?: string;
   },
@@ -1608,21 +1626,6 @@ export const runCodeGraphExport = Effect.fn('codeGraph.command.export')(function
   );
 });
 
-export const runCodeGraphWatch = Effect.fn('codeGraph.command.watch')(function* (
-  config: RuntimeConfig,
-  options: CwdOption,
-) {
-  const cwd = yield* commandCwd(options.cwd);
-  const watcher = yield* CodeGraphWatcher;
-  yield* Console.log(`Watching code graph inputs in ${cwd}. Press Ctrl-C to stop.`);
-  yield* watcher.watch({
-    cwd,
-    key: cwd,
-    onRefreshed: (symbols, edges) => Console.log(`Code graph refreshed: ${symbols} symbol(s), ${edges} edge(s).`),
-    threadnoteHome: config.agentContextHome,
-  });
-});
-
 function commandCwd(value: string | undefined) {
   return Effect.gen(function* () {
     const system = yield* SystemInfo;
@@ -1824,8 +1827,10 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
   freshnessPolicy: CodeGraphCliFreshnessPolicy,
   operation: CodeGraphCliAnalysisState['operation'],
   readTimeoutMilliseconds = CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS,
+  project?: string,
 ) {
   const indexer = yield* CodeGraphIndexer;
+  const route = yield* resolveCodeGraphScopeRoute(config.manifestPath, cwd, project);
   return yield* resolveCodeGraphAnalysisSnapshot(
     config,
     cwd,
@@ -1838,6 +1843,7 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
               cwd,
               ensureVectors: false,
               onProgress: reportProgress,
+              ...(route.state === 'selected' ? {project: route.project} : {}),
               threadnoteHome: config.agentContextHome,
             });
           })
@@ -1848,11 +1854,12 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
                 cwd,
                 ensureVectors: false,
                 onProgress: state => formatProgress(state).pipe(Effect.flatMap(update)),
+                ...(route.state === 'selected' ? {project: route.project} : {}),
                 threadnoteHome: config.agentContextHome,
               }),
             );
           }),
-    {operation, readTimeoutMilliseconds},
+    {operation, project, readTimeoutMilliseconds},
   );
 });
 

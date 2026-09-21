@@ -57,6 +57,7 @@ function principalFixture(overrides: Partial<AuthorizedRemotePrincipal> = {}): A
     allowedProjects: 'all',
     attestationRequiredForWrites: true,
     capabilities: new Set(['memory:read', 'memory:write:durable']),
+    cloudAdmissionRequired: false,
     cursorOwnerIds: new Set(['12345']),
     cursorSubjects: new Set(['user:12345']),
     cursorTeamId: '6789',

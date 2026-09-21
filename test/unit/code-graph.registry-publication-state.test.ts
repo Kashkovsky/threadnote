@@ -4,7 +4,7 @@ import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
   assertGraphSharePublicationProgress,
   graphSharePublicationAuthority,
-} from '../../src/code_graph/sharing/registry_publication_state.js';
+} from '../../src/code_graph/sharing/registry/publication_state.js';
 
 const candidate = (generation: number, publisherFence = 1) => ({
   descriptorDigest: sha256Digest(`descriptor-${generation}`),

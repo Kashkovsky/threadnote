@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
 import fc from 'fast-check';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
-import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile_oci_artifact.js';
+import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile/oci_artifact.js';
 import {
   defaultGraphShareProfile,
   graphShareProfileDigest,
@@ -105,6 +105,35 @@ describe('Fly graph publisher preflight', () => {
   it('admits a pinned persisted checkout, profile, policy, and publisher key', () => {
     const {env, root} = fixture();
     expect(() => validateGraphPublisherDeployment(root, env)).not.toThrow();
+  });
+
+  it('accepts a custom authorization server and requires the exact explicit JWKS endpoint', () => {
+    const {env, root, policy, write} = fixture();
+    const issuer = 'https://example.okta.test/oauth2/threadnote';
+    const generic: NodeJS.ProcessEnv = Object.fromEntries(
+      Object.entries(env).map(([name, value]) => [name.replace('THREADNOTE_AUTH0_', 'THREADNOTE_OAUTH_'), value]),
+    );
+    Object.assign(generic, {
+      THREADNOTE_GRAPH_OAUTH_ISSUER: issuer,
+      THREADNOTE_GRAPH_OAUTH_JWKS_URL: `${issuer}/v1/keys`,
+      THREADNOTE_OAUTH_REGISTRY_M2M_ISSUER: 'https://example.okta.test/oauth2/registry',
+      THREADNOTE_OAUTH_REGISTRY_M2M_TOKEN_URL: 'https://example.okta.test/oauth2/registry/v1/token',
+      THREADNOTE_OAUTH_REGISTRY_M2M_JWKS_URL: 'https://example.okta.test/oauth2/registry/v1/keys',
+      THREADNOTE_OAUTH_REGISTRY_M2M_CLIENT_AUTHENTICATION: 'client_secret_basic',
+      THREADNOTE_OAUTH_REGISTRY_M2M_CLIENT_ID_CLAIM: 'cid',
+    });
+    write('control-policy.json', {...policy, issuer, jwksUrl: `${issuer}/v1/keys`}, true);
+    expect(() => validateGraphPublisherDeployment(root, generic)).not.toThrow();
+    for (const value of [undefined, 'https://other.example/keys', `${issuer}/different-keys`]) {
+      expect(() =>
+        validateGraphPublisherDeployment(root, {...generic, THREADNOTE_GRAPH_OAUTH_JWKS_URL: value}),
+      ).toThrow();
+    }
+    const noncanonical = `${issuer}/v1/../keys`;
+    write('control-policy.json', {...policy, issuer, jwksUrl: noncanonical}, true);
+    expect(() =>
+      validateGraphPublisherDeployment(root, {...generic, THREADNOTE_GRAPH_OAUTH_JWKS_URL: noncanonical}),
+    ).toThrow();
   });
 
   it('accepts an offline-pinned OCI profile manifest without contacting Zot', () => {

@@ -115,6 +115,7 @@ export const ANONYMOUS_TELEMETRY_WAITING_REASONS = [
   'database-writer',
   'disk-capacity',
   'home-builder-cap',
+  'prepared-spool-budget',
   'repository-lock',
   'request-lock',
   'snapshot-build',
@@ -638,6 +639,36 @@ export function emitAnonymousTelemetryEvent(options: AnonymousTelemetryEventOpti
       }),
     ),
   );
+}
+
+/** Emits a checkpoint measured by an isolated child without re-running its work in this process. */
+export function emitObservedAnonymousTelemetryCheckpoint(options: {
+  readonly durationMilliseconds: number;
+  readonly fields: AnonymousTelemetryFields;
+  readonly outcome: 'failure' | 'interrupted' | 'success';
+}): Effect.Effect<void> {
+  return Effect.flatMap(CurrentAnonymousTelemetryRecorder, recorder => {
+    if (recorder === undefined || !recorder.active) return Effect.void;
+    const durationMilliseconds =
+      Number.isSafeInteger(options.durationMilliseconds) && options.durationMilliseconds >= 0
+        ? options.durationMilliseconds
+        : 0;
+    return Effect.flatMap(AnonymousTelemetry, service =>
+      service.emit({
+        component: recorder.component,
+        durationMilliseconds,
+        event: 'checkpoint',
+        fields: {
+          ...options.fields,
+          elapsedMilliseconds: durationMilliseconds,
+          phaseOutcome: options.outcome,
+        },
+        invocationId: recorder.invocationId,
+        operation: recorder.operation,
+        outcome: options.outcome,
+      }),
+    );
+  });
 }
 
 /** Records bounded progress on the current operation without network I/O. */

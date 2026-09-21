@@ -6,15 +6,19 @@ import {Clock, Effect} from 'effect';
 import * as FC from 'fast-check';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {describe, expect, vi} from 'vitest';
-import {releaseSnapshotLease} from '../../src/code_graph/store_leases.js';
-import {initializeSchema} from '../../src/code_graph/store_schema_initialization.js';
+import {releaseSnapshotLease} from '../../src/code_graph/store/leases.js';
+import {initializeSchema} from '../../src/code_graph/store/schema/initialization.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const SNAPSHOT = 'cgsn_1111111111111111111111111111111111111111';
 const EXPIRED_SNAPSHOT = 'cgsn_2222222222222222222222222222222222222222';
 const WORKTREE = 'c'.repeat(64);
-const cleanupObservation = (query: string) => query.includes("pragma_table_xinfo('removed_view_cleanup')");
+// Scoped authority inspects its immutable definitions through sqlite_master;
+// the narrow lease path only checks lease/snapshot authority and never emits
+// this parameterized definition lookup.
+const cleanupObservation = (query: string) =>
+  query.includes('FROM sqlite_master WHERE name = ? COLLATE NOCASE LIMIT 2');
 
 describe('snapshot lease retirement authority', () => {
   effectIt.effect('skips unused full retirement observations for clean and already released leases', () =>
@@ -94,6 +98,53 @@ describe('snapshot lease retirement authority', () => {
           {expires_at: 'invalid', token: 'clean'},
         ]);
         expect(yield* snapshotState(sql)).toBe('ready');
+      }),
+    ),
+  );
+
+  effectIt.effect('ignores partial cleanup-trigger sets during ordinary lease release', () =>
+    withFixture(sql =>
+      Effect.gen(function* () {
+        yield* seedLease(sql, 'clean', SNAPSHOT, false);
+        const trigger = yield* sql<{readonly name: string}>`
+          SELECT name
+          FROM sqlite_master
+          WHERE type = 'trigger' AND tbl_name = 'removed_views'
+          ORDER BY name
+          LIMIT 1
+        `;
+        expect(trigger[0]?.name).toBeDefined();
+        yield* sql.unsafe(`DROP TRIGGER "${trigger[0]?.name?.replaceAll('"', '""')}"`);
+        const queries = yield* observeQueries();
+        expect(yield* releaseSnapshotLease('clean')).toBe(false);
+        expect(queries.filter(cleanupObservation)).toHaveLength(0);
+        expect(yield* snapshotState(sql)).toBe('ready');
+        expect(yield* sql`SELECT token FROM snapshot_leases`).toEqual([]);
+      }),
+    ),
+  );
+
+  effectIt.effect('ignores malformed cleanup triggers during ordinary lease release', () =>
+    withFixture(sql =>
+      Effect.gen(function* () {
+        yield* seedLease(sql, 'clean', SNAPSHOT, false);
+        const trigger = yield* sql<{readonly name: string}>`
+          SELECT name
+          FROM sqlite_master
+          WHERE type = 'trigger' AND tbl_name = 'removed_views'
+          ORDER BY name
+          LIMIT 1
+        `;
+        const name = trigger[0]?.name;
+        expect(name).toBeDefined();
+        const escapedName = name?.replaceAll('"', '""');
+        yield* sql.unsafe(`DROP TRIGGER "${escapedName}"`);
+        yield* sql.unsafe(`CREATE TRIGGER "${escapedName}" AFTER INSERT ON removed_views BEGIN SELECT 1; END`);
+        const queries = yield* observeQueries();
+        expect(yield* releaseSnapshotLease('clean')).toBe(false);
+        expect(queries.filter(cleanupObservation)).toHaveLength(0);
+        expect(yield* snapshotState(sql)).toBe('ready');
+        expect(yield* sql`SELECT token FROM snapshot_leases`).toEqual([]);
       }),
     ),
   );

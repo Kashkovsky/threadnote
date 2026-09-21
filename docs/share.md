@@ -97,3 +97,8 @@ path rewrite. The memory-share scrubber does not run on these artifacts; `--reda
 binary content without explicit permission, embedded binary credentials, machine-local paths in binaries, reserved
 tokens, and locally modified installs are blocked. Declared pack `pathRewrites` still tokenize repo-root paths for
 portable install.
+
+Machine-to-machine graph and registry credentials, including Okta custom authorization servers, are described in
+[OAuth machine credentials](oauth-machine-credentials.md) and [OAuth user credentials](oauth-user-credentials.md).
+Preview-first memory-share enrollment and the pilot's read-only grant default are described in
+[organization pilot provisioning](org-pilot-provisioning.md).

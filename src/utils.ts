@@ -29,7 +29,7 @@ import {parseResourceId} from './storage/resource-id.js';
 import {isThreadnoteStorageLayoutReceipt} from './storage/layout.js';
 import type {CommandStatus, JsonObject} from './types.js';
 import {getThreadnoteVersion} from './release/runtime_version.js';
-import {compareVersions} from './release/version_compare.js';
+import {compareVersions} from './release/version/compare.js';
 import {findWorkspaceComponentManifest} from './workspace_component.js';
 
 class UtilityOperationError extends Schema.TaggedError<UtilityOperationError>()('UtilityOperationError', {
@@ -38,7 +38,7 @@ class UtilityOperationError extends Schema.TaggedError<UtilityOperationError>()(
 }) {}
 
 export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
-export {compareVersions} from './release/version_compare.js';
+export {compareVersions} from './release/version/compare.js';
 
 export function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -1067,6 +1067,8 @@ export interface RecallHit {
   readonly contextType: string;
   readonly equivalentUris?: readonly string[];
   readonly identityConflict?: boolean;
+  /** Stable memory identity retained for internal consumers that must prove semantic discovery before exact read. */
+  readonly memoryId?: string;
   /**
    * Query terms this document matched exactly (lexically) via grep. Present when
    * an exact-match pass corroborates a semantic hit, or when the document was
@@ -1708,6 +1710,7 @@ function hybridRankRecallHits(
               ...hit,
               equivalentUris: ranked.candidate.equivalentUris,
               identityConflict: ranked.candidate.identityConflict,
+              memoryId: ranked.candidate.memoryId,
               finalScore: ranked.finalScore,
               rankReasons: ranked.reasons,
               rankSignals: ranked.signals,

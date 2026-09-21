@@ -1,3 +1,4 @@
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   boundedMemoryAuthority,
@@ -6,6 +7,7 @@ import {
   formatMemoryDocument,
   formatMemoryDocumentWithKeywords,
   inferMemoryMetadata,
+  isIsoDateOrCanonicalIsoInstant,
   parseMemoryDocument,
   type MemoryMetadata,
 } from '../../src/memory/document.js';
@@ -17,7 +19,8 @@ import {
   MEMORY_SCHEMA_VERSION,
   UnsupportedMemorySchemaVersionError,
   type MemoryCodeCitationInputV1,
-} from '../../src/memory/code_citation.js';
+} from '../../src/memory/code/citation.js';
+import {migrateMemoryDocumentV4ToV5} from '../../src/memory/migrations.js';
 
 describe('memory document contract', () => {
   it('preserves the legacy document format when versioned metadata is absent', () => {
@@ -183,6 +186,123 @@ describe('memory document contract', () => {
     expect(Object.isFrozen(parsed?.metadata.codeCitations?.[1]?.target)).toBe(true);
     expect(parsed && formatMemoryDocument(parsed.headerTitle, parsed.metadata, parsed.body)).toBe(document);
     expect(inferMemoryMetadata(document).codeCitations).toEqual([file, symbol]);
+  });
+
+  it('round-trips v5 maintenance metadata while retaining v4 code-citation compatibility', () => {
+    const citation = createMemoryCodeCitation(citationInput('src/memory/document.ts'));
+    const v4 = formatMemoryDocument(
+      'MEMORY',
+      {
+        codeCitations: [citation],
+        kind: 'durable',
+        project: 'threadnote',
+        schemaVersion: 4,
+        sourceAgentClient: 'codex',
+        status: 'active',
+        timestamp: '2026-09-17T10:00:00.000Z',
+        topic: 'v4-compatibility',
+      },
+      'Existing citation evidence remains readable.',
+    );
+    const v5Metadata: MemoryMetadata = {
+      codeCitations: [citation],
+      kind: 'durable',
+      owner: 'context-maintainers',
+      project: 'threadnote',
+      reviewAfter: '2026-12-01',
+      schemaVersion: MEMORY_SCHEMA_VERSION,
+      sourceAgentClient: 'codex',
+      status: 'active',
+      timestamp: '2026-09-17T10:00:00.000Z',
+      topic: 'maintenance',
+    };
+
+    expect(parseMemoryDocument('threadnote://user/me/v4.md', v4)?.metadata.codeCitations).toEqual([citation]);
+    const v5 = formatMemoryDocument('MEMORY', v5Metadata, 'Maintain this contract.');
+    expect(v5).toContain('owner: context-maintainers');
+    expect(v5).toContain('review_after: 2026-12-01');
+    expect(parseMemoryDocument('threadnote://user/me/v5.md', v5)?.metadata).toEqual(v5Metadata);
+  });
+
+  it('migrates canonical v4 documents to v5 without inventing maintenance metadata', () => {
+    const citation = createMemoryCodeCitation(citationInput('src/memory/document.ts'));
+    const v4 = formatMemoryDocument(
+      'MEMORY',
+      {
+        codeCitations: [citation],
+        kind: 'durable',
+        project: 'threadnote',
+        schemaVersion: 4,
+        sourceAgentClient: 'codex',
+        status: 'active',
+        timestamp: '2026-09-17T10:00:00.000Z',
+      },
+      'Migrate only the schema version.',
+    );
+
+    const migrated = migrateMemoryDocumentV4ToV5(v4);
+    const parsed = parseMemoryDocument('threadnote://user/me/migrated.md', migrated);
+
+    expect(migrated).toBe(v4.replace('schema_version: 4', `schema_version: ${MEMORY_SCHEMA_VERSION}`));
+    expect(migrateMemoryDocumentV4ToV5(migrated)).toBe(migrated);
+    expect(parsed?.metadata).toMatchObject({codeCitations: [citation], schemaVersion: MEMORY_SCHEMA_VERSION});
+    expect(parsed?.metadata.owner).toBeUndefined();
+    expect(parsed?.metadata.reviewAfter).toBeUndefined();
+  });
+
+  it('has a deterministic, idempotent v4-to-v5 migration that never adds maintenance metadata (property)', () => {
+    fc.assert(
+      fc.property(fc.string({maxLength: 256}), body => {
+        const v4 = [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          'project: threadnote',
+          'source_agent_client: codex',
+          'timestamp: 2026-09-17T10:00:00.000Z',
+          'schema_version: 4',
+          '',
+          body,
+        ].join('\n');
+
+        const migrated = migrateMemoryDocumentV4ToV5(v4);
+        const parsed = parseMemoryDocument('threadnote://user/me/property.md', migrated);
+
+        expect(migrateMemoryDocumentV4ToV5(v4)).toBe(migrated);
+        expect(migrateMemoryDocumentV4ToV5(migrated)).toBe(migrated);
+        expect(parsed?.metadata.schemaVersion).toBe(MEMORY_SCHEMA_VERSION);
+        expect(parsed?.metadata.owner).toBeUndefined();
+        expect(parsed?.metadata.reviewAfter).toBeUndefined();
+        expect(parsed?.body).toBe(body.replace(/\r\n?/gu, '\n').trim());
+      }),
+      {numRuns: 64},
+    );
+  });
+
+  it('rejects non-calendar review_after values while keeping malformed imported values non-authoritative', () => {
+    const metadata: MemoryMetadata = {
+      kind: 'durable',
+      reviewAfter: '2026-02-30',
+      sourceAgentClient: 'codex',
+      status: 'active',
+      timestamp: '2026-09-17T10:00:00.000Z',
+    };
+
+    expect(() => formatMemoryDocument('MEMORY', metadata, 'Body')).toThrow('review_after must be an ISO date');
+    expect(
+      parseMemoryDocument(
+        'threadnote://user/me/invalid-review-date.md',
+        ['MEMORY', 'kind: durable', 'status: active', 'review_after: 2026-02-30', '', 'Body'].join('\n'),
+      )?.metadata.reviewAfter,
+    ).toBeUndefined();
+  });
+
+  it('validates four-digit ISO calendar years without Date.UTC century coercion', () => {
+    expect(isIsoDateOrCanonicalIsoInstant('0000-02-29')).toBe(true);
+    expect(isIsoDateOrCanonicalIsoInstant('0099-12-31')).toBe(true);
+    expect(isIsoDateOrCanonicalIsoInstant('0000-02-30')).toBe(false);
+    expect(isIsoDateOrCanonicalIsoInstant('0099-02-29')).toBe(false);
+    expect(isIsoDateOrCanonicalIsoInstant('0100-02-29')).toBe(false);
   });
 
   it('preserves closed errors for malformed, unsupported, and non-canonical schema-v4 citation lines', () => {

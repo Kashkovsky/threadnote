@@ -44,6 +44,15 @@ export function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
 
+export function optionalGraphScopeIdentity(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const identity = requireString(value, 'scopeId');
+  if (!/^code-graph-scope:[0-9a-f]{64}$/.test(identity)) {
+    throw ManagerRequestInputError.make({message: 'Provide scopeId as an exact graph scope identity.'});
+  }
+  return identity;
+}
+
 export function requireStringArray(value: unknown, name: string): readonly string[] {
   if (!Array.isArray(value) || value.length === 0 || !value.every(item => typeof item === 'string')) {
     throw ManagerRequestInputError.make({message: `Provide ${name} as a non-empty string array.`});

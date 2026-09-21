@@ -31,7 +31,7 @@ import {captureConsoleWithoutProgress} from '../effect/console.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {ResourceStore} from '../effect/resource-store.js';
 import type {ApplicationServices} from '../effect/runtime.js';
-import {withSharedRepositoryLock} from '../effect/share_lock.js';
+import {withSharedRepositoryLock} from '../effect/share/lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   runShareInit,
@@ -61,14 +61,15 @@ import {
   removeManagerPersonalMemorySource,
   removeManagerSharedMemorySource,
   storeManagerPersonalMemoryMove,
-} from './memory_move.js';
-import {assertManagerRawPersonalMemorySave, assertManagerRawSharedMemorySave} from './memory_save.js';
-import {ManagerMemoryRelationsError, updateManagerMemoryRelations} from './memory_relations.js';
+} from './memory/move.js';
+import {assertManagerRawPersonalMemorySave, assertManagerRawSharedMemorySave} from './memory/save.js';
+import {ManagerMemoryRelationsError, updateManagerMemoryRelations} from './memory/relations.js';
+import {managerGraphViewRemovalApprovalDigest} from './graph/removal_digest.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../memory/code_citation_policy.js';
-import {discardDeferredCodeAnchorIntent} from '../memory/deferred_code_anchor.js';
+} from '../memory/code/citation_policy.js';
+import {discardDeferredCodeAnchorIntent} from '../memory/deferred/code_anchor.js';
 import {parseMemoryDocument, type MemoryRecord} from '../memory/hygiene.js';
 import {
   ensureSharedDirectoryChain,
@@ -87,20 +88,21 @@ import {collectDoctorChecks, runRepair, runStart} from '../lifecycle.js';
 import {runSeed, runSeedSkills} from '../seeding.js';
 import {readManagerRuntimeState} from './state.js';
 import {handleManagerProcessRequest} from './processes.js';
-import {handleManagerContextRequest} from './context.js';
+import {handleManagerWorkspaceRequest} from './value.js';
 import {emptyManagerTree, readManagerTreeRoot} from './tree.js';
 import {
   handleManagerWorksetRequest,
   isManagerWorksetApiPath,
   managerWorksetRequestAllowedDuringMaintenance,
 } from './worksets.js';
-import * as graphProjects from './graph_projects.js';
-import * as graphActions from './graph_actions.js';
+import * as graphProjects from './graph/projects.js';
+import * as graphActions from './graph/actions.js';
 import {
   cleanupMode,
   consolidationAgent,
   memoryKind,
   memoryStatus,
+  optionalGraphScopeIdentity,
   optionalNonEmptyQuery,
   optionalNonNegativeIntegerQuery,
   optionalPositiveIntegerQuery,
@@ -111,12 +113,12 @@ import {
   requireStringArray,
 } from './request_inputs.js';
 import {runCodeGraphPurge, runCodeGraphRepair} from '../code_graph/commands.js';
-import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated_index.js';
+import {runIsolatedCodeGraphIndexSnapshot} from '../code_graph/isolated/index.js';
 import {
   compactCodeGraphStorageIsolated,
-  runCodeGraphAutomaticCompactionLoop,
+  runCodeGraphAutomaticCompactionScheduler,
   type CodeGraphAutomaticCompactionStatus,
-} from '../code_graph/automatic_compaction.js';
+} from '../code_graph/automatic/compaction.js';
 import {inspectAllCodeGraphsLocal} from '../code_graph/diagnostics.js';
 import {readAllCodeGraphBuildStatuses} from '../code_graph/build_status.js';
 import {
@@ -125,13 +127,13 @@ import {
 } from '../code_graph/local_provenance.js';
 import {repositoryIdentityMatchesExpectation} from '../code_graph/repository.js';
 import {CodeGraphStoreBusyError, type RepositoryIdentityExpectation} from '../code_graph/types.js';
-import {codeGraphMaintenanceIntentActive} from '../code_graph/maintenance_gate.js';
+import {codeGraphMaintenanceIntentActive} from '../code_graph/maintenance/gate.js';
 import {codeGraphLayout} from '../code_graph/layout.js';
-import {CodeGraphMaintenanceCoordinator} from '../code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../code_graph/maintenance/coordinator.js';
 import {
   observeCodeGraphLifecycleOpportunityTargets,
   runCodeGraphLifecycleOpportunity,
-} from '../code_graph/lifecycle_opportunity.js';
+} from '../code_graph/lifecycle/opportunity.js';
 import {removeCodeGraphView, renderCodeGraphViewRemovalResult} from '../code_graph/view_removal.js';
 import {
   managerGraphAnalysis,
@@ -374,7 +376,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
             createManagerServer({automaticCompactionStatus, config, jobs: new Map(), token, worksetScope}),
           );
           yield* Effect.forkScoped(
-            runCodeGraphAutomaticCompactionLoop(config.agentContextHome, status =>
+            runCodeGraphAutomaticCompactionScheduler(config.agentContextHome, status =>
               Ref.set(automaticCompactionStatus, status),
             ),
           );
@@ -574,16 +576,13 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     writeJson(response, processResponse.status, processResponse.body);
     return;
   }
-  const contextResponse = yield* handleManagerContextRequest({
+  const workspaceResponse = yield* handleManagerWorkspaceRequest({
     body: request.body,
     config: context.config,
     method: request.method,
     url,
   });
-  if (contextResponse) {
-    writeJson(response, contextResponse.status, contextResponse.body);
-    return;
-  }
+  if (workspaceResponse) return writeJson(response, workspaceResponse.status, workspaceResponse.body);
   if (
     ((isGraphApiPath(url.pathname) && url.pathname !== '/api/graphs/status') ||
       (isManagerWorksetApiPath(url.pathname) &&
@@ -1646,7 +1645,16 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
       try: () => requireGraphSnapshotIdentity(body.expectedSnapshotId),
       catch: managerOperationError,
     });
-    const target = {checkoutId, snapshotId: expectedSnapshotId, worktreeId};
+    const scopeId = yield* Effect.try({
+      try: () => optionalGraphScopeIdentity(body.scopeId),
+      catch: managerOperationError,
+    });
+    const target = {
+      checkoutId,
+      ...(scopeId === undefined ? {} : {scopeId}),
+      snapshotId: expectedSnapshotId,
+      worktreeId,
+    };
     const approvalDigest = yield* managerGraphViewRemovalApprovalDigest(target);
     if (!dryRun && body.approvalDigest !== approvalDigest) {
       return yield* ManagerOperationError.make({
@@ -1835,22 +1843,6 @@ function requireGraphSnapshotIdentity(value: unknown): string {
   }
   return identity;
 }
-
-const managerGraphViewRemovalApprovalDigest = Effect.fn('manager.graphViewRemovalApprovalDigest')(function* (target: {
-  readonly checkoutId: string;
-  readonly snapshotId: string;
-  readonly worktreeId: string;
-}) {
-  return `sha256:${yield* sha256(
-    JSON.stringify({
-      action: 'remove-view',
-      checkoutId: target.checkoutId,
-      expectedSnapshotId: target.snapshotId,
-      version: 1,
-      worktreeId: target.worktreeId,
-    }),
-  )}`;
-});
 
 const memoryUriFor = Effect.fn('manager.memoryUriFor')(function* (
   config: RuntimeConfig,

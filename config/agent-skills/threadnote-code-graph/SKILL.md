@@ -1,38 +1,28 @@
 ---
 name: threadnote-code-graph
-description: Investigate unfamiliar local source relationships with Threadnote's code graph before broad text search. Use for locating concepts, tracing callers and dependencies, impact analysis, and repository architecture.
+description: Investigate unfamiliar local source relationships with Threadnote's code graph before broad text search.
 ---
 
 <!-- BEGIN THREADNOTE USER INSTRUCTIONS -->
 
 # Threadnote code graph
 
-For unfamiliar source or relationship claims, call `inspect_code_graph` before broad text search. Start with `query`,
-then round-trip a stable `cgs_` or `cgr_` ID through `node`, `neighbors`, or `path`. Use `impact` for reverse dependencies
-and `analyze_code_graph` for repository-wide structure. Follow graph evidence with exact path or literal search for
-verification.
+For unfamiliar source or relationship claims, call `inspect_code_graph` before broad text search: start with `query`,
+then round-trip stable `cgs_`/`cgr_` IDs through `node`, `neighbors`, or `path`. Use `impact` for reverse dependencies
+and `analyze_code_graph` for repository-wide structure. Follow graph evidence with exact path or literal search.
 
-On the local MCP server, `inspect_code_graph` accepts `responseFormat: "text"` for a successful repository or named
-Workset inspection. Parse the complete bounded graph JSON in text `content[0]`; it includes stable IDs, evidence,
-freshness, trust, and coverage receipts without a duplicate structured graph. Keep the default `dual` format when a
-client needs `structuredContent`. Indexing, timeout, and error responses retain their existing status format.
+Use canonical repository-relative POSIX paths or exact lowercase `cgs_<32 hex>` IDs as Context Brief `codeRefs`; `cgr_`
+handles remain inspection handles. If a brief is truncated, follow its retained selector. Treat bounded cards as
+provenance, not proof of absence. During indexing, use compatible stale/deferred cards, verify exact source, and retry
+only before strict current/relationship claims or when no usable cards survive; never tight-poll refresh state.
 
-If indexing is in progress, continue safe work and retry after the returned delay. If graph tooling is unavailable,
-say so and use targeted text search. Skip graph only for known exact paths or symbols, remote review without a checkout,
-or visual and binary evidence; use it if the scope expands.
+Preserve the Context Brief `project` selector and read `projectCoverage`: a configured project graph covers its roots,
+forward dependencies, and explicit includes, not the whole repository. Do not claim repository-wide absence from that
+view. For `outside-project-graph`, partial coverage, or ambiguous selection, follow the returned action or choose a
+project explicitly identified by the task or repository guidance; never guess, silently widen, or force a full rebuild.
 
-Named Worksets read only their published ready generation. Run `threadnote workset prepare <name>` explicitly when a
-member needs a ready or fresher snapshot. Treat bounded results as evidence with provenance, not proof of absence.
+Named Worksets expose only their published ready generation; run `threadnote workset prepare <name>` when a fresher ready
+snapshot is required. If graph tooling is unavailable, say so and use targeted search. Skip graph for known exact paths
+or symbols, remote review without a checkout, and visual/binary evidence. Carry consequential anchors into the handoff.
 
-For the code-brief workflow, use canonical graph-indexed POSIX repository-relative paths or exact lowercase
-`cgs_<32 hex>` IDs as bidirectional anchors: pass them to `context_brief.codeRefs` to find memories attached to current
-code, and use memory citations to return to the current graph before making relationship claims. `cgr_` remains valid
-for `inspect_code_graph` (including Worksets) but is deliberately rejected by Context Brief. If a brief is truncated,
-follow its retained selector to make the next query narrower. If it retains `graph-status` after a ready-read failure,
-inspect graph health and rerun; do not infer absence from the empty evidence lane. Carry the most consequential anchors
-into the final handoff.
-
-Typed memory connections complement code citations; they do not replace graph evidence. When a code-linked memory is
-relevant, pass its stable identity through `recall_context.memoryRefs` to inspect direct related decisions, read the
-useful neighbor memories, and then verify their cited anchors against the current code graph.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

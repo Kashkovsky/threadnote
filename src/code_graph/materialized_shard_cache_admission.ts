@@ -1,4 +1,4 @@
-import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from './fact_budget.js';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from './fact/budget.js';
 
 /**
  * Derived materialized shards are a non-authoritative restart optimization.

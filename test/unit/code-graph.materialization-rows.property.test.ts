@@ -11,7 +11,7 @@ import {
   codeGraphMaterializationSymbolLookupRows,
   codeGraphMaterializationSymbolRows,
   codeGraphMaterializationSymbolTermRows,
-} from '../../src/code_graph/materialization_rows.js';
+} from '../../src/code_graph/materialization/rows.js';
 import type {CodeGraphEdge, CodeGraphReference, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
 const edgeArbitrary = FC.record({

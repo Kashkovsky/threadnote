@@ -14,7 +14,7 @@ import {
   type CodeGraphSqliteWriterTuning,
 } from '../src/code_graph/store.js';
 import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
-import {codeGraphAnalysisLimitsForView} from '../src/code_graph/analysis_render.js';
+import {codeGraphAnalysisLimitsForView} from '../src/code_graph/analysis/render.js';
 import {codeGraphLayout} from '../src/code_graph/layout.js';
 import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
 import {
@@ -56,7 +56,7 @@ import {
   type GraphQueryVisualization,
   type GraphVisualization,
 } from '../src/manager/graph.js';
-import {MANAGER_GRAPH_MAX_EDGE_LIMIT, MANAGER_GRAPH_MAX_NODE_LIMIT} from '../src/manager/graph_limits.js';
+import {MANAGER_GRAPH_MAX_EDGE_LIMIT, MANAGER_GRAPH_MAX_NODE_LIMIT} from '../src/manager/graph/limits.js';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   benchmarkMeasurement,

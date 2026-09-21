@@ -5,7 +5,7 @@ import {
   normalizeRemoteContextBriefAnchors,
   projectRemoteContextBrief,
   remoteContextBriefAnchorSelectors,
-} from '../../src/remote_memory/context_brief.js';
+} from '../../src/remote_memory/context/brief.js';
 
 const receipt: RemoteMemoryReceiptV1 = {
   consistency: 'current',

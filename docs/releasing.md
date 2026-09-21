@@ -58,9 +58,22 @@ checksums but are not OS code-signed.
 
 ## Publishing
 
-For a prerelease, use a full SemVer prerelease such as `4.1.0-beta.1` in `package.json`,
-`.github/release-notes/v4.1.0-beta.1.md`, and the `v4.1.0-beta.1` tag. The publisher detects the hyphenated tag and
-creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
+For the 5.0 release branch, keep `package.json` at `5.0.0` while reviewed slices accumulate. Every pull request targeting
+`release/5.0.0` must update the cumulative `.github/release-notes/v5.0.0.md`. Do not tag or publish until the reviewed
+release candidate is on the protected publication branch through the normal release process.
+
+The only currently supported prerelease is a numbered Threadnote 5 beta: use `5.0.0-beta.N` (with `N >= 1`) in
+`package.json`, `.github/release-notes/v5.0.0-beta.N.md`, and the `v5.0.0-beta.N` tag. The publisher creates a GitHub
+prerelease only when that tag targets the exact current remote `release/5.0.0` tip, and rechecks that tip immediately before
+creating the immutable release. Activate the no-bypass `Threadnote 5.0 beta publication freeze` ruleset after the final
+candidate merge and before tagging; it targets only `release/5.0.0` and uses the `update` rule with fetch-and-merge disabled.
+Keep it active until immutable-release verification completes, then disable it. The workflow fails closed if it cannot inspect
+that active ruleset. On a non-fork repository, GitHub may omit the update-rule parameters when
+`update_allows_fetch_and_merge` is false; the workflow accepts that omission only after confirming `fork` is false, and
+rejects an explicit `true`. It also rejects any `ref_name.exclude`, because an exclusion overrides the exact release-branch
+include. It rejects unnumbered, zero-padded,
+other-channel, and other-version prerelease tags. Stable tags
+remain restricted to commits already present on protected `main`.
 
 1. Add `.github/release-notes/vX.Y.Z.md` for the exact version being released. Begin with `## What's new`, then open
    with one sentence (at most 240 characters after the `Threadnote X.Y.Z` prefix) that states the release's main
@@ -341,7 +354,16 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    experiment blocker to investigate; do not weaken the binding. This verifier is deliberately absent from the
    release-publishing workflow.
 
-4. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
+4. Run the Stage 3 code-graph dogfood gate across three linked worktrees and two MCP hosts. Retain evidence that a
+   blocked writer still permits stale query/node/neighbors/explain discovery, while path and impact remain strict;
+   verify shared opaque `cgdq_` tokens, latest-demand convergence, process-kill recovery, and a privacy scan. This gate
+   records observations and bounded retry guidance, not unverified latency claims. The release is not ready until the
+   continuity contract, crash recovery, and strict-current boundaries are all exercised.
+   Use [`bun run gate:code-graph:stage3`](code-graph-readiness.md#stage-3-release-gate) from the exact clean candidate
+   checkout with its verified managed development runtime. `--mode plan` is a non-executing preview; only
+   `--mode execute` creates the disposable fixtures, launches the candidate MCP hosts, and writes passing evidence.
+   Keep the new output file outside source control. The harness accepts no caller-supplied observations.
+5. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
    graph correctness and performance. The tag starts one separate exact-tag production-large capacity classification
    and, on an admitted runner, one `code-graph-production-large-n1` observation automatically. When the hosted runner
    lacks the governed 120 GiB floor but has at least 20 GiB, it must instead complete the separately governed
@@ -349,16 +371,73 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    a passing fallback does not claim full 73,000-file attainment. Use a separately governed capable environment when
    full-shape evidence is needed. Do not dispatch a duplicate hosted run for a tag; the event SHA must match the
    exact tagged checkout for governed release evidence.
-5. Confirm immutable releases are enabled, the Apple signing secrets below are configured, the protected-main ruleset
-   still requires signed linear reviewed merges, and an active `v*` tag ruleset forbids tag updates and deletion. The
-   workflow can compare the pushed tag, exact checkout, protected-main ancestry, and remote tag peel; repository tag
-   protection is what closes the remaining check-to-publication movement window.
-6. Verify that HEAD is the exact reviewed release commit, create the version tag matching both `package.json` and the
-   release-notes filename (for example `v4.0.1`) on that commit, and push it immediately. Do not merge or push another
-   main-branch commit between the final check and the tag. The publish workflow binds its checkout, every platform
-   build, and the reusable publisher to that tag-event Git object and rechecks that the remote tag still peels to the
-   same protected-main commit before creating the immutable release.
-7. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
+   Hosted GitHub Actions heavy-tail artifacts are explicitly `correctness-only`; they must never be treated as
+   performance evidence. Final release readiness additionally requires a fresh, exactly three-run governed heavy-tail
+   ratchet on the matching local release runner, with every run from the same clean frozen candidate **C** and the
+   checked numeric thresholds unchanged. Bind the capture to an explicit non-fallback runner class and stable local
+   runner identity; `local-unclassified` and `local` are release-ineligible. The independently chosen release window
+   below admits evidence at the exact not-before, maximum-age, maximum-span, and future-skew boundaries, and the output
+   retains all five policy values. Generate it only after the three runs complete and retain the inputs for replay:
+
+   ```sh
+   export THREADNOTE_BENCHMARK_RUNNER_CLASS=apple-m1-max-64g-internal
+   export THREADNOTE_BENCHMARK_RUNNER_ID=local-apple-m1-max
+   RELEASE_NOT_BEFORE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   for run in 1 2 3; do
+     bun run bench:code-graph:heavy-tail -- --governed \
+       --candidate-commit <candidate-sha> \
+       --evidence-class governed-performance \
+       --ratchet test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json \
+       --output artifacts/heavy-tail-<candidate-sha>-$run.json
+   done
+   RELEASE_OBSERVED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+   bun run bench:code-graph:heavy-tail:ratchet -- \
+     --candidate-commit <candidate-sha> \
+     --runner-class "$THREADNOTE_BENCHMARK_RUNNER_CLASS" \
+     --runner-identity "$THREADNOTE_BENCHMARK_RUNNER_ID" \
+     --ratchet test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json \
+     --release-not-before "$RELEASE_NOT_BEFORE" \
+     --release-observed-at "$RELEASE_OBSERVED_AT" \
+     --maximum-evidence-age-ms 86400000 \
+     --maximum-run-span-ms 21600000 \
+     --future-skew-ms 300000 \
+     --output artifacts/heavy-tail-ratchet-<candidate-sha>.json \
+     artifacts/heavy-tail-<candidate-sha>-1.json \
+     artifacts/heavy-tail-<candidate-sha>-2.json \
+     artifacts/heavy-tail-<candidate-sha>-3.json
+   ```
+
+   The generator strictly validates the outer assertions, storage, managed exact-HEAD runtime provenance, and every
+   duplicated embedded binding before admission. It enforces every source run against the checked ratchet and rejects
+   a generated numeric bound that is weaker than the checked bound. A hosted run, a correctness-only artifact, a
+   fourth sample, a mismatched candidate or runner identity, an out-of-window timestamp, or a changed threshold policy
+   is release-ineligible. This ratchet covers parser/cache heavy-tail behavior only; production-scale materialization
+   still requires the unchanged 73,000-file / 59,936-eligible production-large shape contract below.
+
+6. Confirm immutable releases are enabled, the Apple signing secrets below are configured, and an active `v*` tag ruleset
+   forbids tag updates and deletion. Stable publication additionally requires the protected-main ruleset to require signed
+   linear reviewed merges. Before any `v5.0.0-beta.N` publication, mirror that ruleset onto the exact `release/5.0.0`
+   branch: signed commits, linear history, the same pull-request/code-owner approval policy, and the same strict required
+   Gateway check. Preserve any reviewed maintainer bypass from the main ruleset only if it remains necessary for the
+   one-maintainer repository, and document it in the ruleset rather than treating the beta path as a bypass. Freeze
+   `release/5.0.0` against all merges and pushes while a beta publish workflow is running with a separately named
+   `Threadnote 5.0 beta publication freeze` ruleset: active enforcement, exact branch target, no bypass actors, and an
+   `update` rule whose `update_allows_fetch_and_merge` is false. Enable it after the final candidate merge and before
+   tagging; disable it only after immutable-release verification completes. On a non-fork repository, GitHub can omit the
+   update-rule parameters for that false setting; the workflow accepts the omitted form only after it verifies `fork` is
+   false, and rejects an explicit `true`. The freeze predicate also rejects every `ref_name.exclude`, since excludes
+   override the exact release-branch include. The release workflow uses the coordinator token to inspect that ruleset
+   immediately before release creation and fails closed if the API permission is unavailable; the release coordinator
+   must preflight the API access and manually verify the freeze in GitHub when a run cannot begin. The workflow compares
+   the pushed tag, exact checkout, eligible branch condition, and remote tag peel; tag protection closes the remaining
+   check-to-publication movement window.
+7. Verify that HEAD is the exact reviewed release commit, create the version tag matching both `package.json` and the
+   release-notes filename (for example `v4.0.1`) on that commit, and push it immediately. For stable releases, do not
+   merge or push another main-branch commit between the final check and the tag. For `v5.0.0-beta.N`, HEAD must instead
+   equal the exact current remote `release/5.0.0` tip; do not push the branch between that check and tagging. The publish
+   workflow binds its checkout, every platform build, and the reusable publisher to that tag-event Git object and rechecks
+   the remote tag peel plus the applicable branch condition before creating the immutable release.
+8. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    six enabled archives are verified while its bounded production-large observation continues independently.
 
 The main-branch website build hides prepared release notes until a published immutable GitHub Release exists for the
@@ -433,6 +512,13 @@ macOS:
 
 The workflow selects the single valid Developer ID Application identity imported from the PKCS#12 file and signs by
 its certificate fingerprint. An identity-name secret is not required.
+
+Beta publication coordination:
+
+- `THREADNOTE_RELEASE_COORDINATOR_TOKEN`: a fine-grained token scoped to this repository with read-only
+  Administration permission. The publisher uses it only to inspect the active beta freeze ruleset; release creation
+  continues to use the job-scoped GitHub token. The default GitHub Actions token cannot prove that a ruleset has no
+  bypass actors and is intentionally rejected for this check.
 
 Deferred Windows configuration, not required for the current release line:
 

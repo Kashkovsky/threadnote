@@ -1,12 +1,12 @@
 import {Schema} from 'effect';
-import type {CodeGraphScanningMetrics, CodeGraphSourceSizeBucket} from './progress_telemetry.js';
+import type {CodeGraphScanningMetrics, CodeGraphSourceSizeBucket} from './progress/telemetry.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 
 export {
   CODE_GRAPH_CORE_SCHEMA_VERSION as CODE_GRAPH_SCHEMA_VERSION,
   CODE_GRAPH_MINIMUM_BACKGROUND_SCHEMA_REVISION as CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION,
   CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION as CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
-} from './store/schema_revision.js';
+} from './store/schema/revision.js';
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
 export const CODE_GRAPH_EXTRACTOR_GENERATION = 14 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
@@ -163,6 +163,8 @@ export interface CodeGraphReference {
 }
 
 export interface CodeGraphSnapshot {
+  /** Missing scope denotes the canonical full-repository graph. */
+  readonly scopeId?: string;
   readonly baseSnapshotId?: string;
   readonly commit: string;
   readonly completedAt?: string;
@@ -284,9 +286,9 @@ export interface CodeGraphMaterializationMetrics {
   /** Exact UTF-8 bytes decoded from raw parser-fact cache rows for attribution. */
   readonly rawFactReplayBytesCompleted?: number;
   /** Closed, path-free evidence for the declaration-publication gate. */
-  readonly resolutionLookupKeyForm?: import('./resolution_surface.js').CodeGraphResolutionLookupKeyForm;
+  readonly resolutionLookupKeyForm?: import('./resolution/surface.js').CodeGraphResolutionLookupKeyForm;
   /** Closed, path-free evidence for the declaration-publication gate. */
-  readonly resolutionPublicationGate?: import('./resolution_surface.js').CodeGraphResolutionPublicationGate;
+  readonly resolutionPublicationGate?: import('./resolution/surface.js').CodeGraphResolutionPublicationGate;
   readonly rows?: CodeGraphMaterializationRows;
   readonly sourceBytesCompleted: number;
   readonly sourceBytesTotal: number;
@@ -418,11 +420,13 @@ export type CodeGraphProgress =
         'applying-deltas' | 'building-local-overlay' | 'discovering-shared-base' | 'downloading-checkpoint';
     }
   | {
+      readonly admission?: import('./builder/admission_scheduler.js').CodeGraphBuilderAdmissionQueue;
       readonly phase: 'waiting';
       readonly reason?:
         | 'database-writer'
         | 'disk-capacity'
         | 'home-builder-cap'
+        | 'prepared-spool-budget'
         | 'repository-lock'
         | 'request-lock'
         | 'snapshot-build';
@@ -517,7 +521,7 @@ export interface CodeGraphIndexSummary {
   readonly diagnostics: readonly string[];
   readonly durationMs: number;
   readonly identity: RepositoryIdentity;
-  readonly incrementalWork?: import('./incremental_work.js').CodeGraphIncrementalWork;
+  readonly incrementalWork?: import('./incremental/work.js').CodeGraphIncrementalWork;
   readonly materialization?: {
     /** Prior logical-delta files copied from persisted rows without fact decoding. */
     readonly carriedFiles?: number;
@@ -529,8 +533,8 @@ export interface CodeGraphIndexSummary {
     /** Files freshly decoded/attributed for this build; `stagedFiles` remains the physical delta size. */
     readonly freshStagedFiles?: number;
     readonly resolutionClosure?: 'changed' | 'full' | 'project';
-    readonly resolutionLookupKeyForm?: import('./resolution_surface.js').CodeGraphResolutionLookupKeyForm;
-    readonly resolutionPublicationGate?: import('./resolution_surface.js').CodeGraphResolutionPublicationGate;
+    readonly resolutionLookupKeyForm?: import('./resolution/surface.js').CodeGraphResolutionLookupKeyForm;
+    readonly resolutionPublicationGate?: import('./resolution/surface.js').CodeGraphResolutionPublicationGate;
     readonly stagedFiles: number;
     readonly totalFiles: number;
   };
@@ -632,6 +636,13 @@ export interface CodeGraphQueryNode extends CodeGraphSymbol {
 }
 
 export interface CodeGraphQueryResult {
+  readonly projectCoverage?: CodeGraphProjectCoverage;
+  readonly outsideProjectGraph?: {
+    readonly state: 'outside-project-graph';
+    readonly paths: readonly string[];
+    readonly suggestedActions: readonly string[];
+  };
+  readonly outsideScopeChangedPaths?: number;
   readonly edges: readonly CodeGraphEdge[];
   readonly freshness: 'current' | 'deferred' | 'stale';
   readonly nodes: readonly CodeGraphQueryNode[];
@@ -676,6 +687,9 @@ export interface CodeGraphQueryResult {
 }
 
 export interface CodeGraphQueryOptions {
+  readonly project?: string;
+  /** Manifest used to resolve the project selector; defaults to the home seed manifest. */
+  readonly manifestPath?: string;
   readonly cwd: string;
   readonly depth?: number;
   readonly direction?: 'both' | 'incoming' | 'outgoing';
@@ -693,6 +707,7 @@ export interface CodeGraphQueryOptions {
 }
 
 export interface CodeGraphStatus {
+  readonly projectCoverage?: CodeGraphProjectCoverage;
   readonly databasePath: string;
   readonly freshness: 'current' | 'deferred' | 'stale';
   readonly identity: RepositoryIdentity;
@@ -700,6 +715,33 @@ export interface CodeGraphStatus {
   readonly readySnapshot?: CodeGraphSnapshot;
   readonly stale: boolean;
 }
+
+/** Public coverage, deliberately excluding internal scope identities and digests. */
+export interface CodeGraphProjectCoverage {
+  readonly project: string;
+  readonly kind: 'project' | 'full-repository';
+  readonly configuredRoots: readonly string[];
+  readonly rootComponents: number;
+  readonly dependencyComponents: number;
+  readonly completeness: 'complete' | 'partial';
+  readonly negativeProof: 'selected-graph-only' | 'unavailable';
+  readonly snapshotSourceCommit?: string;
+  readonly observedWorktreeCommit: string;
+  readonly reusedEquivalentSnapshot: boolean;
+}
+
+export const CodeGraphProjectCoverageSchema = Schema.Struct({
+  project: Schema.String,
+  kind: Schema.Literals(['project', 'full-repository']),
+  configuredRoots: Schema.Array(Schema.String),
+  rootComponents: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  dependencyComponents: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  completeness: Schema.Literals(['complete', 'partial']),
+  negativeProof: Schema.Literals(['selected-graph-only', 'unavailable']),
+  snapshotSourceCommit: Schema.optionalKey(Schema.String),
+  observedWorktreeCommit: Schema.String,
+  reusedEquivalentSnapshot: Schema.Boolean,
+});
 
 export interface CodeGraphLanguagePackStatus {
   readonly assetCount: number;

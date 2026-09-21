@@ -1,6 +1,6 @@
 import {selectRemoteCanonicalCitations} from '../../src/remote_memory/citation_sources.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
-import {requestFingerprint} from '../../src/remote_memory/remember_fingerprint.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
+import {requestFingerprint} from '../../src/remote_memory/remember/fingerprint.js';
 import type {AuthorizedRemotePrincipal} from '../../src/remote_memory/authorization.js';
 import {describe, expect, it} from 'vitest';
 import * as FC from 'fast-check';
@@ -75,7 +75,7 @@ describe('remote citation selectors', () => {
     for (const content of [
       body.replace('status: active', 'status: archived'),
       body.replace('code_citation: {', 'code_citation: invalid{'),
-      body.replace('schema_version: 4', 'schema_version: 999'),
+      body.replace(`schema_version: ${metadata.schemaVersion}`, 'schema_version: 999'),
       formatMemoryDocument(
         'MEMORY',
         {...metadata, codeCitations: [createMemoryCodeCitation({...citationInput, sourceDirty: true})]},

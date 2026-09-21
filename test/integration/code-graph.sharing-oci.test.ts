@@ -16,7 +16,7 @@ import {readAcceptedGraphShareFrontier} from '../../src/code_graph/sharing/front
 import {graphShareFrontierDiscoveryTag} from '../../src/code_graph/sharing/namespace.js';
 import {parseGraphShareProfile} from '../../src/code_graph/sharing/profile.js';
 import {ociProfilePointer} from '../../src/code_graph/sharing/profile.js';
-import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile_oci_artifact.js';
+import {graphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile/oci_artifact.js';
 import {readSharedGraphProvenance} from '../../src/code_graph/sharing/provenance.js';
 import {runGraphShareInit} from '../../src/code_graph/sharing/publisher.js';
 import {
@@ -28,9 +28,9 @@ import {
   runGraphPublisherBootstrapCommand,
   runGraphPublisherServeCommand,
 } from '../../src/code_graph/sharing/commands.js';
-import {readGraphPublisherRegistryStatus} from '../../src/code_graph/sharing/publisher_registry.js';
-import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
-import {collectGraphShareRegistryPublication} from '../../src/code_graph/sharing/registry_closure.js';
+import {readGraphPublisherRegistryStatus} from '../../src/code_graph/sharing/publisher/registry.js';
+import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher/cycle.js';
+import {collectGraphShareRegistryPublication} from '../../src/code_graph/sharing/registry/closure.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 

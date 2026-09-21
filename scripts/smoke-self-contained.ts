@@ -20,6 +20,12 @@ const smokeSelfContained = Effect.scoped(
     const path = yield* Path.Path;
     const root = yield* path.fromFileUrl(ROOT_URL);
     const executable = path.join(root, 'dist', process.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
+    const packageManifest = JSON.parse(yield* fs.readFileString(path.join(root, 'package.json'))) as {
+      readonly version?: unknown;
+    };
+    if (typeof packageManifest.version !== 'string' || packageManifest.version.length === 0) {
+      return yield* ScriptError.make({message: 'package.json does not declare a release version.'});
+    }
     if (!(yield* fs.exists(executable))) {
       return yield* ScriptError.make({message: 'Standalone executable is missing; run bun run build first.'});
     }
@@ -57,7 +63,7 @@ const smokeSelfContained = Effect.scoped(
       }).pipe(Effect.map(result => `${result.stdout}\n${result.stderr}`));
 
     const version = yield* run(['--version']);
-    if (!/threadnote v4\./.test(version)) {
+    if (!version.includes(`threadnote v${packageManifest.version}`)) {
       return yield* ScriptError.make({message: `Standalone release reported an unexpected version:\n${version}`});
     }
 

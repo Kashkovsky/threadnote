@@ -22,14 +22,17 @@ import fc from 'fast-check';
 import {afterEach, describe, expect} from 'vitest';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
-import type {CodeGraphWorktreeReconciliationAuthorityObservation} from '../../src/code_graph/git_worktree_registration.js';
+import type {CodeGraphWorktreeReconciliationAuthorityObservation} from '../../src/code_graph/git/worktree/registration.js';
 import {
   recordVerifiedCodeGraphLocalAssociation,
   type CodeGraphWorktreeReconciliationEvidenceCandidate,
 } from '../../src/code_graph/local_provenance.js';
 import {codeGraphLayout, type CodeGraphLayout} from '../../src/code_graph/layout.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
-import {CodeGraphMaintenanceActiveError} from '../../src/code_graph/maintenance_gate.js';
+import {
+  CodeGraphMaintenanceActiveError,
+  withCodeGraphTargetWorktreeLock,
+} from '../../src/code_graph/maintenance/gate.js';
 import {
   CodeGraphStore,
   codeGraphExactSnapshotRetirementStatement,
@@ -44,7 +47,7 @@ import {
   isCodeGraphStoreError,
   type CodeGraphSnapshot,
 } from '../../src/code_graph/types.js';
-import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store_schema_metadata.js';
+import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store/schema/metadata.js';
 import type {RepositoryIdentity} from '../../src/code_graph/types.js';
 import {
   CODE_GRAPH_WORKTREE_RECONCILIATION_CANDIDATE_LIMIT,
@@ -305,6 +308,25 @@ describe('automatic missing-worktree reconciliation', () => {
       expect(result).toMatchObject({reason: 'no-missing-candidates', state: 'preserved'});
       expect(yield* Ref.get(anchorCalls)).toBe(0);
       expect(yield* Ref.get(registryCalls)).toBe(0);
+    }),
+  );
+
+  effectIt.effect('runs bounded scope-intent maintenance even when the active-view page is empty', () =>
+    Effect.gen(function* () {
+      const retirementCalls = yield* Ref.make(0);
+      const dependencies = successfulDependencies({
+        listCandidates: () => Effect.succeed([]),
+        retireScopes: (_input, candidates) =>
+          Ref.update(retirementCalls, count => count + 1).pipe(
+            Effect.tap(() => Effect.sync(() => expect(candidates).toEqual([]))),
+            Effect.as(undefined),
+          ),
+      });
+
+      const result = yield* (yield* makeCodeGraphWorktreeReconciler(dependencies)).tick(tick());
+
+      expect(result).toEqual({reason: 'no-candidates', state: 'preserved'});
+      expect(yield* Ref.get(retirementCalls)).toBe(1);
     }),
   );
 
@@ -1160,7 +1182,7 @@ describe('automatic missing-worktree reconciliation', () => {
               setup: (databasePath: string) =>
                 rebuildCanonicalTableDefinition(databasePath, 'snapshots', definition =>
                   definition.replace(
-                    /\n\s*\)$/u,
+                    /\s*\)$/u,
                     ',\n      FOREIGN KEY (base_snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE\n    )',
                   ),
                 ),
@@ -1481,6 +1503,103 @@ describe('automatic missing-worktree reconciliation', () => {
         expect(JSON.stringify(result)).not.toContain(fixture.root);
       }).pipe(provideTestLayer(liveLayer)),
     ),
+  );
+
+  effectIt.effect(
+    'removes full and scoped missing-worktree views under their exact locks and preserves sibling views',
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fixture = yield* createLiveReconciliationFixture('threadnote-reconciliation-scopes-');
+          const scopeId = `code-graph-scope:${'a'.repeat(64)}`;
+          const scopedSnapshotId = `cgsn_${'8'.repeat(40)}`;
+          yield* Effect.sync(() => {
+            const database = new Database(fixture.layout.databasePath, {strict: true});
+            try {
+              database
+                .query(
+                  `INSERT INTO snapshots (id, repository_id, worktree_id, scope_id, commit_id, extractor_set,
+              dirty, state, file_count, symbol_count, edge_count, started_at, completed_at)
+              SELECT ?, repository_id, worktree_id, ?, commit_id, extractor_set, dirty, state,
+                file_count, symbol_count, edge_count, started_at, completed_at FROM snapshots WHERE id = ?`,
+                )
+                .run(scopedSnapshotId, scopeId, fixture.snapshotId);
+              database
+                .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, ?)')
+                .run(scopedSnapshotId, CODE_GRAPH_EXTRACTOR_GENERATION);
+              database
+                .query(
+                  'INSERT INTO active_snapshots (worktree_id, scope_id, snapshot_id, activated_at) VALUES (?, ?, ?, ?)',
+                )
+                .run(fixture.linkedIdentity.worktreeId, scopeId, scopedSnapshotId, '2026-08-08T00:00:00.000Z');
+              database
+                .query(
+                  'INSERT INTO active_snapshots (worktree_id, scope_id, snapshot_id, activated_at) VALUES (?, ?, ?, ?)',
+                )
+                .run(fixture.mainIdentity.worktreeId, scopeId, scopedSnapshotId, '2026-08-08T00:00:00.000Z');
+            } finally {
+              database.close(false);
+            }
+          });
+          yield* Effect.sync(() => removeLiveLinkedWorktree(fixture));
+          const reconciler = yield* makeLiveCodeGraphWorktreeReconciler();
+          yield* withCodeGraphTargetWorktreeLock(
+            fixture.home,
+            fixture.linkedIdentity.checkoutId,
+            fixture.linkedIdentity.worktreeId,
+            Effect.gen(function* () {
+              const result = yield* reconciler.tick(liveTick(fixture));
+              expect(result).toMatchObject({reason: 'target-busy', state: 'deferred'});
+            }),
+            scopeId,
+          );
+          const store = yield* CodeGraphStore;
+          expect(yield* reconciler.tick(liveTick(fixture))).toMatchObject({state: 'removed'});
+          yield* Effect.sync(() => {
+            const database = new Database(fixture.layout.databasePath, {strict: true});
+            try {
+              database.query("UPDATE removed_view_cleanup SET phase = 'provenance'").run();
+            } finally {
+              database.close(false);
+            }
+          });
+          const [cleanup] = yield* store.claimRemovedViewCleanupCandidates(
+            fixture.layout.databasePath,
+            yield* Clock.currentTimeMillis,
+            1,
+          );
+          expect(cleanup).toMatchObject({phase: 'provenance', scopeId});
+          expect(yield* store.authorizeRemovedViewCleanup(fixture.layout.databasePath, cleanup)).toMatchObject({
+            observedSnapshotId: fixture.snapshotId,
+            state: 'active-pointer-changed',
+          });
+          expect(existsSync(fixture.provenancePath)).toBe(true);
+          for (let index = 0; index < 3; index++) yield* reconciler.tick(liveTick(fixture));
+          expect(yield* store.authorizeRemovedViewCleanup(fixture.layout.databasePath, cleanup)).toMatchObject({
+            state: 'authorized',
+          });
+          expect(
+            yield* store.loadActiveViewFence(fixture.layout.databasePath, fixture.linkedIdentity.worktreeId),
+          ).toBeUndefined();
+          expect(
+            yield* store.loadActiveViewFence(fixture.layout.databasePath, fixture.linkedIdentity.worktreeId, scopeId),
+          ).toBeUndefined();
+          expect(
+            (yield* store.loadActiveViewFence(fixture.layout.databasePath, fixture.mainIdentity.worktreeId, scopeId))
+              ?.snapshotId,
+          ).toBe(scopedSnapshotId);
+          for (let index = 0; index < 4; index++)
+            yield* store.runRoutineMaintenance(fixture.layout.databasePath, {
+              checkoutId: fixture.linkedIdentity.checkoutId,
+              threadnoteHome: fixture.home,
+              writerLockPath: fixture.layout.databaseWriteLockPath,
+            });
+          expect(
+            (yield* store.loadActiveViewFence(fixture.layout.databasePath, fixture.mainIdentity.worktreeId, scopeId))
+              ?.snapshotId,
+          ).toBe(scopedSnapshotId);
+        }).pipe(provideTestLayer(liveLayer)),
+      ),
   );
 
   effectIt.effect('preserves a real graph view when the recorded worktree path reappears', () =>
@@ -2004,7 +2123,7 @@ function tombstoneEveryActiveView(databasePath: string): void {
       SELECT worktree_id, snapshot_id, '2026-08-08T00:00:00.000Z'
       FROM active_snapshots
       WHERE 1
-      ON CONFLICT(worktree_id) DO UPDATE SET expected_snapshot_id = excluded.expected_snapshot_id`);
+      ON CONFLICT(worktree_id, scope_id) DO UPDATE SET expected_snapshot_id = excluded.expected_snapshot_id`);
   } finally {
     database.close(false);
   }

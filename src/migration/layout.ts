@@ -1,8 +1,8 @@
 import {Crypto, Effect, FileSystem, Option, Path, Predicate, Schema} from 'effect';
 import {sha256FileHex, sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
-import {resourceAccountMutationLockPath} from '../effect/resource_lock.js';
-import {advanceCanonicalMutationGeneration} from '../effect/resource_mutation_generation.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
+import {resourceAccountMutationLockPath} from '../effect/resource/lock.js';
+import {advanceCanonicalMutationGeneration} from '../effect/resource/mutation_generation.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   LEGACY_THREADNOTE_DATA_DIRECTORY,

@@ -1,3 +1,5 @@
+import {isPurePrivateReleaseEvidenceDiff} from './private-release-evidence-family.js';
+
 export interface CodeGraphProductionRatchetDiff {
   readonly afterPackageJson?: string;
   readonly beforePackageJson?: string;
@@ -7,7 +9,8 @@ export interface CodeGraphProductionRatchetDiff {
 export interface CodeGraphProductionRatchetScope {
   readonly changedCount: number;
   readonly paths: readonly string[];
-  readonly releaseMetadataOnly: boolean;
+  readonly runBenchmark: boolean;
+  readonly skipReason?: 'private-release-evidence-only' | 'release-metadata-only' | 'unrelated-evaluation-only';
 }
 
 type JsonObject = Readonly<Record<string, unknown>>;
@@ -27,6 +30,26 @@ function normalizeGitPath(path: string): string | undefined {
 
 function isReleaseNotePath(path: string): boolean {
   return /^\.github\/release-notes\/v[^/\n\r]+\.md$/u.test(path);
+}
+
+const PRODUCTION_RATCHET_EVALUATION_DEPENDENCIES = new Set([
+  'src/evaluation/benchmark.ts',
+  'src/evaluation/code-graph.ts',
+  'src/evaluation/external_evidence.ts',
+  'src/evaluation/public_controls.ts',
+]);
+
+const PRODUCTION_RATCHET_CONTRACT_TEST_PATHS = new Set(['test/unit/benchmark-workflow.test.ts']);
+
+function isUnrelatedEvaluationPath(path: string): boolean {
+  if (PRODUCTION_RATCHET_EVALUATION_DEPENDENCIES.has(path) || PRODUCTION_RATCHET_CONTRACT_TEST_PATHS.has(path)) {
+    return false;
+  }
+  return (
+    /^src\/evaluation\/context-brief-citation-[^/]+$/u.test(path) ||
+    /^test\/evaluation\/(?:baselines|fixtures)\/context-brief-citations[^/]*(?:\/|$)/u.test(path) ||
+    /^test\/unit\/(?:evaluation\.)?context-brief-citation-[^/]+\.test\.ts$/u.test(path)
+  );
 }
 
 function parseJsonObject(source: string | undefined): JsonObject | undefined {
@@ -86,10 +109,14 @@ export function classifyCodeGraphProductionRatchetScope(
 ): CodeGraphProductionRatchetScope {
   const paths = new Set<string>();
   let invalidPath = false;
-  for (const path of diff.changedPaths) {
-    const normalized = normalizeGitPath(path);
-    if (normalized) paths.add(normalized);
-    else invalidPath = true;
+  try {
+    for (const path of diff.changedPaths) {
+      const normalized = typeof path === 'string' ? normalizeGitPath(path) : undefined;
+      if (normalized) paths.add(normalized);
+      else invalidPath = true;
+    }
+  } catch {
+    invalidPath = true;
   }
 
   const sortedPaths = [...paths].sort();
@@ -102,7 +129,16 @@ export function classifyCodeGraphProductionRatchetScope(
     pathsAreReleaseMetadata &&
     changesOnlyTopLevelVersion(diff.beforePackageJson, diff.afterPackageJson);
 
-  return {changedCount: sortedPaths.length, paths: sortedPaths, releaseMetadataOnly};
+  const evaluationOnly = !invalidPath && sortedPaths.length > 0 && sortedPaths.every(isUnrelatedEvaluationPath);
+  const skipReason =
+    !invalidPath && isPurePrivateReleaseEvidenceDiff(sortedPaths)
+      ? 'private-release-evidence-only'
+      : releaseMetadataOnly
+        ? 'release-metadata-only'
+        : evaluationOnly
+          ? 'unrelated-evaluation-only'
+          : undefined;
+  return {changedCount: sortedPaths.length, paths: sortedPaths, runBenchmark: skipReason === undefined, skipReason};
 }
 
 function commitArgument(name: '--base' | '--head'): string | undefined {
@@ -150,7 +186,7 @@ function classifyCurrentDiff(
     changedPaths,
   });
   return {
-    reason: scope.releaseMetadataOnly ? 'release-metadata-only' : 'ratchet-relevant-or-ambiguous-diff',
+    reason: scope.skipReason ?? 'ratchet-relevant-or-ambiguous-diff',
     scope,
   };
 }
@@ -160,14 +196,14 @@ async function writeGitHubOutput(scope: CodeGraphProductionRatchetScope, reason:
   if (outputPath) {
     await Bun.write(
       outputPath,
-      `release_metadata_only=${String(scope.releaseMetadataOnly)}\nchanged_count=${scope.changedCount}\nreason=${reason}\n`,
+      `run_benchmark=${String(scope.runBenchmark)}\nchanged_count=${scope.changedCount}\nreason=${reason}\n`,
     );
   }
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) {
     await Bun.write(
       summaryPath,
-      `### Code graph production ratchet scope\n\n- Changed paths: ${scope.changedCount}\n- Reason: \`${reason}\`\n- Run benchmark: ${scope.releaseMetadataOnly ? 'no' : 'yes'}\n`,
+      `### Code graph production ratchet scope\n\n- Changed paths: ${scope.changedCount}\n- Reason: \`${reason}\`\n- Run benchmark: ${scope.runBenchmark ? 'yes' : 'no'}\n`,
     );
   }
 }

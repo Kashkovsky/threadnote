@@ -4,9 +4,9 @@ import {describe, expect, it} from '@effect/vitest';
 import {Effect, Result} from 'effect';
 import * as FC from 'fast-check';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {inspectCodeGraphQueryIndexes} from '../../src/code_graph/store_query_indexes.js';
-import {normalizeSchemaDefinition} from '../../src/code_graph/store_schema_normalization.js';
-import {normalizeSchemaDefinition as normalizeUncachedVectorSchema} from '../../src/code_graph/vector_retirement_inspection.js';
+import {inspectCodeGraphQueryIndexes} from '../../src/code_graph/store/query/indexes.js';
+import {normalizeSchemaDefinition} from '../../src/code_graph/store/schema/normalization.js';
+import {normalizeSchemaDefinition as normalizeUncachedVectorSchema} from '../../src/code_graph/vector/retirement/inspection.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const literal = FC.array(FC.constantFrom('A', 'a', ' ', '\n', "'", '"', '`', '[', ']', ',', 'İ', '😀'), {

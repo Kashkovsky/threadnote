@@ -3,7 +3,8 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {Crypto, Effect, Layer} from 'effect';
 import {succeedUndefined} from './optional.js';
 import {CommandExecutor} from './command.js';
-import {CliOutput} from './cli_output.js';
+import {threadnoteCliFormatterLayer} from './cli/help.js';
+import {CliOutput} from './cli/output.js';
 import {HttpService} from './http.js';
 import {ResourceStore} from './resource-store.js';
 import {SystemInfo} from './system.js';
@@ -16,7 +17,7 @@ import {CodeGraphIndexer} from '../code_graph/indexer.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphEmbeddingIndex} from '../code_graph/embedding.js';
 import {CodeGraphWatcher} from '../code_graph/watcher.js';
-import {CodeGraphMaintenanceCoordinator} from '../code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../code_graph/maintenance/coordinator.js';
 import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js';
 import {TreeSitterRuntime} from '../code_graph/tree_sitter/runtime.js';
 import {CodeGraphAnalysis} from '../code_graph/analysis.js';
@@ -24,8 +25,8 @@ import {CodeGraphParserPool} from '../code_graph/parser_worker.js';
 import {
   healAfterPublishedGraphIndex,
   withDeferredCodeAnchorIndexHeal,
-} from '../memory/deferred_code_anchor_index_heal.js';
-import {deferredCodeAnchorRefreshSchedulerLayer} from '../memory/deferred_code_anchor_refresh.js';
+} from '../memory/deferred/code_anchor_index_heal.js';
+import {deferredCodeAnchorRefreshSchedulerLayer} from '../memory/deferred/code_anchor_refresh.js';
 import {resolveTelemetryConfiguration} from '../telemetry/config.js';
 import {
   resolveAgentSession,
@@ -97,6 +98,7 @@ const codeGraphWatcherLayer = CodeGraphWatcher.layer.pipe(Layer.provideMerge(cod
 
 const ApplicationServicesLayer = Layer.mergeAll(
   cliOutputLayer,
+  threadnoteCliFormatterLayer,
   codeGraphQueryLayer,
   codeGraphAnalysisLayer,
   codeGraphWatcherLayer,

@@ -85,6 +85,10 @@ uncited legacy memories, canonical `threadnote://` URIs, recall indexing, and te
 filtered by checkpoint operations. Recall continues to read those memories at coarse or unknown citation freshness.
 A Workset remains optional and is used only for explicitly prepared multi-repository evidence.
 
+Checkpoint v1 exports only a full-repository graph. Exporting a dependency-scoped project graph fails closed because
+v1 cannot carry the verified scope receipt needed to establish what the artifact covers. Rebuild the scoped graph on
+the receiving checkout, or clear that project's scope and export a full graph when portable transfer is required.
+
 ## Operational boundaries
 
 - Treat the expected artifact digest like a release checksum and obtain it independently from the checkpoint file.

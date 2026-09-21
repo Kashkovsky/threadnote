@@ -15,7 +15,7 @@ import {
   type CodeMemoryLinkDogfoodObservationSummaryV1,
 } from '../src/evaluation/code-memory-link-dogfood.js';
 import {parseContextBriefV1, renderContextBriefText} from '../src/context_brief/projector.js';
-import {isDeferredCodeAnchorIntentFilename} from '../src/memory/deferred_code_anchor.js';
+import {isDeferredCodeAnchorIntentFilename} from '../src/memory/deferred/code_anchor.js';
 import {parseMemoryDocument, type MemoryRecord} from '../src/memory/document.js';
 import {
   resolveManagedDevelopmentExecutableForSource,

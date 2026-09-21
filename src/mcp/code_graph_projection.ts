@@ -6,6 +6,7 @@ import {
 } from '../evaluation/agent-response.js';
 import {renderCodeGraphResult} from '../code_graph/query.js';
 import type {CodeGraphQueryResult} from '../code_graph/types.js';
+import type {CodeGraphRefreshContinuity} from '../code_graph/watcher.js';
 
 const MCP_CODE_GRAPH_STRUCTURED_CONTENT_BYTES = 24 * 1_024;
 const MCP_CODE_GRAPH_STRUCTURED_CONTENT_RESERVE_BYTES = 768;
@@ -53,6 +54,7 @@ function projectCodeGraphMcpResult(
   edgeCount: number,
   warningCount: number,
   conciseTruncationWarning: boolean,
+  refresh?: CodeGraphRefreshContinuity,
 ) {
   const warningsPrefix = result.warnings.slice(0, warningCount).map(warning => compactMcpText(warning, 320));
   const nodes = result.nodes.slice(0, nodeCount).map(compactCodeGraphNode);
@@ -69,6 +71,11 @@ function projectCodeGraphMcpResult(
       repositoryId: result.repository.repositoryId,
     },
     snapshot: result.snapshot,
+    ...(result.projectCoverage === undefined ? {} : {projectCoverage: result.projectCoverage}),
+    ...(result.outsideProjectGraph === undefined ? {} : {outsideProjectGraph: result.outsideProjectGraph}),
+    ...(result.outsideScopeChangedPaths === undefined
+      ? {}
+      : {outsideScopeChangedPaths: result.outsideScopeChangedPaths}),
     ...(result.scope ? {scope: result.scope} : {}),
     ...(result.searchCoverage ? {searchCoverage: result.searchCoverage} : {}),
     sourceVersion: result.version,
@@ -85,6 +92,7 @@ function projectCodeGraphMcpResult(
       truncated,
     },
     ...(result.source === undefined ? {} : {source: result.source}),
+    ...(refresh === undefined ? {} : {refresh}),
     warnings: truncated
       ? [
           ...warningsPrefix,
@@ -102,6 +110,7 @@ function responseForPrefix(
   edgeCount: number,
   warningCount: number,
   conciseTruncationWarning: boolean,
+  refresh?: CodeGraphRefreshContinuity,
 ) {
   const structuredContent = projectCodeGraphMcpResult(
     result,
@@ -109,6 +118,7 @@ function responseForPrefix(
     edgeCount,
     warningCount,
     conciseTruncationWarning,
+    refresh,
   );
   const rendered: CodeGraphQueryResult = {
     ...result,
@@ -128,6 +138,7 @@ function longestAdmittedPrefix(
   result: CodeGraphQueryResult,
   admits: (response: ReturnType<typeof responseForPrefix>) => boolean,
   conciseTruncationWarning = false,
+  refresh?: CodeGraphRefreshContinuity,
 ) {
   let nodeCount = 0;
   let edgeCount = 0;
@@ -135,28 +146,49 @@ function longestAdmittedPrefix(
   let nodesBlocked = false;
   let edgesBlocked = false;
   let warningsBlocked = false;
-  let selected = responseForPrefix(result, nodeCount, edgeCount, warningCount, conciseTruncationWarning);
+  let selected = responseForPrefix(result, nodeCount, edgeCount, warningCount, conciseTruncationWarning, refresh);
   while (
     (!nodesBlocked && nodeCount < result.nodes.length) ||
     (!edgesBlocked && edgeCount < result.edges.length) ||
     (!warningsBlocked && warningCount < Math.min(5, result.warnings.length))
   ) {
     if (!warningsBlocked && warningCount < Math.min(5, result.warnings.length)) {
-      const candidate = responseForPrefix(result, nodeCount, edgeCount, warningCount + 1, conciseTruncationWarning);
+      const candidate = responseForPrefix(
+        result,
+        nodeCount,
+        edgeCount,
+        warningCount + 1,
+        conciseTruncationWarning,
+        refresh,
+      );
       if (admits(candidate)) {
         warningCount += 1;
         selected = candidate;
       } else warningsBlocked = true;
     }
     if (!nodesBlocked && nodeCount < result.nodes.length) {
-      const candidate = responseForPrefix(result, nodeCount + 1, edgeCount, warningCount, conciseTruncationWarning);
+      const candidate = responseForPrefix(
+        result,
+        nodeCount + 1,
+        edgeCount,
+        warningCount,
+        conciseTruncationWarning,
+        refresh,
+      );
       if (admits(candidate)) {
         nodeCount += 1;
         selected = candidate;
       } else nodesBlocked = true;
     }
     if (!edgesBlocked && edgeCount < result.edges.length) {
-      const candidate = responseForPrefix(result, nodeCount, edgeCount + 1, warningCount, conciseTruncationWarning);
+      const candidate = responseForPrefix(
+        result,
+        nodeCount,
+        edgeCount + 1,
+        warningCount,
+        conciseTruncationWarning,
+        refresh,
+      );
       if (admits(candidate)) {
         edgeCount += 1;
         selected = candidate;
@@ -166,9 +198,14 @@ function longestAdmittedPrefix(
   return selected;
 }
 
-function defaultCodeGraphMcpResponse(result: CodeGraphQueryResult) {
+function defaultCodeGraphMcpResponse(result: CodeGraphQueryResult, refresh?: CodeGraphRefreshContinuity) {
   const maximumBytes = MCP_CODE_GRAPH_STRUCTURED_CONTENT_BYTES - MCP_CODE_GRAPH_STRUCTURED_CONTENT_RESERVE_BYTES;
-  return longestAdmittedPrefix(result, response => encodedJsonBytes(response.structuredContent) <= maximumBytes);
+  return longestAdmittedPrefix(
+    result,
+    response => encodedJsonBytes(response.structuredContent) <= maximumBytes,
+    false,
+    refresh,
+  );
 }
 
 /**
@@ -176,12 +213,16 @@ function defaultCodeGraphMcpResponse(result: CodeGraphQueryResult) {
  * Keep the richer graph result available to the CLI and Manager while enforcing
  * a deterministic context budget for agent tool calls.
  */
-export function compactCodeGraphMcpResult(result: CodeGraphQueryResult) {
-  return defaultCodeGraphMcpResponse(result).structuredContent;
+export function compactCodeGraphMcpResult(result: CodeGraphQueryResult, refresh?: CodeGraphRefreshContinuity) {
+  return defaultCodeGraphMcpResponse(result, refresh).structuredContent;
 }
 
-export function codeGraphMcpResponse(result: CodeGraphQueryResult, maximumEstimatedTokens?: number) {
-  if (maximumEstimatedTokens === undefined) return defaultCodeGraphMcpResponse(result);
+export function codeGraphMcpResponse(
+  result: CodeGraphQueryResult,
+  maximumEstimatedTokens?: number,
+  refresh?: CodeGraphRefreshContinuity,
+) {
+  if (maximumEstimatedTokens === undefined) return defaultCodeGraphMcpResponse(result, refresh);
   if (
     !Number.isSafeInteger(maximumEstimatedTokens) ||
     maximumEstimatedTokens < 1 ||
@@ -192,10 +233,15 @@ export function codeGraphMcpResponse(result: CodeGraphQueryResult, maximumEstima
     );
   }
   const maximumBytes = maximumEstimatedTokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;
-  const minimum = responseForPrefix(result, 0, 0, 0, true);
+  const minimum = responseForPrefix(result, 0, 0, 0, true, refresh);
   const minimumBytes = measureAgentToolResponse(minimum).totalBytes;
   if (minimumBytes > maximumBytes) throw AgentResponseBudgetTooSmallError.of(maximumBytes, minimumBytes);
-  return longestAdmittedPrefix(result, response => measureAgentToolResponse(response).totalBytes <= maximumBytes, true);
+  return longestAdmittedPrefix(
+    result,
+    response => measureAgentToolResponse(response).totalBytes <= maximumBytes,
+    true,
+    refresh,
+  );
 }
 
 export function formatCodeGraphMcpResponse<T>(

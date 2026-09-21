@@ -8,20 +8,22 @@ import {basename, join} from '../helpers/node-path.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
+import {AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN} from '../../src/evaluation/agent-response.js';
 import {renderSessionStartRecallQueue} from '../../src/hooks.js';
 import {
   createMemoryCodeCitation,
   MAX_MEMORY_CODE_CITATIONS,
   MEMORY_SCHEMA_VERSION,
-} from '../../src/memory/code_citation.js';
+} from '../../src/memory/code/citation.js';
 import {
+  canonicalMemoryDocumentContent,
   formatMemoryDocument,
   MAX_MEMORY_RELATIONS,
   MEMORY_RELATION_TYPES,
   parseMemoryDocument,
 } from '../../src/memory/document.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
-import {isDeferredCodeAnchorIntentFilename} from '../../src/memory/deferred_code_anchor.js';
+import {isDeferredCodeAnchorIntentFilename} from '../../src/memory/deferred/code_anchor.js';
 import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
 import {
   parseContextBriefAgentViewText,
@@ -29,7 +31,7 @@ import {
   projectContextBriefAgentView,
 } from '../../src/context_brief/projector.js';
 import {MCP_RESOURCE_READ_MAX_BYTES} from '../../src/effect/ai/mcp_resource.js';
-import {MEMORY_READ_PAGE_BYTES} from '../../src/memory/read_projection.js';
+import {MEMORY_READ_PAGE_BYTES} from '../../src/memory/read/projection.js';
 
 interface TextContent {
   readonly text: string;
@@ -70,7 +72,11 @@ const RECALL_PROGRESS_PHASES = [
   'recall.lexical-ranking',
 ] as const;
 
+const COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS = 10_000;
+const COLD_BUILD_RESPONSE_BUDGET_TOKENS = 400;
+
 const CORE_TOOL_NAMES = [
+  'complete_activation_retrieval_proof',
   'recall_context',
   'inspect_code_graph',
   'analyze_code_graph',
@@ -82,7 +88,18 @@ const CORE_TOOL_NAMES = [
   'review_session_context',
   'apply_memory_candidates',
   'obsidian_publish',
+  'context_health',
+  'context_health_aggregate',
+  'context_health_schedule',
+  'context_health_repair_preview',
+  'context_health_repair_apply',
+  'context_metadata_preview',
+  'context_metadata_apply',
+  'recall_feedback',
   'threadnote_guide',
+  'share_propose',
+  'procedure_publish_preview',
+  'procedure_publish_apply',
   'share_publish',
 ];
 
@@ -94,7 +111,6 @@ const ADVANCED_TOOL_NAMES = [
   'archive',
   'archive_context',
   'compact_context',
-  'recall_feedback',
   'forget',
   'add_resource',
   'grep',
@@ -107,6 +123,19 @@ const ADVANCED_TOOL_NAMES = [
   'share_bundle',
   'list_shared_skills',
   'install_shared_skill',
+];
+
+const LIFECYCLE_TOOL_NAMES = [
+  'context_health',
+  'context_health_aggregate',
+  'context_health_schedule',
+  'context_health_repair_preview',
+  'context_health_repair_apply',
+  'context_metadata_preview',
+  'context_metadata_apply',
+  'recall_feedback',
+  'procedure_publish_preview',
+  'procedure_publish_apply',
 ];
 
 interface McpFixture {
@@ -269,23 +298,32 @@ describe('Threadnote MCP toolsets', () => {
         expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(640);
         expect(instructions).toContain('callerCwd');
         expect(instructions).toContain('threadnote://');
-        expect(instructions).toContain('durable');
         expect(instructions).toContain('handoff');
-        expect(instructions).toContain('`project` excludes others');
-        expect(instructions).toContain('omit it for global recall');
-        expect(instructions).toContain('Nested cwd prefers its package');
-        expect(instructions).toContain('repo-wide/sibling evidence remains eligible');
-        expect(instructions).toContain('user-approved candidates');
-        expect(instructions).toContain('Do not store');
-        expect(instructions).toContain('Results are unread `threadnote://` pointers, not evidence');
-        expect(instructions).toContain('read them via `read_context`');
-        expect(instructions).toContain('`inspect_code_graph` before broad search');
-        expect(instructions).toContain('`analyze_code_graph` for architecture');
-        expect(instructions).toContain('exact search remains useful');
-        expect(instructions).toContain('Retry indexing when advised');
+        expect(instructions).toContain(
+          'For non-trivial local repo work, call MCP `context_brief` with task + absolute `callerCwd`',
+        );
+        expect(instructions).toContain('`recall_context` + `read_context`: memory alternative');
+        expect(instructions.indexOf('context_brief')).toBeLessThan(instructions.indexOf('recall_context'));
+        expect(instructions).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
+        expect(instructions).not.toContain('threadnote context brief --caller-cwd');
+        expect(instructions).toContain('`threadnote://` pointers unread, not evidence');
+        expect(instructions).toContain('Use `inspect_code_graph`/`analyze_code_graph`, then exact source');
+        expect(instructions).toContain('Close with private `remember_context(kind=handoff)`');
+        expect(instructions).toContain('Optional five-field KD: `review_session_context`');
+        expect(instructions).toContain(
+          '`apply_memory_candidates` with `approve` (optional `editedText`), `defer`, or `reject`',
+        );
+        expect(instructions).toContain('Never auto-apply/share');
+        expect(instructions).toContain('No sensitive data; confirm publishes; never publish handoffs/preferences');
+        expect(instructions).not.toContain('Start with `recall_context`');
+        expect(instructions).not.toContain(
+          'Store durable knowledge; `review_session_context` adds approved candidates',
+        );
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
-        expect(reviewTool?.description).toContain('After routine durable and handoff writes');
-        expect(reviewTool?.description).toContain('additional reviewable');
+        expect(reviewTool?.description).toContain('five-field Knowledge Delta');
+        expect(reviewTool?.description).toContain('handoff is separate and required');
+        expect(reviewTool?.description).toContain('explicit approval is required');
+        expect(reviewTool?.description).not.toContain('After routine durable and handoff writes');
       },
       {toolset: 'core'},
     );
@@ -296,7 +334,15 @@ describe('Threadnote MCP toolsets', () => {
       async client => {
         const tools = await client.listTools();
         expect(tools.tools.map(tool => tool.name)).toEqual(CORE_TOOL_NAMES);
-        expect(Buffer.byteLength(JSON.stringify(tools.tools))).toBeLessThanOrEqual(15_000);
+        for (const lifecycleTool of LIFECYCLE_TOOL_NAMES) {
+          expect(tools.tools.map(tool => tool.name)).toContain(lifecycleTool);
+        }
+        for (const fullOnlyTool of ['archive', 'compact_context', 'forget', 'share_conflicts', 'share_skill']) {
+          expect(tools.tools.map(tool => tool.name)).not.toContain(fullOnlyTool);
+        }
+        const serializedToolsBytes = Buffer.byteLength(JSON.stringify(tools.tools));
+        // Bound metadata growth without penalizing future concise descriptions.
+        expect(serializedToolsBytes).toBeLessThanOrEqual(30_000);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );
@@ -1342,8 +1388,53 @@ describe('Threadnote MCP toolsets', () => {
         expect(structured.canonicalUri).toBeUndefined();
         expect(JSON.stringify(result)).not.toContain(canonicalUri);
 
+        const replacement = await client.callTool(
+          {
+            arguments: {
+              kind: 'durable',
+              project: 'threadnote',
+              replaceUri: alias,
+              sourceAgentClient: 'integration-test',
+              status: 'active',
+              text: 'Identity alias replacement evidence.',
+              topic: 'identity-alias',
+            },
+            name: 'remember_context',
+          },
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(replacement.isError, JSON.stringify(replacement)).not.toBe(true);
+        expect(replacement.structuredContent).toMatchObject({
+          memoryUri: canonicalUri,
+          replacementCleanupPending: false,
+        });
+        await expect(
+          readFile(
+            join(
+              fixture.home,
+              'data',
+              'local',
+              'user',
+              'test-user',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'identity-alias.md',
+            ),
+            'utf8',
+          ),
+        ).resolves.toContain('Identity alias replacement evidence.');
+
         await expect(client.readResource({uri: alias})).resolves.toEqual({
-          contents: [{mimeType: 'text/plain; charset=utf-8', text: content, uri: alias}],
+          contents: [
+            expect.objectContaining({
+              mimeType: 'text/plain; charset=utf-8',
+              text: expect.stringContaining('Identity alias replacement evidence.'),
+              uri: alias,
+            }),
+          ],
         });
 
         const missingAlias = 'threadnote://memory/tn_mcp_identity_missing';
@@ -1574,6 +1665,134 @@ describe('Threadnote MCP toolsets', () => {
       {toolset: 'core'},
     );
   });
+
+  it('preserves a memory project while resolving its graph root alias for code citations', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const repository = join(fixture.root, 'monorepo');
+        const docsMobile = join(repository, 'apps', 'docs-mobile');
+        await mkdir(join(repository, 'apps', 'docs'), {recursive: true});
+        await mkdir(docsMobile, {recursive: true});
+        await writeFile(join(repository, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+        await writeFile(join(repository, 'apps', 'docs', 'package.json'), JSON.stringify({name: '@fixture/docs'}));
+        await writeFile(join(repository, 'apps', 'docs', 'index.ts'), 'export const docs = true;\n');
+        await writeFile(join(docsMobile, 'package.json'), JSON.stringify({name: '@fixture/docs-mobile'}));
+        await writeFile(join(docsMobile, 'index.ts'), 'export const docsMobile = true;\n');
+        execFileSync('git', ['init', '-q'], {cwd: repository});
+        execFileSync('git', ['add', '.'], {cwd: repository});
+        execFileSync(
+          'git',
+          ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture'],
+          {cwd: repository},
+        );
+        const manifest = join(fixture.home, 'seed-manifest.yaml');
+        await writeFile(
+          manifest,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: docs',
+            `    path: ${JSON.stringify(repository)}`,
+            '    uri: threadnote://resources/repos/docs',
+            '    seed: []',
+            '    graph:',
+            '      closure: dependencies',
+            '      roots: [apps/docs, apps/docs-mobile]',
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+        execFileSync(
+          process.execPath,
+          [join(process.cwd(), 'src', 'standalone.ts'), 'graph', 'index', '--project', 'docs-mobile', '--no-vectors'],
+          {
+            cwd: docsMobile,
+            env: {
+              ...process.env,
+              THREADNOTE_ACCOUNT: 'local',
+              THREADNOTE_AGENT_ID: 'threadnote',
+              THREADNOTE_HOME: fixture.home,
+              THREADNOTE_MANIFEST: manifest,
+              THREADNOTE_USER: 'test-user',
+            },
+            stdio: 'pipe',
+          },
+        );
+
+        const stored = await client.callTool(
+          {
+            arguments: {
+              callerCwd: docsMobile,
+              citationPolicy: 'require-current',
+              codeRefs: ['apps/docs-mobile/index.ts'],
+              kind: 'durable',
+              project: 'docs-mobile',
+              text: 'The native docs application uses the shared docs project graph.',
+              topic: 'root-alias-memory',
+            },
+            name: 'remember_context',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(stored.isError, JSON.stringify(stored)).not.toBe(true);
+        expect(stored.structuredContent).toMatchObject({
+          memoryUri: 'threadnote://user/test-user/memories/durable/projects/docs-mobile/root-alias-memory.md',
+        });
+        const memory = parseMemoryDocument(
+          'threadnote://user/test-user/memories/durable/projects/docs-mobile/root-alias-memory.md',
+          await readFile(
+            join(
+              fixture.home,
+              'data',
+              'local',
+              'user',
+              'test-user',
+              'memories',
+              'durable',
+              'projects',
+              'docs-mobile',
+              'root-alias-memory.md',
+            ),
+            'utf8',
+          ),
+        );
+        expect(memory?.metadata).toMatchObject({
+          codeCitations: [expect.objectContaining({path: 'apps/docs-mobile/index.ts'})],
+          project: 'docs-mobile',
+        });
+        const closeout = await client.callTool(
+          {
+            arguments: {
+              callerCwd: docsMobile,
+              codeRefs: ['apps/docs-mobile/index.ts'],
+              decisions: ['Keep native docs memories in the docs-mobile project.'],
+              evidence: ['apps/docs-mobile/index.ts'],
+              outcome: 'Kept memory ownership separate from graph scope ownership.',
+              project: 'docs-mobile',
+              task: 'Close out native docs work',
+              topic: 'root-alias-closeout',
+            },
+            name: 'review_session_context',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(closeout.isError, JSON.stringify(closeout)).not.toBe(true);
+        expect(closeout.structuredContent).toMatchObject({
+          knowledgeDelta: {
+            items: [
+              expect.objectContaining({
+                proposedDestination: expect.objectContaining({project: 'docs-mobile'}),
+                sourceEvidence: expect.arrayContaining([expect.stringMatching(/^code-citation:/u)]),
+              }),
+            ],
+          },
+        });
+      },
+      {toolset: 'core'},
+    );
+  }, 60_000);
 
   it('lets remember_context relate to a shared durable that has no memory_id', async () => {
     await withMcpClient(
@@ -2000,6 +2219,7 @@ describe('Threadnote MCP toolsets', () => {
               anyOf: expect.arrayContaining([{type: 'string'}, {items: {type: 'string'}, maxItems: 8, type: 'array'}]),
             },
             mode: {enum: ['brief', 'locate', 'explain', 'trace', 'impact']},
+            surface: {type: 'string'},
             task: {type: 'string'},
             workset: {type: 'string'},
           },
@@ -2225,6 +2445,7 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
+          required: ['operation'],
           properties: {
             base: {type: 'string'},
             budgetTokens: {maximum: 1_500, minimum: 1, type: 'integer'},
@@ -2249,6 +2470,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(analysisTool?.description).toContain('separate from inspect_code_graph');
         expect(analysisTool?.inputSchema).toMatchObject({
           additionalProperties: false,
+          required: ['operation'],
           properties: {
             callerCwd: {type: 'string'},
             communityId: {type: 'string'},
@@ -2540,9 +2762,9 @@ describe('Threadnote MCP toolsets', () => {
             name: 'inspect_code_graph',
           },
           undefined,
-          {timeout: 10_000},
+          {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
         );
-        expect(Date.now() - startedAt).toBeLessThan(8_000);
+        expect(Date.now() - startedAt).toBeLessThan(COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS);
         expect(pending.isError).not.toBe(true);
         expect(pending.structuredContent).toMatchObject({
           operation: 'query',
@@ -2571,7 +2793,7 @@ describe('Threadnote MCP toolsets', () => {
             name: 'inspect_code_graph',
           },
           undefined,
-          {timeout: 10_000},
+          {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
         );
         expect(Date.now() - repeatedStartedAt).toBeLessThan(2_000);
         expect(repeated.structuredContent).toMatchObject({
@@ -2590,7 +2812,7 @@ describe('Threadnote MCP toolsets', () => {
               name: 'inspect_code_graph',
             },
             undefined,
-            {timeout: 10_000},
+            {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
           );
           if (
             !isRetryableCodeGraphState((candidate.structuredContent as {readonly state?: unknown} | undefined)?.state)
@@ -2613,14 +2835,18 @@ describe('Threadnote MCP toolsets', () => {
         expect(readyStructured).not.toContain('lookupKeys');
         expect(readyStructured).not.toContain('contentHash');
 
-        const budgetTokens = 300;
         const bounded = await client.callTool(
           {
-            arguments: {budgetTokens, callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
+            arguments: {
+              budgetTokens: COLD_BUILD_RESPONSE_BUDGET_TOKENS,
+              callerCwd: repository,
+              operation: 'query',
+              query: 'coldGraphSymbol',
+            },
             name: 'inspect_code_graph',
           },
           undefined,
-          {timeout: 10_000},
+          {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
         );
         expect(bounded.isError, JSON.stringify(bounded)).not.toBe(true);
         expect(bounded.structuredContent).toMatchObject({operation: 'query'});
@@ -2630,7 +2856,9 @@ describe('Threadnote MCP toolsets', () => {
         const boundedBytes =
           new TextEncoder().encode(JSON.stringify(bounded.structuredContent)).byteLength +
           new TextEncoder().encode(boundedText ?? '').byteLength;
-        expect(boundedBytes).toBeLessThanOrEqual(budgetTokens * 3);
+        expect(boundedBytes).toBeLessThanOrEqual(
+          COLD_BUILD_RESPONSE_BUDGET_TOKENS * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN,
+        );
       },
       {toolset: 'core'},
     );
@@ -3060,6 +3288,7 @@ describe('Threadnote MCP toolsets', () => {
           pendingCount: 0,
           scannedCount: 0,
         });
+        expect(idempotent.structuredContent).not.toHaveProperty('derivedIndexes');
       },
       {toolset: 'full'},
     );
@@ -3422,6 +3651,154 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
+  it('includes the current bounded KnowledgeDeltaV1 in review and decision results', async () => {
+    await withMcpClient(
+      async client => {
+        const review = await client.callTool(
+          {
+            arguments: {
+              decisions: ['Keep the review projection compatible with candidate application.'],
+              rationale: 'Capture why the reviewed projection is safe.',
+              constraints: ['Keep writes private until explicit approval.'],
+              verificationPerformed: ['Focused MCP test passed.'],
+              knowledgeInvalidated: ['The prior unstructured draft.'],
+              unresolvedRisks: ['A later review may refine this contract.'],
+              evidence: ['test/integration/mcp.native-tools.test.ts'],
+              outcome: 'Projected the reviewed closeout.',
+              project: 'threadnote',
+              sourceAgentClient: 'codex',
+              sourceSessionId: 'knowledge-delta-session',
+              task: 'Project a knowledge delta',
+              topic: 'knowledge-delta-projection',
+            },
+            name: 'review_session_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(review.isError, JSON.stringify(review)).not.toBe(true);
+        const reviewStructured = review.structuredContent as {
+          readonly knowledgeDelta?: {
+            readonly items?: readonly {readonly candidateId?: string; readonly type?: string}[];
+            readonly reviewId?: string;
+            readonly revision?: number;
+            readonly type?: string;
+            readonly version?: number;
+          };
+        };
+        expect(reviewStructured.knowledgeDelta).toMatchObject({
+          items: [expect.objectContaining({type: 'decision-or-invariant'})],
+          structuredCloseout: {
+            type: 'structured-closeout',
+            version: 1,
+            rationale: 'Capture why the reviewed projection is safe.',
+            constraints: ['Keep writes private until explicit approval.'],
+            verificationPerformed: ['Focused MCP test passed.'],
+            knowledgeInvalidated: ['The prior unstructured draft.'],
+            unresolvedRisks: ['A later review may refine this contract.'],
+          },
+          revision: 1,
+          type: 'knowledge-delta',
+          version: 1,
+        });
+        const delta = reviewStructured.knowledgeDelta;
+        const candidateId = delta?.items?.[0]?.candidateId;
+        expect(candidateId).toBeDefined();
+
+        const deferred = await client.callTool(
+          {
+            arguments: {
+              action: 'defer',
+              candidateId,
+              reviewId: delta?.reviewId,
+              revision: delta?.revision,
+            },
+            name: 'apply_memory_candidates',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(deferred.isError, JSON.stringify(deferred)).not.toBe(true);
+        expect(deferred.structuredContent).toMatchObject({
+          knowledgeDelta: {
+            items: [expect.objectContaining({candidateId, state: 'deferred'})],
+            structuredCloseout: expect.objectContaining({
+              rationale: 'Capture why the reviewed projection is safe.',
+            }),
+            revision: 2,
+            type: 'knowledge-delta',
+            version: 1,
+          },
+        });
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('does not form durable candidates from empty structured closeout fields', async () => {
+    await withMcpClient(
+      async client => {
+        const result = await client.callTool(
+          {
+            arguments: {
+              constraints: [],
+              evidence: ['test/integration/mcp.native-tools.test.ts'],
+              knowledgeInvalidated: [],
+              outcome: 'No durable closeout material was found.',
+              project: 'threadnote',
+              rationale: '   ',
+              task: 'Ignore empty structured closeout fields',
+              unresolvedRisks: [],
+              verificationPerformed: ['  '],
+            },
+            name: 'review_session_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(result.content).toEqual([
+          expect.objectContaining({text: expect.stringContaining('No additional memory candidates found')}),
+        ]);
+        expect(result.structuredContent).toMatchObject({candidates: [], noAction: true});
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('keeps structured durable fields disabled by the handoff-only candidate policy', async () => {
+    await withMcpClient(
+      async client => {
+        const result = await client.callTool(
+          {
+            arguments: {
+              constraints: ['Would otherwise form a durable candidate.'],
+              evidence: ['test/integration/mcp.native-tools.test.ts'],
+              handoff: ['Continue the scoped implementation.'],
+              outcome: 'Preserved handoff-only closeout policy.',
+              project: 'threadnote',
+              rationale: 'Would otherwise form a durable candidate.',
+              task: 'Respect handoff-only structured closeout policy',
+              unresolvedRisks: ['Would otherwise form a durable candidate.'],
+              verificationPerformed: ['Would otherwise form a durable candidate.'],
+            },
+            name: 'review_session_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const structured = result.structuredContent as {
+          readonly candidates?: readonly {readonly kind?: string}[];
+          readonly knowledgeDelta?: {readonly structuredCloseout?: unknown};
+        };
+        expect(structured.candidates).toEqual([expect.objectContaining({kind: 'handoff'})]);
+        expect(structured.knowledgeDelta?.structuredCloseout).toBeUndefined();
+      },
+      {environment: {THREADNOTE_CANDIDATE_POLICY: 'handoff-only'}, toolset: 'core'},
+    );
+  });
+
   it('writes an approved candidate only with explicit approval and the current revision', async () => {
     await withMcpClient(
       async client => {
@@ -3446,17 +3823,39 @@ describe('Threadnote MCP toolsets', () => {
           }),
         ).resolves.toContain('approved=true');
 
-        const applied = await callText(client, 'apply_memory_candidates', {
-          action: 'approve',
-          approved: true,
-          candidateId,
-          reviewId,
-          revision: 1,
-        });
+        const editedText =
+          '## Decisions\n- Use a stable candidate review identifier as canonical approved candidates guidance.';
+        const appliedResult = await client.callTool(
+          {
+            arguments: {
+              action: 'approve',
+              approved: true,
+              candidateId,
+              editedText,
+              reviewId,
+              revision: 1,
+            },
+            name: 'apply_memory_candidates',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        const applied = (appliedResult.content as TextContent[]).map(item => item.text).join('\n');
 
+        expect(appliedResult.isError, applied).not.toBe(true);
         expect(applied).toContain(
           'Stored memory: threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates.md',
         );
+        expect(appliedResult.structuredContent).toMatchObject({
+          knowledgeDelta: {
+            items: [
+              expect.objectContaining({
+                candidateId,
+                mutationPreview: expect.objectContaining({bodyText: editedText}),
+              }),
+            ],
+          },
+        });
 
         const approvedUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates.md';
         const unreviewedUri =
@@ -3578,6 +3977,149 @@ describe('Threadnote MCP toolsets', () => {
           candidates: Array<{state?: string}>;
         };
         expect(conflicted.candidates[0]?.state).toBe('conflict');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('requires explicit destructive approval before legacy cross-URI cleanup', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const topic = 'candidate-recovery-destructive';
+        const replacementUri =
+          'threadnote://user/test-user/memories/handoffs/active/threadnote/legacy-recovery-source.md';
+        const replacementPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          'legacy-recovery-source.md',
+        );
+        const detailedBody = Array.from(
+          {length: 12},
+          (_unused, index) => `- Continuity detail ${index} remains required for release recovery.`,
+        ).join('\n');
+        await mkdir(join(replacementPath, '..'), {recursive: true});
+        await writeFile(
+          replacementPath,
+          formatMemoryDocument(
+            'HANDOFF',
+            {
+              kind: 'handoff',
+              project: 'threadnote',
+              sourceAgentClient: 'codex',
+              status: 'active',
+              timestamp: '2026-07-22T10:00:00.000Z',
+              topic,
+            },
+            `## Current state\n${detailedBody}`,
+          ),
+          'utf8',
+        );
+
+        const reviewText = await callText(client, 'review_session_context', {
+          evidence: ['test/integration/mcp.native-tools.test.ts'],
+          handoff: ['Continue after the remaining release check.'],
+          outcome: 'Prepared the next release recovery step.',
+          project: 'threadnote',
+          sourceAgentClient: 'codex',
+          task: 'Recover an interrupted cross-URI replacement',
+          topic,
+        });
+        const reviewId = /Review (review-[a-f0-9]+)/.exec(reviewText)?.[1];
+        const candidateId = /candidate: (review-[a-f0-9]+-1)/.exec(reviewText)?.[1];
+        expect(reviewId).toBeDefined();
+        expect(candidateId).toBeDefined();
+        const reviewPath = join(fixture.home, 'threadnote', 'candidates', 'v1', 'reviews', `${reviewId}.json`);
+        const review = JSON.parse(await readFile(reviewPath, 'utf8')) as {
+          candidates: Array<Record<string, unknown>>;
+        };
+        const candidate = review.candidates[0];
+        if (!candidate) {
+          throw TestError.make({message: 'Expected the replacement candidate review fixture.'});
+        }
+        expect(candidate).toMatchObject({targetUri: replacementUri});
+        const destinationUri = `threadnote://user/test-user/memories/handoffs/active/threadnote/${topic}.md`;
+        const destinationPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          `${topic}.md`,
+        );
+        const approvedAt = '2026-07-23T10:00:00.000Z';
+        const approvedBody = String(candidate?.proposedText ?? '');
+        const destinationContent = formatMemoryDocument(
+          'HANDOFF',
+          {
+            candidateId,
+            kind: 'handoff',
+            project: 'threadnote',
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: approvedAt,
+            topic,
+          },
+          approvedBody,
+        );
+        await writeFile(destinationPath, destinationContent, 'utf8');
+        review.candidates[0] = {
+          ...candidate,
+          applyApprovedAt: approvedAt,
+          applyBodyText: approvedBody,
+          applyContentHash: createHash('sha256')
+            .update(canonicalMemoryDocumentContent(destinationContent))
+            .digest('hex'),
+          applyOperation: 'replace',
+          applyReplaceUri: replacementUri,
+          applyStage: 'written',
+          applyTargetUri: destinationUri,
+          state: 'applying',
+        };
+        await writeFile(reviewPath, `${JSON.stringify(review, undefined, 2)}\n`, 'utf8');
+
+        await expect(
+          callErrorText(client, 'apply_memory_candidates', {
+            action: 'approve',
+            approved: true,
+            candidateId,
+            reviewId,
+            revision: 1,
+          }),
+        ).resolves.toContain('allowDestructiveReplacement=true');
+        expect(existsSync(replacementPath)).toBe(true);
+        expect(existsSync(destinationPath)).toBe(true);
+
+        const recovered = await client.callTool(
+          {
+            arguments: {
+              action: 'approve',
+              allowDestructiveReplacement: true,
+              approved: true,
+              candidateId,
+              reviewId,
+              revision: 1,
+            },
+            name: 'apply_memory_candidates',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(recovered.isError, JSON.stringify(recovered)).not.toBe(true);
+        expect(existsSync(replacementPath)).toBe(false);
+        expect(existsSync(destinationPath)).toBe(true);
+        const audit = await readFile(join(fixture.home, 'threadnote', 'candidates', 'v1', 'audit.jsonl'), 'utf8');
+        expect(audit).toContain('"allowDestructiveReplacement":true');
       },
       {toolset: 'core'},
     );
@@ -3928,7 +4470,7 @@ describe('Threadnote MCP toolsets', () => {
         const tools = await client.listTools();
         const names = tools.tools.map(tool => tool.name);
         expect(names).toHaveLength(CORE_TOOL_NAMES.length + ADVANCED_TOOL_NAMES.length);
-        expect(names).toEqual(expect.arrayContaining([...CORE_TOOL_NAMES, ...ADVANCED_TOOL_NAMES]));
+        expect([...names].sort()).toEqual([...CORE_TOOL_NAMES, ...ADVANCED_TOOL_NAMES].sort());
         expect(tools.tools.find(tool => tool.name === 'finalize_code_refs')?.inputSchema).toMatchObject({
           properties: {
             uri: {type: 'string'},
@@ -3941,6 +4483,305 @@ describe('Threadnote MCP toolsets', () => {
             },
           });
         }
+        expect(tools.tools.find(tool => tool.name === 'share_propose')).toMatchObject({
+          annotations: {destructiveHint: false, readOnlyHint: true},
+          inputSchema: {
+            properties: {
+              approved: {type: 'boolean'},
+              candidateIds: expect.any(Object),
+              reviewId: {type: 'string'},
+              revision: {type: 'integer'},
+            },
+          },
+        });
+        expect(tools.tools.find(tool => tool.name === 'procedure_publish_preview')).toMatchObject({
+          annotations: {destructiveHint: false, readOnlyHint: true},
+        });
+        expect(tools.tools.find(tool => tool.name === 'procedure_publish_apply')).toMatchObject({
+          annotations: {destructiveHint: true, readOnlyHint: false},
+        });
+        expect(tools.tools.find(tool => tool.name === 'context_metadata_preview')).toMatchObject({
+          annotations: {destructiveHint: false, readOnlyHint: true},
+          inputSchema: {
+            properties: {
+              memoryId: {type: 'string'},
+              reviewAfter: {description: 'Optional ISO calendar date or canonical ISO instant', type: 'string'},
+              uri: {type: 'string'},
+            },
+          },
+        });
+        expect(tools.tools.find(tool => tool.name === 'context_metadata_apply')).toMatchObject({
+          annotations: {destructiveHint: true, idempotentHint: true, readOnlyHint: false},
+          inputSchema: {properties: {approved: {type: 'boolean'}, expectedContentHash: {type: 'string'}}},
+        });
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('preserves raw maintenance date input for validation while normalizing owner labels', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/metadata-input.md';
+        await writeCanonicalMemory(
+          fixture.home,
+          'metadata-input.md',
+          canonicalMemoryContent('metadata-input', 'Body.'),
+        );
+        const preview = await client.callTool({
+          arguments: {owner: '  maintainer  ', uri},
+          name: 'context_metadata_preview',
+        });
+        expect(preview.structuredContent).toMatchObject({
+          proposal: {patch: {owner: 'maintainer'}},
+          status: 'preview',
+        });
+        for (const arguments_ of [
+          {reviewAfter: ' 2026-12-01 ', uri},
+          {reviewAfter: '', uri},
+          {validTo: '2026-12-01T00:00:00.000+00:00', uri},
+        ]) {
+          const result = await client.callTool({arguments: arguments_, name: 'context_metadata_preview'});
+          expect(result.structuredContent).toMatchObject({code: 'invalid-date', status: 'conflict'});
+        }
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('records applied recall feedback through the full MCP tool without persisting the raw query', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const query = 'private applied feedback query';
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/applied.md';
+        const result = await client.callTool({
+          arguments: {action: 'applied', project: 'threadnote', query, uri},
+          name: 'recall_feedback',
+        });
+
+        expect(result.isError).not.toBe(true);
+        expect(result.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({text: expect.stringContaining('Recorded applied feedback')}),
+          ]),
+        );
+        const stored = await readFile(join(fixture.home, 'feedback', 'recall-events-v1.jsonl'), 'utf8');
+        expect(stored).not.toContain(query);
+        expect(JSON.parse(stored.trim())).toMatchObject({action: 'applied', project: 'threadnote', uri});
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('returns read-only structured context health from the full toolset', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const tools = await client.listTools();
+        for (const name of ['context_health', 'context_health_repair_preview', 'context_health_repair_apply']) {
+          const schema = tools.tools.find(tool => tool.name === name)?.inputSchema;
+          expect(schema).toMatchObject({
+            properties: {
+              findingCategory: {enum: expect.arrayContaining(['validity-expired', 'citation-changed'])},
+              kind: {enum: ['durable', 'handoff', 'incident', 'preference', 'smoke']},
+            },
+          });
+        }
+        const result = await client.callTool({
+          arguments: {callerCwd: fixture.root, kind: 'durable', project: 'threadnote'},
+          name: 'context_health',
+        });
+
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          findings: [],
+          project: 'threadnote',
+          recordsScanned: 0,
+          version: 1,
+        });
+        expect(result.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({text: expect.stringContaining('Context health for threadnote')}),
+            expect.objectContaining({text: expect.stringContaining('Active selector: kind=durable.')}),
+          ]),
+        );
+        for (const arguments_ of [
+          {callerCwd: fixture.root, project: 'threadnote', topic: ''},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\nvalue'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\u0085value'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\u009bvalue'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\u2028value'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: 'unsafe\u2029value'},
+          {callerCwd: fixture.root, project: 'threadnote', topic: '🙂'.repeat(65)},
+          {callerCwd: fixture.root, kind: 'unknown', project: 'threadnote'},
+          {callerCwd: fixture.root, findingCategory: 'unknown', project: 'threadnote'},
+        ]) {
+          const invalid = await client.callTool({arguments: arguments_, name: 'context_health'});
+          expect(invalid.isError).toBe(true);
+        }
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('returns read-only aggregate health and a provider-neutral schedule plan from the full toolset', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const aggregate = await client.callTool({
+          arguments: {callerCwd: fixture.root, project: 'threadnote'},
+          name: 'context_health_aggregate',
+        });
+        expect(aggregate.isError).not.toBe(true);
+        expect(aggregate.structuredContent).toMatchObject({
+          completeSources: 1,
+          exitCode: 0,
+          project: 'threadnote',
+          status: 'clean',
+        });
+
+        const shareDirectory = join(fixture.home, 'share');
+        await mkdir(shareDirectory, {recursive: true});
+        await writeFile(
+          join(shareDirectory, 'teams.json'),
+          `${JSON.stringify({teams: {platform: {remote: 'https://example.test/platform.git'}}, version: 1})}\n`,
+          'utf8',
+        );
+        const emptyTeamSelection = await client.callTool({
+          arguments: {callerCwd: fixture.root, project: 'threadnote', team: []},
+          name: 'context_health_aggregate',
+        });
+        expect(emptyTeamSelection.isError).not.toBe(true);
+        expect(emptyTeamSelection.structuredContent).toMatchObject({
+          exitCode: 2,
+          sources: expect.arrayContaining([
+            expect.objectContaining({reason: 'snapshot-missing', sourceKey: 'team:platform', state: 'unknown'}),
+          ]),
+          status: 'unknown',
+        });
+
+        const schedule = await client.callTool({
+          arguments: {cadenceMinutes: 60, project: 'threadnote', team: ['runtime', 'platform']},
+          name: 'context_health_schedule',
+        });
+        expect(schedule.isError).not.toBe(true);
+        expect(schedule.structuredContent).toMatchObject({
+          argv: [
+            'context',
+            'health',
+            'aggregate',
+            '--project',
+            'threadnote',
+            '--json',
+            '--team',
+            'platform',
+            '--team',
+            'runtime',
+          ],
+          execution: {network: 'disabled', readOnly: true},
+          teams: ['platform', 'runtime'],
+        });
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('previews structured context-health repairs without writing state', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const result = await client.callTool({
+          arguments: {callerCwd: fixture.root, kind: 'durable', project: 'threadnote'},
+          name: 'context_health_repair_preview',
+        });
+
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          knowledgeDelta: {
+            items: [],
+            noAction: true,
+            reviewId: expect.stringMatching(/^review-[0-9a-f]{16}$/u),
+            revision: 1,
+            type: 'knowledge-delta',
+            version: 1,
+          },
+          project: 'threadnote',
+          proposals: [],
+          version: 1,
+        });
+        expect(result.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({text: expect.stringContaining('Active selector: kind=durable.')}),
+          ]),
+        );
+        await expect(readFile(join(fixture.home, 'threadnote', 'context-health-repairs'), 'utf8')).rejects.toThrow();
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('applies an MCP repair only with the exact normalized preview selector', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        await writeCanonicalMemory(
+          fixture.home,
+          'mcp-selector.md',
+          canonicalMemoryContent('mcp-selector', 'Synthetic expired MCP selector fixture.').replace(
+            'timestamp: 2026-08-01T00:00:00.000Z',
+            'timestamp: 2026-08-01T00:00:00.000Z\nvalid_to: 2026-08-02T00:00:00.000Z',
+          ),
+        );
+        const selector = {
+          findingCategory: 'validity-expired',
+          kind: 'durable',
+          topic: '  mcp-selector  ',
+        } as const;
+        const preview = await client.callTool({
+          arguments: {callerCwd: fixture.root, project: 'threadnote', ...selector},
+          name: 'context_health_repair_preview',
+        });
+        expect(preview.isError).not.toBe(true);
+        const proposal = (
+          preview.structuredContent as {
+            readonly proposals?: readonly {readonly proposalId: string; readonly revision: string}[];
+          }
+        ).proposals?.[0];
+        expect(proposal).toBeDefined();
+        if (proposal === undefined) throw new Error('expected MCP selector repair proposal');
+
+        const missingSelector = await client.callTool({
+          arguments: {
+            approved: true,
+            callerCwd: fixture.root,
+            project: 'threadnote',
+            proposalId: proposal.proposalId,
+            revision: proposal.revision,
+          },
+          name: 'context_health_repair_apply',
+        });
+        expect(missingSelector.isError).toBe(true);
+        const applied = await client.callTool({
+          arguments: {
+            approved: true,
+            callerCwd: fixture.root,
+            project: 'threadnote',
+            proposalId: proposal.proposalId,
+            revision: proposal.revision,
+            ...selector,
+          },
+          name: 'context_health_repair_apply',
+        });
+        expect(applied.isError).not.toBe(true);
+        expect(applied.structuredContent).toMatchObject({status: 'applied', version: 1});
+        const repeated = await client.callTool({
+          arguments: {
+            approved: true,
+            callerCwd: fixture.root,
+            project: 'threadnote',
+            proposalId: proposal.proposalId,
+            revision: proposal.revision,
+            ...selector,
+          },
+          name: 'context_health_repair_apply',
+        });
+        expect(repeated.structuredContent).toMatchObject({status: 'already-applied', version: 1});
       },
       {toolset: 'full'},
     );

@@ -23,6 +23,7 @@ kill_timeout = 60
   THREADNOTE_GRAPH_ORGANIZATION = "threadnote-org"
   THREADNOTE_GRAPH_OAUTH_ISSUER = "https://threadnote-org.eu.auth0.com/"
   THREADNOTE_GRAPH_OAUTH_AUDIENCE = "https://threadnote-org-graph-e2e.fly.dev"
+  THREADNOTE_GRAPH_OAUTH_JWKS_URL = "https://threadnote-org.eu.auth0.com/.well-known/jwks.json"
   THREADNOTE_AUTH0_REGISTRY_M2M_ISSUER = "https://threadnote-org.eu.auth0.com/"
   THREADNOTE_AUTH0_REGISTRY_M2M_ORIGIN = "https://threadnote-org-registry-e2e.fly.dev"
   THREADNOTE_AUTH0_REGISTRY_M2M_AUDIENCE = "https://threadnote-org-registry-e2e.fly.dev"

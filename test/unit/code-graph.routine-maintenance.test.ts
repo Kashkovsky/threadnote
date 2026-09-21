@@ -11,12 +11,12 @@ import {codeGraphLayout, codeGraphSnapshotBuildLockPath} from '../../src/code_gr
 import {
   COMPLETED_PERSISTENT_BUILD_DRAIN_SPECS,
   completedPersistentBuildDrainPageStatement,
-} from '../../src/code_graph/store_activation_core.js';
+} from '../../src/code_graph/store/activation/core.js';
 import {
   CodeGraphMaintenanceCoordinator,
   makeCodeGraphMaintenanceCoordinator,
   type CodeGraphRoutineMaintenanceTick,
-} from '../../src/code_graph/maintenance_coordinator.js';
+} from '../../src/code_graph/maintenance/coordinator.js';
 import {
   CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE,
   codeGraphRoutineFileBlobCleanupPageStatement,
@@ -24,8 +24,8 @@ import {
   CodeGraphStore,
   type CodeGraphRoutineMaintenanceResult,
 } from '../../src/code_graph/store.js';
-import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance/gate.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {
@@ -37,6 +37,7 @@ import {
 } from '../../src/code_graph/types.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 
 const temporaryHomes: string[] = [];
 const ROUTINE_CACHE_ALL_ELIGIBLE = '9999-12-31T23:59:59.999Z';
@@ -1368,6 +1369,11 @@ describe('routine code graph maintenance', () => {
       yield* Effect.sync(() => {
         const database = new Database(databasePath, {strict: true});
         try {
+          // Start from the released unscoped authority contract before
+          // reconstructing the pre-cleanup r7 fixture below. Merely lowering
+          // the revision marker leaves r18 scope tables behind, which is an
+          // intentionally incompatible hybrid rather than a migratable r7 DB.
+          for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
           database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete');
           database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert');
           database.run('DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update');

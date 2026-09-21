@@ -5,22 +5,24 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import fc from 'fast-check';
-import {DateTime, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {DateTime, Deferred, Effect, Fiber, FileSystem, Option, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {
   assertIsolatedBuilderPlan,
   awaitOwnedIsolatedBuilderResult,
   codeGraphIsolatedBuilderSpawnPlan,
   codeGraphProgressFromBuildStatus,
+  developmentStandaloneScript,
   isCodeGraphIsolatedBuilderHost,
   isolatedBuilderFailureMessage,
+  isolatedBuilderOwnedAdmission,
   isolatedBuilderRequestMatches,
   isolatedBuilderResultFromCompletedStatus,
   runIsolatedCodeGraphIndex,
   shouldAwaitExistingBuilder,
   statusBelongsToChild,
   type CodeGraphIsolatedBuilderSpawnPlan,
-} from '../../src/code_graph/isolated_builder.js';
+} from '../../src/code_graph/isolated/builder.js';
 import type {ObservedCodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {CodeGraphRuntimeReconnectRequiredError, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
@@ -30,7 +32,11 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
+import {
+  CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE,
+  CodeGraphRefreshDemandSuperseded,
+} from '../../src/code_graph/refresh/demand.js';
 
 function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
   return {
@@ -115,11 +121,36 @@ describe('isolated code-graph builder host detection', () => {
 });
 
 describe('isolated code-graph builder spawn plan', () => {
+  it('resolves the development fallback to the repository standalone entrypoint', () => {
+    expect(
+      Option.getOrThrow(
+        developmentStandaloneScript(
+          systemInfoStub({
+            executablePath: '/usr/local/bin/bun',
+            processArguments: ['/usr/local/bin/bun'],
+          }),
+        ),
+      ),
+    ).toBe(Bun.fileURLToPath(new URL('../../src/standalone.ts', import.meta.url)));
+  });
+
   it('reuses completed results only for exact request-key equality', () => {
     const status = {request: {key: 'request-a'}} as ObservedCodeGraphBuildStatus;
     expect(isolatedBuilderRequestMatches(status, 'request-a')).toBe(true);
     expect(isolatedBuilderRequestMatches(status, 'request-b')).toBe(false);
     expect(isolatedBuilderRequestMatches(status, undefined)).toBe(false);
+  });
+
+  it('retains detached child ownership while startup status is not yet published', () => {
+    const child = {exited: Promise.resolve(0), kill: () => undefined, processId: 77};
+    expect(isolatedBuilderOwnedAdmission(undefined, child, 'prior-build')).toEqual({
+      child,
+      mode: 'starting',
+      priorBuildId: 'prior-build',
+    });
+    expect(
+      isolatedBuilderOwnedAdmission({buildId: 'owned-build'} as ObservedCodeGraphBuildStatus, child, 'prior-build'),
+    ).toEqual({child, mode: 'spawned', observedBuildId: 'owned-build', priorBuildId: 'prior-build'});
   });
 
   it('checks runtime compatibility before observing or spawning a child', async () => {
@@ -200,6 +231,46 @@ describe('isolated code-graph builder spawn plan', () => {
     });
     expect(plan.environment.THREADNOTE_CODE_GRAPH_BUILDER_ADMISSION_CLASS).toBe('background');
     expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
+  });
+
+  it('forwards the selected project to isolated graph-index children', () => {
+    const plan = codeGraphIsolatedBuilderSpawnPlan(systemInfoStub({}), {
+      cwd: '/repo/worktree',
+      project: 'payments',
+      threadnoteHome: '/home/.threadnote',
+    });
+    expect(plan.arguments).toEqual([
+      '--home',
+      '/home/.threadnote',
+      'graph',
+      'index',
+      '--no-vectors',
+      '--project',
+      'payments',
+      '--cwd',
+      '/repo/worktree',
+    ]);
+    expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
+  });
+
+  it('preserves bounded admission metadata while mirroring queued child progress', () => {
+    const queue = {admissionClass: 'background' as const, enqueuedAt: '2026-09-17T12:00:00.000Z', position: 3, size: 4};
+    expect(
+      codeGraphProgressFromBuildStatus({
+        counters: {},
+        phase: 'waiting',
+        subphase: 'home-builder-cap',
+        scheduling: {queue},
+      }),
+    ).toEqual({phase: 'waiting', reason: 'home-builder-cap', admission: queue});
+    expect(
+      codeGraphProgressFromBuildStatus({
+        counters: {},
+        phase: 'waiting',
+        subphase: 'database-writer',
+        scheduling: {queue, admittedAt: '2026-09-17T12:00:01.000Z'},
+      }),
+    ).toEqual({phase: 'waiting', reason: 'database-writer'});
   });
 
   it('forwards a Manager full rebuild without disabling vectors', () => {
@@ -591,6 +662,53 @@ describe('isolated builder exit contracts', () => {
 });
 
 describe('isolated builder cross-host spawn admission', () => {
+  effectIt.effect('transports supersession before the child can publish build status', () =>
+    TestClock.withLive(
+      Effect.acquireUseRelease(
+        Effect.sync(() => mkdtempSync(join(tmpdir(), 'threadnote-isolated-superseded-'))),
+        home =>
+          Effect.gen(function* () {
+            const identity: RepositoryIdentity = {
+              caseMode: 'sensitive',
+              checkoutId: 'a'.repeat(64),
+              displayName: 'fixture/repository',
+              gitCommonDirectory: '/fixture/repository/.git',
+              headCommit: 'b'.repeat(40),
+              objectFormat: 'sha1',
+              repoRoot: '/fixture/repository',
+              repositoryId: 'c'.repeat(64),
+              worktreeId: 'd'.repeat(64),
+            };
+            const failure = yield* Effect.flip(
+              runIsolatedCodeGraphIndex({
+                assertRuntimeSchemaCompatible: () => Effect.void,
+                cwd: identity.repoRoot,
+                readStatus: succeedUndefined,
+                resolveIdentity: () => Effect.succeed(identity),
+                project: {
+                  graph: {closure: 'dependencies', roots: ['apps/payments']},
+                  name: 'payments',
+                  uri: 'threadnote://resources/repos/payments',
+                },
+                spawn: plan => {
+                  expect(plan.arguments).toContain('--project');
+                  expect(plan.arguments[plan.arguments.indexOf('--project') + 1]).toBe('payments');
+                  return {
+                    exited: Promise.resolve(CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE),
+                    kill: () => undefined,
+                    processId: 77,
+                  };
+                },
+                threadnoteHome: home,
+              }),
+            );
+            expect(failure).toBeInstanceOf(CodeGraphRefreshDemandSuperseded);
+          }),
+        home => Effect.sync(() => rmSync(home, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
   effectIt.effect('reports a database writer including the child owner while build status is unavailable', () =>
     Effect.forEach([process.pid + 1, process.pid], childProcessId =>
       Effect.scoped(

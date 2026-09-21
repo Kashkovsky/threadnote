@@ -1,6 +1,6 @@
 import {Clock, Context, DateTime, Effect, FileSystem, Scope} from 'effect';
 import {CodeGraphStore} from '../code_graph/store.js';
-import type {CodeGraphStoreShape} from '../code_graph/store_shape.js';
+import type {CodeGraphStoreShape} from '../code_graph/store/shape.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   compileContextBriefWith,
@@ -168,6 +168,8 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
     memoryCandidates: options.memoryCandidates,
     profileIds: options.profileIds,
     runCount: options.warmups + options.samples * 2,
+    samples: options.samples,
+    warmups: options.warmups,
   });
   const failures: string[] = [];
   if (options.invocationMode !== 'release-scale') {

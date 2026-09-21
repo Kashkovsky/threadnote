@@ -1,7 +1,7 @@
 import {Crypto, Effect, FileSystem, Path} from 'effect';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {runCodeGraphCheckpointExport} from '../checkpoint/commands.js';
-import type {CliOutput} from '../../effect/cli_output.js';
+import type {CliOutput} from '../../effect/cli/output.js';
 import {SystemInfo} from '../../effect/system.js';
 import {resolveRepositoryIdentity} from '../repository.js';
 import type {RuntimeConfig} from '../../types.js';
@@ -25,7 +25,7 @@ import {
   recordPublishedFrontier,
   runGraphShareControlServer,
   withCoordinatorStateLock,
-} from './control_server.js';
+} from './control/server.js';
 import {graphShareEnrollmentPath, graphSharingFrontierPointerPath, graphSharingLayout} from './layout.js';
 import {
   assertEnrollmentMatchesIdentity,
@@ -41,18 +41,18 @@ import {
   type GraphShareEnrollmentV2,
   type GraphShareProfileV1,
 } from './profile.js';
-import {advanceGraphPublisherFrontier, ensureGraphSharePublishedOciDescriptor} from './publisher_cycle.js';
+import {advanceGraphPublisherFrontier, ensureGraphSharePublishedOciDescriptor} from './publisher/cycle.js';
 import {resolveGraphShareCasRoot, writeGraphShareClientState} from './trust.js';
-import {validateGraphControlPolicy} from './control_reader.js';
-import {completeGraphPublisherRegistryPublication} from './publisher_registry.js';
-import {graphShareRegistryPublicationScope, type GraphShareRegistryPublicationResult} from './registry_publication.js';
+import {validateGraphControlPolicy} from './control/reader.js';
+import {completeGraphPublisherRegistryPublication} from './publisher/registry.js';
+import {graphShareRegistryPublicationScope, type GraphShareRegistryPublicationResult} from './registry/publication.js';
 import {readAuthenticatedGraphShareFrontier} from './frontier_acceptance.js';
-import {graphWorkerRegistryForProfile} from './worker_registry_upload.js';
-import {publishGraphShareProfileArtifact} from './profile_publication.js';
-import {makeGraphShareRegistryReader} from './registry_reader.js';
-import {makeGraphShareRegistryWriter} from './registry_writer.js';
-import {parseGraphShareRegistryTarget} from './registry_reference.js';
-import {readGraphShareEnrolledProfile} from './profile_storage.js';
+import {graphWorkerRegistryForProfile} from './worker/registry_upload.js';
+import {publishGraphShareProfileArtifact} from './profile/publication.js';
+import {makeGraphShareRegistryReader} from './registry/reader.js';
+import {makeGraphShareRegistryWriter} from './registry/writer.js';
+import {parseGraphShareRegistryTarget} from './registry/reference.js';
+import {readGraphShareEnrolledProfile} from './profile/storage.js';
 
 export interface GraphShareInitOptions {
   readonly cas?: string;

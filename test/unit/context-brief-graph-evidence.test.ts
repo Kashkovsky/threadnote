@@ -42,6 +42,76 @@ const EFFECT_SOURCE_ANCHORS = [
 ] as const;
 
 describe('Context Brief exact-anchor graph evidence', () => {
+  it('preserves project coverage and partial-scope safety in the public agent view', () => {
+    const projectCoverage = {
+      project: 'app-a',
+      kind: 'project' as const,
+      configuredRoots: ['apps/a'],
+      rootComponents: 1,
+      dependencyComponents: 2,
+      completeness: 'partial' as const,
+      negativeProof: 'unavailable' as const,
+      observedWorktreeCommit: COMMIT,
+      reusedEquivalentSnapshot: false,
+    };
+    const graph = fromRepositoryQuery({...queryResult({edges: [], nodes: [], operation: 'query'}), projectCoverage});
+    expect(graph.coverage.complete).toBe(false);
+    expect(graph.gaps).toContain('graph-project-scope-partial');
+    expect(graph.projectCoverage).toEqual(projectCoverage);
+    const plan = planContextBrief({
+      task: 'Find the selected app',
+      scope: {kind: 'repository', callerCwd: '/workspace/fixture', project: 'app-a'},
+    });
+    const projected = projectContextBrief(
+      assembleContextBriefLogicalResult({
+        graph,
+        plan,
+        memory: emptyMemoryEvidence(),
+        observedAt: '2026-09-20T00:00:00.000Z',
+      }),
+      1_500,
+    );
+    expect(projected.structuredContent.scope.projectCoverage).toEqual(projectCoverage);
+    expect(parseContextBriefAgentViewText(projected.text).scope.projectCoverage).toEqual(projectCoverage);
+  });
+  effectIt.effect('borrows compatible shared graph evidence before reporting a fresh-worktree gap', () =>
+    Effect.gen(function* () {
+      const attachOptions: unknown[] = [];
+      const missing = {...STATUS, freshness: 'stale' as const, readySnapshot: undefined, stale: true};
+      const borrowed = {...STATUS, freshness: 'stale' as const, stale: true};
+      const plan = planContextBrief({
+        scope: {callerCwd: '/workspace/effect', kind: 'repository', project: 'effect'},
+        task: 'Locate the HTTP client from a fresh worktree.',
+      });
+      const query = CodeGraphQueryService.of({
+        attachSharedReadySnapshot: (_home, _identity, _status, options) => {
+          attachOptions.push(options);
+          return Effect.succeed(borrowed);
+        },
+        inspect: () =>
+          Effect.succeed(
+            queryResult({
+              edges: [],
+              nodes: [sourceNode(stableId(1), PATH_ANCHOR, PATH_ANCHOR, 'module')],
+              operation: 'query',
+            }),
+          ),
+        purge: () => Effect.die('Unexpected graph purge.'),
+        status: () => Effect.succeed(missing),
+        statusForIdentity: () => Effect.die('Unexpected identity status.'),
+        statusForPublishedIdentity: () => Effect.die('Unexpected published identity status.'),
+      });
+
+      const evidence = yield* retrieveContextBriefGraphEvidence(CONFIG, plan.graph).pipe(
+        Effect.provideService(CodeGraphQueryService, query),
+        provideTestLayer(Layer.mergeAll(BunServices.layer, SystemInfo.layer)),
+      );
+
+      expect(attachOptions).toEqual([{allowBorrowedStale: true, requestMaintenance: false}]);
+      expect(evidence.cards[0]?.symbol.path).toBe(PATH_ANCHOR);
+      expect(evidence.gaps).not.toContain('graph-ready-snapshot-missing');
+    }),
+  );
   effectIt.effect('traces mixed path and cgs anchors in both directions without task-semantic displacement', () =>
     Effect.gen(function* () {
       const calls: CodeGraphInspectOptions[] = [];
@@ -89,6 +159,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
       );
 
       expect(calls).toHaveLength(3);
+      expect(calls.every(call => call.project === 'effect' && call.manifestPath === CONFIG.manifestPath)).toBe(true);
       expect(calls.find(call => call.operation === 'impact')).toMatchObject({
         depth: 0,
         direction: 'incoming',

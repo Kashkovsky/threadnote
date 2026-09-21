@@ -6,7 +6,7 @@ import {defaultGraphShareProfile, type GraphShareEnrollmentV2} from '../../src/c
 import {
   promptGraphShareOciProfileAccess,
   promptGraphShareOciTrustRoot,
-} from '../../src/code_graph/sharing/profile_consent.js';
+} from '../../src/code_graph/sharing/profile/consent.js';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '../helpers/fast-check-property.js';

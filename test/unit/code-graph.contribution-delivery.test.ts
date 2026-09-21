@@ -14,9 +14,9 @@ import {
 import {
   readContributionRetryState,
   writeContributionRetryState,
-} from '../../src/code_graph/sharing/contribution_retry_state.js';
+} from '../../src/code_graph/sharing/contribution/retry_state.js';
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
-import {drainQueuedGraphShareContributions} from '../../src/code_graph/sharing/parse_cache.js';
+import {drainQueuedGraphShareContributions} from '../../src/code_graph/sharing/parse/cache.js';
 import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
 import {writeGraphShareTrustReceipt} from '../../src/code_graph/sharing/trust.js';
 import {SystemInfo} from '../../src/effect/system.js';

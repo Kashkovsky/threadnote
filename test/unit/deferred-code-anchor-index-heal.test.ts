@@ -8,21 +8,21 @@ import {runCommandEffect} from '../../src/effect/command.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {
   deferredCodeAnchorDoctorCheck,
   hasDeferredCodeAnchorIntent,
   isDeferredCodeAnchorIntentFilename,
   stageDeferredCodeAnchorIntent,
-} from '../../src/memory/deferred_code_anchor.js';
+} from '../../src/memory/deferred/code_anchor.js';
 import {
   healAfterPublishedGraphIndex,
   withDeferredCodeAnchorIndexHeal,
-} from '../../src/memory/deferred_code_anchor_index_heal.js';
+} from '../../src/memory/deferred/code_anchor_index_heal.js';
 import {
   DeferredCodeAnchorRefreshScheduler,
   refreshPendingDeferredCodeAnchorWorkspaces,
-} from '../../src/memory/deferred_code_anchor_refresh.js';
+} from '../../src/memory/deferred/code_anchor_refresh.js';
 import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

@@ -13,7 +13,7 @@ import {
   MEMORY_HYGIENE_SOURCES_HEADING,
   MEMORY_HYGIENE_SOURCES_MARKER,
   parseMemoryHygieneSources,
-} from './hygiene_provenance.js';
+} from './hygiene/provenance.js';
 
 export type CompactableMemoryKind = Extract<MemoryKind, 'durable' | 'handoff' | 'incident'>;
 export {parseMemoryDocument};

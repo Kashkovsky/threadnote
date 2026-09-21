@@ -12,7 +12,7 @@ import {
   scanCodeGraphGitWorktreeRegistryBatch,
   scanCodeGraphWorktreeAuthorityWorkerRequest,
   type CodeGraphGitWorktreeRegistryRequest,
-} from '../../src/code_graph/git_worktree_registration.js';
+} from '../../src/code_graph/git/worktree/registration.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
 

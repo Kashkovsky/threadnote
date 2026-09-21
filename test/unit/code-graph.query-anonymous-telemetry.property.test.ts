@@ -13,7 +13,7 @@ import {
   makeCodeGraphQueryAnonymousTelemetryReporter,
   type CodeGraphQueryAnonymousTelemetryProjection,
   type CodeGraphQueryAnonymousTelemetrySnapshotSurface,
-} from '../../src/code_graph/query_anonymous_telemetry.js';
+} from '../../src/code_graph/query/anonymous_telemetry.js';
 import type {CodeGraphStatus} from '../../src/code_graph/types.js';
 import {anonymousTelemetryTestLayer, withAnonymousTelemetry} from '../../src/effect/telemetry.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
@@ -314,6 +314,46 @@ describe('code graph query anonymous telemetry', () => {
       expect(completion).not.toHaveProperty('threadnote.phase');
       expect(completion).not.toHaveProperty('threadnote.stage');
       expect(completion).not.toHaveProperty('threadnote.subphase');
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
+  effectIt.effect('emits the measured duration and outcome of an isolated query stage', () => {
+    const capture = capturingTracer();
+    const reporter = makeCodeGraphQueryAnonymousTelemetryReporter({
+      requestKind: 'inspect.query',
+      requestScope: 'local',
+    });
+
+    return Effect.gen(function* () {
+      yield* withAnonymousTelemetry(
+        {component: 'mcp', operation: 'inspect_code_graph'},
+        reporter.observedStage({
+          disposition: 'fallback',
+          durationMilliseconds: 17,
+          outcome: 'failure',
+          phase: 'graph.query.execute',
+          stage: 'query-worktree-observation',
+        }),
+      );
+
+      expect(capture.spans).toHaveLength(2);
+      expect(spanAttributes(capture.spans[0])).toMatchObject({
+        'threadnote.duration_ms': 17,
+        'threadnote.event': 'checkpoint',
+        'threadnote.graph.request_kind': 'inspect.query',
+        'threadnote.graph.request_scope': 'local',
+        'threadnote.operation': 'inspect_code_graph',
+        'threadnote.outcome': 'failure',
+        'threadnote.phase': 'graph.query.execute',
+        'threadnote.phase.elapsed_ms': 17,
+        'threadnote.phase.outcome': 'failure',
+        'threadnote.stage': 'query-worktree-observation',
+        'threadnote.subphase': 'fallback',
+      });
+      expect(spanAttributes(capture.spans[1])).toMatchObject({
+        'threadnote.event': 'completion',
+        'threadnote.outcome': 'success',
+      });
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 

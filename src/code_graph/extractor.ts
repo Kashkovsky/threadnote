@@ -2,7 +2,7 @@ import ts from 'typescript-compiler';
 import {Option, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {compareCodeUnits} from './ordering.js';
-import {documentLookupTiers, resolveLegacyDocumentReference, resolveLookupTiers} from './resolution_lookup.js';
+import {documentLookupTiers, resolveLegacyDocumentReference, resolveLookupTiers} from './resolution/lookup.js';
 import type {
   CodeGraphEdge,
   CodeGraphFileFacts,

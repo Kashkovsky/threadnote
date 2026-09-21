@@ -14,13 +14,13 @@ import {
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
   CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM,
   finalCodeGraphFactBatches,
-} from '../../src/code_graph/fact_budget.js';
-import {CODE_GRAPH_STORED_FACT_CODEC, decodeStoredCodeGraphFact} from '../../src/code_graph/fact_storage.js';
+} from '../../src/code_graph/fact/budget.js';
+import {CODE_GRAPH_STORED_FACT_CODEC, decodeStoredCodeGraphFact} from '../../src/code_graph/fact/storage.js';
 import {createCachedCodeGraphFactsAttributor, factMaterializationBatches} from '../../src/code_graph/indexer.js';
 import {
   CodeGraphDiskCapacityPressureError,
   type CodeGraphDirectPersistentCapacityBoundary,
-} from '../../src/code_graph/disk_capacity.js';
+} from '../../src/code_graph/disk/capacity.js';
 import type {CodeGraphWorkspace} from '../../src/code_graph/languages/types.js';
 import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
 import {augmentRationaleFacts} from '../../src/code_graph/rationale.js';
@@ -41,9 +41,9 @@ import {
   type CodeGraphSqliteWriterTuning,
   type CodeGraphStagingProgress,
 } from '../../src/code_graph/store.js';
-import {prepareActivationTables} from '../../src/code_graph/store_staging_core.js';
-import {type CodeGraphWriterGate} from '../../src/code_graph/store_build_core.js';
-import {pruneRetiredSnapshotRows} from '../../src/code_graph/store_retirement.js';
+import {prepareActivationTables} from '../../src/code_graph/store/staging_core.js';
+import {type CodeGraphWriterGate} from '../../src/code_graph/store/build/core.js';
+import {pruneRetiredSnapshotRows} from '../../src/code_graph/store/retirement.js';
 import {
   CodeGraphStoreError,
   isCodeGraphStoreError,
@@ -5267,18 +5267,18 @@ describe('code graph full-build materialization store', () => {
       expect(result.pause).toHaveLength(1);
       expect(result.pause[0]).toMatchObject({
         operation: 'promote ready code graph snapshot',
-        rowCount: 5,
+        rowCount: 6,
       });
       expect(result.pause[0].finalFactBytes).toBeLessThan(leaseCount * snapshot.id.length);
       expect(result.afterPause).toEqual({active: 0, flags: 0, state: 'ready'});
       expect(result.resumed).toHaveLength(2);
       expect(result.resumed[0]).toMatchObject({
         operation: 'promote ready code graph snapshot',
-        rowCount: 5,
+        rowCount: 6,
       });
       expect(result.resumed[1]).toMatchObject({
         operation: 'promote ready code graph snapshot',
-        rowCount: 5,
+        rowCount: 6,
       });
       expect(result.resumed[1].finalFactBytes).toBeGreaterThan(result.resumed[0].finalFactBytes);
       expect(result.afterResume).toEqual({

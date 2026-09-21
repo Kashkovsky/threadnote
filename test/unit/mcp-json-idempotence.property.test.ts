@@ -46,6 +46,7 @@ fcEffectProp(
           THREADNOTE_AGENT_ID: 'threadnote',
           THREADNOTE_HOME: home,
           THREADNOTE_MCP_CLIENT: 'cursor',
+          THREADNOTE_MCP_SURFACE: 'cursor-desktop',
           THREADNOTE_MCP_TOOLSET: 'core',
           THREADNOTE_USER: 'test-user',
         };
@@ -108,6 +109,7 @@ fcEffectProp(
           THREADNOTE_AGENT_ID: 'threadnote',
           THREADNOTE_HOME: home,
           THREADNOTE_MCP_CLIENT: 'omp',
+          THREADNOTE_MCP_SURFACE: 'omp-agent',
           THREADNOTE_MCP_TOOLSET: 'core',
           THREADNOTE_USER: 'test-user',
         };

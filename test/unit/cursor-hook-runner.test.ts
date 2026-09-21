@@ -6,7 +6,7 @@ import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {runCursorHookWith} from '../../src/cursor_hook_runner.js';
+import {runCursorHookWith} from '../../src/cursor/hook_runner.js';
 
 const TestLayer = Layer.merge(BunPath.layer, SystemInfo.layer);
 

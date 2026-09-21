@@ -5,7 +5,7 @@ import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {codeGraphWorktreeLockPath} from '../../src/code_graph/layout.js';
-import {codeGraphAutomaticCompactionCandidateAllowed} from '../../src/code_graph/automatic_compaction.js';
+import {codeGraphAutomaticCompactionCandidateAllowed} from '../../src/code_graph/automatic/compaction.js';
 import {
   codeGraphCompactionRecommendation,
   codeGraphStorageUnattributedBytes,
@@ -14,7 +14,7 @@ import {
   inspectCodeGraphStorage,
 } from '../../src/code_graph/storage.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../../src/code_graph/types.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';

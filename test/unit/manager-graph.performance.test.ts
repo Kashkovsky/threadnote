@@ -9,7 +9,7 @@ import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
   MANAGER_GRAPH_MAX_NODE_LIMIT,
   managerGraphVisualizationLimits,
-} from '../../src/manager/graph_limits.js';
+} from '../../src/manager/graph/limits.js';
 
 // Istanbul instruments every branch in the layout loop. Keep the production
 // budget unchanged while allowing the measured coverage build its known tax.

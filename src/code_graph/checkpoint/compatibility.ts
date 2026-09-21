@@ -1,9 +1,9 @@
-import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../inventory_policy.js';
+import {CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION} from '../inventory/policy.js';
 import {codeGraphLanguagePackProvenance, type CodeGraphLanguagePackRegistryShape} from '../languages/registry.js';
 import {compareCodeUnits} from '../ordering.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store_build_core.js';
-import type {CodeGraphLanguagePackProvenance} from '../store_models.js';
-import {CODE_GRAPH_RESOLUTION_SURFACE_VERSION} from '../store/schema_revision.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store/build/core.js';
+import type {CodeGraphLanguagePackProvenance} from '../store/models.js';
+import {CODE_GRAPH_RESOLUTION_SURFACE_VERSION} from '../store/schema/revision.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from '../types.js';
 import {CODE_GRAPH_WORKSPACE_MODEL_VERSION} from '../workspace.js';
 import {canonicalJson} from './canonical_json.js';

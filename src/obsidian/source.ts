@@ -1,7 +1,7 @@
 import {Clock, Console, Crypto, DateTime, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {MAX_SECRET_MATCHES_TO_PRINT} from '../constants.js';
 import {sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {ResourceStore, type ResourceStoreMutation} from '../effect/resource-store.js';
 import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {

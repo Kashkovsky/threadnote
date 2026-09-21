@@ -3,11 +3,11 @@ import {
   selectCodeGraphCitationContentHashTargets,
   type CodeGraphEffectiveSnapshotCitationEvidence,
   type CodeGraphEffectiveSnapshotCitationEvidenceRequest,
-} from '../code_graph/citation_primitives.js';
+} from '../code_graph/citation/primitives.js';
 import {codeGraphCommittedFileContentHash} from '../code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphStore} from '../code_graph/store.js';
-import type {CodeGraphStoreShape} from '../code_graph/store_shape.js';
+import type {CodeGraphStoreShape} from '../code_graph/store/shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot, CodeGraphStatus} from '../code_graph/types.js';
 import {
   compileContextBriefWith,
@@ -17,7 +17,7 @@ import {
 } from '../context_brief/index.js';
 import {validateContextBriefMemoryCitations} from '../context_brief/citation_validation.js';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {captureMemoryCodeCitations} from '../memory/code_citation_capture.js';
+import {captureMemoryCodeCitations} from '../memory/code/citation_capture.js';
 import type {RuntimeConfig} from '../types.js';
 import {
   finalizeContextBriefCitationRuntimeEvaluation,

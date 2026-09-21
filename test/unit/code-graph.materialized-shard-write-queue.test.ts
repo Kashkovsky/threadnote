@@ -1,7 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import {describe, expect} from 'vitest';
-import {makeCodeGraphMaterializedShardWriteQueue} from '../../src/code_graph/indexer_materialized_shard_writes.js';
+import {makeCodeGraphMaterializedShardWriteQueue} from '../../src/code_graph/indexer/materialized_shard_writes.js';
 import type {
   CodeGraphDirectPersistentCapacityProtector,
   CodeGraphMaterializedShardAssociationBatch,

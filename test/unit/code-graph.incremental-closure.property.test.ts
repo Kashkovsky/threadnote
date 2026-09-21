@@ -7,7 +7,7 @@ import {
   declaredProjectResolutionClosureProjectIds,
   partitionProjectResolutionSurfaceChanges,
   planProjectIncrementalClosure,
-} from '../../src/code_graph/incremental_closure.js';
+} from '../../src/code_graph/incremental/closure.js';
 import {resolvePersistedReexportTerminals} from '../../src/code_graph/indexer.js';
 import type {CodeGraphWorkspace, CodeGraphWorkspaceProject} from '../../src/code_graph/languages/types.js';
 import type {CodeGraphReusableReexport} from '../../src/code_graph/store.js';

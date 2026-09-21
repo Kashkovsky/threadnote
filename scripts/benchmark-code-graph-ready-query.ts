@@ -13,7 +13,7 @@ import type {
   CodeGraphQueryTelemetryPhase,
   CodeGraphQueryTelemetryStage,
   CodeGraphStatusOptions,
-} from '../src/code_graph/query_contract.js';
+} from '../src/code_graph/query/contract.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
@@ -24,15 +24,15 @@ import {
 } from '../src/code_graph/types.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {sha256Hex} from '../src/effect/digest.js';
-import {withExclusiveFileLock} from '../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../src/effect/file/lock.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {runtimeHostHardwareInfo, SystemInfo} from '../src/effect/system.js';
-import {diagnoseCodeGraphDatabaseReadOnly} from '../src/code_graph/store_health.js';
+import {diagnoseCodeGraphDatabaseReadOnly} from '../src/code_graph/store/health.js';
 import {
   awaitCodeGraphWorktreeBuilds,
   withCodeGraphMaintenanceIntent,
   withCodeGraphMaintenanceRegistration,
-} from '../src/code_graph/maintenance_gate.js';
+} from '../src/code_graph/maintenance/gate.js';
 import {codeGraphRepositoryLockPath} from '../src/code_graph/layout.js';
 import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
 import {
@@ -63,12 +63,12 @@ import {
   type ReadyQueryStageDisposition,
   type ReadyQueryStageSeriesV1,
   type ReadyQueryTimingSeriesV1,
-} from '../src/evaluation/ready_query_evidence.js';
+} from '../src/evaluation/ready/query_evidence.js';
 import {
   readReadyQueryLinuxHostSample,
   readyQueryHostEvidence,
   type ReadyQueryLinuxHostSample,
-} from '../src/evaluation/ready_query_host.js';
+} from '../src/evaluation/ready/query_host.js';
 import {codeGraphMcpResponse} from '../src/mcp/server/code_graph.js';
 import {
   publicGitHubRepositoryEvidence,

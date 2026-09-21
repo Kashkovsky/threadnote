@@ -4,7 +4,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {sha256FileHex, sha256Hex} from '../../src/effect/digest.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
-import {readCanonicalMutationGeneration} from '../../src/effect/resource_mutation_generation.js';
+import {readCanonicalMutationGeneration} from '../../src/effect/resource/mutation_generation.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {

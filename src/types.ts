@@ -7,6 +7,7 @@ export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
 export type MemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';
 export type RuntimeIdentitySource = 'cursor-cloud-command' | 'cursor-cloud-profile' | 'environment' | 'system';
+export type RuntimeManifestSource = 'bundled-example' | 'configured' | 'user';
 
 export interface RuntimeConfig {
   readonly account: string;
@@ -14,15 +15,23 @@ export interface RuntimeConfig {
   readonly agentId: string;
   readonly agentIdSource?: RuntimeIdentitySource;
   readonly manifestPath: string;
+  readonly manifestSource?: RuntimeManifestSource;
   readonly user: string;
   readonly userSource?: RuntimeIdentitySource;
 }
 
 export interface ProjectManifest {
+  readonly graph?: ProjectGraphManifest;
   readonly name: string;
   readonly path: string;
   readonly seed: readonly string[];
   readonly uri: string;
+}
+
+export interface ProjectGraphManifest {
+  readonly closure: 'dependencies';
+  readonly include?: readonly string[];
+  readonly roots: readonly string[];
 }
 
 export interface WorksetManifest {
@@ -98,6 +107,8 @@ export interface HooksInstallOptions {
   /** @internal Recorded relocatable host root used by repair and uninstall. */
   readonly hostRoot?: string;
   readonly remove?: boolean;
+  /** @internal The caller already holds the home-wide setup mutation lock. */
+  readonly setupLockHeld?: boolean;
 }
 
 export interface HookRunnerOptions {
@@ -189,6 +200,8 @@ export interface McpInstallOptions {
   readonly project?: string;
   readonly scope?: ClaudeMcpScope;
   readonly shareId?: string;
+  /** @internal The caller already holds the home-wide setup mutation lock. */
+  readonly setupLockHeld?: boolean;
   readonly toolset?: McpToolset;
 }
 
@@ -300,6 +313,10 @@ export interface HandoffOptions {
 }
 
 export interface ArchiveOptions {
+  /** Internal composite-mutation option; the caller must refresh recall indexes from the final state. */
+  readonly deferRecallIndexRefresh?: boolean;
+  /** Internal accumulator for the archive URI created by a composite mutation. */
+  readonly invalidatedUris?: string[];
   readonly dryRun?: boolean;
   /** Internal optimistic-concurrency guard used by hygiene apply. */
   readonly expectedContent?: string;
@@ -324,6 +341,8 @@ export interface InitManifestOptions {
   readonly path?: string;
   readonly replace?: boolean;
   readonly repo?: readonly string[];
+  /** @internal The caller already holds the home-wide setup mutation lock. */
+  readonly setupLockHeld?: boolean;
 }
 
 export interface JsonObject {

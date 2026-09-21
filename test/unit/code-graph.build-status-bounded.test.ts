@@ -21,7 +21,7 @@ import {
 import {
   CODE_GRAPH_FAILED_BUILD_STATUS_RETENTION_MILLISECONDS,
   codeGraphFailedBuildStatusRemovable,
-} from '../../src/code_graph/build_status_validation.js';
+} from '../../src/code_graph/build_status/validation.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,

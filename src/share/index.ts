@@ -74,6 +74,6 @@ export {
   runSharePublishBundle,
   shareAgentArtifact,
   shareBundlePack,
-} from './artifact_publish.js';
-export {installSharedAgentArtifacts, listSharedAgentArtifacts, runShareInstallArtifacts} from './artifact_install.js';
+} from './artifact/publish.js';
+export {installSharedAgentArtifacts, listSharedAgentArtifacts, runShareInstallArtifacts} from './artifact/install.js';
 export {applyScrubber, scrubberBlocker} from './scrubber.js';

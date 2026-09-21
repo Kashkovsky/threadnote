@@ -5,7 +5,7 @@ import {
   initialMaterializationStorageTelemetry,
   observeMaterializationStorage,
   type MaterializationStorageFiles,
-} from '../../src/code_graph/indexer_materialization.js';
+} from '../../src/code_graph/indexer/materialization.js';
 
 const bytes = FC.integer({max: 1_000_000_000, min: 0});
 const storageFiles = FC.record({

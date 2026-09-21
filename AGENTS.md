@@ -32,8 +32,9 @@ Threadnote application and runtime behavior is predominantly Effect code. Tests 
 `Effect` must use the Effect Vitest integration from `@effect/vitest` rather than wrapping the program with
 `Effect.runPromise`, `runEffect`, or another Promise bridge inside a plain async Vitest test.
 
-- Import `it as effectIt` from `@effect/vitest` and use `effectIt.effect` for Effect examples,
-  `effectIt.scoped` when the test owns scoped resources, and `effectIt.effect.prop` for Effect properties.
+- Import `it as effectIt` from `@effect/vitest` and use `effectIt.effect` for Effect examples; it already scopes
+  the test. When an example explicitly needs a nested sub-scope, use `Effect.scoped` inside the returned Effect,
+  and use `effectIt.effect.prop` for Effect properties.
 - Provide the narrow test layer explicitly. Use `ApplicationLayer` only for integration behavior that genuinely needs
   the application service graph; prefer focused service layers for unit tests.
 - Keep setup, synchronization, assertions, and cleanup inside the returned Effect. Use `Effect.acquireUseRelease`,

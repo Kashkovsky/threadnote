@@ -5,7 +5,7 @@ import {
   getAuth0M2MGraphCredential,
   parseAuth0M2MGraphCredentialConfig,
   parseAuth0M2MGraphCredentialRequest,
-} from '../../src/code_graph/sharing/auth0_m2m_graph_credential.js';
+} from '../../src/code_graph/sharing/auth0/m2m_graph_credential.js';
 import {createAccessTokenVerifier} from '../../src/oauth/access_token.js';
 
 const now = Math.floor(Date.now() / 1000);
@@ -107,7 +107,7 @@ describe('Auth0 graph worker credential helper', () => {
         fetch: async () =>
           Response.json({access_token: token, expires_in: 600, scope: 'graph:contribute', token_type: 'Bearer'}),
       }),
-    ).rejects.toThrow('Auth0 graph credential unavailable.');
+    ).rejects.toThrow('OAuth graph credential unavailable.');
   });
 
   it('accepts a canonical origin as the Auth0 audience and coordinator URL', async () => {
@@ -151,7 +151,7 @@ describe('Auth0 graph worker credential helper', () => {
             return new Response(null);
           },
         }),
-      ).rejects.toThrow('Auth0 graph credential unavailable.');
+      ).rejects.toThrow('OAuth graph credential unavailable.');
       expect(called).toBe(false);
     }
   });
@@ -184,7 +184,7 @@ describe('Auth0 graph worker credential helper', () => {
         });
         throw new Error('Expected token rejection');
       } catch (error) {
-        expect(String(error)).toBe('Error: Auth0 graph credential unavailable.');
+        expect(String(error)).toBe('Error: OAuth graph credential unavailable.');
         expect(JSON.stringify(error)).not.toContain(token);
       }
     }
@@ -217,7 +217,7 @@ describe('Auth0 graph worker credential helper', () => {
             new Set(scopes).size === scopes.length &&
             scopes.every(scope => scope === 'graph:read' || scope === 'graph:contribute');
           if (expected) expect((await result).accessToken).toBe(token);
-          else await expect(result).rejects.toThrow('Auth0 graph credential unavailable.');
+          else await expect(result).rejects.toThrow('OAuth graph credential unavailable.');
         },
       ),
       {numRuns: 80},
@@ -239,7 +239,7 @@ describe('Auth0 graph worker credential helper', () => {
           key: async () => publicKey,
           fetch: async () => response,
         }),
-      ).rejects.toThrow('Auth0 graph credential unavailable.');
+      ).rejects.toThrow('OAuth graph credential unavailable.');
     }
     await expect(
       getAuth0M2MGraphCredential(request, environment, {
@@ -247,7 +247,7 @@ describe('Auth0 graph worker credential helper', () => {
           throw new Error('synthetic-secret-never-log');
         },
       }),
-    ).rejects.toThrow('Auth0 graph credential unavailable.');
+    ).rejects.toThrow('OAuth graph credential unavailable.');
   });
 
   it('requires a dedicated, exact Cloud M2M binding from environment', () => {
@@ -260,7 +260,7 @@ describe('Auth0 graph worker credential helper', () => {
       {THREADNOTE_AUTH0_GRAPH_M2M_SUBJECT: 'user\nother'},
     ])
       expect(() => parseAuth0M2MGraphCredentialConfig({...environment, ...changed})).toThrow(
-        'Auth0 graph credential unavailable.',
+        'OAuth graph credential unavailable.',
       );
   });
 
@@ -271,7 +271,7 @@ describe('Auth0 graph worker credential helper', () => {
         if (candidate === 'graph:read' || candidate === 'graph:contribute') {
           expect(parseAuth0M2MGraphCredentialRequest(input).scopes[0]).toBe(candidate);
         } else {
-          expect(() => parseAuth0M2MGraphCredentialRequest(input)).toThrow('Auth0 graph credential unavailable.');
+          expect(() => parseAuth0M2MGraphCredentialRequest(input)).toThrow('OAuth graph credential unavailable.');
         }
       }),
       {numRuns: 100},

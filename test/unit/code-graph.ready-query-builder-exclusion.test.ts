@@ -9,8 +9,8 @@ import {
   codeGraphRepositoryLockPath,
   codeGraphWorktreeLockPath,
 } from '../../src/code_graph/layout.js';
-import {withCodeGraphMaintenanceRegistration} from '../../src/code_graph/maintenance_gate.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withCodeGraphMaintenanceRegistration} from '../../src/code_graph/maintenance/gate.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

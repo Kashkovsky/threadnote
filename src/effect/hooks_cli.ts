@@ -1,8 +1,8 @@
 import type {Effect} from 'effect';
 import {Argument, Command} from 'effect/unstable/cli';
 import type {AgentClient, HookRunnerOptions, HooksInstallOptions} from '../types.js';
-import type {CursorHookEvent} from '../cursor_hooks.js';
-import {boolean, optionalChoice, optionalString} from './cli_flags.js';
+import type {CursorHookEvent} from '../cursor/hooks.js';
+import {boolean, optionalChoice, optionalString} from './cli/flags.js';
 
 export function makeInstallHooksCommand<E, R>(
   handler: (agent: AgentClient, options: HooksInstallOptions) => Effect.Effect<void, E, R>,

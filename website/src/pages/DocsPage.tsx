@@ -347,7 +347,7 @@ export default function DocsPage() {
       <div className="docs-shell">
         <aside className={`docs-sidebar${navOpen ? ' docs-sidebar--open' : ''}`} id="docs-sidebar" ref={sidebarRef}>
           <div className="docs-sidebar__top">
-            <span className="eyebrow">Threadnote 4</span>
+            <span className="eyebrow">Threadnote 5</span>
             <strong>Documentation</strong>
             <button
               className="docs-sidebar__close"

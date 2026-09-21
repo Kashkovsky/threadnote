@@ -2,13 +2,13 @@ import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import * as FC from 'fast-check';
-import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
-import type {ProjectResolutionLookupKey} from '../../src/code_graph/incremental_closure.js';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact/budget.js';
+import type {ProjectResolutionLookupKey} from '../../src/code_graph/incremental/closure.js';
 import {
   assessResolutionCandidateReexportSafety,
   boundedReusableReexportsFromKeys,
   enrichPersistedTypeScriptReexports,
-} from '../../src/code_graph/indexer_resolution_candidate_closure.js';
+} from '../../src/code_graph/indexer/resolution_candidate_closure.js';
 import type {CodeGraphReusableReexport} from '../../src/code_graph/store.js';
 import {
   PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_KEY_BYTES,
@@ -24,8 +24,8 @@ import {
   type ProjectResolutionCandidateFactPage,
   type ProjectResolutionCandidateScanPlan,
   type ProjectResolutionReexportKeys,
-} from '../../src/code_graph/store_resolution_candidate_closure.js';
-import {CODE_GRAPH_RESOLUTION_PASS_MAXIMUM} from '../../src/code_graph/store_resolution.js';
+} from '../../src/code_graph/store/resolution/candidate_closure.js';
+import {CODE_GRAPH_RESOLUTION_PASS_MAXIMUM} from '../../src/code_graph/store/resolution.js';
 import type {
   CodeGraphFileFacts,
   CodeGraphInventoryFile,

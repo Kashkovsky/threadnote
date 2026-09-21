@@ -1,8 +1,9 @@
 import {sha256HexSync} from '../crypto/sha256.js';
-import {codeGraphInventorySha256Hex} from './inventory_identity.js';
+import {codeGraphInventorySha256Hex} from './inventory/identity.js';
 import {compareCodeUnits} from './ordering.js';
-import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './store_build_core.js';
-import type {CodeGraphLanguagePackProvenance} from './store_models.js';
+import {codeGraphScopeIdentitySuffix, type CodeGraphScopeIdentity} from './scope/identity.js';
+import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './store/build/core.js';
+import type {CodeGraphLanguagePackProvenance} from './store/models.js';
 import {CODE_GRAPH_EXTRACTOR_SET_VERSION} from './types.js';
 
 export interface CodeGraphContentIdentityFile {
@@ -37,14 +38,21 @@ export function codeGraphExtractorSetIdentityFromIdentities(
   );
 }
 
-export function codeGraphContentIdentity(extractorSet: string, files: readonly CodeGraphContentIdentityFile[]): string {
-  return `cgc_${codeGraphInventorySha256Hex(graphContentPrefix(extractorSet), files, graphContentLine).slice(0, 40)}`;
+export function codeGraphContentIdentity(
+  extractorSet: string,
+  files: readonly CodeGraphContentIdentityFile[],
+  scope?: CodeGraphScopeIdentity,
+): string {
+  return `cgc_${codeGraphInventorySha256Hex(graphContentPrefix(extractorSet, scope), files, graphContentLine).slice(0, 40)}`;
 }
 
 /** Hashes an already strict UTF-16-code-unit-ordered inventory without retaining it in memory. */
-export function createCodeGraphContentIdentityAccumulator(extractorSet: string): CodeGraphContentIdentityAccumulator {
+export function createCodeGraphContentIdentityAccumulator(
+  extractorSet: string,
+  scope?: CodeGraphScopeIdentity,
+): CodeGraphContentIdentityAccumulator {
   const hasher = new Bun.CryptoHasher('sha256');
-  hasher.update(graphContentPrefix(extractorSet));
+  hasher.update(graphContentPrefix(extractorSet, scope));
   let completed: string | undefined;
   let previousPath: string | undefined;
   let rows = 0;
@@ -66,8 +74,8 @@ export function createCodeGraphContentIdentityAccumulator(extractorSet: string):
   };
 }
 
-function graphContentPrefix(extractorSet: string): string {
-  return `graph-content-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${extractorSet}\n`;
+function graphContentPrefix(extractorSet: string, scope: CodeGraphScopeIdentity | undefined): string {
+  return `graph-content-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${extractorSet}\n${codeGraphScopeIdentitySuffix(scope)}`;
 }
 
 function graphContentLine(file: CodeGraphContentIdentityFile): string {

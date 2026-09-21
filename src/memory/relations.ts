@@ -5,7 +5,7 @@ import type {RuntimeConfig} from '../types.js';
 import {isMemoryRelationType, MAX_MEMORY_RELATIONS, parseMemoryDocument, type MemoryRelation} from './document.js';
 import {isMemoryId, memoryIdentityAlias, memoryIdentityLockKey, memoryIdFromIdentityAlias} from './identity_alias.js';
 import {readMemoryWithRelocations} from './relocation.js';
-import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../recall/memory_identity.js';
+import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../recall/memory/identity.js';
 
 export class MemoryRelationWriteError extends Data.TaggedError('MemoryRelationWriteError')<{
   readonly message: string;

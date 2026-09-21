@@ -10,7 +10,7 @@ import {describe, expect} from 'vitest';
 import {
   CodeGraphDiskCapacityObservationError,
   type CodeGraphDirectPersistentCapacityBoundary,
-} from '../../src/code_graph/disk_capacity.js';
+} from '../../src/code_graph/disk/capacity.js';
 import {
   acquireCodeGraphDiskReservation,
   parseCodeGraphDiskReservationReceipt,
@@ -20,7 +20,7 @@ import {
   type CodeGraphDiskReservationLease,
   type CodeGraphDiskReservationObservation,
   type CodeGraphDiskReservationOptions,
-} from '../../src/code_graph/disk_reservation.js';
+} from '../../src/code_graph/disk/reservation.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const filesystemKey = 'a'.repeat(64);

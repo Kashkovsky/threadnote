@@ -51,6 +51,7 @@ const pageLoaders: Readonly<Record<SitePage, () => Promise<PageModule>>> = {
   performance: () => import('./pages/PerformancePage'),
   'performance-graphify': () => import('./pages/GraphifyPerformancePage'),
   docs: () => import('./pages/DocsPage'),
+  agents: () => import('./pages/AgentsPage'),
   'whats-new': () => import('./pages/WhatsNewPage'),
   'pro-tips': () => import('./pages/ProTipsPage'),
   'manager-demo': () => import('./pages/ManagerDemoPage'),
@@ -65,6 +66,8 @@ function declaredInitialPage(): SitePage {
   const page = document.body.dataset.page;
   switch (page) {
     case 'docs':
+      return page;
+    case 'agents':
       return page;
     case 'performance':
       return page;

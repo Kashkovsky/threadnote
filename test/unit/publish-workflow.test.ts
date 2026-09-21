@@ -2,7 +2,23 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {BunFileSystem} from '@effect/platform-bun';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
+import {JSON_SCHEMA, load} from 'js-yaml';
 import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
+
+interface PublisherWorkflow {
+  readonly env?: Readonly<Record<string, string>>;
+  readonly jobs: Readonly<{
+    readonly publish?: {
+      readonly env?: Readonly<Record<string, string>>;
+      readonly steps?: readonly {
+        readonly name?: string;
+        readonly run?: string;
+        readonly uses?: string;
+        readonly with?: Readonly<Record<string, string>>;
+      }[];
+    };
+  }>;
+}
 
 const readProjectFile = (path: string) =>
   FileSystem.FileSystem.pipe(
@@ -140,6 +156,46 @@ describe('standalone release workflows', () => {
     }),
   );
 
+  it.effect('sets up the pinned Bun runtime before every publisher Bun invocation', () =>
+    Effect.gen(function* () {
+      const publisher = load(yield* readProjectFile('.github/workflows/publish-release-assets.yml'), {
+        schema: JSON_SCHEMA,
+      }) as PublisherWorkflow;
+      const releaseWorkflow = load(yield* readProjectFile('.github/workflows/publish.yml'), {
+        schema: JSON_SCHEMA,
+      }) as PublisherWorkflow;
+      const job = publisher.jobs.publish;
+      const steps = job?.steps ?? [];
+      const setupIndex = steps.findIndex(step => step.uses === 'oven-sh/setup-bun@v2');
+      const bunRunSteps = steps
+        .map((step, index) => ({index, run: step.run ?? ''}))
+        .filter(({run}) => /(?:^|[\s;&|])bun(?:\s|$)/.test(run));
+      const releaseStep = steps
+        .map((step, index) => ({index, run: step.run ?? ''}))
+        .find(({run}) => run.includes('verify_beta_release_freeze() {'));
+      const releaseRun = releaseStep?.run ?? '';
+      const freezeStart = releaseRun.indexOf('verify_beta_release_freeze() {');
+      const freezeEnd =
+        freezeStart >= 0
+          ? releaseRun.indexOf('verify_release_source() {', freezeStart + 'verify_beta_release_freeze() {'.length)
+          : -1;
+      const freezeFunction =
+        freezeStart >= 0 && freezeEnd > freezeStart ? releaseRun.slice(freezeStart, freezeEnd) : '';
+
+      expect(releaseWorkflow?.env?.BUN_VERSION).toBe('1.4.2');
+      expect(job?.env?.BUN_VERSION).toBe(releaseWorkflow?.env?.BUN_VERSION);
+      expect(setupIndex).toBeGreaterThanOrEqual(0);
+      expect(steps[setupIndex]?.with).toEqual({'bun-version': '${{ env.BUN_VERSION }}'});
+      expect(bunRunSteps.length).toBeGreaterThan(0);
+      expect(bunRunSteps.every(({index}) => setupIndex < index)).toBe(true);
+      expect(releaseStep).toBeDefined();
+      expect(setupIndex).toBeLessThan(releaseStep?.index ?? Number.POSITIVE_INFINITY);
+      expect(freezeStart).toBeGreaterThanOrEqual(0);
+      expect(freezeEnd).toBeGreaterThan(freezeStart);
+      expect(freezeFunction).toContain('RELEASE_FREEZE_RULESET="$freeze_ruleset" bun -e');
+    }),
+  );
+
   it.effect('keeps the v4.6.0 publication recovery exact, one-shot, and artifact-bound', () =>
     Effect.gen(function* () {
       const recovery = yield* readProjectFile('.github/workflows/publish-v4.6.0-recovery.yml');
@@ -189,40 +245,76 @@ describe('standalone release workflows', () => {
 
       expect(notes.trimStart()).toMatch(/^## What's new\s/);
       expect(workflow).toContain('Verify versioned release notes');
-      expect(workflow).toContain('.github/release-notes/${{ github.ref_name }}.md');
+      expect(workflow).toContain('.github/release-notes/${RELEASE_TAG}.md');
       expect(publisher).toContain('release_flags=(--verify-tag --generate-notes)');
       expect(publisher).toContain('--notes "$release_notes"');
     }),
   );
 
-  it.effect('builds every release payload from the exact protected-main tag commit without experiment gating', () =>
-    Effect.gen(function* () {
-      const workflow = yield* readProjectFile('.github/workflows/publish.yml');
-      const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
-      const verifyJob = workflow.slice(workflow.indexOf('  verify:'), workflow.indexOf('\n  linux:'));
-      const resolveRelease = verifyJob.indexOf('Resolve exact release source');
-      const releaseSmokes = verifyJob.indexOf('Run release contract smokes');
+  it.effect(
+    'builds from either a protected-main stable tag or the exact protected release-branch beta tip without experiment gating',
+    () =>
+      Effect.gen(function* () {
+        const workflow = yield* readProjectFile('.github/workflows/publish.yml');
+        const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
+        const verifyJob = workflow.slice(workflow.indexOf('  verify:'), workflow.indexOf('\n  linux:'));
+        const resolveRelease = verifyJob.indexOf('Resolve exact release source');
+        const releaseSmokes = verifyJob.indexOf('Run release contract smokes');
 
-      expect(verifyJob).toContain('runs-on: ubuntu-latest');
-      expect(verifyJob).toContain('release_commit: ${{ steps.release_source.outputs.release_commit }}');
-      expect(verifyJob).toContain('refs/tags/${release_tag}^{commit}');
-      expect(verifyJob).toContain('git merge-base --is-ancestor "$head_commit" refs/remotes/origin/main');
-      expect(verifyJob).toContain('printf \'release_commit=%s\\n\' "$head_commit"');
-      expect(verifyJob).not.toContain('code-memory-link');
-      expect(verifyJob).not.toContain('CANDIDATE_COMMIT');
-      expect(resolveRelease).toBeGreaterThan(0);
-      expect(releaseSmokes).toBeGreaterThan(resolveRelease);
-      expect(workflow.match(/needs: verify/g)).toHaveLength(3);
-      expect(workflow.match(/name: Select exact verified release source/g)).toHaveLength(3);
-      expect(workflow.match(/RELEASE_COMMIT: \$\{\{ needs\.verify\.outputs\.release_commit \}\}/g)).toHaveLength(3);
-      expect(workflow.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(5);
-      expect(workflow.match(/persist-credentials: false/g)).toHaveLength(5);
-      expect(workflow).toContain('release_sha: ${{ github.sha }}');
-      expect(publisher).toContain('ref: ${{ inputs.release_sha }}');
-      expect(publisher).toContain('persist-credentials: false');
-      expect(publisher).toContain('refs/tags/${RELEASE_TAG}:refs/threadnote-release-tag');
-      expect(publisher).toContain('remote_tag_commit');
-    }),
+        expect(verifyJob).toContain('runs-on: ubuntu-latest');
+        expect(verifyJob).toContain('release_commit: ${{ steps.release_source.outputs.release_commit }}');
+        expect(verifyJob).toContain('RELEASE_TAG: ${{ github.ref_name }}');
+        expect(verifyJob).toContain('name: Validate release tag syntax');
+        expect(verifyJob).toContain('refs/tags/${RELEASE_TAG}^{commit}');
+        expect(verifyJob).toContain('git merge-base --is-ancestor "$head_commit" refs/remotes/origin/main');
+        expect(verifyJob).toContain('^v5\\.0\\.0-beta\\.[1-9][0-9]*$');
+        expect(verifyJob).toContain('Number.isSafeInteger(Number(component))');
+        expect(verifyJob).toContain('canonical safe-integer stable vX.Y.Z');
+        expect(verifyJob).toContain('refs/heads/release/5.0.0:refs/remotes/origin/release/5.0.0');
+        expect(verifyJob).toContain('A v5.0.0-beta.N tag must target the exact current origin/release/5.0.0 tip.');
+        expect(verifyJob).toContain('canonical safe-integer stable vX.Y.Z or numbered v5.0.0-beta.N.');
+        expect(verifyJob).toContain('printf \'release_commit=%s\\n\' "$head_commit"');
+        expect(verifyJob).not.toContain('code-memory-link');
+        expect(verifyJob).not.toContain('CANDIDATE_COMMIT');
+        expect(resolveRelease).toBeGreaterThan(0);
+        expect(releaseSmokes).toBeGreaterThan(resolveRelease);
+        expect(verifyJob.indexOf('Validate release tag syntax')).toBeLessThan(
+          verifyJob.indexOf('Verify release tag matches package version'),
+        );
+        expect(verifyJob).not.toContain('release_tag="${{ github.ref_name }}"');
+        expect(verifyJob).not.toContain('.github/release-notes/${{ github.ref_name }}.md');
+        expect(workflow.match(/needs: verify/g)).toHaveLength(3);
+        expect(workflow.match(/name: Select exact verified release source/g)).toHaveLength(3);
+        expect(workflow.match(/RELEASE_COMMIT: \$\{\{ needs\.verify\.outputs\.release_commit \}\}/g)).toHaveLength(3);
+        expect(workflow.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(5);
+        expect(workflow.match(/persist-credentials: false/g)).toHaveLength(5);
+        expect(workflow).toContain('release_sha: ${{ github.sha }}');
+        expect(workflow).toContain('release_coordinator_token: ${{ secrets.THREADNOTE_RELEASE_COORDINATOR_TOKEN }}');
+        expect(publisher).toContain('ref: ${{ inputs.release_sha }}');
+        expect(publisher).toContain('persist-credentials: false');
+        expect(publisher).toContain('refs/tags/${RELEASE_TAG}:refs/threadnote-release-tag');
+        expect(publisher).toContain('remote_tag_commit');
+        expect(publisher).toContain('origin/release/5.0.0 moved after beta verification; refusing publication.');
+        expect(publisher.match(/verify_release_source/g)).toHaveLength(3);
+        expect(publisher).toContain('final practical gate');
+        expect(publisher).toContain('Threadnote 5.0 beta publication freeze');
+        expect(publisher).toContain('repository_is_fork');
+        expect(publisher).toContain("--jq '.fork'");
+        expect(publisher).toContain(
+          "RELEASE_COORDINATOR_TOKEN: ${{ startsWith(inputs.release_tag, 'v5.0.0-beta.') && secrets.release_coordinator_token || '' }}",
+        );
+        expect(publisher.match(/GH_TOKEN="\$RELEASE_COORDINATOR_TOKEN" gh api/g)).toHaveLength(2);
+        expect(publisher).toContain('GH_TOKEN: ${{ github.token }}');
+        expect(publisher).not.toContain('GH_TOKEN: ${{ secrets.release_coordinator_token }}');
+        expect(publisher.indexOf('unset RELEASE_COORDINATOR_TOKEN')).toBeLessThan(
+          publisher.indexOf('gh release create'),
+        );
+        expect(publisher).toContain('requires a release coordinator token with read access to repository rulesets');
+        expect(publisher).toContain('ruleset.conditions?.ref_name?.exclude?.length === 0');
+        expect(publisher).toContain('update_allows_fetch_and_merge !== true');
+        expect(publisher).toContain('GitHub omits update parameters when false');
+        expect(publisher).toContain('bypass_actors?.length === 0');
+      }),
   );
 
   it.effect('produces a real embedding on every native release runner before signing or archiving', () =>

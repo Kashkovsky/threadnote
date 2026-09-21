@@ -16,14 +16,14 @@ import {
   selectCodeGraphBuildStatuses,
 } from '../../src/code_graph/build_status.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
-import {writerSessionOptions} from '../../src/code_graph/indexer_build.js';
+import {writerSessionOptions} from '../../src/code_graph/indexer/build.js';
 import {runCodeGraphStatus} from '../../src/code_graph/commands.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
-import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query_status_helpers.js';
+import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query/status_helpers.js';
 import {captureConsole} from '../../src/effect/console.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
@@ -239,6 +239,65 @@ describe('code graph cross-process build status', () => {
     expect(result.global.every(status => status.managerContext?.worktreePath === `${home}/repository`)).toBe(true);
     expect(result.global.every(status => status.managerContext?.branch === 'feature/manager-labels')).toBe(true);
   });
+
+  effectIt.effect('keeps scoped Manager progress separate and verifies each scope-specific owner lock', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* Effect.acquireRelease(
+            fs.makeTempDirectory({prefix: 'threadnote-graph-scoped-manager-status-'}),
+            directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.ignore),
+          );
+          const identity = fixtureIdentity(home);
+          const fullLayout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const scopeId = `code-graph-scope:${'a'.repeat(64)}`;
+          const scopedLayout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId, scopeId);
+          const full = yield* makeCodeGraphBuildReporter(identity, fullLayout);
+          const scoped = yield* makeCodeGraphBuildReporter(identity, scopedLayout);
+
+          const fullStatuses = yield* readCodeGraphBuildStatuses(fullLayout);
+          const scopedStatuses = yield* readCodeGraphBuildStatuses(scopedLayout);
+
+          expect(fullStatuses.map(status => status.identity.scopeId ?? 'full-repository')).toEqual(['full-repository']);
+          expect(scopedStatuses.map(status => status.identity.scopeId)).toEqual([scopeId]);
+
+          const observed = yield* withExclusiveFileLock(
+            fs,
+            fullLayout.lockPath,
+            {
+              onAcquired: () => full.markWorktreeLockHeld(true),
+              retryIntervalMilliseconds: 5,
+              staleAfterMilliseconds: 1_000,
+              waitTimeoutMilliseconds: 1_000,
+            },
+            withExclusiveFileLock(
+              fs,
+              scopedLayout.lockPath,
+              {
+                onAcquired: () => scoped.markWorktreeLockHeld(true),
+                retryIntervalMilliseconds: 5,
+                staleAfterMilliseconds: 1_000,
+                waitTimeoutMilliseconds: 1_000,
+              },
+              readAllCodeGraphBuildStatuses(home),
+            ),
+          );
+          const selected = selectCodeGraphBuildStatuses(observed);
+
+          expect(selected.builds).toHaveLength(2);
+          expect(selected.builds.map(status => status.identity.scopeId ?? 'full-repository').sort()).toEqual([
+            scopeId,
+            'full-repository',
+          ]);
+          expect(selected.builds.every(status => status.coordination?.role === 'owner')).toBe(true);
+          expect(selected.builds.every(status => status.coordination?.lockVerified === true)).toBe(true);
+          expect(selected.builds.every(status => status.managerContext?.worktreePath === identity.repoRoot)).toBe(true);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    ),
+  );
 
   effectIt.effect('resumes the builder status when it acquires a contended writer lock', () =>
     Effect.gen(function* () {

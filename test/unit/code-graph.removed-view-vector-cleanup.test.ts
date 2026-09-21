@@ -6,16 +6,17 @@ import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import * as FC from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {codeGraphDiskReservationRoot, codeGraphVectorWriteLockPath} from '../../src/code_graph/layout.js';
+import {codeGraphVectorViewId} from '../../src/code_graph/vector/identity.js';
 import {
   type CodeGraphRemovedViewVectorUnitEntry,
   type CodeGraphRemovedViewVectorUnitInput,
   type CodeGraphRemovedViewVectorUnitPreparation,
   type CodeGraphRemovedViewVectorUnitResult,
   withPreparedCodeGraphRemovedViewVectorUnit,
-} from '../../src/code_graph/vector_maintenance.js';
+} from '../../src/code_graph/vector/maintenance.js';
 
 const RemovedViewVectorTestLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
 const CHECKOUT_ID = 'a'.repeat(64);
@@ -33,6 +34,58 @@ const MODEL_LOCK_OPTIONS = {
 
 describe('code graph removed-view vector cleanup', () => {
   effectIt.layer(RemovedViewVectorTestLayer)(layerIt => {
+    layerIt.effect('retires only the selected scope through prepared cleanup units', () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-removed-vector-scope-'});
+        const input = yield* makeVectorHome(fs, path, home);
+        yield* makeModelDirectories(fs, path, input, 1, ['model-scoped']);
+        const databasePath = modelDatabasePath(path, input, 'model-scoped');
+        const scopeId = `code-graph-scope:${'c'.repeat(64)}`;
+        const scopeView = codeGraphVectorViewId(WORKTREE_ID, scopeId);
+        yield* Effect.sync(() => {
+          seedVectorDatabase(databasePath, {vectorCount: 3});
+          const database = new Database(databasePath);
+          try {
+            database
+              .query(
+                `INSERT INTO vector_generations SELECT 'generation-scoped', 'snapshot-scoped', model_id, model_sha256, dimensions, template_version, 0, state, created_at FROM vector_generations WHERE generation = 'generation-live'`,
+              )
+              .run();
+            database
+              .query('INSERT INTO vector_pointers (worktree_id, generation) VALUES (?, ?)')
+              .run(scopeView, 'generation-scoped');
+          } finally {
+            database.close();
+          }
+        });
+        let entry = cleanupEntry({scopeId, expectedSnapshotId: 'snapshot-scoped'});
+        let complete = false;
+        for (let step = 0; step < 8; step += 1) {
+          const result = yield* withPreparedCodeGraphRemovedViewVectorUnit(input, entry, PREPARATION, commit => commit);
+          if (result.state === 'complete') {
+            complete = true;
+            break;
+          }
+          expect(result.state).toBe('progress');
+          if (result.state !== 'progress') break;
+          entry = {...entry, cursorToken: result.cursorToken};
+        }
+        expect(complete).toBe(true);
+        expect(readVectorState(databasePath)).toMatchObject({generations: 1, pointers: 1, retirements: 0, vectors: 3});
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {readonly: true});
+          try {
+            expect(database.query('SELECT worktree_id, generation FROM vector_pointers').all()).toEqual([
+              {worktree_id: WORKTREE_ID, generation: 'generation-live'},
+            ]);
+          } finally {
+            database.close();
+          }
+        });
+      }),
+    );
     layerIt.effect('exports the bounded prepared vector-unit adapter', () =>
       Effect.sync(() => {
         expect(typeof withPreparedCodeGraphRemovedViewVectorUnit).toBe('function');

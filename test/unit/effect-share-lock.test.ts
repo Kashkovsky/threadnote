@@ -1,6 +1,6 @@
 import {Effect, Option} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {observeSharedRepositoryHomeLock} from '../../src/effect/share_lock.js';
+import {observeSharedRepositoryHomeLock} from '../../src/effect/share/lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';

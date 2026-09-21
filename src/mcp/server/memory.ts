@@ -8,7 +8,7 @@ import {
   parseMemoryDocument,
   type MemoryRecord,
 } from '../../memory/hygiene.js';
-import {applyAtomicExactDuplicateActions} from '../../memory/hygiene_apply.js';
+import {applyAtomicExactDuplicateActions} from '../../memory/hygiene/apply.js';
 import {
   ensureSharedDirectoryChain,
   assertShareTeamWritable,
@@ -32,7 +32,7 @@ import {EffectMcpServerAdapter, McpInput} from '../../effect/ai/mcp.js';
 import {sha256Hex} from '../../effect/digest.js';
 import {withMemoryUriLocks} from '../../effect/memory_lock.js';
 import {syncSharedReposBeforeAgentRead} from '../../effect/share.js';
-import {withSharedRepositoryLock} from '../../effect/share_lock.js';
+import {withSharedRepositoryLock} from '../../effect/share/lock.js';
 import {ResourceStore, type ResourceStoreMutation} from '../../effect/resource-store.js';
 import {
   assertMemoryDocumentSchemaWritable,
@@ -45,8 +45,8 @@ import {
 import {
   memoryCodeCitationSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../../memory/code_citation_policy.js';
-import {MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
+} from '../../memory/code/citation_policy.js';
+import {MEMORY_SCHEMA_VERSION} from '../../memory/code/citation.js';
 import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
 import {
   MemoryRelationWriteError,
@@ -60,8 +60,9 @@ import {
   stageDeferredCodeAnchorIntent,
   type DeferredCodeAnchorWriteRequest,
   withDeferredCodeAnchorMutationLocks,
-} from '../../memory/deferred_code_anchor.js';
+} from '../../memory/deferred/code_anchor.js';
 import {isMemoryRelocationUri, readMemoryWithRelocations, recordMemoryRelocation} from '../../memory/relocation.js';
+import {resolveLocalMemoryReplacementTarget} from '../../memory/replacement_target.js';
 import {
   canonicalResourceUri,
   parseResourceId,
@@ -82,7 +83,8 @@ import {
   uriSegment,
 } from './common.js';
 import {memoryReadErrorResult} from './memory_read_recovery.js';
-import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../../recall/memory_identity.js';
+import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../../recall/memory/identity.js';
+import {refreshRecallDerivedIndexesAfterCanonicalMutation} from '../../recall/mcp/refresh.js';
 export function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'compact_context',
@@ -142,56 +144,71 @@ export function registerCompactTool(server: EffectMcpServerAdapter, config: Runt
           return argumentError(`Memory ${changed.uri} changed after compact_context planned it. Re-run the plan.`);
         }
 
-        const ov = 'threadnote-native';
-        const appliedMessages: string[] = [];
-        const exactDuplicateApply = yield* applyAtomicExactDuplicateActions(config, plan, records);
-        const atomicallyUpdatedUris = new Set(exactDuplicateApply.updatedSurvivorUris);
-        for (const uri of exactDuplicateApply.updatedSurvivorUris) {
-          appliedMessages.push(`Updated kept memory: ${uri}`);
-        }
-        for (const action of plan.keepUpdates.filter(candidate => !atomicallyUpdatedUris.has(candidate.uri))) {
-          const keepResult = yield* writeMemoryContentWithExpectedHash(
-            config,
-            ov,
-            action.uri,
-            action.content,
-            action.expectedContent,
-          );
-          if (keepResult.isError === true) {
-            return keepResult;
+        const invalidatedUris = plannedActions.map(action => action.uri);
+        return yield* Effect.gen(function* () {
+          const ov = 'threadnote-native';
+          const appliedMessages: string[] = [];
+          const exactDuplicateApply = yield* applyAtomicExactDuplicateActions(config, plan, records);
+          const atomicallyUpdatedUris = new Set(exactDuplicateApply.updatedSurvivorUris);
+          for (const uri of exactDuplicateApply.updatedSurvivorUris) {
+            appliedMessages.push(`Updated kept memory: ${uri}`);
           }
-          appliedMessages.push(`Updated kept memory: ${action.uri}`);
-        }
-        for (const action of plan.archives) {
-          const archiveResult = yield* archiveMemoryForCompact(config, action);
-          if (archiveResult.isError === true) {
-            return archiveResult;
+          for (const action of plan.keepUpdates.filter(candidate => !atomicallyUpdatedUris.has(candidate.uri))) {
+            const keepResult = yield* writeMemoryContentWithExpectedHash(
+              config,
+              ov,
+              action.uri,
+              action.content,
+              action.expectedContent,
+            );
+            if (keepResult.isError === true) {
+              return keepResult;
+            }
+            appliedMessages.push(`Updated kept memory: ${action.uri}`);
           }
-          const [content] = archiveResult.content;
-          if (content?.type === 'text') {
-            appliedMessages.push(content.text);
+          for (const action of plan.archives) {
+            const archiveResult = yield* archiveMemoryForCompact(config, action, {
+              deferRecallIndexRefresh: true,
+              invalidatedUris,
+            });
+            if (archiveResult.isError === true) {
+              return archiveResult;
+            }
+            const [content] = archiveResult.content;
+            if (content?.type === 'text') {
+              appliedMessages.push(content.text);
+            }
           }
-        }
-        for (const uri of exactDuplicateApply.forgottenUris) {
-          appliedMessages.push(`Forgot exact duplicate: ${uri}`);
-        }
-        return {
-          content: [
-            {
-              type: 'text',
-              text: [planText, '', 'Applied actions:', ...appliedMessages.map(message => `- ${message}`)].join('\n'),
-            },
-          ],
-        };
+          for (const uri of exactDuplicateApply.forgottenUris) {
+            appliedMessages.push(`Forgot exact duplicate: ${uri}`);
+          }
+          return {
+            content: [
+              {
+                type: 'text',
+                text: [planText, '', 'Applied actions:', ...appliedMessages.map(message => `- ${message}`)].join('\n'),
+              },
+            ],
+          };
+        }).pipe(
+          Effect.ensuring(
+            refreshRecallDerivedIndexesAfterCanonicalMutation(config, invalidatedUris).pipe(Effect.asVoid),
+          ),
+        );
       }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
     },
   );
 }
 
-export function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
+export function archiveMemoryForCompact(
+  config: RuntimeConfig,
+  action: ArchiveAction,
+  options: {readonly deferRecallIndexRefresh?: boolean; readonly invalidatedUris?: string[]} = {},
+) {
+  const invalidatedUris = options.invalidatedUris ?? [action.uri];
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    return yield* withMemoryUriLocks(
+    const result = yield* withMemoryUriLocks(
       fs,
       config.agentContextHome,
       [action.uri],
@@ -216,6 +233,7 @@ export function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAc
         const timestamp = DateTime.formatIso(yield* DateTime.now);
         const archiveResult = yield* writeDurableMemory(config, {
           bodyText: memoryArchiveBody(source.body),
+          deferRecallIndexRefresh: true,
           metadata: memoryArchiveMetadata(source.metadata, {
             archivedFrom: action.uri,
             kind: action.kind,
@@ -236,6 +254,7 @@ export function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAc
             isError: true,
           };
         }
+        invalidatedUris.push(archiveUri);
         const [currentSource] = yield* readMemoryRecordsByUri(config, [action.uri]);
         if (!currentSource || currentSource.content !== action.expectedContent) {
           const rolledBack = yield* forgetResourceWithRetry(config, archiveUri);
@@ -263,10 +282,18 @@ export function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAc
                 : `${text}\nArchive stored and the original is no longer present: ${action.uri}`,
             },
           ],
+          structuredContent: {memoryUri: archiveUri},
         } satisfies CallToolResult;
       }),
     );
-  });
+    return result;
+  }).pipe(
+    Effect.ensuring(
+      options.deferRecallIndexRefresh
+        ? Effect.void
+        : refreshRecallDerivedIndexesAfterCanonicalMutation(config, invalidatedUris).pipe(Effect.asVoid),
+    ),
+  );
 }
 
 interface CompactSharedAudit {
@@ -297,8 +324,10 @@ function formatSharedCompactAudit(audit: CompactSharedAudit): string {
   ].join('\n');
 }
 
-function memoryUriFromWriteResult(result: CallToolResult): string | undefined {
-  const memoryUri = (result.structuredContent as {readonly memoryUri?: unknown} | undefined)?.memoryUri;
+function memoryUriFromWriteResult(result: unknown): string | undefined {
+  if (typeof result !== 'object' || result === null) return undefined;
+  const structuredContent = Reflect.get(result, 'structuredContent') as {readonly memoryUri?: unknown} | undefined;
+  const memoryUri = structuredContent?.memoryUri;
   return typeof memoryUri === 'string' ? memoryUri : undefined;
 }
 
@@ -449,8 +478,11 @@ const readTextIfExists = Effect.fn('mcpServer.readTextIfExists')(function* (path
 export interface WriteDurableMemoryParams {
   readonly bodyText: string;
   readonly deferredCodeAnchor?: DeferredCodeAnchorWriteRequest;
+  /** Composite mutations refresh once from their final state after every enclosing lock is released. */
+  readonly deferRecallIndexRefresh?: boolean;
   readonly expectedReplaceContent?: string;
   readonly expectedReplaceContentHash?: string;
+  readonly expectedReplaceMemoryId?: string;
   readonly expectedSourceContent?: readonly {
     readonly allowedUriScopes?: readonly string[];
     readonly content: string;
@@ -472,7 +504,40 @@ interface PreparedPersonalMemoryWrite {
   readonly memoryUri: string;
 }
 
-export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMemoryParams) {
+export function writeDurableMemory(config: RuntimeConfig, inputParams: WriteDurableMemoryParams) {
+  return Effect.gen(function* () {
+    const replacement = inputParams.replaceUri
+      ? yield* resolveLocalMemoryReplacementTarget(config, inputParams.replaceUri)
+      : undefined;
+    const replacementMemoryId =
+      inputParams.expectedReplaceMemoryId ?? replacement?.memoryId ?? inputParams.metadata.memoryId;
+    const params: WriteDurableMemoryParams = {
+      ...inputParams,
+      expectedReplaceContent: inputParams.expectedReplaceContent ?? replacement?.record?.content,
+      expectedReplaceMemoryId: replacementMemoryId,
+      metadata:
+        replacementMemoryId === inputParams.metadata.memoryId
+          ? inputParams.metadata
+          : {...inputParams.metadata, memoryId: replacementMemoryId},
+      replaceUri: replacement?.canonicalUri ?? inputParams.replaceUri,
+    };
+    const result = (yield* writeDurableMemoryResolved(config, params)) as CallToolResult;
+    if (result.isError !== true && !params.deferRecallIndexRefresh) {
+      const memoryUri = memoryUriFromWriteResult(result);
+      const invalidatedUris = [memoryUri, params.replaceUri].filter((uri): uri is string => uri !== undefined);
+      if (invalidatedUris.length > 0) {
+        yield* refreshRecallDerivedIndexesAfterCanonicalMutation(config, invalidatedUris);
+      }
+    }
+    return result;
+  }).pipe(
+    Effect.catch(error =>
+      Effect.succeed(error instanceof MemoryRelationWriteError ? argumentError(error.message) : mcpErrorResult(error)),
+    ),
+  );
+}
+
+function writeDurableMemoryResolved(config: RuntimeConfig, params: WriteDurableMemoryParams) {
   const write = Effect.gen(function* () {
     const prepared = params.prepared ?? (yield* preparePersonalMemoryWrite(config, params));
     const fs = yield* FileSystem.FileSystem;
@@ -635,12 +700,7 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
     params.replaceUri && isInSharedNamespace(config, params.replaceUri)
       ? withSharedRepositoryLock(config, write)
       : write;
-  return serializedWrite.pipe(
-    Effect.catch(error =>
-      Effect.succeed(error instanceof MemoryRelationWriteError ? argumentError(error.message) : mcpErrorResult(error)),
-    ),
-    Effect.map(result => result as CallToolResult),
-  );
+  return serializedWrite;
 }
 
 export function writeCursorCloudSharedMemory(
@@ -780,25 +840,55 @@ export function writeCursorCloudSharedMemory(
  * candidate enters its recoverable `applying` state. The writer consumes this
  * same prepared value so recovery and the actual write cannot disagree.
  */
-export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMemoryWrite')(function* (
+export function preparePersonalMemoryWrite(
   config: RuntimeConfig,
-  params: Pick<WriteDurableMemoryParams, 'bodyText' | 'metadata' | 'replaceUri'>,
+  inputParams: Pick<
+    WriteDurableMemoryParams,
+    'bodyText' | 'expectedReplaceContent' | 'expectedReplaceMemoryId' | 'metadata' | 'replaceUri'
+  >,
+) {
+  return Effect.gen(function* () {
+    const replacement = inputParams.replaceUri
+      ? yield* resolveLocalMemoryReplacementTarget(config, inputParams.replaceUri)
+      : undefined;
+    const replacementMemoryId =
+      inputParams.expectedReplaceMemoryId ?? replacement?.memoryId ?? inputParams.metadata.memoryId;
+    return yield* preparePersonalMemoryWriteResolved(config, {
+      ...inputParams,
+      expectedReplaceContent: inputParams.expectedReplaceContent ?? replacement?.record?.content,
+      metadata:
+        replacementMemoryId === inputParams.metadata.memoryId
+          ? inputParams.metadata
+          : {...inputParams.metadata, memoryId: replacementMemoryId},
+      replaceUri: replacement?.canonicalUri ?? inputParams.replaceUri,
+    });
+  });
+}
+
+const preparePersonalMemoryWriteResolved = Effect.fn('mcpServer.preparePersonalMemoryWrite')(function* (
+  config: RuntimeConfig,
+  params: Pick<WriteDurableMemoryParams, 'bodyText' | 'expectedReplaceContent' | 'metadata' | 'replaceUri'>,
 ) {
   const [replaced] = params.replaceUri ? yield* readMemoryRecordsByUri(config, [params.replaceUri]) : [];
   if (replaced) {
     const schemaRewriteError = memorySchemaRewriteError(replaced.content);
     if (schemaRewriteError) return yield* Effect.fail(schemaRewriteError);
   }
+  const replacementProof =
+    params.replaceUri && params.expectedReplaceContent
+      ? parseMemoryDocument(params.replaceUri, params.expectedReplaceContent)
+      : undefined;
+  const replacementLifecycle = replacementProof ?? replaced;
   const metadata: MemoryMetadata = {
     ...params.metadata,
     createdAt:
-      replaced?.metadata.createdAt ??
-      replaced?.metadata.timestamp ??
+      replacementLifecycle?.metadata.createdAt ??
+      replacementLifecycle?.metadata.timestamp ??
       params.metadata.createdAt ??
       params.metadata.timestamp,
     memoryId:
-      replaced?.metadata.memoryId ??
       params.metadata.memoryId ??
+      replaced?.metadata.memoryId ??
       `tn_${(yield* sha256Hex(
         params.metadata.candidateId ??
           `${params.metadata.project ?? ''}\n${params.metadata.topic ?? ''}\n${params.bodyText}`,
@@ -822,11 +912,11 @@ export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMe
   const memoryUri = yield* memoryUriFor(config, candidateMemory, candidateMetadata);
   const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
   const finalMetadata: MemoryMetadata = isInPlaceUpdate
-    ? {...metadata, supersedes: replaced?.metadata.supersedes}
+    ? {...metadata, supersedes: replacementLifecycle?.metadata.supersedes}
     : candidateMetadata;
   const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
   return {
-    expectedReplaceContent: replaced?.content,
+    expectedReplaceContent: params.expectedReplaceContent ?? replaced?.content,
     finalMetadata,
     isInPlaceUpdate,
     memory,
@@ -1361,23 +1451,22 @@ export function writeMemoryContentWithExpectedHash(
   uri: string,
   content: string,
   expectedContent: string,
+  options: {readonly alreadyLocked?: boolean} = {},
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    return yield* withMemoryUriLocks(
-      fs,
-      config.agentContextHome,
-      [uri],
-      Effect.gen(function* () {
-        const [current] = yield* readMemoryRecordsByUri(config, [uri]);
-        if (!current || current.content !== expectedContent) {
-          return argumentError(`Memory ${uri} changed after compact_context planned its update. Re-run the plan.`);
-        }
-        yield* writeMemoryFile(config, ov, uri, content, 'replace', false, {quiet: true});
-        yield* discardDeferredCodeAnchorIntent(config, uri);
-        return {content: [{type: 'text' as const, text: `Updated memory: ${uri}`}]};
-      }),
-    );
+    const write = Effect.gen(function* () {
+      const [current] = yield* readMemoryRecordsByUri(config, [uri]);
+      if (!current || current.content !== expectedContent) {
+        return argumentError(`Memory ${uri} changed after compact_context planned its update. Re-run the plan.`);
+      }
+      yield* writeMemoryFile(config, ov, uri, content, 'replace', false, {quiet: true});
+      yield* discardDeferredCodeAnchorIntent(config, uri);
+      return {content: [{type: 'text' as const, text: `Updated memory: ${uri}`}]};
+    });
+    return yield* options.alreadyLocked === true
+      ? write
+      : withMemoryUriLocks(fs, config.agentContextHome, [uri], write);
   });
 }
 

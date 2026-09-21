@@ -93,9 +93,13 @@ render_expected_launcher() {
   case "$launcher_mode" in
     cli) launcher_mode_argument="" ;;
     mcp) launcher_mode_argument=" mcp-broker" ;;
+    credential-oauth-m2m) launcher_mode_argument=" __credential-oauth-m2m" ;;
+    credential-registry-oauth-m2m) launcher_mode_argument=" __credential-registry-oauth-m2m" ;;
+    credential-registry-oauth-publisher-m2m) launcher_mode_argument=" __credential-registry-oauth-publisher-m2m" ;;
     credential-auth0-m2m) launcher_mode_argument=" __credential-auth0-m2m" ;;
     credential-registry-auth0-m2m) launcher_mode_argument=" __credential-registry-auth0-m2m" ;;
     credential-registry-auth0-publisher-m2m) launcher_mode_argument=" __credential-registry-auth0-publisher-m2m" ;;
+    credential-registry-oauth-user) launcher_mode_argument=" __credential-registry-oauth-user" ;;
     credential-registry-auth0-user) launcher_mode_argument=" __credential-registry-auth0-user" ;;
     *) die "Unknown launcher mode: $launcher_mode" ;;
   esac
@@ -675,6 +679,10 @@ mcp_launcher_path="$launcher_directory/threadnote-mcp-server"
 auth0_m2m_credential_launcher_path="$launcher_directory/threadnote-credential-auth0-m2m"
 auth0_m2m_registry_credential_launcher_path="$launcher_directory/docker-credential-threadnote-auth0-m2m"
 auth0_m2m_publisher_registry_credential_launcher_path="$launcher_directory/docker-credential-threadnote-auth0-publisher-m2m"
+oauth_m2m_credential_launcher_path="$launcher_directory/threadnote-credential-oauth-m2m"
+oauth_m2m_registry_credential_launcher_path="$launcher_directory/docker-credential-threadnote-oauth-m2m"
+oauth_m2m_publisher_registry_credential_launcher_path="$launcher_directory/docker-credential-threadnote-oauth-publisher-m2m"
+oauth_user_registry_credential_launcher_path="$launcher_directory/docker-credential-threadnote-oauth-user"
 auth0_user_registry_credential_launcher_path="$launcher_directory/docker-credential-threadnote-auth0-user"
 release_root_physical="$(cd "$release_root" && pwd -P)"
 verify_managed_launcher \
@@ -702,6 +710,26 @@ verify_managed_launcher \
   credential-registry-auth0-publisher-m2m \
   "$release_root_physical/threadnote" \
   "$temporary_root/expected-threadnote-auth0-publisher-m2m-registry-credential-launcher"
+verify_managed_launcher \
+  "$oauth_m2m_credential_launcher_path" \
+  credential-oauth-m2m \
+  "$release_root_physical/threadnote" \
+  "$temporary_root/expected-threadnote-oauth-m2m-credential-launcher"
+verify_managed_launcher \
+  "$oauth_m2m_registry_credential_launcher_path" \
+  credential-registry-oauth-m2m \
+  "$release_root_physical/threadnote" \
+  "$temporary_root/expected-threadnote-oauth-m2m-registry-credential-launcher"
+verify_managed_launcher \
+  "$oauth_m2m_publisher_registry_credential_launcher_path" \
+  credential-registry-oauth-publisher-m2m \
+  "$release_root_physical/threadnote" \
+  "$temporary_root/expected-threadnote-oauth-publisher-m2m-registry-credential-launcher"
+verify_managed_launcher \
+  "$oauth_user_registry_credential_launcher_path" \
+  credential-registry-oauth-user \
+  "$release_root_physical/threadnote" \
+  "$temporary_root/expected-threadnote-oauth-user-registry-credential-launcher"
 verify_managed_launcher \
   "$auth0_user_registry_credential_launcher_path" \
   credential-registry-auth0-user \

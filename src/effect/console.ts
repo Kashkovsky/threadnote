@@ -1,5 +1,5 @@
 import {Console, Effect} from 'effect';
-import {CliOutput} from './cli_output.js';
+import {CliOutput} from './cli/output.js';
 import {SystemInfo} from './system.js';
 
 function capturingConsole(parent: Console.Console, lines: string[]): Console.Console {

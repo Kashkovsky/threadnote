@@ -3,7 +3,7 @@ import {describe, expect, it} from 'vitest';
 import * as FC from 'fast-check';
 import {chmod, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
-import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git_canonical_store.js';
+import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git/canonical_store.js';
 import {cloneGitShareWorktree, createGitShareWorktreeFixture, git} from '../helpers/git-share-worktree.js';
 
 const path = gitCanonicalSharePath('durable', 'fixture', 'durability');

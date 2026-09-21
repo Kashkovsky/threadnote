@@ -5,17 +5,17 @@ import {
   recallIndexDataBatchResult,
   recallIndexDataResult,
   recallMemoryLinkMatchesResult,
-} from './index_result.js';
+} from './index/result.js';
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {SEED_STATE_FILE} from '../constants.js';
 import {sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
-import {resourceAccountMutationLockPath} from '../effect/resource_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
+import {resourceAccountMutationLockPath} from '../effect/resource/lock.js';
 import {
   readCanonicalMutationGeneration,
   type CanonicalMutationGenerationTransition,
-} from '../effect/resource_mutation_generation.js';
+} from '../effect/resource/mutation_generation.js';
 import {SystemInfo} from '../effect/system.js';
 import {parseSeedManifest} from '../manifest.js';
 import {
@@ -34,7 +34,7 @@ import {
   postingLexicalScore,
   selectQueryTerms,
   stripRecallAnchor,
-} from './index_lexical.js';
+} from './index/lexical.js';
 import {
   deduplicateLogicalRecallCandidates,
   recallMemoryContentHash,
@@ -43,44 +43,44 @@ import {
   type RecallCorpusStatistics,
 } from './rank.js';
 import {normalizeRecallSearchText} from './tokenize.js';
-import {removeLegacyRecallIndexArtifacts} from './index_cleanup.js';
+import {removeLegacyRecallIndexArtifacts} from './index/cleanup.js';
 import {
   recallCandidateIsEligible,
   recallEligibilityPolicyRestrictsCandidates,
   type RecallEligibilityPolicy,
 } from './eligibility.js';
 import {recallCandidateIsValid} from './candidate_validation.js';
-import {recallEligibilityPredicate} from './index_eligibility.js';
+import {recallEligibilityPredicate} from './index/eligibility.js';
 import {
   boundedRecallPhysicalCandidateLimit,
   RECALL_RECENCY_CANDIDATE_RESERVE,
   RECALL_RECENCY_RETRIEVAL_LIMIT,
   recallStatisticTerms,
-} from './index_query.js';
+} from './index/query.js';
 import {deriveIndexedRecallCodeLinks, selectRecallCodeLinks, type RecallCodeLinkQueryOptions} from './code_links.js';
 import {
   deriveIndexedRecallMemoryLinks,
   selectRecallMemoryLinks,
   type RecallMemoryLinkQueryOptions,
-} from './memory_links.js';
-import * as RecallIndexIdentity from './index_identity.js';
+} from './memory/links.js';
+import * as RecallIndexIdentity from './index/identity.js';
 import {
   recallIndexCanonicalMutationContinuityAllowsIncrementalRefresh,
   recallIndexForegroundRefreshRequired,
-} from './index_freshness.js';
+} from './index/freshness.js';
 import {
   clearRecallStaleMarkerInvalidations as clearStaleMarkerInvalidations,
   readRecallStaleMarker as readStaleMarker,
   type RecallStaleMarker,
   writeRecallStaleGeneration as writeStaleGeneration,
-} from './index_stale_marker.js';
+} from './index/stale_marker.js';
 import {
   combineRecallSqlPredicates,
   recallUriMatchesScopes,
   recallUriScopePredicate,
   recallWorkspaceScopeMatches,
   type RecallWorkspaceScopeMode,
-} from './index_scope.js';
+} from './index/scope.js';
 import {
   recallProjectMatches,
   recallQuerySelectionIsExhaustive,
@@ -91,7 +91,7 @@ import {
   selectRecallQueryTermStatistics,
   selectRecallRecentTopicalDocuments,
   selectTopRecallPostingsByTerms,
-} from './index_selection.js';
+} from './index/selection.js';
 import {
   countRecallSourceChanges,
   dropRecallSourceScan,
@@ -109,9 +109,9 @@ import {
   stageRecallRefreshAffectedTerms,
   type CanonicalResourcePolicy,
   type IndexedRecallSource,
-} from './index_refresh.js';
+} from './index/refresh.js';
 
-export {recallUriMatchesScopes} from './index_scope.js';
+export {recallUriMatchesScopes} from './index/scope.js';
 
 class RecallIndexOperationError extends Schema.TaggedError<RecallIndexOperationError>()('RecallIndexOperationError', {
   cause: Schema.optionalKey(Schema.Defect()),

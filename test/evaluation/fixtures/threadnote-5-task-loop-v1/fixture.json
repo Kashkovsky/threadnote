@@ -1,0 +1,223 @@
+{
+  "version": 1,
+  "suite": "threadnote-5-release-readiness",
+  "networkAllowed": false,
+  "baselineComparison": {
+    "id": "threadnote-4.7.x",
+    "version": "4.7.8",
+    "commit": "80ca4acdb7347a4d00b0381f3757a5ac984d9fbf",
+    "comparableMetricIds": [
+      "time-to-first-cited-correct-plan",
+      "estimated-tokens-to-first-cited-correct-plan",
+      "wrong-memory-rate"
+    ],
+    "notApplicableMetricIds": [
+      "setup-success-rate",
+      "second-agent-reuse-rate",
+      "knowledge-delta-completion-rate",
+      "health-resolution-rate"
+    ]
+  },
+  "metrics": [
+    {
+      "id": "time-to-first-cited-correct-plan",
+      "kind": "mean",
+      "unit": "milliseconds",
+      "direction": "lower",
+      "thresholdKind": "maximum",
+      "threshold": 600000
+    },
+    {
+      "id": "estimated-tokens-to-first-cited-correct-plan",
+      "kind": "mean",
+      "unit": "tokens",
+      "direction": "lower",
+      "thresholdKind": "maximum",
+      "threshold": 1500
+    },
+    {
+      "id": "setup-success-rate",
+      "kind": "rate",
+      "unit": "ratio",
+      "direction": "higher",
+      "thresholdKind": "minimum",
+      "threshold": 0.9
+    },
+    {
+      "id": "wrong-memory-rate",
+      "kind": "rate",
+      "unit": "ratio",
+      "direction": "lower",
+      "thresholdKind": "maximum",
+      "threshold": 0
+    },
+    {
+      "id": "second-agent-reuse-rate",
+      "kind": "rate",
+      "unit": "ratio",
+      "direction": "higher",
+      "thresholdKind": "minimum",
+      "threshold": 1
+    },
+    {
+      "id": "knowledge-delta-completion-rate",
+      "kind": "rate",
+      "unit": "ratio",
+      "direction": "higher",
+      "thresholdKind": "minimum",
+      "threshold": 0.9
+    },
+    {
+      "id": "health-resolution-rate",
+      "kind": "rate",
+      "unit": "ratio",
+      "direction": "higher",
+      "thresholdKind": "minimum",
+      "threshold": 1
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "solo",
+      "metricIds": [
+        "time-to-first-cited-correct-plan",
+        "estimated-tokens-to-first-cited-correct-plan",
+        "setup-success-rate",
+        "wrong-memory-rate"
+      ],
+      "metricMinimums": [
+        {"id": "time-to-first-cited-correct-plan", "minimumEligibleCount": 10},
+        {"id": "estimated-tokens-to-first-cited-correct-plan", "minimumEligibleCount": 10},
+        {"id": "setup-success-rate", "minimumEligibleCount": 10},
+        {"id": "wrong-memory-rate", "minimumEligibleCount": 10}
+      ],
+      "requiredAssertions": ["first-plan-source-cited", "first-plan-correct", "local-setup-complete"],
+      "subsystems": ["activation", "context-brief", "value-report"]
+    },
+    {
+      "id": "two-agent",
+      "metricIds": ["wrong-memory-rate", "second-agent-reuse-rate"],
+      "metricMinimums": [
+        {"id": "wrong-memory-rate", "minimumEligibleCount": 10},
+        {"id": "second-agent-reuse-rate", "minimumEligibleCount": 10}
+      ],
+      "requiredAssertions": [
+        "two-surfaces-connected",
+        "second-surface-reused-decision",
+        "activation-receipt-reused-by-value-report"
+      ],
+      "subsystems": ["activation", "recall", "value-report"]
+    },
+    {
+      "id": "git-shared",
+      "metricIds": ["wrong-memory-rate"],
+      "metricMinimums": [{"id": "wrong-memory-rate", "minimumEligibleCount": 10}],
+      "requiredAssertions": ["git-shared-decision-retrieved"],
+      "subsystems": ["sharing", "recall", "value-report"]
+    },
+    {
+      "id": "offline",
+      "metricIds": ["wrong-memory-rate"],
+      "metricMinimums": [{"id": "wrong-memory-rate", "minimumEligibleCount": 10}],
+      "requiredAssertions": ["network-attempts-zero", "local-flow-complete"],
+      "subsystems": ["activation", "value-report"]
+    },
+    {
+      "id": "dirty-worktree",
+      "metricIds": [],
+      "metricMinimums": [],
+      "requiredAssertions": ["dirty-evidence-not-current", "outcome-unknown"],
+      "subsystems": ["context-check"]
+    },
+    {
+      "id": "interrupted-resumed",
+      "metricIds": ["knowledge-delta-completion-rate"],
+      "metricMinimums": [{"id": "knowledge-delta-completion-rate", "minimumEligibleCount": 10}],
+      "requiredAssertions": ["resume-receipt-accepted", "completed-step-not-repeated"],
+      "subsystems": ["activation", "closeout"]
+    },
+    {
+      "id": "upgrade-downgrade",
+      "metricIds": [],
+      "metricMinimums": [],
+      "requiredAssertions": ["upgrade-readable", "downgrade-readable-or-safe-refusal", "destructive-mutations-zero"],
+      "subsystems": ["migration"]
+    },
+    {
+      "id": "provider-neutral-proposal",
+      "metricIds": ["knowledge-delta-completion-rate"],
+      "metricMinimums": [{"id": "knowledge-delta-completion-rate", "minimumEligibleCount": 10}],
+      "requiredAssertions": ["provider-apis-zero", "proposal-provider-neutral", "proposal-review-approved"],
+      "subsystems": ["git-proposal"]
+    },
+    {
+      "id": "verified-procedures",
+      "metricIds": [],
+      "metricMinimums": [],
+      "requiredAssertions": [
+        "procedure-receipt-current",
+        "procedure-dependencies-compatible",
+        "procedure-never-auto-executed"
+      ],
+      "subsystems": ["procedure"]
+    },
+    {
+      "id": "health-maintenance",
+      "metricIds": ["health-resolution-rate"],
+      "metricMinimums": [{"id": "health-resolution-rate", "minimumEligibleCount": 10}],
+      "requiredAssertions": [
+        "health-issue-detected",
+        "health-resolution-recorded",
+        "local-scheduled-invocation-read-only",
+        "configured-git-team-aggregation-read-only"
+      ],
+      "subsystems": ["context-health"]
+    },
+    {
+      "id": "structured-closeout",
+      "metricIds": ["knowledge-delta-completion-rate"],
+      "metricMinimums": [{"id": "knowledge-delta-completion-rate", "minimumEligibleCount": 10}],
+      "requiredAssertions": [
+        "decisions-rationale-present",
+        "constraints-present",
+        "verification-present",
+        "invalidations-present",
+        "unresolved-risks-present"
+      ],
+      "subsystems": ["closeout"]
+    },
+    {
+      "id": "stale-citation",
+      "metricIds": [],
+      "metricMinimums": [],
+      "requiredAssertions": ["changed-never-current", "missing-never-current", "unknown-remains-distinct"],
+      "subsystems": ["context-health"]
+    },
+    {
+      "id": "contradiction-triage",
+      "metricIds": [],
+      "metricMinimums": [],
+      "requiredAssertions": [
+        "contradiction-category-observed",
+        "possible-duplicate-category-observed",
+        "manual-review-required",
+        "ordering-stable"
+      ],
+      "subsystems": ["context-health"]
+    },
+    {
+      "id": "projection-drift",
+      "metricIds": [],
+      "metricMinimums": [],
+      "requiredAssertions": ["unmanaged-text-preserved", "apply-previewed", "content-precondition-checked"],
+      "subsystems": ["guidance"]
+    },
+    {
+      "id": "output-budgets",
+      "metricIds": [],
+      "metricMinimums": [],
+      "requiredAssertions": ["context-brief-800-to-1500-estimated-tokens", "knowledge-delta-items-at-most-three"],
+      "subsystems": ["context-brief", "closeout"]
+    }
+  ]
+}

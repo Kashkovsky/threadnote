@@ -46,8 +46,8 @@ const mocks = vi.hoisted(() => ({
   worksetLock: vi.fn(),
 }));
 
-vi.mock('../../src/effect/file_lock.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../src/effect/file_lock.js')>()),
+vi.mock('../../src/effect/file/lock.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../src/effect/file/lock.js')>()),
   withExclusiveFileLock: mocks.worksetLock,
 }));
 
@@ -61,7 +61,7 @@ vi.mock('../../src/utils.js', async importOriginal => ({
   expandPath: mocks.expandPath,
 }));
 
-vi.mock('../../src/code_graph/workset_catalog/projection_builder.js', () => ({
+vi.mock('../../src/code_graph/workset_catalog/projection/builder.js', () => ({
   stageCodeGraphWorksetRoutingProjectionScoped: mocks.stageProjection,
 }));
 
@@ -74,8 +74,8 @@ vi.mock('../../src/code_graph/cross_repository/store.js', () => ({
   replaceCodeGraphWorksetCatalogBridgeSet: mocks.replaceBridgeSet,
 }));
 
-vi.mock('../../src/code_graph/isolated_index.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../../src/code_graph/isolated_index.js')>()),
+vi.mock('../../src/code_graph/isolated/index.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../src/code_graph/isolated/index.js')>()),
   runIsolatedCodeGraphIndexSnapshot: mocks.isolatedIndex,
 }));
 

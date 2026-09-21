@@ -69,11 +69,11 @@ export {
   type GraphViewPage,
   type GraphVisualization,
   type ViewState,
-} from './graph_model.js';
+} from './graph/model.js';
 export {
   graphFocusLayoutTargets,
   graphFocusTarget,
   graphWheelZoomFactor,
   managerGraphClientRenderProxy,
-} from './graph_scene.js';
-export {GraphWorkspace} from './graph_workspace.js';
+} from './graph/scene.js';
+export {GraphWorkspace} from './graph/workspace.js';

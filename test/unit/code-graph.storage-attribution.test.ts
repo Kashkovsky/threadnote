@@ -10,7 +10,7 @@ import {inspectCodeGraphStorage} from '../../src/code_graph/storage.js';
 import {
   codeGraphStorageSemanticGroup,
   readCodeGraphStorageSemanticAttribution,
-} from '../../src/code_graph/storage_attribution.js';
+} from '../../src/code_graph/storage/attribution.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {rm} from '../helpers/effect-filesystem.js';
 

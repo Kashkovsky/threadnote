@@ -1,5 +1,6 @@
 import type {Effect} from 'effect';
 import {Command, Flag} from 'effect/unstable/cli';
+import {boolean, optionalString, repeatedString} from './cli/flags.js';
 
 export interface CursorCloudAttestCliOptions {
   readonly audience: string;
@@ -66,4 +67,20 @@ export function makeCursorCloudAttestCommand<E, R>(
     },
     handler,
   ).pipe(Command.withDescription('Complete a managed Threadnote challenge with Cursor workload identity'));
+}
+
+export function makeCursorCloudRemoteConfigFlags() {
+  return {
+    clientId: optionalString('client-id', 'Registered public OAuth client ID for the organization composer'),
+    contribute: boolean(
+      'contribute',
+      'Explicitly request organization Cloud durable contribution; current grant and Cursor attestation remain required',
+    ),
+    repositories: repeatedString(
+      'repository',
+      'Organization Cloud repository binding; repeat for the complete admitted set',
+    ),
+    endpoint: optionalString('endpoint', 'Managed remote Streamable HTTP MCP endpoint'),
+    shareId: optionalString('share-id', 'Opaque managed remote memory share identifier'),
+  };
 }

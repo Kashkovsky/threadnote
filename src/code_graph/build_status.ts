@@ -1,15 +1,22 @@
 import {Clock, Crypto, DateTime, Effect, FileSystem, Option, Path, PlatformError, Ref, Schema, Semaphore} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_lock.js';
+import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file/lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
-import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
-import {parseCodeGraphBuildStatus} from './build_status_codec.js';
+import type {CodeGraphBuildOwnerIdentity} from './build/owner.js';
+import {parseCodeGraphBuildStatus} from './build_status/codec.js';
+import {sameProcessOwner} from './build_status/coordination.js';
 import {
-  annotateBuildCoordination,
-  groupBuildStatusesByWorktree,
-  sameProcessOwner,
-} from './build_status_coordination.js';
-import {codeGraphProgressTimings} from './build_status_timings.js';
+  annotateBuildCoordinationByWorktree,
+  annotateCheckoutBuildCoordination,
+} from './build_status/coordination_reader.js';
+import {codeGraphProgressTimings} from './build_status/timings.js';
+import {
+  accountCodeGraphBuildScheduling,
+  observeCodeGraphBuildAdmission,
+  observeCodeGraphBuildResource,
+  type CodeGraphBuildScheduling,
+} from './build_status/scheduling.js';
+import type {CodeGraphBuilderAdmissionQueue} from './builder/admission_scheduler.js';
 import {
   CODE_GRAPH_BUILD_HASH_ID as HASH_ID,
   CODE_GRAPH_BUILD_ID as BUILD_ID,
@@ -17,17 +24,18 @@ import {
   codeGraphFailedBuildStatusRemovable,
   isBuildStatusRecord as isRecord,
   isBuildStatusText as isText,
-} from './build_status_validation.js';
-import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle_classification.js';
-import {codeGraphRepositoriesRoot, codeGraphWorktreeLockPath, type CodeGraphLayout} from './layout.js';
+} from './build_status/validation.js';
+import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle/classification.js';
+import {codeGraphRepositoriesRoot, type CodeGraphLayout} from './layout.js';
+import {codeGraphScopeViewKey} from './scope/identity.js';
 import {
   codeGraphEtaMeasurement,
   estimateCodeGraphEta,
   makeCodeGraphEtaTracker,
   observeCodeGraphEta,
   type CodeGraphEtaTracker,
-} from './progress_eta.js';
-export {calibratedCodeGraphEtaConfidence} from './progress_eta.js';
+} from './progress/eta.js';
+export {calibratedCodeGraphEtaConfidence} from './progress/eta.js';
 import {
   CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS,
   CODE_GRAPH_TOP_SLOW_FILE_LIMIT,
@@ -37,7 +45,7 @@ import {
   type CodeGraphScanningMetrics,
   type CodeGraphSlowFileTelemetry,
   type CodeGraphSourceSizeBucket,
-} from './progress_telemetry.js';
+} from './progress/telemetry.js';
 import type {
   CodeGraphActivationActivity,
   CodeGraphIndexSummary,
@@ -51,8 +59,8 @@ import type {
   RepositoryIdentity,
 } from './types.js';
 
-export {parseCodeGraphBuildStatus} from './build_status_codec.js';
-export {CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION} from './build_status_validation.js';
+export {parseCodeGraphBuildStatus} from './build_status/codec.js';
+export {CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION} from './build_status/validation.js';
 export const CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS = 2_000;
 export const CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS = 250;
 export const CODE_GRAPH_BUILD_STALE_AFTER_MILLISECONDS = 15_000;
@@ -148,6 +156,8 @@ export interface CodeGraphBuildStatus {
     readonly commit: string;
     readonly displayName?: string;
     readonly repositoryId: string;
+    /** Opaque configured-view key; absent is the legacy complete repository view. */
+    readonly scopeId?: string;
     readonly worktreeId: string;
   };
   readonly materialization?: CodeGraphBuildMaterialization;
@@ -175,6 +185,7 @@ export interface CodeGraphBuildStatus {
     };
   };
   readonly schemaVersion: typeof CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION;
+  readonly scheduling?: CodeGraphBuildScheduling;
   readonly state: CodeGraphBuildState;
   readonly subphase?: string;
   readonly timings?: CodeGraphBuildTimings;
@@ -215,6 +226,7 @@ export interface CodeGraphBuildStatusSelection {
 }
 
 export interface CodeGraphBuildReporter {
+  readonly admission: (queue?: CodeGraphBuilderAdmissionQueue) => Effect.Effect<void, never>;
   readonly complete: (summary: CodeGraphIndexSummary) => Effect.Effect<void, never>;
   readonly completeSnapshot: (snapshot: CodeGraphSnapshot) => Effect.Effect<void, never>;
   readonly fail: (cause: unknown) => Effect.Effect<void, never>;
@@ -222,12 +234,16 @@ export interface CodeGraphBuildReporter {
   /** Exact privacy-safe owner instance persisted with resumable build state. */
   readonly ownerIdentity: CodeGraphBuildOwnerIdentity;
   readonly progress: (progress: CodeGraphProgress) => Effect.Effect<void, never>;
+  readonly resource: (
+    resource: import('./build/resources.js').CodeGraphBuildResource | undefined,
+  ) => Effect.Effect<void, never>;
   readonly markWorktreeLockHeld: (held: boolean) => Effect.Effect<void, never>;
 }
 
 export type CodeGraphBuildOwnerStatusCorroboration = 'absent' | 'matches' | 'mismatch';
 
 interface ReporterState {
+  readonly accountedAtMilliseconds: number;
   readonly etaTracker: CodeGraphEtaTracker;
   readonly lastPersistedAtMilliseconds: number;
   readonly status: CodeGraphBuildStatus;
@@ -256,6 +272,7 @@ const MANAGER_CONTEXT_SCHEMA_VERSION = 1 as const;
 const BUILD_HISTORY_INVALID_RETRY_MILLISECONDS = 30_000;
 const BUILD_HISTORY_IO_RETRY_MILLISECONDS = 1_000;
 const BUILD_STATUS_FILE = /^([0-9a-f-]{16,64})\.json$/;
+const BUILD_STATUS_VIEW_DIRECTORY = /^[0-9a-f]{64}(?:\.scope-[0-9a-f]{64})?$/;
 
 export type CodeGraphBuildHistoryPruneResult =
   | {readonly state: 'complete'}
@@ -296,6 +313,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
   let writeSequence = 0;
   const reporterHistoryAuthority = {current: undefined as BuildHistoryDirectoryAuthority | undefined};
   const state = yield* Ref.make<ReporterState>({
+    accountedAtMilliseconds: startedAtMilliseconds,
     etaTracker: makeCodeGraphEtaTracker(),
     lastPersistedAtMilliseconds: 0,
     status: {
@@ -306,6 +324,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
         commit: identity.headCommit.slice(0, 12),
         displayName: boundedText(identity.displayName, 256),
         repositoryId: identity.repositoryId,
+        ...(layout.scopeId === undefined ? {} : {scopeId: layout.scopeId}),
         worktreeId: identity.worktreeId,
       },
       owner: {
@@ -317,6 +336,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
       phase: 'registering',
       ...(request ? {request} : {}),
       schemaVersion: CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION,
+      scheduling: {phaseMilliseconds: {}, waitMilliseconds: {}},
       state: 'running',
       subphase: 'registration',
       worktreeLockHeld: false,
@@ -340,7 +360,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           const now = yield* Clock.currentTimeMillis;
           const current = yield* Ref.get(state);
           const shouldForce = typeof force === 'function' ? force(current) : force;
-          const next = update(current, now);
+          const next = update(accountCodeGraphBuildScheduling(current, now), now);
           yield* Ref.set(state, next);
           if (
             !shouldForce &&
@@ -401,6 +421,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
             symbols: snapshot.symbolCount,
           },
           state: 'completed',
+          scheduling: {...current.status.scheduling, blocker: undefined, resource: undefined},
           subphase: 'ready',
           timings: undefined,
           timestamps: {
@@ -429,6 +450,14 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
     );
 
   return {
+    admission: (queue?: CodeGraphBuilderAdmissionQueue) =>
+      persist(
+        (current, now) => ({
+          ...current,
+          status: observeCodeGraphBuildAdmission(current.status, queue, now),
+        }),
+        current => queue === undefined || current.status.scheduling?.queue === undefined,
+      ),
     complete: summary =>
       complete(
         summary.snapshot,
@@ -457,6 +486,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
               : undefined,
             resolution: undefined,
             state: 'failed',
+            scheduling: {...current.status.scheduling, blocker: undefined, resource: undefined},
             subphase: 'failed',
             timings: undefined,
             timestamps: {
@@ -543,6 +573,8 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           );
         },
       ),
+    resource: resource =>
+      persist(current => ({...current, status: observeCodeGraphBuildResource(current.status, resource)}), true),
   } satisfies CodeGraphBuildReporter;
 });
 
@@ -551,7 +583,16 @@ export const readCodeGraphBuildStatuses = Effect.fn('codeGraph.buildStatus.readC
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const statuses = yield* readBuildStatusesBelow(fs, path, path.join(layout.repositoryRoot, STATUS_DIRECTORY));
+  const statuses =
+    layout.scopeId === undefined
+      ? (yield* readBuildStatusesBelow(fs, path, path.join(layout.repositoryRoot, STATUS_DIRECTORY))).filter(
+          status => status.identity.scopeId === undefined,
+        )
+      : yield* readWorktreeStatuses(
+          fs,
+          path,
+          path.join(layout.repositoryRoot, STATUS_DIRECTORY, codeGraphScopeViewKey(layout.worktreeId, layout.scopeId)),
+        );
   return yield* annotateCheckoutBuildCoordination(fs, path, layout, statuses);
 });
 
@@ -578,6 +619,7 @@ export const corroborateCodeGraphBuildOwnerStatus = Effect.fn('codeGraph.buildSt
   if (parsed === undefined) return 'mismatch' as const;
   return parsed.buildId === owner.buildId &&
     parsed.identity.checkoutId === layout.checkoutId &&
+    parsed.identity.scopeId === layout.scopeId &&
     parsed.identity.worktreeId === worktreeId &&
     parsed.owner.processId === owner.processId &&
     parsed.owner.processStartIdentity === owner.processStartIdentity
@@ -801,6 +843,7 @@ function observeProgress(
       registration: progressRegistration(progress),
       resolution: progressResolution(current.status.resolution, progress, timestamp),
       state: progress.phase === 'waiting' ? 'queued' : 'running',
+      scheduling: {...current.status.scheduling, blocker: progress.phase === 'waiting' ? progress.reason : undefined},
       subphase: progressSubphase(progress),
       timings: codeGraphProgressTimings(current.status, progress),
       timestamps: {
@@ -1019,7 +1062,12 @@ function codeGraphBuildStatusPath(
 ): string {
   if (!HASH_ID.test(worktreeId) || !BUILD_ID.test(buildId))
     throw CodeGraphBuildStatusError.make({message: 'Code graph build identity is invalid.'});
-  return path.join(layout.repositoryRoot, STATUS_DIRECTORY, worktreeId, `${buildId}.json`);
+  return path.join(
+    layout.repositoryRoot,
+    STATUS_DIRECTORY,
+    codeGraphScopeViewKey(worktreeId, layout.scopeId),
+    `${buildId}.json`,
+  );
 }
 
 function writeCodeGraphBuildStatus(
@@ -1117,7 +1165,7 @@ function attachCodeGraphManagerContexts(
         repositoriesRoot,
         checkoutId,
         STATUS_DIRECTORY,
-        status.identity.worktreeId,
+        codeGraphScopeViewKey(status.identity.worktreeId, status.identity.scopeId),
         `${status.buildId}.json`,
       );
       const contextFile = codeGraphManagerContextPath(path, statusFile, status.buildId);
@@ -1168,7 +1216,7 @@ function ensurePrivateRegularDirectory(fs: FileSystem.FileSystem, path: Path.Pat
 function readBuildStatusesBelow(fs: FileSystem.FileSystem, path: Path.Path, root: string) {
   return Effect.gen(function* () {
     if (!(yield* regularDirectory(fs, root))) return [];
-    const worktrees = (yield* fs.readDirectory(root)).filter(name => HASH_ID.test(name)).sort();
+    const worktrees = (yield* fs.readDirectory(root)).filter(name => BUILD_STATUS_VIEW_DIRECTORY.test(name)).sort();
     const groups = yield* Effect.forEach(
       worktrees,
       worktreeId => readWorktreeStatuses(fs, path, path.join(root, worktreeId)),
@@ -1187,7 +1235,12 @@ function readWorktreeStatuses(fs: FileSystem.FileSystem, path: Path.Path, direct
     const statuses = yield* Effect.forEach(files, name => readStatusFile(fs, path.join(directory, name)), {
       concurrency: 8,
     });
-    return statuses.filter((status): status is ObservedCodeGraphBuildStatus => status !== undefined);
+    const expectedViewKey = path.basename(directory);
+    return statuses.filter(
+      (status): status is ObservedCodeGraphBuildStatus =>
+        status !== undefined &&
+        codeGraphScopeViewKey(status.identity.worktreeId, status.identity.scopeId) === expectedViewKey,
+    );
   });
 }
 
@@ -1499,9 +1552,10 @@ const inspectBuildHistoryDirectory = Effect.fn('codeGraph.buildStatus.inspectHis
   if (statusRoot.canonicalPath !== path.join(repositoryRoot.canonicalPath, STATUS_DIRECTORY)) {
     return yield* InvalidBuildHistorySidecarError.make({message: 'Build history status root escaped containment.'});
   }
-  const directory = yield* freezeBuildHistoryDirectory(fs, path.join(statusRoot.path, worktreeId));
+  const viewKey = codeGraphScopeViewKey(worktreeId, layout.scopeId);
+  const directory = yield* freezeBuildHistoryDirectory(fs, path.join(statusRoot.path, viewKey));
   if (directory === undefined) return undefined;
-  if (directory.canonicalPath !== path.join(statusRoot.canonicalPath, worktreeId)) {
+  if (directory.canonicalPath !== path.join(statusRoot.canonicalPath, viewKey)) {
     return yield* InvalidBuildHistorySidecarError.make({message: 'Build history worktree escaped containment.'});
   }
   return {directory, repositoryRoot, statusRoot} satisfies BuildHistoryDirectoryAuthority;
@@ -1893,7 +1947,7 @@ export function selectCodeGraphBuildStatuses(
 ): CodeGraphBuildStatusSelection {
   const byWorktree = new Map<string, ObservedCodeGraphBuildStatus[]>();
   for (const status of statuses) {
-    const key = `${status.identity.checkoutId}\0${status.identity.worktreeId}`;
+    const key = `${status.identity.checkoutId}\0${status.identity.worktreeId}\0${status.identity.scopeId ?? ''}`;
     const current = byWorktree.get(key) ?? [];
     current.push(status);
     byWorktree.set(key, current);
@@ -1916,39 +1970,6 @@ export function selectCodeGraphBuildStatuses(
     builds: builds.sort(compareObservedBuildStatus),
     waiters: waiters.sort(compareObservedBuildStatus),
   };
-}
-
-function annotateCheckoutBuildCoordination(
-  fs: FileSystem.FileSystem,
-  path: Path.Path,
-  layout: CodeGraphLayout,
-  statuses: readonly ObservedCodeGraphBuildStatus[],
-) {
-  return Effect.forEach(
-    groupBuildStatusesByWorktree(statuses),
-    ([worktreeId, worktreeStatuses]) =>
-      readExclusiveFileLockOwner(fs, path.join(layout.worktreeLockRoot, `${worktreeId}.lock`)).pipe(
-        Effect.map(lockOwner => annotateBuildCoordination(worktreeStatuses, Option.getOrUndefined(lockOwner))),
-      ),
-    {concurrency: 8},
-  ).pipe(Effect.map(groups => groups.flat().sort(compareObservedBuildStatus)));
-}
-
-function annotateBuildCoordinationByWorktree(
-  fs: FileSystem.FileSystem,
-  path: Path.Path,
-  threadnoteHome: string,
-  checkoutId: string,
-  statuses: readonly ObservedCodeGraphBuildStatus[],
-) {
-  return Effect.forEach(
-    groupBuildStatusesByWorktree(statuses),
-    ([worktreeId, worktreeStatuses]) =>
-      readExclusiveFileLockOwner(fs, codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId)).pipe(
-        Effect.map(lockOwner => annotateBuildCoordination(worktreeStatuses, Option.getOrUndefined(lockOwner))),
-      ),
-    {concurrency: 8},
-  ).pipe(Effect.map(groups => groups.flat().sort(compareObservedBuildStatus)));
 }
 
 function privacySafeError(cause: unknown): string {

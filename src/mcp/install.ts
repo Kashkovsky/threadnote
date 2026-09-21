@@ -7,9 +7,14 @@ import {
   registeredAgentClients,
 } from '../agent_integration/index.js';
 import {resolveAgentHostPaths} from '../agent_integration/host_paths.js';
-import {type AgentIntegrationMcpReceipt, withAgentIntegrationLock} from '../agent_integration/registry.js';
+import {
+  emptyAgentIntegrationRegistry,
+  setupCompletionForSuccessfulInstall,
+  type AgentIntegrationMcpReceipt,
+  withAgentIntegrationLock,
+} from '../agent_integration/registry.js';
 import {commandLauncherPath} from '../command-shim.js';
-import {THREADNOTE_MCP_CLIENT_ENV, THREADNOTE_MCP_NAME} from '../constants.js';
+import {THREADNOTE_MCP_CLIENT_ENV, THREADNOTE_MCP_NAME, THREADNOTE_MCP_SURFACE_ENV} from '../constants.js';
 import {maybeRunEffect, runCommandEffect} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {relocateManagedOmpHook} from '../omp_hooks.js';
@@ -44,6 +49,7 @@ import {
   readFileIfExists,
   removePathIfExists,
 } from '../utils.js';
+import {withSetupMutationLock} from '../setup/lock.js';
 
 export function isPersonalThreadnoteHome(
   agentContextHome: string,
@@ -60,7 +66,7 @@ const isPersonalThreadnoteHomeEffect = Effect.fn('mcp.isPersonalHome')(function*
 });
 
 export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options: McpInstallOptions) {
-  return Effect.gen(function* () {
+  const operation = Effect.gen(function* () {
     const attach = yield* Effect.try({
       try: () => resolveComposerAttach(options),
       catch: cause =>
@@ -83,9 +89,17 @@ export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options
       });
     }
     if (attach && agent === 'codex') return yield* runCodexOrgMcpInstall(attach, options.apply === true);
-    const install = runMcpInstallInTransaction(config, agent, options);
+    const install = Effect.gen(function* () {
+      const registry = (yield* readAgentIntegrationRegistry(config)) ?? emptyAgentIntegrationRegistry(false);
+      const setupCompletion = options.apply ? setupCompletionForSuccessfulInstall(registry, {host: agent}) : undefined;
+      yield* runMcpInstallInTransaction(config, agent, options);
+      return setupCompletion;
+    });
     return yield* options.apply === true ? withAgentIntegrationLock(config, install) : install;
   });
+  return options.apply !== true || options.setupLockHeld === true
+    ? operation
+    : withSetupMutationLock(config.agentContextHome, operation);
 }
 
 const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(function* (
@@ -992,6 +1006,7 @@ function mcpEnvironment(config: RuntimeConfig, toolset: McpToolset, client: Agen
     `THREADNOTE_AGENT_ID=${config.agentId}`,
     `${MCP_TOOLSET_ENV}=${toolset}`,
     `${THREADNOTE_MCP_CLIENT_ENV}=${client}`,
+    `${THREADNOTE_MCP_SURFACE_ENV}=${legacyMcpSurfaceId(client)}`,
   ];
 }
 
@@ -1001,9 +1016,20 @@ function mcpEnvironmentObject(config: RuntimeConfig, toolset: McpToolset, client
     THREADNOTE_AGENT_ID: config.agentId,
     THREADNOTE_HOME: config.agentContextHome,
     [THREADNOTE_MCP_CLIENT_ENV]: client,
+    [THREADNOTE_MCP_SURFACE_ENV]: legacyMcpSurfaceId(client),
     [MCP_TOOLSET_ENV]: toolset,
     THREADNOTE_USER: config.user,
   };
+}
+
+function legacyMcpSurfaceId(client: AgentClient): string {
+  return {
+    claude: 'claude-code',
+    codex: 'codex-cli',
+    copilot: 'copilot-vscode',
+    cursor: 'cursor-desktop',
+    omp: 'omp-agent',
+  }[client];
 }
 
 const buildCursorMcpServerConfig = Effect.fn('mcp.buildCursorServerConfig')(function* (

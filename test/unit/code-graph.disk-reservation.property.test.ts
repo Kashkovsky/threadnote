@@ -4,14 +4,14 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
-import {codeGraphDiskCapacityReservationProjection, saturatingCapacityAdd} from '../../src/code_graph/disk_capacity.js';
+import {codeGraphDiskCapacityReservationProjection, saturatingCapacityAdd} from '../../src/code_graph/disk/capacity.js';
 import {
   aggregateCodeGraphDiskReservationReceipts,
   codeGraphDiskReservationFilesystemKey,
   parseCodeGraphDiskReservationReceipt,
   serializeCodeGraphDiskReservationReceipt,
   type CodeGraphDiskReservationReceipt,
-} from '../../src/code_graph/disk_reservation.js';
+} from '../../src/code_graph/disk/reservation.js';
 
 describe('code graph disk reservation ledger', () => {
   effectIt.effect('round trips one canonical path-free receipt', () =>

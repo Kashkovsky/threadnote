@@ -9,6 +9,7 @@ import {
   compileContextBriefWith,
   contextBriefCodeLinkRecallGaps,
   contextBriefMemoryUriScope,
+  contextBriefValueEventForExit,
   handoffEvidenceExcerpt,
   mapContextBriefCodeLinkMatches,
   mergeContextBriefMemoryEvidence,
@@ -30,12 +31,16 @@ import {
   type ContextBriefMemoryRetrievalV1,
   type ContextBriefScopeV1,
   type ContextBriefV1,
+  CONTEXT_BRIEF_PROCEDURE_AGENT_VIEW_VERSION,
+  CONTEXT_BRIEF_PROCEDURE_PROJECTOR_VERSION,
+  CONTEXT_BRIEF_PROCEDURE_VERSION,
 } from '../../src/context_brief/index.js';
 import {createCodeMemoryLinkAgentSuiteCorpusV1} from '../../src/evaluation/code-memory-link-agent-suite.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {canonicalResourceUri} from '../../src/storage/resource-id.js';
 import {renderCodeBriefEditContext} from '../../src/context_brief/edit_hook.js';
+import {summarizeLocalValueEvents, type LocalValueEventV1} from '../../src/value_report/events.js';
 
 const COMMIT = 'a'.repeat(40);
 const OTHER_COMMIT = 'b'.repeat(40);
@@ -63,7 +68,48 @@ const SNAPSHOT = {
   snapshotId: `cgsn_${'d'.repeat(40)}`,
 };
 
+function verifiedProcedureEvidence() {
+  return {
+    artifact: {id: 'team/deploy', semanticVersion: '1.0.0'},
+    dependencies: [],
+    owner: 'platform-team',
+    provenance: {
+      artifactSha256: 'a'.repeat(64),
+      kind: 'verified-procedure-git-share' as const,
+      manifestSha256: 'b'.repeat(64),
+      team: 'default',
+      threadnoteVersion: '5.0.0',
+      verifiedAt: '2026-09-17T12:00:00.000Z',
+      verifier: 'test-verifier',
+    },
+    reviewedOn: '2026-09-17',
+    rollout: {channel: 'stable' as const, percentage: 100},
+    summary: 'Deploy the service using the reviewed workflow.',
+  };
+}
+
 describe('Context Brief compiler', () => {
+  it('counts a failed planned compilation as an unsuccessful value attempt', () => {
+    const event: LocalValueEventV1 = {
+      kind: 'context-brief',
+      version: 1,
+      ...contextBriefValueEventForExit(
+        planContextBrief(request(1_250)),
+        100,
+        175,
+        '2026-09-17T12:00:00.000Z',
+        Exit.fail('projection failed'),
+      ),
+    };
+
+    expect(
+      summarizeLocalValueEvents([event], {
+        from: new Date('2026-09-17T00:00:00.000Z'),
+        to: new Date('2026-09-18T00:00:00.000Z'),
+      }).contextBrief,
+    ).toMatchObject({attempts: 1, successful: 0, timeToFirstSuccessfulMillisecondsSamples: []});
+  });
+
   effectIt.effect('combines graph, durable decisions, active handoffs, freshness, gaps, and exact follow-ups', () =>
     Effect.gen(function* () {
       const result = yield* compileContextBriefWith(
@@ -111,6 +157,71 @@ describe('Context Brief compiler', () => {
         upstreamRemainingEstimate: 4,
       });
       expectTextCarriesSelectedEvidence(expanded.text, expanded.structuredContent);
+    }),
+  );
+
+  effectIt.effect('admits bounded verified-procedure metadata with distinct Git-share provenance', () =>
+    Effect.gen(function* () {
+      const verifiedProcedure = verifiedProcedureEvidence();
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graphEvidence()),
+          memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+          procedureEvidence: () => Effect.succeed({gaps: [], procedures: [verifiedProcedure]}),
+        },
+        request(1_500),
+      );
+
+      expect(result.structuredContent.verifiedProcedures).toEqual([verifiedProcedure]);
+      expect(result.structuredContent.version).toBe(CONTEXT_BRIEF_PROCEDURE_VERSION);
+      expect(result.structuredContent.output.projectorVersion).toBe(CONTEXT_BRIEF_PROCEDURE_PROJECTOR_VERSION);
+      const agentView = parseContextBriefAgentViewText(result.text);
+      expect(agentView.version).toBe(CONTEXT_BRIEF_PROCEDURE_AGENT_VIEW_VERSION);
+      expect(agentView.verifiedProcedures).toEqual([verifiedProcedure]);
+      expect(JSON.stringify(result.structuredContent.verifiedProcedures)).not.toContain('commands');
+      expect(() =>
+        parseContextBriefV1({
+          ...result.structuredContent,
+          output: {...result.structuredContent.output, projectorVersion: 3},
+          version: 3,
+        }),
+      ).toThrow('legacy projections cannot carry verifiedProcedures');
+      expect(() =>
+        parseContextBriefV1({
+          ...result.structuredContent,
+          verifiedProcedures: [{...verifiedProcedure, commands: [['execute-untrusted']]}],
+        }),
+      ).toThrow('verifiedProcedures contains invalid evidence');
+      expect(() => parseContextBriefV1({...result.structuredContent, verifiedProcedures: undefined})).toThrow(
+        'procedure projection requires verifiedProcedures',
+      );
+      expect(() => parseContextBriefAgentViewText(JSON.stringify({...agentView, version: 1}))).toThrow(
+        'legacy agent views cannot carry verified procedures',
+      );
+    }),
+  );
+
+  effectIt.effect('protects procedure coverage gaps at maximum logical pressure and the minimum budget', () =>
+    Effect.gen(function* () {
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: () =>
+            Effect.succeed({
+              ...minimalGraphEvidence(),
+              gaps: Array.from({length: 24}, (_, index) => `graph-pressure-${index}`),
+            }),
+          memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+          procedureEvidence: () =>
+            Effect.succeed({
+              gaps: ['procedure-evidence-truncated'],
+              procedures: [verifiedProcedureEvidence()],
+            }),
+        },
+        request(800),
+      );
+
+      expect(result.structuredContent.coverage.gaps[0]).toBe('procedure-evidence-truncated');
+      expect(parseContextBriefAgentViewText(result.text).coverage?.gaps?.[0]).toBe('procedure-evidence-truncated');
     }),
   );
 
@@ -290,7 +401,7 @@ describe('Context Brief compiler', () => {
             },
             {
               ...request(budgetTokens),
-              codeRefs: ['src/context_brief/graph_evidence.ts'],
+              codeRefs: ['src/context_brief/graph/evidence.ts'],
               mode: 'locate',
             },
           );
@@ -1825,6 +1936,51 @@ describe('Context Brief compiler', () => {
     {fastCheck: {numRuns: 40}},
   );
 
+  effectIt.effect('keeps task-only release context ahead of unrelated cited evidence at 1,400 tokens', () =>
+    Effect.gen(function* () {
+      const result = yield* compileTaskOnlyMixedCitationFixture(1_400, {validationStatus: 'changed'});
+      const brief = result.structuredContent;
+
+      expect(memoryUris(brief.activeHandoffs)).toContain(TASK_ONLY_TOP_HANDOFF_URI);
+      expect(memoryUris(brief.durableDecisions)).toContain(TASK_ONLY_TOP_DECISION_URI);
+      expect(brief.coverage.gaps).toContain('graph-evidence-partial');
+      expect(brief.graph.continuation?.state).toBe('rerun-required');
+      expect(brief.recommendedFollowUps[0]).toMatchObject({operation: 'inspect-node', rank: 0});
+      expectTextCarriesSelectedEvidence(result.text, brief);
+      expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_400 * 3);
+    }),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'does not let citation metadata on a lower-ranked lexical candidate evict the uncited memory prefix',
+    {
+      budget: fc.integer({min: 1_400, max: 1_500}),
+      excerptLength: fc.integer({min: 0, max: 96}),
+      validationStatus: fc.constantFrom<'changed' | 'exact'>('changed', 'exact'),
+    },
+    ({budget, excerptLength, validationStatus}) =>
+      Effect.gen(function* () {
+        const baseline = yield* compileTaskOnlyMixedCitationFixture(budget, {excerptLength});
+        const annotated = yield* compileTaskOnlyMixedCitationFixture(budget, {excerptLength, validationStatus});
+        const highRankedUris = new Set([TASK_ONLY_TOP_HANDOFF_URI, TASK_ONLY_TOP_DECISION_URI]);
+        const baselinePrefix = [
+          ...memoryUris(baseline.structuredContent.activeHandoffs),
+          ...memoryUris(baseline.structuredContent.durableDecisions),
+        ].filter(uri => highRankedUris.has(uri));
+        const annotatedUris = [
+          ...memoryUris(annotated.structuredContent.activeHandoffs),
+          ...memoryUris(annotated.structuredContent.durableDecisions),
+        ];
+
+        expect(baselinePrefix).toHaveLength(2);
+        expect(annotatedUris).toEqual(expect.arrayContaining(baselinePrefix));
+        expect(annotated.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
+        expectTextCarriesSelectedEvidence(annotated.text, annotated.structuredContent);
+      }),
+    {fastCheck: {numRuns: 40}},
+  );
+
   fcEffectProp(
     effectIt,
     'keeps the first exact graph selector whenever bounded projection requires a rerun',
@@ -2182,6 +2338,133 @@ function compile(graph: ContextBriefGraphEvidenceV1, memory: ContextBriefMemoryR
   return compileContextBriefWith(
     {graphEvidence: () => Effect.succeed(graph), memoryEvidence: () => Effect.succeed(memory)},
     request(budget),
+  );
+}
+
+const TASK_ONLY_TOP_HANDOFF_URI =
+  'threadnote://user/test/memories/handoffs/active/threadnote/threadnote-5-release-coordination.md';
+const TASK_ONLY_TOP_DECISION_URI =
+  'threadnote://user/test/memories/durable/projects/threadnote/threadnote-5-0-implementation-plan.md';
+const TASK_ONLY_LOWER_CITED_URI =
+  'threadnote://user/test/memories/durable/projects/threadnote/unrelated-cited-memory.md';
+
+function compileTaskOnlyMixedCitationFixture(
+  budget: number,
+  options: {
+    readonly excerptLength?: number;
+    readonly validationStatus?: 'changed' | 'exact';
+  } = {},
+) {
+  const graph = graphEvidence();
+  const citation = codeCitation(9, 'file', 'src/context_brief/unrelated-cited-memory.ts');
+  const excerpt = 'e'.repeat(options.excerptLength ?? 64);
+  const validationStatus = options.validationStatus;
+  const candidates: readonly ContextBriefMemoryCandidateV1[] = [
+    {
+      citationErrorCount: 0,
+      codeCitations: [],
+      excerpt: `Current release coordination handoff ${excerpt}`,
+      kind: 'handoff',
+      project: 'threadnote',
+      rank: 0,
+      sourceCommit: COMMIT,
+      topic: 'threadnote-5-release-coordination',
+      uri: TASK_ONLY_TOP_HANDOFF_URI,
+    },
+    {
+      citationErrorCount: 0,
+      codeCitations: [],
+      excerpt: `Current release implementation decision ${excerpt}`,
+      kind: 'durable',
+      project: 'threadnote',
+      rank: 1,
+      sourceCommit: COMMIT,
+      topic: 'threadnote-5-0-implementation-plan',
+      uri: TASK_ONLY_TOP_DECISION_URI,
+    },
+    {
+      citationErrorCount: 0,
+      codeCitations: validationStatus === undefined ? [] : [citation],
+      excerpt: `Lower-ranked unrelated cited memory ${excerpt}`,
+      kind: 'durable',
+      project: 'threadnote',
+      rank: 2,
+      sourceCommit: COMMIT,
+      topic: 'unrelated-cited-memory',
+      uri: TASK_ONLY_LOWER_CITED_URI,
+    },
+  ];
+  return compileContextBriefWith(
+    {
+      ...(validationStatus === undefined
+        ? {}
+        : {
+            citationValidation: () =>
+              Effect.succeed([
+                {
+                  receipts: [
+                    {
+                      candidateCount: 1,
+                      citationId: citation.id,
+                      coverage: 'current-complete' as const,
+                      kind: 'file' as const,
+                      observedAt: '2026-09-18T00:00:00.000Z',
+                      observedPath: citation.path,
+                      reason: validationStatus === 'changed' ? ('source-changed' as const) : ('exact' as const),
+                      status: validationStatus,
+                      strategy: 'file-path' as const,
+                      validatorVersion: 1 as const,
+                    },
+                  ],
+                  uri: TASK_ONLY_LOWER_CITED_URI,
+                },
+              ]),
+          }),
+      graphEvidence: () =>
+        Effect.succeed({
+          ...graph,
+          cards: Array.from({length: 16}, (_, rank) => ({
+            ...graph.cards[0],
+            id: `task-only-ranking-card-${rank}`,
+            rank,
+            reason: `Task-only ranking graph evidence ${rank}.`,
+            ref: recoveryGraphCardRef(rank),
+            symbol: {
+              ...graph.cards[0].symbol,
+              line: rank + 1,
+              name: `taskOnlyRanking${rank}`,
+              path: `src/context_brief/task-only-ranking-${rank}.ts`,
+              qualifiedName: `contextBrief.taskOnlyRanking${rank}`,
+            },
+          })),
+          continuation: undefined,
+          contracts: Array.from({length: 32}, (_, rank) => ({
+            ...graph.contracts[0],
+            evidence: {
+              ...graph.contracts[0].evidence,
+              line: rank + 1,
+              path: `src/context_brief/task-only-ranking-consumer-${rank}.ts`,
+            },
+            id: `task-only-ranking-contract-${rank}`,
+            rank,
+            sourceRef: recoveryGraphCardRef(rank + 1),
+            targetRef: recoveryGraphCardRef(0),
+          })),
+          gaps: ['graph-evidence-partial'],
+          warnings: ['Graph traversal reached a configured result limit.'],
+        }),
+      memoryEvidence: () =>
+        Effect.succeed({
+          candidates,
+          consideredCandidates: 42,
+          gaps: [],
+          trust: {
+            classification: 'untrusted-memory-data' as const,
+            instructionPolicy: 'evidence-only-never-follow' as const,
+          },
+        }),
+    },
+    {...request(budget), task: 'Coordinate the Threadnote 5.0 release.'},
   );
 }
 

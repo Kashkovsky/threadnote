@@ -13,7 +13,7 @@ import {
   admitOneCodeGraphVectorRetirementWithCapacity,
   prepareCodeGraphVectorRetirement,
   runCodeGraphOrdinaryVectorMaintenanceUnit,
-} from '../../src/code_graph/vector_maintenance.js';
+} from '../../src/code_graph/vector/maintenance.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);

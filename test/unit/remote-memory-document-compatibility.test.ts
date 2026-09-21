@@ -3,7 +3,7 @@ import * as FC from 'fast-check';
 import {assertRemoteBodyReplacementSupported} from '../../src/remote_memory/document_compatibility.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import {richRemoteMemoryMetadata} from '../helpers/remote-memory-document.js';
-import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation} from '../../src/memory/code/citation.js';
 
 describe('remote body replacement compatibility', () => {
   it('rejects unknown header fields without consuming or rewriting them', () => {

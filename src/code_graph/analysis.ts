@@ -7,7 +7,7 @@ import {
   type CodeGraphAnalysisOptions,
   type ResolvedCodeGraphAnalysisBudget,
   type ResolvedCodeGraphAnalysisLimits,
-} from './analysis_configuration.js';
+} from './analysis/configuration.js';
 import {compareCodeUnits} from './ordering.js';
 import {sanitizeCodeGraphPresentationText} from './presentation_text.js';
 import type {CodeGraphEdge, CodeGraphProvenance, CodeGraphRelation, CodeGraphSymbol} from './types.js';
@@ -30,7 +30,7 @@ export type {
   CodeGraphAnalysisOptions,
   ResolvedCodeGraphAnalysisBudget,
   ResolvedCodeGraphAnalysisLimits,
-} from './analysis_configuration.js';
+} from './analysis/configuration.js';
 
 export interface CodeGraphAnalysisCount {
   readonly count: number;
@@ -256,6 +256,7 @@ export interface CodeGraphAnalysisUsage {
 }
 
 export interface CodeGraphAnalysisResult {
+  readonly projectCoverage?: import('./types.js').CodeGraphProjectCoverage;
   readonly algorithms: {
     readonly communities: 'structural-connectivity-v1';
     readonly components: 'weak-connectivity-v1';

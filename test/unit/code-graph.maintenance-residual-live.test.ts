@@ -7,14 +7,14 @@ import type {CodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {
   CodeGraphMaintenanceCoordinator,
   type CodeGraphRoutineMaintenanceTick,
-} from '../../src/code_graph/maintenance_coordinator.js';
+} from '../../src/code_graph/maintenance/coordinator.js';
 import {
   CODE_GRAPH_VECTOR_GENERATIONS_TABLE_SQL,
   CODE_GRAPH_VECTOR_POINTER_GENERATION_INDEX_SQL,
   CODE_GRAPH_VECTOR_POINTERS_TABLE_SQL,
   CODE_GRAPH_VECTOR_REUSE_INDEX_SQL,
   CODE_GRAPH_VECTORS_TABLE_SQL,
-} from '../../src/code_graph/vector_retirement.js';
+} from '../../src/code_graph/vector/retirement.js';
 import {codeGraphDiskReservationRoot, codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';

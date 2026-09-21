@@ -1,17 +1,17 @@
 import {Command} from 'effect/unstable/cli';
 import type {Effect} from 'effect';
-import {boolean, optionalString, requiredChoice} from '../../effect/cli_flags.js';
+import {boolean, optionalString, requiredChoice} from '../../effect/cli/flags.js';
 import {codeGraphCliBounds} from '../../effect/code_graph_cli_flags.js';
 import type {RuntimeConfig} from '../../types.js';
 import {
   runGraphContributeSetCommand,
   runGraphContributeStatusCommand,
-  runGraphAuth0ConfigureCommand,
-  runGraphAuth0LoginCommand,
-  runGraphAuth0LogoutCommand,
-  runRegistryAuth0ConfigureCommand,
-  runRegistryAuth0LoginCommand,
-  runRegistryAuth0LogoutCommand,
+  runGraphOAuthConfigureCommand,
+  runGraphOAuthLoginCommand,
+  runGraphOAuthLogoutCommand,
+  runRegistryOAuthConfigureCommand,
+  runRegistryOAuthLoginCommand,
+  runRegistryOAuthLogoutCommand,
   runGraphPublisherBootstrapCommand,
   runGraphPublisherProfilePromoteCommand,
   runGraphPublisherServeCommand,
@@ -22,7 +22,7 @@ import {
   runGraphShareStatusCommand,
   runGraphWorkerCommand,
 } from './commands.js';
-import {requiredString} from '../../effect/cli_flags.js';
+import {requiredString} from '../../effect/cli/flags.js';
 
 export function makeGraphSharingCommands(
   withRuntimeEffect: <E, R>(effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>) => Effect.Effect<void, E, R>,
@@ -189,48 +189,70 @@ export function makeGraphSharingCommands(
     options => withRuntimeEffect(config => runGraphWorkerCommand(config, options)),
   ).pipe(Command.withDescription('Report which advertised Git blobs exist locally without executing actions'));
 
-  const graphAuth0Configure = Command.make(
+  const graphOAuthConfigure = Command.make(
     'configure',
     {
-      audience: requiredString('audience', 'Stable graph API audience registered with Auth0'),
-      clientId: requiredString('client-id', 'Public Auth0 Native application client ID'),
+      audience: requiredString('audience', 'Stable graph API audience registered with the OAuth provider'),
+      audienceParameter: optionalString(
+        'audience-parameter',
+        'Optional provider audience request parameter; omit for Okta custom authorization servers',
+      ),
+      clientId: requiredString('client-id', 'Public OAuth Native application client ID'),
+      clientIdClaim: optionalString(
+        'client-id-claim',
+        'Access-token client claim: cid, azp, client_id, or azp-or-client_id',
+      ),
       coordinatorUrl: requiredString('coordinator', 'Exact HTTPS graph coordinator URL'),
-      issuer: requiredString('issuer', 'Exact Auth0 tenant issuer URL'),
+      deviceAuthorizationUrl: optionalString('device-authorization-url', 'Exact OAuth device authorization endpoint'),
+      issuer: requiredString('issuer', 'Exact OAuth issuer URL, including any authorization-server path'),
+      jwksUrl: optionalString('jwks-url', 'Exact OAuth JSON Web Key Set endpoint'),
       organization: requiredString('organization', 'Graph organization identity'),
+      tokenUrl: optionalString('token-url', 'Exact OAuth token endpoint'),
       json: codeGraphCliBounds.json,
     },
-    options => withRuntimeEffect(config => runGraphAuth0ConfigureCommand(config, options)),
-  ).pipe(Command.withDescription('Bind an Auth0 public Native client to this organization graph'));
+    options => withRuntimeEffect(config => runGraphOAuthConfigureCommand(config, options)),
+  ).pipe(Command.withDescription('Bind a public OAuth Native client to this organization graph'));
 
   const graphAuthSelection = {
     coordinatorUrl: optionalString('coordinator', 'Select one configured graph coordinator when multiple are present'),
     organization: optionalString('organization', 'Select one configured graph organization when multiple are present'),
   };
-  const graphAuth0Login = Command.make('login', graphAuthSelection, options =>
-    withRuntimeEffect(config => runGraphAuth0LoginCommand(config, options)),
+  const graphOAuthLogin = Command.make('login', graphAuthSelection, options =>
+    withRuntimeEffect(config => runGraphOAuthLoginCommand(config, options)),
   ).pipe(
     Command.withDescription(
-      'Authorize graph use once with Auth0 Device Flow and save rotating credentials in macOS Keychain',
+      'Authorize graph use once with OAuth Device Flow and save rotating credentials in macOS Keychain',
     ),
   );
 
-  const graphAuth0Logout = Command.make('logout', graphAuthSelection, options =>
-    withRuntimeEffect(config => runGraphAuth0LogoutCommand(config, options)),
-  ).pipe(Command.withDescription('Remove the saved local Auth0 graph session from macOS Keychain'));
+  const graphOAuthLogout = Command.make('logout', graphAuthSelection, options =>
+    withRuntimeEffect(config => runGraphOAuthLogoutCommand(config, options)),
+  ).pipe(Command.withDescription('Remove the saved local OAuth graph session from macOS Keychain'));
 
-  const registryAuth0Configure = Command.make(
+  const registryOAuthConfigure = Command.make(
     'configure',
     {
       audience: requiredString('audience', 'Exact registry API audience; must equal the Zot HTTPS origin'),
-      clientId: requiredString('client-id', 'Public Auth0 Native application client ID'),
-      issuer: requiredString('issuer', 'Exact Auth0 tenant issuer URL'),
+      audienceParameter: optionalString(
+        'audience-parameter',
+        'Optional provider audience request parameter; omit for Okta custom authorization servers',
+      ),
+      clientId: requiredString('client-id', 'Public OAuth Native application client ID'),
+      clientIdClaim: optionalString(
+        'client-id-claim',
+        'Access-token client claim: cid, azp, client_id, or azp-or-client_id',
+      ),
+      deviceAuthorizationUrl: optionalString('device-authorization-url', 'Exact OAuth device authorization endpoint'),
+      issuer: requiredString('issuer', 'Exact OAuth issuer URL, including any authorization-server path'),
+      jwksUrl: optionalString('jwks-url', 'Exact OAuth JSON Web Key Set endpoint'),
       organization: requiredString('organization', 'Registry organization identity'),
       origin: requiredString('origin', 'Exact Zot HTTPS origin'),
-      subject: requiredString('subject', 'Exact Auth0 reader subject admitted by Zot'),
+      subject: requiredString('subject', 'Exact OAuth reader subject admitted by Zot'),
+      tokenUrl: optionalString('token-url', 'Exact OAuth token endpoint'),
       json: codeGraphCliBounds.json,
     },
-    options => withRuntimeEffect(config => runRegistryAuth0ConfigureCommand(config, options)),
-  ).pipe(Command.withDescription('Bind a separate Auth0 Native registry reader audience to this organization'));
+    options => withRuntimeEffect(config => runRegistryOAuthConfigureCommand(config, options)),
+  ).pipe(Command.withDescription('Bind a separate OAuth Native registry reader audience to this organization'));
   const registryAuthSelection = {
     origin: optionalString('origin', 'Select one configured Zot registry origin when multiple are present'),
     organization: optionalString(
@@ -238,20 +260,20 @@ export function makeGraphSharingCommands(
       'Select one configured registry organization when multiple are present',
     ),
   };
-  const registryAuth0Login = Command.make('login', registryAuthSelection, options =>
-    withRuntimeEffect(config => runRegistryAuth0LoginCommand(config, options)),
-  ).pipe(Command.withDescription('Authorize read-only Zot access with Auth0 Device Flow and macOS Keychain'));
-  const registryAuth0Logout = Command.make('logout', registryAuthSelection, options =>
-    withRuntimeEffect(config => runRegistryAuth0LogoutCommand(config, options)),
-  ).pipe(Command.withDescription('Remove the saved local Zot reader session from macOS Keychain'));
+  const registryOAuthLogin = Command.make('login', registryAuthSelection, options =>
+    withRuntimeEffect(config => runRegistryOAuthLoginCommand(config, options)),
+  ).pipe(Command.withDescription('Authorize read-only Zot access with OAuth Device Flow and macOS Keychain'));
+  const registryOAuthLogout = Command.make('logout', registryAuthSelection, options =>
+    withRuntimeEffect(config => runRegistryOAuthLogoutCommand(config, options)),
+  ).pipe(Command.withDescription('Remove the saved local Zot reader OAuth session from macOS Keychain'));
   const registryAuth = Command.make('registry').pipe(
-    Command.withDescription('Set up user-delegated Auth0 credentials for Zot registry reads'),
-    Command.withSubcommands([registryAuth0Configure, registryAuth0Login, registryAuth0Logout]),
+    Command.withDescription('Set up user-delegated OAuth credentials for Zot registry reads'),
+    Command.withSubcommands([registryOAuthConfigure, registryOAuthLogin, registryOAuthLogout]),
   );
 
   const graphAuth = Command.make('auth').pipe(
-    Command.withDescription('Set up user-delegated Auth0 credentials for organization graphs'),
-    Command.withSubcommands([graphAuth0Configure, graphAuth0Login, graphAuth0Logout, registryAuth]),
+    Command.withDescription('Set up user-delegated OAuth credentials for organization graphs'),
+    Command.withSubcommands([graphOAuthConfigure, graphOAuthLogin, graphOAuthLogout, registryAuth]),
   );
 
   return {graphAuth, graphContribute, graphPublisher, graphShare, graphWorker};

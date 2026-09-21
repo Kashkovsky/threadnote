@@ -5,7 +5,7 @@ import {
   codeGraphResolutionPassAdmitted,
   nextPersistentUnresolvedReferenceBatchRows,
   persistentUnresolvedReferenceMaximumBatchRows,
-} from '../../src/code_graph/store_resolution.js';
+} from '../../src/code_graph/store/resolution.js';
 import {
   aggregatePersistentReferenceResolutionCapacityBoundaries,
   nextPersistentReferenceResolutionTransactionPages,
@@ -13,7 +13,7 @@ import {
   PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES,
   PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
   planPersistentReferenceResolutionPages,
-} from '../../src/code_graph/store_resolution_core.js';
+} from '../../src/code_graph/store/resolution/core.js';
 
 describe('code graph resolution pass bounds', () => {
   it('adapts unresolved publication without exceeding the workload-specific hydrated-row ceiling', () => {

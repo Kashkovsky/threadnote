@@ -26,13 +26,14 @@ import {
 } from '../../src/code_graph/types.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {captureConsole} from '../../src/effect/console.js';
-import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+import {legacyCodeGraphAuthorityStatements} from '../helpers/code-graph-legacy-authority.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
+import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance/coordinator.js';
 import {inspectCodeGraphViewDatabaseTarget} from '../../src/code_graph/view_removal.js';
 
 const LIVE_LEASE_EXPIRY_MILLISECONDS = Number.MAX_SAFE_INTEGER;
@@ -389,7 +390,10 @@ describe('bounded code graph maintenance', () => {
                 fs,
                 codeGraphWorktreeLockPath(path, home, identity.checkoutId, identity.worktreeId),
                 {
-                  heartbeatIntervalMilliseconds: 20,
+                  // Keep touching the live build lease while the durable state
+                  // is created, so cleanup must release its lock despite a
+                  // trailing heartbeat racing the release read.
+                  heartbeatIntervalMilliseconds: 1,
                   retryIntervalMilliseconds: 5,
                   staleAfterMilliseconds: 100,
                   waitTimeoutMilliseconds: 5_000,
@@ -610,6 +614,61 @@ describe('bounded code graph maintenance', () => {
     expect(progress).toEqual(['checking:none']);
     await expect(Bun.file(lockPath).exists()).resolves.toBe(false);
   });
+
+  effectIt.effect('reports a ready snapshot while maintenance is deferred by a live worktree build', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-doctor-live-builder-'});
+        const identity = legacyRepositoryIdentity(home, 'd');
+        const databasePath = path.join(
+          home,
+          'indexes',
+          'code-graph',
+          'repositories',
+          identity.checkoutId,
+          `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+        );
+        const snapshot = legacyReadySnapshot(identity, 'd');
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, snapshot, [], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
+        const before = yield* fs.readFile(databasePath);
+        const acquired = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const builder = yield* Effect.forkScoped(
+          withExclusiveFileLock(
+            fs,
+            codeGraphWorktreeLockPath(path, home, identity.checkoutId, identity.worktreeId),
+            {
+              heartbeatIntervalMilliseconds: 20,
+              onAcquired: () => Deferred.succeed(acquired, undefined).pipe(Effect.asVoid),
+              retryIntervalMilliseconds: 5,
+              staleAfterMilliseconds: 100,
+              waitTimeoutMilliseconds: 5_000,
+            },
+            Deferred.await(release),
+          ),
+        );
+        yield* Deferred.await(acquired);
+        const progress: string[] = [];
+
+        const doctor = yield* codeGraphDoctorCheck(home, state =>
+          Effect.sync(() => progress.push(`${state.phase}:${state.reason ?? 'none'}`)),
+        );
+
+        expect(doctor).toMatchObject({status: 'warn'});
+        expect(doctor.detail).toContain('1 ready snapshot(s)');
+        expect(doctor.detail).toContain('1 database maintenance check(s) deferred');
+        expect(progress).toEqual(['checking:none', 'deferred:active-build']);
+        expect(yield* fs.readFile(databasePath)).toEqual(before);
+
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(builder);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
   effectIt.effect('reports revision-8 cleanup authority drift as incompatible without mutating it', () =>
     Effect.gen(function* () {
@@ -1261,6 +1320,7 @@ function makeRecoverableInterruptedExtension(databasePath: string): void {
     database.run('PRAGMA foreign_keys = OFF');
     database.run('BEGIN IMMEDIATE');
     try {
+      for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
       database.exec(`
         DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
         DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;
@@ -1292,6 +1352,7 @@ function makePreReconciliationIndexRevision7(databasePath: string): void {
   try {
     database.run('BEGIN IMMEDIATE');
     try {
+      for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
       database.exec(`
         DROP TRIGGER removed_views_cleanup_revoke_delete;
         DROP TRIGGER removed_views_cleanup_revoke_insert;
@@ -1322,6 +1383,7 @@ function downgradeToReleasedRevision6(databasePath: string): void {
     database.run('PRAGMA foreign_keys = OFF');
     database.run('BEGIN IMMEDIATE');
     try {
+      for (const statement of legacyCodeGraphAuthorityStatements) database.exec(statement);
       database.exec(`
         DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
         DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;

@@ -1,11 +1,12 @@
 import type {MemoryMetadata} from './document.js';
-import type {DeferredCodeAnchorWriteRequest} from './deferred_code_anchor.js';
+import type {DeferredCodeAnchorWriteRequest} from './deferred/code_anchor.js';
 
 export interface StoreMemoryOptions {
   readonly bodyText: string;
   readonly dryRun: boolean;
   readonly deferredCodeAnchor?: DeferredCodeAnchorWriteRequest;
   readonly expectedReplaceContent?: string;
+  readonly expectedReplaceMemoryId?: string;
   readonly expectedReplaceRawContent?: string;
   readonly expectedSourceContent?: readonly {
     readonly allowedUriScopes?: readonly string[];
@@ -13,6 +14,8 @@ export interface StoreMemoryOptions {
     readonly memoryId?: string;
     readonly uri: string;
   }[];
+  /** Composite mutations refresh once from their final state after every enclosing lock is released. */
+  readonly deferRecallIndexRefresh?: boolean;
   /** Nested lifecycle writers already hold the source lock and skip the identity fence to avoid lock inversion. */
   readonly skipMemoryIdentityLock?: boolean;
   readonly metadata: MemoryMetadata;

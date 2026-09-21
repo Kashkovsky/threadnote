@@ -10,14 +10,14 @@ import {
   codeGraphVectorRetirementCapacityDemand,
   saturatingCapacityAdd,
   type CodeGraphDirectPersistentCapacityBoundary,
-} from '../../src/code_graph/disk_capacity.js';
+} from '../../src/code_graph/disk/capacity.js';
 import {codeGraphDiskReservationRoot} from '../../src/code_graph/layout.js';
 import {
   type CodeGraphOrdinaryVectorMaintenanceUnitInput,
   makeCodeGraphVectorRetirementCapacityProtector,
   retireCodeGraphVectorPointerWithCapacity,
   runCodeGraphOrdinaryVectorMaintenanceUnit,
-} from '../../src/code_graph/vector_maintenance.js';
+} from '../../src/code_graph/vector/maintenance.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);

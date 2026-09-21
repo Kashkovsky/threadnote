@@ -1,13 +1,13 @@
 import type {TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
-import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import type {MemoryCodeCitationV1} from '../memory/code/citation.js';
 import {parseMemoryDocument} from '../memory/document.js';
 import type {RemoteCitationSource} from '../memory_domain/citation_sources.js';
 import {parseRemoteShareAddress} from '../memory_domain/address.js';
 import type {AuthorizedRemotePrincipal} from './authorization.js';
 import {assertRemoteBodyReplacementSupported} from './document_compatibility.js';
 import {remoteMemoryError} from './errors.js';
-import {gitCanonicalSharePath, type GitCanonicalMemoryStore} from './git_canonical_store.js';
+import {gitCanonicalSharePath, type GitCanonicalMemoryStore} from './git/canonical_store.js';
 import {requireActiveProject, requirePrincipalProject} from './repository_policy.js';
 
 export interface ResolvedRemoteCitationSources {

@@ -21,8 +21,8 @@ import {
   type ReadyQueryEvidenceV1,
   type ReadyQueryStageSeriesV1,
   type ReadyQueryTimingSeriesV1,
-} from '../../src/evaluation/ready_query_evidence.js';
-import {parseReadyQueryLinuxHostSample, readyQueryHostEvidence} from '../../src/evaluation/ready_query_host.js';
+} from '../../src/evaluation/ready/query_evidence.js';
+import {parseReadyQueryLinuxHostSample, readyQueryHostEvidence} from '../../src/evaluation/ready/query_host.js';
 import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from '../../src/code_graph/types.js';
 
 const RESULT_DIGEST = 'a'.repeat(64);

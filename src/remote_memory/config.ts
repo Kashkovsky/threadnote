@@ -1,10 +1,11 @@
 import {remoteMemoryError} from './errors.js';
-import {requireGitMemoryBinding, type GitMemoryBinding} from './git_binding.js';
+import {requireGitMemoryBinding, type GitMemoryBinding} from './git/binding.js';
 
 export type RemoteMemoryCanonicalStore = 'git' | 'postgres';
 
 export interface RemoteMemoryServiceConfig {
   readonly accessTokenAudience: string;
+  readonly accessTokenClientIdClaim?: 'azp' | 'client_id' | 'cid' | 'azp-or-client_id';
   readonly accessTokenIssuer: string;
   readonly accessTokenJwksUrl: URL;
   readonly autoMigrate: boolean;
@@ -22,6 +23,7 @@ export interface RemoteMemoryServiceConfig {
   readonly gitRemote: string;
   readonly gitWorktree?: string;
   readonly host: string;
+  readonly legacyClientIdCompatibilityUntil?: string;
   readonly globallyEnabled: boolean;
   readonly maxBodyBytes: number;
   readonly port: number;
@@ -62,6 +64,11 @@ export function remoteMemoryConfigFromEnvironment(
   const accessTokenAudience = audienceValue(
     environment.THREADNOTE_REMOTE_OAUTH_AUDIENCE?.trim() || new URL('/mcp', publicBaseUrl).toString(),
     'THREADNOTE_REMOTE_OAUTH_AUDIENCE',
+  );
+  const accessTokenClientIdClaim = clientIdClaimValue(environment.THREADNOTE_REMOTE_OAUTH_CLIENT_ID_CLAIM);
+  const legacyClientIdCompatibilityUntil = legacyClientIdCompatibilityTimestamp(
+    environment.THREADNOTE_REMOTE_OAUTH_LEGACY_CLIENT_ID_COMPATIBILITY_UNTIL,
+    accessTokenClientIdClaim,
   );
   const attestationAudience = audienceValue(
     environment.THREADNOTE_REMOTE_CURSOR_AUDIENCE?.trim() || new URL('/attest/cursor', publicBaseUrl).toString(),
@@ -112,6 +119,7 @@ export function remoteMemoryConfigFromEnvironment(
   }
   return {
     accessTokenAudience,
+    ...(accessTokenClientIdClaim === undefined ? {} : {accessTokenClientIdClaim}),
     accessTokenIssuer,
     accessTokenJwksUrl,
     autoMigrate,
@@ -145,6 +153,7 @@ export function remoteMemoryConfigFromEnvironment(
     ...(gitWorktree ? {gitWorktree} : {}),
     globallyEnabled: booleanValue(environment.THREADNOTE_REMOTE_ENABLED, false),
     host: environment.THREADNOTE_REMOTE_HOST?.trim() || '127.0.0.1',
+    ...(legacyClientIdCompatibilityUntil === undefined ? {} : {legacyClientIdCompatibilityUntil}),
     maxBodyBytes: boundedInteger(environment.THREADNOTE_REMOTE_MAX_BODY_BYTES, 256 * 1024, 1024, 1024 * 1024),
     port: boundedInteger(environment.THREADNOTE_REMOTE_PORT, 8787, 1, 65_535),
     publicBaseUrl,
@@ -182,6 +191,9 @@ function gitCloneUrl(value: string, localService: boolean): string {
 export function redactedRemoteMemoryConfig(config: RemoteMemoryServiceConfig): Readonly<Record<string, unknown>> {
   return {
     accessTokenAudience: config.accessTokenAudience,
+    ...(config.accessTokenClientIdClaim === undefined
+      ? {}
+      : {accessTokenClientIdClaim: config.accessTokenClientIdClaim}),
     accessTokenIssuer: config.accessTokenIssuer,
     autoMigrate: config.autoMigrate,
     allowedHosts: config.allowedHosts,
@@ -195,6 +207,9 @@ export function redactedRemoteMemoryConfig(config: RemoteMemoryServiceConfig): R
     ...(config.gitWorktree ? {gitWorktree: config.gitWorktree} : {}),
     globallyEnabled: config.globallyEnabled,
     host: config.host,
+    ...(config.legacyClientIdCompatibilityUntil === undefined
+      ? {}
+      : {legacyClientIdCompatibilityUntil: config.legacyClientIdCompatibilityUntil}),
     maxBodyBytes: config.maxBodyBytes,
     port: config.port,
     publicBaseUrl: config.publicBaseUrl.toString(),
@@ -335,6 +350,42 @@ function booleanValue(value: string | undefined, fallback: boolean): boolean {
   if (value === 'true') return true;
   if (value === 'false') return false;
   throw remoteMemoryError('invalid_request', 'Expected true or false.');
+}
+
+function clientIdClaimValue(value: string | undefined): 'azp' | 'client_id' | 'cid' | 'azp-or-client_id' | undefined {
+  if (!value?.trim()) return undefined;
+  if (value === 'azp' || value === 'client_id' || value === 'cid' || value === 'azp-or-client_id') return value;
+  throw remoteMemoryError(
+    'invalid_request',
+    'THREADNOTE_REMOTE_OAUTH_CLIENT_ID_CLAIM must be azp, client_id, cid, or azp-or-client_id.',
+  );
+}
+
+function legacyClientIdCompatibilityTimestamp(
+  value: string | undefined,
+  clientIdClaim: RemoteMemoryServiceConfig['accessTokenClientIdClaim'],
+): string | undefined {
+  if (!value?.trim()) return undefined;
+  if (clientIdClaim === undefined) {
+    throw remoteMemoryError(
+      'invalid_request',
+      'THREADNOTE_REMOTE_OAUTH_LEGACY_CLIENT_ID_COMPATIBILITY_UNTIL requires a client-id claim mapping.',
+    );
+  }
+  const milliseconds = Date.parse(value);
+  const now = Date.now();
+  if (
+    !Number.isFinite(milliseconds) ||
+    new Date(milliseconds).toISOString() !== value ||
+    milliseconds <= now ||
+    milliseconds - now > 31 * 24 * 60 * 60 * 1000
+  ) {
+    throw remoteMemoryError(
+      'invalid_request',
+      'THREADNOTE_REMOTE_OAUTH_LEGACY_CLIENT_ID_COMPATIBILITY_UNTIL must be an exact future ISO timestamp within 31 days.',
+    );
+  }
+  return value;
 }
 
 function isLoopbackHostname(hostname: string): boolean {

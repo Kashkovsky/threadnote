@@ -6,12 +6,12 @@ import type {
   CodeGraphWorkspaceDependency,
   CodeGraphWorkspaceProject,
 } from '../languages/types.js';
-import {parseCodeGraphFileFacts} from '../fact_validation.js';
+import {parseCodeGraphFileFacts} from '../fact/validation.js';
 import {
   CODE_GRAPH_CHECKPOINT_FORMAT_VERSION,
   CODE_GRAPH_CHECKPOINT_RECORD_SCHEMA_VERSION,
   CODE_GRAPH_CHECKPOINT_SEMANTIC_VERSION,
-} from '../store/schema_revision.js';
+} from '../store/schema/revision.js';
 import type {CodeGraphFileFacts} from '../types.js';
 import {canonicalJson} from './canonical_json.js';
 import {codeGraphCheckpointFileFactCacheIdentity} from './file_fact_identity.js';

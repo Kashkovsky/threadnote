@@ -1,9 +1,21 @@
+import {
+  makeCompactCommand,
+  makeContextBriefCommand,
+  makeContextHealthCommand,
+  makeContextHealthRepairCommand,
+  makeContextCheckCommand,
+  makeRecallFeedbackCommand,
+  makeValueCommand,
+} from './workflow_cli.js';
 import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
-import {runCursorHook} from '../cursor_hook_runner.js';
+import {agentsCommandMetadata, makeAgentsCommand} from './agents_cli.js';
+import {makeSetupCommand, setupCommandMetadata} from './setup_cli.js';
+import {guidanceCommandMetadata, makeGuidanceCommand} from './guidance_cli.js';
+import {runCursorHook} from '../cursor/hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
-import {makeComposerAttachFlags} from './composer_attach_flags.js';
+import {makeComposerAttachFlags} from './composer/attach_flags.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
 import {
   runDevelopmentInstallRepair,
@@ -45,6 +57,15 @@ import {
   runRecall,
   runRemember,
 } from '../memory/index.js';
+import {runRecallFeedback} from '../recall/feedback_commands.js';
+import {makeCloseoutCommand} from './closeout_cli.js';
+import {makeContextMetadataCommand} from './maintenance_metadata_cli.js';
+import {runContextHealthAggregate, runContextHealthSchedule} from '../memory/context/health_aggregate_commands.js';
+import {runContextHealth} from '../memory/context/health_commands.js';
+import {runContextHealthRepairApply, runContextHealthRepairPreview} from '../memory/context/health_repair_commands.js';
+import {runMaintenanceMetadataApply, runMaintenanceMetadataPreview} from '../memory/maintenance/metadata_commands.js';
+import {runContextCheck} from '../context_check/commands.js';
+import {runProcedurePublish, runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
 import {runMcpInstall} from '../mcp/index.js';
 import {runObsidianInboxScan} from '../obsidian/inbox.js';
 import {runObsidianOpen} from '../obsidian/open.js';
@@ -65,7 +86,9 @@ import {
   runObsidianSourceSync,
 } from '../obsidian/source.js';
 import {getRuntimeConfig} from '../runtime.js';
-import {runInitManifest, runSeed, runSeedSkills, runWorksetList, runWorksetShow} from '../seeding.js';
+import {runInitManifest, runSeed, runSeedSkills} from '../seeding.js';
+import {makeWorksetCommand} from './workset_cli.js';
+import {makeCodeGraphScopeCommand} from './graph_scope_cli.js';
 import {
   runShareConflictResolve,
   runShareConflicts,
@@ -87,7 +110,7 @@ import {
 import type {RuntimeConfig} from '../types.js';
 import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate} from '../release/index.js';
 import {errorMessage} from '../utils.js';
-import {runVersion} from '../release/version_command.js';
+import {runVersion} from '../release/version/command.js';
 import {runManage} from '../manager/index.js';
 import {applicationError} from './errors.js';
 import {runHomeMigration} from '../migration/home.js';
@@ -117,8 +140,6 @@ import {
   runCodeGraphReport,
   runCodeGraphStatus,
   runCodeGraphWatch,
-  runCodeGraphWorksetPrepare,
-  runCodeGraphWorksetStatus,
   runCodeGraphWorksetTopology,
 } from '../code_graph/commands.js';
 import {
@@ -127,21 +148,23 @@ import {
   runCodeGraphCheckpointInspect,
   runCodeGraphCheckpointVerify,
 } from '../code_graph/checkpoint/commands.js';
-import {makeComposerCommands} from './composer_cli.js';
+import {makeComposerCommands} from './composer/cli.js';
+import {makeActivationCommand} from './activation_cli.js';
+import {makeProcedureCommand} from './procedure_cli.js';
 import {makeGraphSharingCommands} from '../code_graph/sharing/cli.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS,
   CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS,
-} from '../code_graph/workset_evidence.js';
+} from '../code_graph/workset/evidence.js';
 import {runProcessDiagnostics} from '../process/diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
 import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
-import {
-  CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
-  CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
-} from '../context_brief/types.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
+import * as valueReportCommands from '../value_report/commands.js';
+import {runPilotCommand, withPilotHome} from '../value_report/pilot/commands.js';
+import {runKnowledgeDeltaGitProposalExport, runKnowledgeDeltaGitProposalMaterialize} from '../git_proposal/commands.js';
+import {makeShareMemoryCommands, publishFlags} from './share/memory_cli.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
   cursorCloudRuntimeConfig,
@@ -154,13 +177,14 @@ import {
   makeCursorCloudAttestCommand,
   makeCursorCloudIdentityFlags,
   makeCursorCloudModeFlag,
+  makeCursorCloudRemoteConfigFlags,
 } from './cursor_cloud_cli.js';
 import {
   makeCliInvocationInspector,
   normalizeCliArguments,
   type CliInvocationInspection,
   type ProductionLogMode,
-} from './cli_invocation.js';
+} from './cli/invocation.js';
 import {
   argument,
   boolean,
@@ -177,7 +201,7 @@ import {
   requiredChoice,
   requiredString,
   withValueAlias,
-} from './cli_flags.js';
+} from './cli/flags.js';
 import {
   codeGraphCliBounds as graphBounds,
   codeGraphFreshnessFlag as graphFreshness,
@@ -190,7 +214,6 @@ const root = Command.make('threadnote').pipe(
     manifest: optionalString('manifest', 'Override THREADNOTE_MANIFEST for this invocation'),
   }),
 );
-
 const withRuntimeEffect = <E, R>(
   effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
   manifestOverride?: string,
@@ -201,7 +224,6 @@ const withRuntimeEffect = <E, R>(
       Effect.flatMap(effect),
     ),
   );
-
 const manage = Command.make(
   'manage',
   {
@@ -215,7 +237,6 @@ const manage = Command.make(
   },
   options => withRuntimeEffect(config => runManage(config, options)),
 ).pipe(Command.withDescription('Open the local Threadnote web manager'));
-
 const processes = Command.make(
   'processes',
   {
@@ -225,7 +246,6 @@ const processes = Command.make(
 ).pipe(
   Command.withDescription('Show privacy-safe roles, relationships, age, operations, and memory for live processes'),
 );
-
 const doctor = Command.make(
   'doctor',
   {
@@ -622,6 +642,7 @@ const graphInventory = Command.make(
   {
     cwd: graphBounds.cwd,
     json: graphBounds.json,
+    project: graphBounds.project,
   },
   options => withRuntimeEffect(config => runCodeGraphInventory(config, options)),
 ).pipe(Command.withDescription('Preview aggregate graph eligibility by language, role, classifier, and policy reason'));
@@ -659,9 +680,15 @@ const graphIndex = Command.make(
       'no-vectors',
       'Skip embedding materialization; matches watcher-driven refresh (ensureVectors: false)',
     ),
+    project: graphBounds.project,
   },
   options => withRuntimeEffect(config => runCodeGraphIndex(config, options)),
 ).pipe(Command.withDescription('Build and atomically activate a current native code graph snapshot'));
+
+const withScopedRuntime = withRuntimeEffect as <E, R>(
+  effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
+) => Effect.Effect<void, E, R>;
+const graphScope = makeCodeGraphScopeCommand(withScopedRuntime, graphBounds.json);
 
 const graphQuery = Command.make(
   'query',
@@ -701,6 +728,7 @@ const graphNode = Command.make(
     freshness: graphFreshness('ready'),
     json: graphBounds.json,
     nodeId: requiredString('node-id', 'Exact local cgs_ ID or repository-qualified cgr_ handle'),
+    project: graphBounds.project,
     readTimeoutMilliseconds: graphBounds.readTimeoutMilliseconds,
   },
   options => withRuntimeEffect(config => runCodeGraphInspect(config, {...options, operation: 'node'})),
@@ -753,6 +781,7 @@ const graphImpact = Command.make(
     edgeLimit: graphBounds.edgeLimit,
     json: graphBounds.json,
     nodeLimit: graphBounds.nodeLimit,
+    project: graphBounds.project,
     query: optionalString('query', 'Local selector, or cgr_ / repository:cgp_ endpoint with --workset'),
     workset: optionalString('workset', 'Trace reverse impact across a prepared workset generation'),
   },
@@ -781,6 +810,7 @@ const graphAnalysisBounds = {
   includeHeuristic: graphBounds.includeHeuristic,
   includeModelAssociations: graphBounds.includeModelAssociations,
   json: graphBounds.json,
+  project: graphBounds.project,
   readTimeoutMilliseconds: graphBounds.readTimeoutMilliseconds,
 } as const;
 
@@ -857,7 +887,7 @@ const graphReport = Command.make(
   options => withRuntimeEffect(config => runCodeGraphReport(config, options)),
 ).pipe(Command.withDescription('Write a deterministic architecture report with suggested graph questions'));
 
-const graphWatch = Command.make('watch', {cwd: graphBounds.cwd}, options =>
+const graphWatch = Command.make('watch', {cwd: graphBounds.cwd, project: graphBounds.project}, options =>
   withRuntimeEffect(config => runCodeGraphWatch(config, options)),
 ).pipe(Command.withDescription('Keep one worktree graph current in the foreground'));
 
@@ -928,9 +958,6 @@ const graphCheckpoint = Command.make('checkpoint').pipe(
   ]),
 );
 
-const withScopedRuntime = withRuntimeEffect as <E, R>(
-  effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
-) => Effect.Effect<void, E, R>;
 const {graphAuth, graphContribute, graphPublisher, graphShare, graphWorker} =
   makeGraphSharingCommands(withScopedRuntime);
 
@@ -981,6 +1008,7 @@ const graphCommand = Command.make('graph').pipe(
     graphDiagnostics,
     graphRepair,
     graphIndex,
+    graphScope,
     graphQuery,
     graphNode,
     graphNeighbors,
@@ -1376,89 +1404,44 @@ const recall = Command.make(
   options => withRuntimeEffect(config => runRecall(config, options)),
 ).pipe(Command.withDescription('Search shared Threadnote context'));
 
-const worksetList = Command.make('list', {}, () => withRuntimeEffect(config => runWorksetList(config))).pipe(
-  Command.withDescription('List worksets defined in the seed manifest'),
+const recallFeedback = makeRecallFeedbackCommand(options =>
+  withRuntimeEffect(config => runRecallFeedback(config, options)),
 );
 
-const worksetShow = Command.make('show', {name: argument('name', 'Workset name')}, ({name}) =>
-  withRuntimeEffect(config => runWorksetShow(config, name)),
-).pipe(Command.withDescription('Show the member projects of a workset'));
-
-const worksetPrepare = Command.make(
-  'prepare',
-  {
-    concurrency: optional(
-      describeFlag(
-        integerFlag('concurrency'),
-        'Maximum repositories to index and project concurrently (default 2, maximum 8)',
-      ),
-    ),
-    json: boolean('json', 'Print a machine-readable preparation receipt'),
-    name: argument('name', 'Workset name'),
-  },
-  options => withRuntimeEffect(config => runCodeGraphWorksetPrepare(config, options)),
-).pipe(Command.withDescription('Build member snapshots explicitly and atomically publish the routing catalog'));
-
-const worksetStatus = Command.make(
-  'status',
-  {json: boolean('json', 'Print a machine-readable workset coverage receipt'), name: argument('name', 'Workset name')},
-  options => withRuntimeEffect(config => runCodeGraphWorksetStatus(config, options)),
-).pipe(Command.withDescription('Compare the workset manifest, ready snapshots, and published routing catalog'));
-
-const workset = Command.make('workset').pipe(
-  Command.withDescription('Inspect and prepare named sets of related repos'),
-  Command.withSubcommands([worksetList, worksetShow, worksetPrepare, worksetStatus]),
+const workset = makeWorksetCommand(withScopedRuntime);
+const contextBrief = makeContextBriefCommand(options => withRuntimeEffect(config => runContextBrief(config, options)));
+const contextHealth = makeContextHealthCommand(
+  options => withRuntimeEffect(config => runContextHealth(config, options)),
+  options => withRuntimeEffect(config => runContextHealthAggregate(config, options)),
+  options => runContextHealthSchedule(options),
 );
-
-const contextBrief = Command.make(
-  'brief',
-  {
-    budgetTokens: optional(
-      describeFlag(
-        integerFlag('budget-tokens').pipe(
-          Flag.withSchema(
-            Schema.Int.check(
-              Schema.isBetween({
-                minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
-                maximum: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
-              }),
-            ),
-          ),
-        ),
-        `Maximum estimated tokens for the combined structured and text response (${CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS}-${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS})`,
-      ),
-    ),
-    codeRefs: repeatedString(
-      'code-ref',
-      'Canonical graph-indexed repository-relative path (no ./ or ..) or exact cgs_<32 lowercase hex>; cgr_ unsupported; repeat up to eight times',
-      8,
-    ),
-    cwd: optionalString('cwd', 'Absolute repository path, at most 4096 UTF-8 bytes; defaults to the current directory'),
-    json: boolean('json', 'Print the structured Context Brief projection'),
-    mode: defaultChoice('mode', ['brief', 'locate', 'explain', 'trace', 'impact'], 'Evidence-planning mode', 'brief'),
-    project: optionalString('project', 'Optional memory project scope, at most 256 UTF-8 bytes'),
-    task: requiredString('task', 'Engineering task or question, 1-4096 UTF-8 bytes without control characters'),
-    workset: optionalString('workset', 'Prepared workset scope, at most 256 UTF-8 bytes, instead of the repository'),
-  },
-  options => withRuntimeEffect(config => runContextBrief(config, options)),
-).pipe(Command.withDescription('Compile bounded graph, decision, handoff, and freshness evidence for an agent task'));
-
+const contextHealthRepair = makeContextHealthRepairCommand(
+  options => withRuntimeEffect(config => runContextHealthRepairPreview(config, options)),
+  options => withRuntimeEffect(config => runContextHealthRepairApply(config, options)),
+);
+const contextMetadata = makeContextMetadataCommand(
+  options => withRuntimeEffect(config => runMaintenanceMetadataPreview(config, options)),
+  options => withRuntimeEffect(config => runMaintenanceMetadataApply(config, options)),
+);
+const contextCheck = makeContextCheckCommand(options => withRuntimeEffect(config => runContextCheck(config, options)));
 const context = Command.make('context').pipe(
   Command.withDescription('Compile task-oriented agent context'),
-  Command.withSubcommands([contextBrief]),
+  Command.withSubcommands([contextBrief, contextHealth, contextHealthRepair, contextMetadata, contextCheck]),
+);
+const value = makeValueCommand(
+  options => withRuntimeEffect(config => valueReportCommands.runValueReport(config, options)),
+  options => withRuntimeEffect(config => valueReportCommands.runValueReportExport(config, options)),
+  options => withRuntimeEffect(config => valueReportCommands.runValueReportRetention(config, options)),
+  options => withRuntimeEffect(config => valueReportCommands.runValueReportDelete(config, options)),
+  options => Effect.flatMap(root, ({home}) => withPilotHome(home, config => runPilotCommand(config, options))),
+);
+const procedure = makeProcedureCommand(
+  options => withRuntimeEffect(() => runProcedureVerify(options)),
+  options => withRuntimeEffect(() => runProcedureStatus(options)),
+  options => withRuntimeEffect(config => runProcedurePublish(config, options)),
 );
 
-const compact = Command.make(
-  'compact',
-  {
-    apply: boolean('apply', 'Apply the compact plan; without this, prints a dry run'),
-    dryRun: boolean('dry-run', 'Print the compact plan without changing anything'),
-    kind: optionalChoice('kind', ['durable', 'handoff', 'incident'], 'Optional memory kind filter'),
-    project: requiredString('project', 'Project/repo namespace to inspect'),
-    topic: optionalString('topic', 'Stable topic name to inspect'),
-  },
-  options => withRuntimeEffect(config => runCompact(config, options)),
-).pipe(Command.withDescription('Plan or apply scoped memory hygiene for active personal memories'));
+const compact = makeCompactCommand(options => withRuntimeEffect(config => runCompact(config, options)));
 
 const read = Command.make(
   'read',
@@ -1468,6 +1451,12 @@ const read = Command.make(
   },
   ({uri, ...options}) => withRuntimeEffect(config => runRead(config, uri, options)),
 ).pipe(Command.withDescription('Read a canonical or stable-identity threadnote:// pointer'));
+
+const closeout = makeCloseoutCommand(
+  Effect.flatMap(root, options =>
+    getRuntimeConfig(options).pipe(Effect.mapError(cause => applicationError('load runtime configuration', cause))),
+  ),
+);
 
 const list = Command.make(
   'list',
@@ -1566,8 +1555,7 @@ const cursorCloudConfig = Command.make(
   'config',
   {
     ...cursorCloudBaseIdentityFlags,
-    clientId: optionalString('client-id', 'Registered public OAuth client ID for the organization composer'),
-    endpoint: optionalString('endpoint', 'Managed remote Streamable HTTP MCP endpoint'),
+    ...makeCursorCloudRemoteConfigFlags(),
     memoryMode: defaultChoice(
       'memory-mode',
       ['shared-read-write'],
@@ -1575,7 +1563,6 @@ const cursorCloudConfig = Command.make(
       'shared-read-write',
     ),
     mode: cursorCloudMode,
-    shareId: optionalString('share-id', 'Opaque managed remote memory share identifier'),
     teams: repeatedString('team', 'Personal Git memory share; repeat to expose several through one MCP'),
   },
   options =>
@@ -1707,27 +1694,11 @@ const shareConflict = Command.make('conflict').pipe(
   Command.withSubcommands([conflictShow, conflictResolve]),
 );
 
-const publishFlags = {
-  dryRun: boolean('dry-run', 'Print actions without running them'),
-  message: optionalString('message', 'Commit message override'),
-  preview: boolean('preview', 'Print exact shared bytes without writing or committing'),
-  push: negatedBoolean('push', 'Skip the push step'),
-  redact: boolean('redact', 'Redact soft leaks; credentials still block'),
-  team: optionalString('team', 'Team name'),
-} as const;
-
-const sharePublish = Command.make(
-  'publish',
-  {
-    ...publishFlags,
-    allowUncitedPendingCodeRefs: boolean(
-      'allow-uncited-pending-code-refs',
-      'Publish without pending code citations and discard the private pending intent',
-    ),
-    uri: argument('resource-uri', 'Personal threadnote:// memory URI'),
-  },
-  ({uri, ...options}) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
-).pipe(Command.withDescription('Move a personal memory into the shared team namespace, commit and push'));
+const {shareMaterialize, sharePropose, sharePublish} = makeShareMemoryCommands(
+  (uri, options) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
+  options => withRuntimeEffect(config => runKnowledgeDeltaGitProposalExport(config, options)),
+  options => withRuntimeEffect(config => runKnowledgeDeltaGitProposalMaterialize(config, options)),
+);
 
 const artifactFlags = {
   dryRun: publishFlags.dryRun,
@@ -1841,6 +1812,8 @@ const share = Command.make('share').pipe(
     shareSync,
     shareConflicts,
     shareConflict,
+    sharePropose,
+    shareMaterialize,
     sharePublish,
     sharePublishArtifact,
     sharePublishBundle,
@@ -1894,6 +1867,10 @@ const registerTopLevelCommand = <const Name extends string, CommandType>(
 });
 
 const topLevelCommandRegistrations = [
+  registerTopLevelCommand('setup', makeSetupCommand(withScopedRuntime), setupCommandMetadata),
+  registerTopLevelCommand('activate', makeActivationCommand(withScopedRuntime)),
+  registerTopLevelCommand('guidance', makeGuidanceCommand(withScopedRuntime), guidanceCommandMetadata),
+  registerTopLevelCommand('agents', makeAgentsCommand(withScopedRuntime), agentsCommandMetadata),
   registerTopLevelCommand('manage', manage),
   registerTopLevelCommand('processes', processes, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('doctor', doctor),
@@ -1961,9 +1938,13 @@ const topLevelCommandRegistrations = [
     productionLog: {mode: 'requires-apply'},
   }),
   registerTopLevelCommand('recall', recall),
+  registerTopLevelCommand('recall-feedback', recallFeedback),
   registerTopLevelCommand('workset', workset),
   registerTopLevelCommand('context', context),
+  registerTopLevelCommand('value', value, {productionLog: {subcommands: {report: 'requires-apply', pilot: 'never'}}}),
+  registerTopLevelCommand('procedure', procedure, {productionLog: {subcommands: {verify: 'requires-apply'}}}),
   registerTopLevelCommand('compact', compact, {productionLog: {mode: 'requires-apply'}}),
+  registerTopLevelCommand('closeout', closeout, {productionLog: {subcommands: {apply: 'always'}}}),
   registerTopLevelCommand('read', read),
   registerTopLevelCommand('list', list, {aliases: ['ls']}),
   registerTopLevelCommand('handoff', handoff),
@@ -1989,9 +1970,7 @@ export const threadnoteCommand = root.pipe(
   Command.withDescription('Threadnote shared context workflow for development agents'),
   Command.withSubcommands(topLevelCommandRegistrations.map(registration => registration.command)),
 );
-
 export function inspectCliInvocation(arguments_: readonly string[]): CliInvocationInspection {
   return inspectRegisteredCliInvocation(arguments_);
 }
-
 export {CliError, normalizeCliArguments, type CliInvocationInspection};

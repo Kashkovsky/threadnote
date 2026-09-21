@@ -13,7 +13,7 @@ import {
   recallIndexStatus,
   recallUriMatchesScopes,
 } from '../../src/recall/index.js';
-import {recallWorkspaceScopeMatches} from '../../src/recall/index_scope.js';
+import {recallWorkspaceScopeMatches} from '../../src/recall/index/scope.js';
 import {deriveRecallEligibilityPolicy} from '../../src/recall/eligibility.js';
 import {chunksForRecallCandidates} from '../../src/search/vector-index.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';

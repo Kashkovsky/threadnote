@@ -18,10 +18,10 @@ COPY --from=build /src/dist /opt/threadnote
 COPY --from=build /tmp/graph-publisher-preflight.js /opt/threadnote/graph-publisher-preflight.js
 COPY deploy/threadnote-org-graph/entrypoint.sh /usr/local/bin/threadnote-org-graph-entrypoint
 COPY deploy/threadnote-org-graph/sync-checkout.sh /usr/local/bin/threadnote-org-graph-sync
-COPY deploy/threadnote-org-graph/docker-credential-threadnote-auth0-publisher-m2m /usr/local/bin/docker-credential-threadnote-auth0-publisher-m2m
+COPY deploy/threadnote-org-graph/docker-credential-threadnote-oauth-publisher-m2m /usr/local/bin/docker-credential-threadnote-oauth-publisher-m2m
 COPY deploy/threadnote-org-graph/nginx.conf /etc/threadnote/graph-nginx.conf
 COPY deploy/threadnote-org/github_known_hosts /etc/threadnote/github_known_hosts
-RUN chmod 755 /usr/local/bin/threadnote-org-graph-entrypoint /usr/local/bin/threadnote-org-graph-sync /usr/local/bin/docker-credential-threadnote-auth0-publisher-m2m && \
+RUN chmod 755 /usr/local/bin/threadnote-org-graph-entrypoint /usr/local/bin/threadnote-org-graph-sync /usr/local/bin/docker-credential-threadnote-oauth-publisher-m2m && \
     chmod 644 /etc/threadnote/graph-nginx.conf /etc/threadnote/github_known_hosts && \
     mkdir -p /data /run/threadnote /run/nginx && \
     chown bun:bun /run/threadnote /run/nginx

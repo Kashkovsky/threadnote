@@ -5,10 +5,10 @@ import type {CodeGraphWorksetTopologyResultV1} from '../code_graph/cross_reposit
 import type {CodeGraphCrossRepositoryTraversalResultV1} from '../code_graph/cross_repository/traversal.js';
 import {renderCodeGraphWorksetPrepareProgress} from '../code_graph/workset_catalog/progress_render.js';
 import type {CodeGraphWorksetStatusResultV1} from '../code_graph/workset_catalog/workset.js';
-import type {ProjectedCodeGraphWorksetEvidenceV1} from '../code_graph/workset_evidence.js';
+import type {ProjectedCodeGraphWorksetEvidenceV1} from '../code_graph/workset/evidence.js';
 import {useManagerDialogs} from './dialog.js';
 import {ManifestProjectsPanel} from './manifest_projects_view.js';
-import {ManagerApiError, api, errorMessage} from './ui_support.js';
+import {ManagerApiError, api, errorMessage} from './ui/support.js';
 import type {
   ManagerWorksetCatalog,
   ManagerWorksetDefinition,

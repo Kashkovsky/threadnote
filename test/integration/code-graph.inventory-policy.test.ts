@@ -11,7 +11,7 @@ import {inventoryRepository, previewCodeGraphInventory, worktreeOverlayState} fr
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
-} from '../../src/code_graph/inventory_policy.js';
+} from '../../src/code_graph/inventory/policy.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';

@@ -1,12 +1,12 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Effect, Schema} from 'effect';
-import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code_citation_capture.js';
+import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code/citation_capture.js';
 import {mcpErrorResult} from './server/common.js';
 import type {RuntimeConfig} from '../types.js';
 
 export function captureMemoryCodeCitationsForMcp(
   config: RuntimeConfig,
-  input: {readonly callerCwd: string; readonly refs: readonly string[]},
+  input: {readonly callerCwd: string; readonly project?: string; readonly refs: readonly string[]},
   operation: string,
 ) {
   if (input.refs.length === 0) {

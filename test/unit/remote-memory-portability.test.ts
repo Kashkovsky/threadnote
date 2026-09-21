@@ -3,7 +3,7 @@ import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
 import {parseRemoteCanonicalMemoryDocument} from '../../src/memory_domain/content.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {
   applyGitBetaImportOperator,

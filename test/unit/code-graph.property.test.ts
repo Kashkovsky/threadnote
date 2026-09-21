@@ -10,11 +10,11 @@ import {
   parseNameStatus,
   summarizeCodeGraphInventoryPreview,
 } from '../../src/code_graph/inventory.js';
-import {parsePorcelainV1Status} from '../../src/code_graph/inventory_porcelain.js';
+import {parsePorcelainV1Status} from '../../src/code_graph/inventory/porcelain.js';
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
-} from '../../src/code_graph/inventory_policy.js';
+} from '../../src/code_graph/inventory/policy.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 import {neighborQuery, traversalQuery} from '../../src/code_graph/query.js';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store.js';

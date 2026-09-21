@@ -3,24 +3,24 @@ import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import {canonicalJson} from '../../src/code_graph/checkpoint/canonical_json.js';
 import {writeDurablePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
-import type {GraphControlPolicy} from '../../src/code_graph/sharing/control_authorization.js';
+import type {GraphControlPolicy} from '../../src/code_graph/sharing/control/authorization.js';
 import {
   graphWorkerAdmissionStatePath,
   readGraphWorkerAdmissionStore,
   retireGraphWorkerAdmissionsForPublishedSourceLocked,
-} from '../../src/code_graph/sharing/control_result_admission.js';
+} from '../../src/code_graph/sharing/control/result_admission.js';
 import {withCoordinatorStateLock} from '../../src/code_graph/sharing/coordinator_lock.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
   graphWorkerAdmissionArchivePaths,
   parkGraphWorkerAdmissionReceipts,
   readGraphWorkerAdmissionArchive,
-} from '../../src/code_graph/sharing/worker_admission_archive.js';
+} from '../../src/code_graph/sharing/worker/admission_archive.js';
 import {
   admitGraphWorkerAnnouncement,
   emptyGraphWorkerAdmissionStore,
   type GraphWorkerAdmissionReceiptV2,
-} from '../../src/code_graph/sharing/worker_admission_state.js';
+} from '../../src/code_graph/sharing/worker/admission_state.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

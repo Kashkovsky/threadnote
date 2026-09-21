@@ -1,7 +1,7 @@
 import {Console, Crypto, DateTime, Effect, Exit, FileSystem, Option, Path, Schema} from 'effect';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {observeProcessInstanceIdentity, processInstanceIdentityMatches} from './process_identity.js';
-import {compareVersions} from '../release/version_compare.js';
+import {compareVersions} from '../release/version/compare.js';
 
 class StandaloneProcessLeaseError extends Schema.TaggedError<StandaloneProcessLeaseError>()(
   'StandaloneProcessLeaseError',

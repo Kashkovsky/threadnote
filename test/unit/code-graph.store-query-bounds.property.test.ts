@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {reusableCleanBaseSlicePaths} from '../../src/code_graph/store_queries.js';
+import {reusableCleanBaseSlicePaths} from '../../src/code_graph/store/queries.js';
 
 describe('code graph persisted-base slice bounds', () => {
   it('canonicalizes every bounded unique path set without changing membership', () => {

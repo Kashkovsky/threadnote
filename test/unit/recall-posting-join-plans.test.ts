@@ -6,8 +6,8 @@ import * as FC from 'fast-check';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {describe, expect} from 'vitest';
 import type {RecallEligibilityPolicy} from '../../src/recall/eligibility.js';
-import {postingLexicalScore} from '../../src/recall/index_lexical.js';
-import {selectRecallQueryTermStatistics, selectTopRecallPostingsByTerms} from '../../src/recall/index_selection.js';
+import {postingLexicalScore} from '../../src/recall/index/lexical.js';
+import {selectRecallQueryTermStatistics, selectTopRecallPostingsByTerms} from '../../src/recall/index/selection.js';
 import type {RecallCorpusStatistics} from '../../src/recall/rank.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

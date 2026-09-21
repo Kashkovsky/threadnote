@@ -25,14 +25,14 @@ import {
   shareBundlePack,
   showShareConflict,
 } from '../../effect/share.js';
-import {withSharedRepositoryLock} from '../../effect/share_lock.js';
+import {withSharedRepositoryLock} from '../../effect/share/lock.js';
 import {canonicalMemoryDocumentContent} from '../../memory/document.js';
 import {sharePublishEligibilityError, sharePublishRelationWarnings} from '../../share/publish_policy.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../../memory/code_citation_policy.js';
-import {discardDeferredCodeAnchorIntent, hasDeferredCodeAnchorIntent} from '../../memory/deferred_code_anchor.js';
+} from '../../memory/code/citation_policy.js';
+import {discardDeferredCodeAnchorIntent, hasDeferredCodeAnchorIntent} from '../../memory/deferred/code_anchor.js';
 import {recordMemoryRelocation} from '../../memory/relocation.js';
 import {type RuntimeConfig, argumentError, mcpErrorResult} from './common.js';
 import {

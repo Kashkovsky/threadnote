@@ -5,8 +5,8 @@ import {TestClock} from 'effect/testing';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {enrollGraphControlClient} from '../../src/code_graph/sharing/client_enrollment.js';
-import {makeAuthenticatedGraphControlClient} from '../../src/code_graph/sharing/control_http.js';
+import {enrollGraphControlClient} from '../../src/code_graph/sharing/client/enrollment.js';
+import {makeAuthenticatedGraphControlClient} from '../../src/code_graph/sharing/control/http.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

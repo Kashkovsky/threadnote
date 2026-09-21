@@ -8,11 +8,11 @@ import {
   readCodeGraphMaterializationSpoolReadyPlan,
   sealCodeGraphMaterializationSpool,
   sortCodeGraphMaterializationSpoolSurfaces,
-} from '../../src/code_graph/materialization_spool.js';
+} from '../../src/code_graph/materialization/spool.js';
 import {
   appendCodeGraphMaterializationSpoolFactBatch,
   prepareCodeGraphMaterializationSpoolFactBatch,
-} from '../../src/code_graph/materialization_spool_writer.js';
+} from '../../src/code_graph/materialization/spool/writer.js';
 import type {CodeGraphEdge, CodeGraphReference, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
 it('appends every canonical fact surface under the exact durable batch receipt', () => {

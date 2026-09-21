@@ -1,7 +1,7 @@
 import {fcProp} from '../helpers/fast-check-property.js';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'fast-check';
-import {identifiers, indexTerms} from '../../src/recall/index_lexical.js';
+import {identifiers, indexTerms} from '../../src/recall/index/lexical.js';
 
 describe('recall tokenization', () => {
   it('keeps Ukrainian words and splits apostrophe and hyphen compounds', () => {

@@ -9,7 +9,7 @@ import {
   codeGraphGitWorktreeAdminNameKeys,
   observeCodeGraphGitWorktreeRegistry,
   type CodeGraphGitWorktreeRegistryObservation,
-} from '../../src/code_graph/git_worktree_registration.js';
+} from '../../src/code_graph/git/worktree/registration.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
 import {runEffect} from '../helpers/effect-runtime.js';

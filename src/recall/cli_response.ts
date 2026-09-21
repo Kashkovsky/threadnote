@@ -9,7 +9,10 @@ import {
   parseRecallMemoryConnectionInput,
   type ParsedRecallMemoryConnectionInput,
   type RecallMemoryConnectionsResult,
-} from './memory_connections.js';
+} from './memory/connections.js';
+
+export const RECALL_FEEDBACK_CLI_GUIDANCE =
+  'Feedback: threadnote recall-feedback <threadnote://uri> --query <original-query> --action useful|wrong|pin|dismiss|applied (pin also requires --project).';
 
 export interface ParsedRecallCliInput {
   readonly memoryConnections: ParsedRecallMemoryConnectionInput | undefined;
@@ -107,10 +110,11 @@ export function projectRecallCliResponse(
         input.exactTail,
         input.memoryConnections ? renderRecallMemoryConnections(input.memoryConnections) : undefined,
       ].filter((section): section is string => section !== undefined);
+  const surfacedSections = sections.length > 0 ? [...sections, RECALL_FEEDBACK_CLI_GUIDANCE] : sections;
   return {
     confidence:
       (navigationOnly ? explicitMemoryConnectionConfidence(input.memoryConnections) : undefined) ?? input.confidence,
     rankedContext,
-    sections,
+    sections: surfacedSections,
   };
 }

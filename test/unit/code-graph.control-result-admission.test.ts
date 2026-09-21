@@ -18,8 +18,8 @@ import {
 } from '../../src/code_graph/sharing/artifacts.js';
 import {writePrivateJsonFile} from '../../src/code_graph/sharing/atomic.js';
 import {putCasBytes} from '../../src/code_graph/sharing/cas.js';
-import {readGraphControlPolicy} from '../../src/code_graph/sharing/control_authorization.js';
-import {makeGraphControlReader} from '../../src/code_graph/sharing/control_reader.js';
+import {readGraphControlPolicy} from '../../src/code_graph/sharing/control/authorization.js';
+import {makeGraphControlReader} from '../../src/code_graph/sharing/control/reader.js';
 import {withCoordinatorStateLock} from '../../src/code_graph/sharing/coordinator_lock.js';
 import {
   admitGraphControlWorkerResult,
@@ -27,24 +27,24 @@ import {
   readGraphWorkerAdmissionStore,
   retireGraphWorkerAdmissionsCoveredByPublishedSourceLocked,
   retireGraphWorkerAdmissionsForPublishedSourceLocked,
-} from '../../src/code_graph/sharing/control_result_admission.js';
+} from '../../src/code_graph/sharing/control/result_admission.js';
 import {
   emptyGraphWorkerAdmissionStore,
   GRAPH_WORKER_ADMISSION_MAX_RECEIPTS,
-} from '../../src/code_graph/sharing/worker_admission_state.js';
+} from '../../src/code_graph/sharing/worker/admission_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingFrontierPointerPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
 import {readAuthenticatedGraphShareFrontier} from '../../src/code_graph/sharing/frontier_acceptance.js';
-import {graphShareRegistryPublicationScope} from '../../src/code_graph/sharing/registry_publication.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
+import {graphShareRegistryPublicationScope} from '../../src/code_graph/sharing/registry/publication.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
 import {defaultGraphShareProfile, graphShareProfileDigest} from '../../src/code_graph/sharing/profile.js';
-import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
+import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker/announcement.js';
 import {
   parkGraphWorkerAdmissionReceipts,
   readGraphWorkerAdmissionArchive,
-} from '../../src/code_graph/sharing/worker_admission_archive.js';
-import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker_result.js';
-import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
+} from '../../src/code_graph/sharing/worker/admission_archive.js';
+import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker/result.js';
+import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker/signing.js';
 import {createAccessTokenVerifier} from '../../src/oauth/access_token.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';

@@ -7,7 +7,7 @@ import {
   CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT,
   CODE_GRAPH_STATUS_MINIMUM_BUILD_LIMIT,
   CODE_GRAPH_STATUS_MINIMUM_LANGUAGE_PACK_LIMIT,
-} from '../code_graph/status_projection.js';
+} from '../code_graph/status/projection.js';
 import {
   boolean,
   defaultChoice,
@@ -16,7 +16,7 @@ import {
   optional,
   optionalString,
   withValueAlias,
-} from './cli_flags.js';
+} from './cli/flags.js';
 
 export const codeGraphCliBounds = {
   cwd: optionalString('cwd', 'Repository or worktree directory; defaults to the current directory'),
@@ -44,6 +44,10 @@ export const codeGraphCliBounds = {
     ),
     'limit',
     'other',
+  ),
+  project: optionalString(
+    'project',
+    'Configured project graph to use; selects a scoped graph or preserves a named full-repository project',
   ),
   readTimeoutMilliseconds: optional(
     describeFlag(
@@ -100,4 +104,5 @@ export const codeGraphStatusFlags = {
   cwd: codeGraphCliBounds.cwd,
   json: codeGraphCliBounds.json,
   languagePackLimit: codeGraphStatusLanguagePackLimitFlag,
+  project: codeGraphCliBounds.project,
 } as const;

@@ -5,7 +5,7 @@ import {describe} from 'vitest';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runArchive} from '../../src/memory/index.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {loadRecallIndexData, recallIndexDatabaseFilename} from '../../src/recall/index.js';
 import type {RuntimeConfig} from '../../src/types.js';

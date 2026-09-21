@@ -1,5 +1,5 @@
 import {Clock, Effect, FileSystem, Option, Path} from 'effect';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {readJsonFile, writePrivateJsonFile} from './atomic.js';
 import {SHA256_DIGEST} from './digest.js';
 import {graphSharingFailure} from './errors.js';

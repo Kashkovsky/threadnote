@@ -33,6 +33,17 @@ describe('Effect CLI', () => {
     expect(result.stdout).toContain('--stable');
   });
 
+  it('keeps the setup verification task built in', async () => {
+    const help = await runCli(['setup', 'gemini-cli', '--help']);
+    expect(help.stdout).not.toContain('--task');
+
+    const error = await runCli(['setup', 'gemini-cli', '--task', 'custom verification']).catch(
+      cause => cause as NodeJS.ErrnoException & {stderr?: string},
+    );
+    expect(error).toMatchObject({code: 1});
+    expect(String(error.stderr)).toContain('--task');
+  });
+
   it('exposes explicit preview/apply telemetry consent commands', async () => {
     const telemetry = await runCli(['telemetry', '--help']);
     const enable = await runCli(['telemetry', 'enable', '--help']);
@@ -66,6 +77,8 @@ describe('Effect CLI', () => {
     expect(handoff.stdout).toContain('--require-current-code-refs');
     expect(contextBrief.stdout).toContain('1-4096 UTF-8 bytes');
     expect(contextBrief.stdout).toContain('at most 256 UTF-8 bytes');
+    expect(contextBrief.stdout).toContain('--cwd string');
+    expect(contextBrief.stdout).not.toContain('--caller-cwd');
   });
 
   it('stores repeatable typed relations as stable memory identities', async () => {
@@ -236,6 +249,23 @@ describe('Effect CLI', () => {
       expect(memoryUri).toBeDefined();
       const stored = await runCli(['read', memoryUri!], {THREADNOTE_HOME: root});
       expect(stored.stdout).toMatch(/^memory_id: tn_[a-f0-9]{32}$/mu);
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('omits derived-index status when finalize-code-refs finalizes nothing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-finalize-empty-'));
+    try {
+      const result = await runCli(['finalize-code-refs'], {THREADNOTE_HOME: root});
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 0,
+        pendingCount: 0,
+        scannedCount: 0,
+      });
+      expect(JSON.parse(result.stdout)).not.toHaveProperty('derivedIndexes');
     } finally {
       await rm(root, {force: true, recursive: true});
     }
@@ -603,6 +633,30 @@ describe('Effect CLI', () => {
     expect(repair.stdout).toContain('--all');
     expect(repair.stdout).toContain('--deep');
     expect(repair.stdout).toContain('--dry-run');
+  });
+
+  it('transports a pre-status refresh-demand supersession as private exit code 75', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-refresh-demand-'));
+    const home = join(root, 'home');
+    const repository = join(root, 'repository');
+    try {
+      await mkdir(home, {mode: 0o700, recursive: true});
+      await mkdir(repository, {recursive: true});
+      await writeFile(join(repository, 'source.ts'), 'export const value = 1;\n');
+      await execFilePromise('git', ['init', '--quiet'], {cwd: repository});
+      await execFilePromise('git', ['config', 'user.email', 'threadnote@example.test'], {cwd: repository});
+      await execFilePromise('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
+      await execFilePromise('git', ['add', '.'], {cwd: repository});
+      await execFilePromise('git', ['commit', '--quiet', '--message', 'fixture'], {cwd: repository});
+
+      await expect(
+        runCli(['graph', 'index', '--home', home, '--cwd', repository, '--no-vectors'], {
+          THREADNOTE_CODE_GRAPH_REFRESH_DEMAND_TOKEN: `cgdq_${'a'.repeat(32)}`,
+        }),
+      ).rejects.toMatchObject({code: 75});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
   });
 
   it('rejects more than eight Context Brief code references during CLI parsing', async () => {
@@ -1669,6 +1723,107 @@ describe('Effect CLI', () => {
 
   it('returns a non-zero exit code for an unknown subcommand', async () => {
     await expect(runCli(['definitely-not-a-command'])).rejects.toMatchObject({code: 1});
+  });
+
+  it('manages workset definitions through the CLI with stable JSON output and explicit deletion confirmation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-worksets-'));
+    const manifestPath = join(root, 'seed-manifest.yaml');
+    try {
+      await writeFile(
+        manifestPath,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: api',
+          '    path: /workspace/api',
+          '    uri: threadnote://resources/repos/api',
+          '    seed: []',
+          '  - name: worker',
+          '    path: /workspace/worker',
+          '    uri: threadnote://resources/repos/worker',
+          '    seed: []',
+          '',
+        ].join('\n'),
+      );
+      const environment = {THREADNOTE_HOME: root, THREADNOTE_MANIFEST: manifestPath};
+
+      await expect(runCli(['workset', 'create', 'empty', '--json'], environment)).rejects.toMatchObject({code: 1});
+      const created = await runCli(
+        ['workset', 'create', 'platform', '--project', 'api', '--description', 'Shared runtime', '--json'],
+        environment,
+      );
+      expect(JSON.parse(created.stdout)).toMatchObject({changed: true, operation: 'create', version: 1});
+
+      const listed = await runCli(['workset', 'list', '--json'], environment);
+      expect(JSON.parse(listed.stdout)).toMatchObject({
+        version: 1,
+        worksets: [{description: 'Shared runtime', memberCount: 1, name: 'platform'}],
+      });
+
+      const shown = await runCli(['workset', 'show', 'PLATFORM', '--json'], environment);
+      expect(JSON.parse(shown.stdout)).toMatchObject({
+        version: 1,
+        workset: {
+          name: 'platform',
+          members: [{configured: true, project: 'api', uri: 'threadnote://resources/repos/api'}],
+        },
+      });
+      const shownText = await runCli(['workset', 'show', 'platform'], environment);
+      expect(shownText.stdout).toContain('- api (threadnote://resources/repos/api)');
+
+      const updated = await runCli(
+        ['workset', 'update', 'platform', '--name', 'core', '--project', 'worker', '--json'],
+        environment,
+      );
+      expect(JSON.parse(updated.stdout)).toMatchObject({changed: true, operation: 'update', version: 1});
+
+      const renamedText = await runCli(['workset', 'update', 'core', '--name', 'platform'], environment);
+      expect(renamedText.stdout).toContain('Updated workset: platform');
+
+      const unchanged = await runCli(['workset', 'update', 'platform', '--json'], environment);
+      expect(JSON.parse(unchanged.stdout)).toMatchObject({changed: false, operation: 'update', version: 1});
+
+      await expect(runCli(['workset', 'delete', 'platform'], environment)).rejects.toMatchObject({code: 1});
+      expect((await runCli(['workset', 'show', 'platform', '--json'], environment)).stdout).toContain('"platform"');
+
+      const deleted = await runCli(['workset', 'delete', 'platform', '--confirm', '--json'], environment);
+      expect(JSON.parse(deleted.stdout)).toMatchObject({changed: true, operation: 'delete', version: 1});
+
+      // Manager permits U+0085, so every CLI selector must use its shared validator rather than a Unicode category check.
+      const c1Name = 'platform\u0085';
+      await runCli(['workset', 'create', c1Name, '--project', 'api'], environment);
+      expect(JSON.parse((await runCli(['workset', 'show', c1Name, '--json'], environment)).stdout)).toMatchObject({
+        workset: {name: c1Name},
+      });
+      await expect(runCli(['workset', 'update', c1Name, '--json'], environment)).resolves.toBeDefined();
+      await expect(runCli(['workset', 'delete', c1Name, '--confirm', '--json'], environment)).resolves.toBeDefined();
+
+      for (const invalid of [' ', 'bad\u001fname', 'x'.repeat(257)]) {
+        await expect(runCli(['workset', 'show', invalid], environment)).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining('workset must be bounded text without control characters.'),
+        });
+        await expect(runCli(['workset', 'update', invalid], environment)).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining('workset must be bounded text without control characters.'),
+        });
+        await expect(runCli(['workset', 'delete', invalid, '--confirm'], environment)).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining('workset must be bounded text without control characters.'),
+        });
+      }
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('makes the full Workset lifecycle discoverable without changing prepare compatibility', async () => {
+    const help = await runCli(['workset', '--help']);
+    expect(help.stdout).toContain('create');
+    expect(help.stdout).toContain('update');
+    expect(help.stdout).toContain('delete');
+    expect(help.stdout).toContain('prepare');
+    expect((await runCli(['workset', 'delete', '--help'])).stdout).toContain('--confirm');
   });
 });
 

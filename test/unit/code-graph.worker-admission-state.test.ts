@@ -13,12 +13,12 @@ import {
   parseGraphWorkerAdmissionStore,
   retireGraphWorkerAdmissionsForPublishedSource,
   retireGraphWorkerAdmissionsForPublishedSources,
-} from '../../src/code_graph/sharing/worker_admission_state.js';
+} from '../../src/code_graph/sharing/worker/admission_state.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
-import {verifyGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
-import type {GraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
-import type {GraphWorkerResultAuthority} from '../../src/code_graph/sharing/worker_result.js';
-import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
+import {verifyGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker/announcement.js';
+import type {GraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker/announcement.js';
+import type {GraphWorkerResultAuthority} from '../../src/code_graph/sharing/worker/result.js';
+import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker/signing.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

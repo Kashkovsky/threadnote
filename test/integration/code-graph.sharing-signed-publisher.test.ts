@@ -22,17 +22,17 @@ import {
   writeDurablePrivateJsonFile,
   writePrivateJsonFile,
 } from '../../src/code_graph/sharing/atomic.js';
-import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control_server.js';
-import {enrollGraphControlWorker} from '../../src/code_graph/sharing/control_enrollment.js';
+import {loadGraphShareCoordinatorState} from '../../src/code_graph/sharing/control/server.js';
+import {enrollGraphControlWorker} from '../../src/code_graph/sharing/control/enrollment.js';
 import {
   graphWorkerAdmissionStatePath,
   readGraphWorkerAdmissionStore,
-} from '../../src/code_graph/sharing/control_result_admission.js';
+} from '../../src/code_graph/sharing/control/result_admission.js';
 import {parseSha256Digest, sha256Digest, type Sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
   parkGraphWorkerAdmissionReceipts,
   readGraphWorkerAdmissionArchive,
-} from '../../src/code_graph/sharing/worker_admission_archive.js';
+} from '../../src/code_graph/sharing/worker/admission_archive.js';
 import {graphShareEnrollmentPath, graphSharingLayout} from '../../src/code_graph/sharing/layout.js';
 import {
   casProfilePointer,
@@ -40,9 +40,9 @@ import {
   parseGraphShareProfile,
   enrolledProfileBodyDigest,
 } from '../../src/code_graph/sharing/profile.js';
-import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher_cycle.js';
-import {readGraphPublisherEvidenceRecord} from '../../src/code_graph/sharing/publisher_evidence_record.js';
-import {readGraphPublisherRegistryStatus} from '../../src/code_graph/sharing/publisher_registry.js';
+import {advanceGraphPublisherFrontier} from '../../src/code_graph/sharing/publisher/cycle.js';
+import {readGraphPublisherEvidenceRecord} from '../../src/code_graph/sharing/publisher/evidence_record.js';
+import {readGraphPublisherRegistryStatus} from '../../src/code_graph/sharing/publisher/registry.js';
 import {
   runGraphPublisherBootstrap,
   runGraphPublisherListen,
@@ -51,15 +51,15 @@ import {
 import {
   graphShareParseResultArtifact,
   type GraphShareParseResultV1,
-} from '../../src/code_graph/sharing/parse_result.js';
+} from '../../src/code_graph/sharing/parse/result.js';
 import {announceGraphShareResult} from '../../src/code_graph/sharing/receipts.js';
-import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
-import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker_result.js';
-import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
+import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker/announcement.js';
+import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker/result.js';
+import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker/signing.js';
 import {
   admitGraphWorkerAnnouncement,
   emptyGraphWorkerAdmissionStore,
-} from '../../src/code_graph/sharing/worker_admission_state.js';
+} from '../../src/code_graph/sharing/worker/admission_state.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 

@@ -1,10 +1,12 @@
-import {Effect} from 'effect';
+import {DateTime, Effect} from 'effect';
+import {it as effectIt} from '@effect/vitest';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   aggregateRecallFeedback,
   loadRecallFeedback,
   recallQueryFingerprint,
   recordRecallFeedback,
+  summarizeRecallFeedback,
   type RecallFeedbackEvent,
 } from '../../src/recall/feedback.js';
 import {join, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/effect-filesystem.js';
@@ -84,6 +86,58 @@ describe('recall feedback', () => {
     expect(scores.get('threadnote://user/me/memory.md')).toBeLessThan(0.4);
   });
 
+  effectIt.effect('keeps unscoped ranking limited to projectless non-pin feedback', () =>
+    Effect.gen(function* () {
+      const query = 'current query';
+      const queryFingerprint = yield* recallQueryFingerprint(query);
+      const otherQueryFingerprint = yield* recallQueryFingerprint('different query');
+      const events: RecallFeedbackEvent[] = [
+        {
+          action: 'useful',
+          queryFingerprint,
+          rankerVersion: 'hybrid-v1',
+          timestamp: '2026-07-23T00:00:00.000Z',
+          uri: 'threadnote://user/me/global.md',
+          version: 1,
+        },
+        {
+          action: 'useful',
+          project: 'threadnote',
+          queryFingerprint,
+          rankerVersion: 'hybrid-v1',
+          timestamp: '2026-07-23T00:00:00.000Z',
+          uri: 'threadnote://user/me/scoped.md',
+          version: 1,
+        },
+        {
+          action: 'pin',
+          project: 'threadnote',
+          queryFingerprint,
+          rankerVersion: 'hybrid-v1',
+          timestamp: '2026-07-23T00:00:00.000Z',
+          uri: 'threadnote://user/me/pinned.md',
+          version: 1,
+        },
+        {
+          action: 'pin',
+          queryFingerprint: otherQueryFingerprint,
+          rankerVersion: 'hybrid-v1',
+          timestamp: '2026-07-23T00:00:00.000Z',
+          uri: 'threadnote://user/me/projectless-pin.md',
+          version: 1,
+        },
+      ];
+
+      const scores = yield* aggregateRecallFeedback(events, {
+        now: DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T00:00:00.000Z')),
+        query,
+      });
+
+      expect(scores).toEqual(new Map([['threadnote://user/me/global.md', 0.15]]));
+      expect(scores.has('threadnote://user/me/projectless-pin.md')).toBe(false);
+    }),
+  );
+
   it('ignores legacy projectless pins and compacts expired events on write', async () => {
     const feedbackDirectory = join(directory, 'feedback');
     const feedbackPath = join(feedbackDirectory, 'recall-events-v1.jsonl');
@@ -151,5 +205,68 @@ describe('recall feedback', () => {
 
     const stored = await readFile(join(directory, 'feedback', 'recall-events-v1.jsonl'), 'utf8');
     expect(stored.trim().split('\n')).toHaveLength(2);
+  });
+
+  it('treats projectless non-pin feedback as global for project-filtered reports', () => {
+    const events: RecallFeedbackEvent[] = [
+      {
+        action: 'applied',
+        queryFingerprint: 'a'.repeat(64),
+        rankerVersion: 'test',
+        timestamp: '2026-07-23T00:00:00.000Z',
+        uri: 'threadnote://user/me/global.md',
+        version: 1,
+      },
+      {
+        action: 'pin',
+        queryFingerprint: 'a'.repeat(64),
+        rankerVersion: 'test',
+        timestamp: '2026-07-23T00:00:00.000Z',
+        uri: 'threadnote://user/me/global-pin.md',
+        version: 1,
+      },
+      {
+        action: 'useful',
+        project: 'other',
+        queryFingerprint: 'a'.repeat(64),
+        rankerVersion: 'test',
+        timestamp: '2026-07-23T00:00:00.000Z',
+        uri: 'threadnote://user/me/other.md',
+        version: 1,
+      },
+    ];
+
+    expect(
+      summarizeRecallFeedback(events, {
+        from: new Date('2026-07-23T00:00:00.000Z'),
+        project: 'threadnote',
+        to: new Date('2026-07-23T00:00:00.000Z'),
+      }),
+    ).toEqual({applied: 1, dismiss: 0, pin: 0, useful: 0, wrong: 0});
+  });
+
+  it('counts all actions for unfiltered reports', () => {
+    const events: RecallFeedbackEvent[] = [
+      {
+        action: 'applied',
+        project: 'threadnote',
+        queryFingerprint: 'a'.repeat(64),
+        rankerVersion: 'test',
+        timestamp: '2026-07-23T00:00:00.000Z',
+        uri: 'threadnote://user/me/scoped.md',
+        version: 1,
+      },
+      {
+        action: 'pin',
+        project: 'threadnote',
+        queryFingerprint: 'a'.repeat(64),
+        rankerVersion: 'test',
+        timestamp: '2026-07-23T00:00:00.000Z',
+        uri: 'threadnote://user/me/pinned.md',
+        version: 1,
+      },
+    ];
+
+    expect(summarizeRecallFeedback(events)).toEqual({applied: 1, dismiss: 0, pin: 1, useful: 0, wrong: 0});
   });
 });

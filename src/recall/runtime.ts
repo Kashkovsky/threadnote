@@ -21,8 +21,8 @@ import {
   recallIndexStatus,
   recallUriMatchesScopes,
 } from './index.js';
-import {recallWorkspaceScopeMatches} from './index_scope.js';
-import {RECALL_RECENCY_CANDIDATE_RESERVE} from './index_query.js';
+import {recallWorkspaceScopeMatches} from './index/scope.js';
+import {RECALL_RECENCY_CANDIDATE_RESERVE} from './index/query.js';
 import {recallRankCandidateIsEligible, type RecallEligibilityPolicy} from './eligibility.js';
 import {
   deduplicateLogicalRecallCandidates,
@@ -53,8 +53,8 @@ import {
   lexicalRefreshDisposition,
   scheduleMcpRecallBackgroundRefresh,
   type McpRecallBackgroundRefreshSchedule,
-} from './mcp_refresh.js';
-import {retrieveRecallMemoryConnections, type RecallMemoryConnectionsResult} from './memory_connections.js';
+} from './mcp/refresh.js';
+import {retrieveRecallMemoryConnections, type RecallMemoryConnectionsResult} from './memory/connections.js';
 
 interface RecallRuntimeConfig {
   readonly account: string;

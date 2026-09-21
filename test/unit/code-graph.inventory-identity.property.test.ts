@@ -5,7 +5,7 @@ import {
   codeGraphContentIdentity,
   createCodeGraphContentIdentityAccumulator,
 } from '../../src/code_graph/graph_identity.js';
-import {codeGraphInventorySha256Hex} from '../../src/code_graph/inventory_identity.js';
+import {codeGraphInventorySha256Hex} from '../../src/code_graph/inventory/identity.js';
 import {compareCodeUnits} from '../../src/code_graph/ordering.js';
 
 describe('code graph inventory identity', () => {

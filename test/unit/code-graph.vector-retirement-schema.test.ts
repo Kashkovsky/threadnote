@@ -23,13 +23,13 @@ import {
   prepareCodeGraphVectorRetirement,
   retireCodeGraphVectorPointerWithCapacity,
   retireCodeGraphVectorGenerationPage,
-} from '../../src/code_graph/vector_maintenance.js';
+} from '../../src/code_graph/vector/maintenance.js';
 import {
   CODE_GRAPH_VECTOR_RETIREMENT_STATE_TABLE_SQL,
   admitOneCodeGraphVectorRetirement,
   deleteCodeGraphVectorPointerWithRetirementSql,
   inspectCodeGraphVectorRetirementWork,
-} from '../../src/code_graph/vector_retirement.js';
+} from '../../src/code_graph/vector/retirement.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const VectorRetirementTestLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);

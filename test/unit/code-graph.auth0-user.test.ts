@@ -4,11 +4,11 @@ import {Clock, Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FC from 'fast-check';
 import {
-  configureGraphAuth0User,
-  getGraphAuth0UserCredential,
-  loginGraphAuth0User,
-  type Auth0UserBackend,
-} from '../../src/code_graph/sharing/auth0_user.js';
+  configureGraphOAuthUser,
+  getGraphOAuthUserCredential,
+  loginGraphOAuthUser,
+  type OAuthUserBackend,
+} from '../../src/code_graph/sharing/oauth/user.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingUnavailable} from '../../src/code_graph/sharing/errors.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -39,6 +39,18 @@ const request = {
   schemaVersion: 1,
   scopes: ['graph:contribute'],
 };
+type Auth0UserBackend = OAuthUserBackend;
+const legacyProvider = {
+  audienceParameter: config.audience,
+  clientIdClaim: 'azp-or-client_id' as const,
+  deviceAuthorizationUrl: new URL('oauth/device/code', config.issuer).href,
+  jwksUrl: new URL('.well-known/jwks.json', config.issuer).href,
+  tokenUrl: new URL('oauth/token', config.issuer).href,
+};
+const configureGraphAuth0User = (runtime: RuntimeConfig, input: typeof config) =>
+  configureGraphOAuthUser(runtime, {...input, ...legacyProvider}, {profile: 'legacy-auth0'});
+const getGraphAuth0UserCredential = getGraphOAuthUserCredential;
+const loginGraphAuth0User = loginGraphOAuthUser;
 
 const fixture = Effect.fn('test.auth0User.fixture')(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -104,6 +116,7 @@ const fixture = Effect.fn('test.auth0User.fixture')(function* () {
       }),
     verify: () =>
       Effect.succeed({
+        clientId: config.clientId,
         expiresAt: now + 300,
         issuer: config.issuer,
         scopes: new Set(['graph:read', 'graph:contribute']),

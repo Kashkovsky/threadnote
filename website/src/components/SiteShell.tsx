@@ -8,6 +8,7 @@ const navItems: Array<{activePages: readonly SitePage[]; label: string; href: st
   {activePages: ['home'], label: 'Product', href: ''},
   {activePages: ['performance', 'performance-graphify'], label: 'Performance', href: 'performance/'},
   {activePages: ['docs'], label: 'Docs', href: 'docs/'},
+  {activePages: ['agents'], label: 'Agents', href: 'agents/'},
   {activePages: ['whats-new'], label: "What's new", href: 'whats-new/'},
   {activePages: ['pro-tips'], label: 'Pro tips', href: 'pro-tips/'},
   {activePages: ['manager-demo'], label: 'Manager demo', href: 'manager-demo/'},
@@ -101,10 +102,11 @@ export function SiteShell({
       <footer className="site-footer">
         <div>
           <ThreadnoteMark />
-          <p>Durable context for people and their agents.</p>
+          <p>Shared, reviewable context for the coding agents your team uses.</p>
         </div>
         <div className="site-footer__links">
           <a href={siteHref('docs/')}>Documentation</a>
+          <a href={siteHref('agents/')}>Supported agents</a>
           <a href={siteHref('performance/')}>Performance</a>
           <a href={siteHref('performance/graphify/')}>Threadnote vs Graphify</a>
           <a href={siteHref('whats-new/')}>What's new</a>
@@ -115,7 +117,7 @@ export function SiteShell({
           <a href={`${githubUrl}/issues`}>Issues</a>
         </div>
         <p className="site-footer__meta">
-          © Denys Kashkovskyi 2026 · AGPL-3.0 · Local-first · Built for the long thread
+          © Denys Kashkovskyi 2026 · AGPL-3.0 · Local-first · Built for reviewed reuse
         </p>
       </footer>
     </>

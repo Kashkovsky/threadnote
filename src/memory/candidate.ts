@@ -1,11 +1,11 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {safeChildDirectoryNames, scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {SystemInfo} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
 import {canonicalMemoryDocumentContent, parseMemoryDocument, type MemoryRecord} from './document.js';
-import {assertMemoryCodeCitation, formatMemoryCodeCitationLines, type MemoryCodeCitationV1} from './code_citation.js';
+import {assertMemoryCodeCitation, formatMemoryCodeCitationLines, type MemoryCodeCitationV1} from './code/citation.js';
 import type {MemoryKind} from '../types.js';
 
 export type CandidateCategory = 'decision' | 'handoff' | 'invariant' | 'preference';
@@ -17,22 +17,41 @@ export type CandidateApplyStage = 'cleanup_pending' | 'conflict' | 'prepared' | 
 
 export interface SessionCloseoutInput {
   readonly codeCitations?: readonly MemoryCodeCitationV1[];
+  readonly constraints?: readonly string[];
   readonly decisions?: readonly string[];
   readonly evidence?: readonly string[];
   readonly handoff?: readonly string[];
   readonly invariants?: readonly string[];
+  readonly knowledgeInvalidated?: readonly string[];
   readonly outcome: string;
   readonly preferences?: readonly string[];
   readonly project: string;
+  readonly rationale?: string;
   readonly sourceAgentClient: string;
   readonly sourceCommit?: string;
   readonly sourceSessionId?: string;
   readonly task: string;
   readonly topic: string;
+  readonly unresolvedRisks?: readonly string[];
+  readonly verificationPerformed?: readonly string[];
+  readonly structuredCloseout?: StructuredCloseoutV1;
+}
+
+/** Versioned, optional closeout context carried with candidate reviews and Knowledge Deltas. */
+export interface StructuredCloseoutV1 {
+  readonly type: 'structured-closeout';
+  readonly version: 1;
+  readonly rationale: string;
+  readonly constraints: readonly string[];
+  readonly verificationPerformed: readonly string[];
+  readonly knowledgeInvalidated: readonly string[];
+  readonly unresolvedRisks: readonly string[];
 }
 
 export interface MemoryCandidate {
+  readonly applyAllowDestructiveReplacement?: boolean;
   readonly applyApprovedAt?: string;
+  readonly applyBodyText?: string;
   readonly applyContentHash?: string;
   readonly applyOperation?: CandidateApplyOperation;
   readonly applyReplaceUri?: string;
@@ -48,10 +67,30 @@ export interface MemoryCandidate {
   readonly proposedText: string;
   readonly reason: string;
   readonly recommendation: CandidateRecommendation;
+  readonly replacementSafetyBaseline?: ReplacementSafetyBaselineV1;
   readonly state: CandidateReviewState;
   readonly targetContentHash?: string;
   readonly targetUri?: string;
   readonly topic: string;
+}
+
+export interface ReplacementSafetyBaselineV1 {
+  readonly bodyCharacters: number;
+  readonly nonEmptyLines: number;
+  readonly sectionHeadings: readonly string[];
+  readonly sectionListTruncated: boolean;
+  readonly version: 1;
+}
+
+export interface ReplacementSafetyAssessmentV1 {
+  readonly destructiveLossRisk: boolean;
+  readonly missingSections: readonly string[];
+  readonly proposedBodyCharacters: number;
+  readonly proposedNonEmptyLines: number;
+  readonly retainedCharacterRatio: number;
+  readonly retainedLineRatio: number;
+  readonly targetBodyCharacters: number;
+  readonly targetNonEmptyLines: number;
 }
 
 export interface CandidateReview {
@@ -66,6 +105,7 @@ export interface CandidateReview {
   readonly sourceAgentClient: string;
   readonly sourceCommit?: string;
   readonly sourceSessionId?: string;
+  readonly structuredCloseout?: StructuredCloseoutV1;
   readonly task: string;
   readonly topic: string;
   readonly version: 2;
@@ -73,6 +113,7 @@ export interface CandidateReview {
 
 export interface CandidateAuditEvent {
   readonly action: 'apply' | 'begin_apply' | 'conflict' | 'create_review' | 'defer' | 'reject';
+  readonly allowDestructiveReplacement?: boolean;
   readonly at: string;
   readonly candidateId?: string;
   readonly memoryUri?: string;
@@ -88,6 +129,7 @@ interface CandidateDraft {
 
 interface CandidateAuditTransition {
   readonly action: CandidateAuditEvent['action'];
+  readonly allowDestructiveReplacement?: boolean;
   readonly at: string;
   readonly memoryUri?: string;
 }
@@ -107,6 +149,9 @@ const MAX_CLOSEOUT_ITEM_CHARACTERS = 2_000;
 const MAX_CLOSEOUT_SCALAR_CHARACTERS = 4_000;
 const MAX_CLOSEOUT_EVIDENCE_POINTERS = 32;
 const MAX_CLOSEOUT_TOTAL_BYTES = 64 * 1_024;
+const MAX_STRUCTURED_CLOSEOUT_ITEMS = MAX_CLOSEOUT_ITEMS_PER_FIELD;
+const MAX_EXACT_DURABLE_CANDIDATE_BYTES = 60 * 1_024;
+const MAX_REPLACEMENT_BASELINE_SECTIONS = 32;
 const TERMINAL_REVIEW_RETENTION_MILLISECONDS = 30 * 24 * 60 * 60 * 1_000;
 const CANDIDATE_LOCK_STALE_MILLISECONDS = 5 * 60 * 1_000;
 const CANDIDATE_LOCK_RETRY_MILLISECONDS = 25;
@@ -122,6 +167,35 @@ export const buildCandidateReview = Effect.fn('candidate.buildReview')(function*
   existing: readonly MemoryRecord[],
   now: Date,
 ) {
+  return yield* buildCandidateReviewFromDrafts(input, existing, now, candidateDrafts(input));
+});
+
+/** Builds one reviewable durable candidate without normalizing its Markdown body. */
+export const buildExactDurableCandidateReview = Effect.fn('candidate.buildExactDurableReview')(function* (
+  input: SessionCloseoutInput,
+  proposedText: string,
+  existing: readonly MemoryRecord[],
+  now: Date,
+) {
+  const validationError = validateSessionCloseoutInput(input);
+  if (validationError) return yield* CandidateMemoryError.make({message: validationError});
+  const text = proposedText.trim();
+  if (!text) return yield* CandidateMemoryError.make({message: 'Exact durable candidate text is empty.'});
+  if (new TextEncoder().encode(text).byteLength > MAX_EXACT_DURABLE_CANDIDATE_BYTES)
+    return yield* CandidateMemoryError.make({
+      message: `Exact durable candidate exceeds ${MAX_EXACT_DURABLE_CANDIDATE_BYTES} UTF-8 bytes.`,
+    });
+  return yield* buildCandidateReviewFromDrafts(input, existing, now, [
+    {categories: ['invariant'], kind: 'durable', proposedText: text},
+  ]);
+});
+
+const buildCandidateReviewFromDrafts = Effect.fn('candidate.buildReviewFromDrafts')(function* (
+  input: SessionCloseoutInput,
+  existing: readonly MemoryRecord[],
+  now: Date,
+  drafts: readonly CandidateDraft[],
+) {
   const createdAt = now.toISOString();
   const reviewId = `review-${(yield* sha256Hex(
     [input.project, input.topic, input.sourceSessionId ?? '', input.task, createdAt].join('\n'),
@@ -131,10 +205,11 @@ export const buildCandidateReview = Effect.fn('candidate.buildReview')(function*
     evidence.length === 0
       ? []
       : yield* Effect.forEach(
-          candidateDrafts(input).slice(0, 3),
+          drafts.slice(0, 3),
           (draft, index) => compareCandidate(reviewId, index, input, draft, existing, evidence),
           {concurrency: 3},
         );
+  const structuredCloseout = structuredCloseoutFromInput(input);
   return {
     auditEvents: [
       {
@@ -154,6 +229,7 @@ export const buildCandidateReview = Effect.fn('candidate.buildReview')(function*
     sourceAgentClient: input.sourceAgentClient,
     sourceCommit: input.sourceCommit,
     sourceSessionId: input.sourceSessionId,
+    ...(structuredCloseout ? {structuredCloseout} : {}),
     task: input.task,
     topic: input.topic,
     version: 2,
@@ -191,6 +267,8 @@ export function candidateReviewWithApplying(
   review: CandidateReview,
   candidateId: string,
   apply: {
+    readonly allowDestructiveReplacement: boolean;
+    readonly bodyText: string;
     readonly contentHash: string;
     readonly operation: CandidateApplyOperation;
     readonly replaceUri?: string;
@@ -205,7 +283,9 @@ export function candidateReviewWithApplying(
         candidate.candidateId === candidateId
           ? {
               ...candidate,
+              ...(apply.allowDestructiveReplacement ? {applyAllowDestructiveReplacement: true} : {}),
               applyApprovedAt: at,
+              applyBodyText: apply.bodyText,
               applyContentHash: apply.contentHash,
               applyOperation: apply.operation,
               applyReplaceUri: apply.replaceUri,
@@ -218,6 +298,7 @@ export function candidateReviewWithApplying(
     },
     {
       action: 'begin_apply',
+      ...(apply.allowDestructiveReplacement ? {allowDestructiveReplacement: true} : {}),
       at,
       candidateId,
       memoryUri: apply.targetUri,
@@ -225,6 +306,80 @@ export function candidateReviewWithApplying(
       revision: review.revision,
     },
   );
+}
+
+function candidateReviewWithRecoveryApproval(
+  review: CandidateReview,
+  candidateId: string,
+  allowDestructiveReplacement: boolean,
+  at: string,
+): {readonly candidate: MemoryCandidate; readonly review: CandidateReview} | undefined {
+  const candidate = review.candidates.find(item => item.candidateId === candidateId);
+  if (!candidate) return undefined;
+  if (!allowDestructiveReplacement || candidate.applyAllowDestructiveReplacement === true) {
+    return {candidate, review};
+  }
+  if (
+    !candidate.applyBodyText ||
+    !candidate.applyContentHash ||
+    !candidate.applyOperation ||
+    !candidate.applyTargetUri
+  ) {
+    return undefined;
+  }
+  const updated = candidateReviewWithApplying(
+    review,
+    candidateId,
+    {
+      allowDestructiveReplacement: true,
+      bodyText: candidate.applyBodyText,
+      contentHash: candidate.applyContentHash,
+      operation: candidate.applyOperation,
+      replaceUri: candidate.applyReplaceUri,
+      targetUri: candidate.applyTargetUri,
+    },
+    at,
+  );
+  return {
+    candidate: updated.candidates.find(item => item.candidateId === candidateId) ?? candidate,
+    review: updated,
+  };
+}
+
+export type CandidateReplacementRecoveryPreparation =
+  | {
+      readonly assessment: ReplacementSafetyAssessmentV1;
+      readonly status: 'destructive-approval-required';
+    }
+  | {readonly status: 'unavailable'}
+  | {
+      readonly candidate: MemoryCandidate;
+      readonly review: CandidateReview;
+      readonly status: 'ready';
+    };
+
+export function prepareCandidateReplacementRecovery(
+  review: CandidateReview,
+  candidateId: string,
+  allowDestructiveReplacement: boolean,
+  at: string,
+  currentTargetBody: string | undefined,
+  currentTargetHash: string | undefined,
+): CandidateReplacementRecoveryPreparation {
+  const candidate = review.candidates.find(item => item.candidateId === candidateId);
+  if (!candidate) return {status: 'unavailable'};
+  if (allowDestructiveReplacement && candidate.applyOperation !== 'replace') return {status: 'unavailable'};
+  const assessment = assessInterruptedReplacementSafety(candidate, currentTargetBody, currentTargetHash);
+  if (assessment === 'unavailable') return {status: 'unavailable'};
+  if (
+    assessment?.destructiveLossRisk &&
+    candidate.applyAllowDestructiveReplacement !== true &&
+    !allowDestructiveReplacement
+  ) {
+    return {assessment, status: 'destructive-approval-required'};
+  }
+  const recovery = candidateReviewWithRecoveryApproval(review, candidateId, allowDestructiveReplacement, at);
+  return recovery ? {...recovery, status: 'ready'} : {status: 'unavailable'};
 }
 
 export function candidateReviewWithApplyStage(
@@ -249,6 +404,7 @@ export function validateSessionCloseoutInput(input: SessionCloseoutInput): strin
     ['sourceAgentClient', input.sourceAgentClient],
     ['sourceCommit', input.sourceCommit],
     ['sourceSessionId', input.sourceSessionId],
+    ['rationale', input.rationale],
   ] as const;
   for (const [name, value] of scalarFields) {
     if ((value?.length ?? 0) > MAX_CLOSEOUT_SCALAR_CHARACTERS) {
@@ -261,6 +417,10 @@ export function validateSessionCloseoutInput(input: SessionCloseoutInput): strin
     ['handoff', input.handoff, MAX_CLOSEOUT_ITEMS_PER_FIELD],
     ['invariants', input.invariants, MAX_CLOSEOUT_ITEMS_PER_FIELD],
     ['preferences', input.preferences, MAX_CLOSEOUT_ITEMS_PER_FIELD],
+    ['constraints', input.constraints, MAX_STRUCTURED_CLOSEOUT_ITEMS],
+    ['verificationPerformed', input.verificationPerformed, MAX_STRUCTURED_CLOSEOUT_ITEMS],
+    ['knowledgeInvalidated', input.knowledgeInvalidated, MAX_STRUCTURED_CLOSEOUT_ITEMS],
+    ['unresolvedRisks', input.unresolvedRisks, MAX_STRUCTURED_CLOSEOUT_ITEMS],
   ] as const;
   for (const [name, values, maximumItems] of listFields) {
     if ((values?.length ?? 0) > maximumItems) {
@@ -270,16 +430,70 @@ export function validateSessionCloseoutInput(input: SessionCloseoutInput): strin
       return `${name} contains an item exceeding ${MAX_CLOSEOUT_ITEM_CHARACTERS} characters.`;
     }
   }
+  if (input.structuredCloseout !== undefined) {
+    const structuredError = validateStructuredCloseout(input.structuredCloseout);
+    if (structuredError) return structuredError;
+  }
   const totalBytes = new TextEncoder().encode(JSON.stringify(input)).byteLength;
   return totalBytes > MAX_CLOSEOUT_TOTAL_BYTES
     ? `session closeout exceeds ${MAX_CLOSEOUT_TOTAL_BYTES} UTF-8 bytes.`
     : undefined;
 }
 
+export function structuredCloseoutFromInput(input: SessionCloseoutInput): StructuredCloseoutV1 | undefined {
+  const nested = input.structuredCloseout;
+  const hasDirectFields =
+    input.rationale !== undefined ||
+    input.constraints !== undefined ||
+    input.verificationPerformed !== undefined ||
+    input.knowledgeInvalidated !== undefined ||
+    input.unresolvedRisks !== undefined;
+  if (!nested && !hasDirectFields) return undefined;
+  const structured = {
+    type: 'structured-closeout',
+    version: 1,
+    rationale: (nested?.rationale ?? input.rationale ?? '').trim(),
+    constraints: normalizedItems(nested?.constraints ?? input.constraints),
+    verificationPerformed: normalizedItems(nested?.verificationPerformed ?? input.verificationPerformed),
+    knowledgeInvalidated: normalizedItems(nested?.knowledgeInvalidated ?? input.knowledgeInvalidated),
+    unresolvedRisks: normalizedItems(nested?.unresolvedRisks ?? input.unresolvedRisks),
+  } satisfies StructuredCloseoutV1;
+  return structured.rationale ||
+    structured.constraints.length > 0 ||
+    structured.verificationPerformed.length > 0 ||
+    structured.knowledgeInvalidated.length > 0 ||
+    structured.unresolvedRisks.length > 0
+    ? structured
+    : undefined;
+}
+
+function validateStructuredCloseout(value: StructuredCloseoutV1): string | undefined {
+  if (value.type !== 'structured-closeout' || value.version !== 1) {
+    return 'structuredCloseout has an unsupported type or version.';
+  }
+  if (value.rationale.length > MAX_CLOSEOUT_SCALAR_CHARACTERS) {
+    return `rationale exceeds ${MAX_CLOSEOUT_SCALAR_CHARACTERS} characters.`;
+  }
+  const lists = [
+    ['constraints', value.constraints],
+    ['verificationPerformed', value.verificationPerformed],
+    ['knowledgeInvalidated', value.knowledgeInvalidated],
+    ['unresolvedRisks', value.unresolvedRisks],
+  ] as const;
+  for (const [name, items] of lists) {
+    if (items.length > MAX_STRUCTURED_CLOSEOUT_ITEMS) return `${name} exceeds ${MAX_STRUCTURED_CLOSEOUT_ITEMS} items.`;
+    if (items.some(item => item.length > MAX_CLOSEOUT_ITEM_CHARACTERS)) {
+      return `${name} contains an item exceeding ${MAX_CLOSEOUT_ITEM_CHARACTERS} characters.`;
+    }
+  }
+  return undefined;
+}
+
 export function candidateReviewWithAuditEvent(review: CandidateReview, event: CandidateAuditEvent): CandidateReview {
   const duplicate = review.auditEvents.some(
     item =>
       item.action === event.action &&
+      item.allowDestructiveReplacement === event.allowDestructiveReplacement &&
       item.candidateId === event.candidateId &&
       item.reviewId === event.reviewId &&
       item.revision === event.revision,
@@ -387,6 +601,35 @@ export const loadCandidateReview = Effect.fn('candidate.loadReview')(function* (
   return review;
 });
 
+/** Read the bounded private review set for maintenance reporting without mutating retention state. */
+export const listCandidateReviews = Effect.fn('candidate.listReviews')(function* (agentContextHome: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const directory = pathService.join(agentContextHome, 'threadnote', 'candidates', 'v1', 'reviews');
+  const entries = yield* fs.readDirectory(directory).pipe(Effect.option);
+  if (entries._tag === 'None') return [];
+  const reviews = yield* Effect.forEach(
+    entries.value
+      .filter(name => name.endsWith('.json') && !name.startsWith('.'))
+      .sort()
+      .slice(-MAX_CANDIDATE_REVIEWS),
+    name =>
+      Effect.gen(function* () {
+        const raw = yield* fs.readFileString(pathService.join(directory, name));
+        return yield* Effect.try({
+          try: () => parseCandidateReview(JSON.parse(raw)),
+          catch: () => undefined,
+        }).pipe(Effect.orElseSucceed(() => undefined));
+      }),
+    {concurrency: MEMORY_READ_CONCURRENCY},
+  );
+  return reviews
+    .filter((review): review is CandidateReview => review !== undefined)
+    .sort(
+      (left, right) => left.createdAt.localeCompare(right.createdAt) || left.reviewId.localeCompare(right.reviewId),
+    );
+});
+
 export const appendCandidateAudit = Effect.fn('candidate.appendAudit')(function* (
   agentContextHome: string,
   event: CandidateAuditEvent,
@@ -430,7 +673,13 @@ const syncCandidateAudit = Effect.fn('candidate.syncAudit')(function* (
 });
 
 function candidateAuditEventKey(event: CandidateAuditEvent): string {
-  return [event.action, event.candidateId ?? '', event.reviewId, event.revision].join('\n');
+  return [
+    event.action,
+    event.allowDestructiveReplacement === true ? 'destructive-approved' : '',
+    event.candidateId ?? '',
+    event.reviewId,
+    event.revision,
+  ].join('\n');
 }
 
 function candidateAuditTimestamp(event: CandidateAuditEvent): number {
@@ -457,17 +706,19 @@ function candidateDrafts(input: SessionCloseoutInput): readonly CandidateDraft[]
   const invariants = normalizedItems(input.invariants);
   const preferences = normalizedItems(input.preferences);
   const handoff = normalizedItems(input.handoff);
+  const structuredCloseout = structuredCloseoutFromInput(input);
   const drafts: CandidateDraft[] = [];
-  if (decisions.length > 0 || invariants.length > 0) {
+  if (decisions.length > 0 || invariants.length > 0 || structuredCloseout !== undefined) {
     drafts.push({
       categories: [
         ...(decisions.length > 0 ? (['decision'] as const) : []),
-        ...(invariants.length > 0 ? (['invariant'] as const) : []),
+        ...(invariants.length > 0 || structuredCloseout !== undefined ? (['invariant'] as const) : []),
       ],
       kind: 'durable',
       proposedText: formatSections([
         ['Decisions', decisions],
         ['Invariants', invariants],
+        ...(structuredCloseout ? structuredCloseoutSections(structuredCloseout) : []),
       ]),
     });
   }
@@ -527,12 +778,114 @@ const compareCandidate = Effect.fn('candidate.compare')(function* (
     proposedText: draft.proposedText,
     reason: comparisonReason(comparison),
     recommendation,
+    ...(target ? {replacementSafetyBaseline: replacementSafetyBaseline(target.body)} : {}),
     state: 'pending',
     targetContentHash: target ? yield* sha256Hex(canonicalMemoryDocumentContent(target.content)) : undefined,
     targetUri: target?.uri,
     topic: input.topic,
   } satisfies MemoryCandidate;
 });
+
+export function replacementSafetyBaseline(body: string): ReplacementSafetyBaselineV1 {
+  const normalizedBody = body.trim();
+  const sections = sectionHeadings(normalizedBody);
+  return {
+    bodyCharacters: normalizedBody.length,
+    nonEmptyLines: nonEmptyLineCount(normalizedBody),
+    sectionHeadings: sections.slice(0, MAX_REPLACEMENT_BASELINE_SECTIONS),
+    sectionListTruncated: sections.length > MAX_REPLACEMENT_BASELINE_SECTIONS,
+    version: 1,
+  };
+}
+
+export function replacementSafetyReviewRequiredWarning(candidate: MemoryCandidate): string {
+  return (
+    `Replacement safety is unavailable for legacy candidate ${candidate.candidateId}. ` +
+    'Run review_session_context again before replacing the current target.'
+  );
+}
+
+export function assessReplacementSafety(
+  kind: MemoryCandidate['kind'],
+  target: ReplacementSafetyBaselineV1,
+  proposedBody: string,
+): ReplacementSafetyAssessmentV1 {
+  const proposed = replacementSafetyBaseline(proposedBody);
+  const retainedCharacterRatio = retainedRatio(proposed.bodyCharacters, target.bodyCharacters);
+  const retainedLineRatio = retainedRatio(proposed.nonEmptyLines, target.nonEmptyLines);
+  const proposedSections = new Set(proposed.sectionHeadings.map(normalizedSectionKey));
+  const missingSections = target.sectionHeadings.filter(
+    section => !proposedSections.has(normalizedSectionKey(section)),
+  );
+  const ratioThreshold = kind === 'handoff' ? 0.7 : 0.5;
+  const removedCharacters = Math.max(0, target.bodyCharacters - proposed.bodyCharacters);
+  const losesMostCharacters = retainedCharacterRatio < ratioThreshold;
+  const losesMostLines = target.nonEmptyLines >= 8 && retainedLineRatio < ratioThreshold;
+  const losesMaterialCharacters = target.bodyCharacters >= 256 && losesMostCharacters;
+  const losesMaterialLines = target.nonEmptyLines >= 8 && losesMostLines;
+  const losesMultipleSections =
+    target.sectionHeadings.length >= 2 &&
+    missingSections.length >= 2 &&
+    (removedCharacters >= 256 || losesMaterialCharacters || losesMaterialLines);
+  return {
+    destructiveLossRisk: losesMaterialCharacters || losesMaterialLines || losesMultipleSections,
+    missingSections,
+    proposedBodyCharacters: proposed.bodyCharacters,
+    proposedNonEmptyLines: proposed.nonEmptyLines,
+    retainedCharacterRatio,
+    retainedLineRatio,
+    targetBodyCharacters: target.bodyCharacters,
+    targetNonEmptyLines: target.nonEmptyLines,
+  };
+}
+
+function assessInterruptedReplacementSafety(
+  candidate: MemoryCandidate,
+  currentTargetBody: string | undefined,
+  currentTargetHash: string | undefined,
+): ReplacementSafetyAssessmentV1 | 'unavailable' | undefined {
+  if (
+    candidate.applyOperation !== 'replace' ||
+    !candidate.applyReplaceUri ||
+    !candidate.applyTargetUri ||
+    candidate.applyReplaceUri === candidate.applyTargetUri ||
+    currentTargetBody === undefined
+  ) {
+    return undefined;
+  }
+  if (!candidate.applyBodyText || !candidate.targetContentHash) return 'unavailable';
+  if (currentTargetHash !== candidate.targetContentHash) return undefined;
+  return assessReplacementSafety(candidate.kind, replacementSafetyBaseline(currentTargetBody), candidate.applyBodyText);
+}
+
+function retainedRatio(proposed: number, target: number): number {
+  return target === 0 ? 1 : Math.min(1, proposed / target);
+}
+
+function sectionHeadings(body: string): readonly string[] {
+  const seen = new Set<string>();
+  const sections: string[] = [];
+  for (const line of body.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    const section =
+      /^#{1,6}\s+(.+?)\s*#*\s*$/u.exec(trimmed)?.[1]?.trim() ??
+      (/^[^\s].{0,118}:$/u.test(trimmed) && !/^[-*+]\s/u.test(trimmed) ? trimmed.slice(0, -1).trim() : undefined);
+    if (!section) continue;
+    const key = normalizedSectionKey(section);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sections.push(section);
+  }
+  return sections;
+}
+
+function normalizedSectionKey(section: string): string {
+  return section.replace(/\s+/gu, ' ').trim().toLocaleLowerCase('en-US');
+}
+
+function nonEmptyLineCount(body: string): number {
+  return body.split(/\r?\n/u).filter(line => line.trim().length > 0).length;
+}
 
 function classifyComparison(
   proposedText: string,
@@ -629,6 +982,16 @@ function formatSections(sections: ReadonlyArray<readonly [string, readonly strin
     .filter(([, items]) => items.length > 0)
     .flatMap(([title, items]) => [`## ${title}`, ...items.map(item => `- ${item}`)])
     .join('\n');
+}
+
+function structuredCloseoutSections(value: StructuredCloseoutV1): ReadonlyArray<readonly [string, readonly string[]]> {
+  return [
+    ['Rationale', value.rationale ? [value.rationale] : []],
+    ['Constraints', value.constraints],
+    ['Verification performed', value.verificationPerformed],
+    ['Knowledge invalidated', value.knowledgeInvalidated],
+    ['Unresolved risks', value.unresolvedRisks],
+  ];
 }
 
 function tokens(value: string): readonly string[] {
@@ -755,7 +1118,7 @@ function candidateReviewRetentionPriority(review: CandidateReview | undefined): 
   return 2;
 }
 
-function parseCandidateReview(value: unknown): CandidateReview {
+export function parseCandidateReview(value: unknown): CandidateReview {
   if (
     typeof value !== 'object' ||
     value === null ||
@@ -772,6 +1135,7 @@ function parseCandidateReview(value: unknown): CandidateReview {
   }
   const review = value as Omit<CandidateReview, 'codeCitations' | 'version'> & {
     readonly codeCitations?: readonly MemoryCodeCitationV1[];
+    readonly structuredCloseout?: unknown;
     readonly version: 1 | 2;
   };
   let codeCitations: readonly MemoryCodeCitationV1[] = [];
@@ -790,8 +1154,42 @@ function parseCandidateReview(value: unknown): CandidateReview {
       ? review.auditEvents.filter(event => candidateAuditEventIsValid(event))
       : [],
     codeCitations,
+    ...(review.structuredCloseout === undefined
+      ? {}
+      : {structuredCloseout: parseStructuredCloseout(review.structuredCloseout)}),
     version: 2,
   };
+}
+
+function parseStructuredCloseout(value: unknown): StructuredCloseoutV1 {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('type' in value) ||
+    value.type !== 'structured-closeout' ||
+    !('version' in value) ||
+    value.version !== 1 ||
+    !('rationale' in value) ||
+    typeof value.rationale !== 'string' ||
+    !('constraints' in value) ||
+    !Array.isArray(value.constraints) ||
+    !value.constraints.every(item => typeof item === 'string') ||
+    !('verificationPerformed' in value) ||
+    !Array.isArray(value.verificationPerformed) ||
+    !value.verificationPerformed.every(item => typeof item === 'string') ||
+    !('knowledgeInvalidated' in value) ||
+    !Array.isArray(value.knowledgeInvalidated) ||
+    !value.knowledgeInvalidated.every(item => typeof item === 'string') ||
+    !('unresolvedRisks' in value) ||
+    !Array.isArray(value.unresolvedRisks) ||
+    !value.unresolvedRisks.every(item => typeof item === 'string')
+  ) {
+    throw CandidateMemoryError.make({message: 'invalid structured closeout'});
+  }
+  const structured = value as StructuredCloseoutV1;
+  const error = validateStructuredCloseout(structured);
+  if (error) throw CandidateMemoryError.make({message: error});
+  return structured;
 }
 
 function candidateAuditEventIsValid(value: unknown): value is CandidateAuditEvent {
@@ -805,6 +1203,7 @@ function candidateAuditEventIsValid(value: unknown): value is CandidateAuditEven
       value.action === 'create_review' ||
       value.action === 'defer' ||
       value.action === 'reject') &&
+    (!('allowDestructiveReplacement' in value) || typeof value.allowDestructiveReplacement === 'boolean') &&
     'at' in value &&
     typeof value.at === 'string' &&
     'reviewId' in value &&

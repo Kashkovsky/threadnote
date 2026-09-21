@@ -11,7 +11,7 @@ import type {
 } from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
-import {materializationStorageFiles} from '../../src/code_graph/indexer_materialization.js';
+import {materializationStorageFiles} from '../../src/code_graph/indexer/materialization.js';
 import {codeGraphSqliteGet} from '../../src/code_graph/sqlite_statement.js';
 
 effectIt.effect('materializes a full build through the sorted sidecar and removes it after finalization', () =>
@@ -80,6 +80,7 @@ effectIt.effect('materializes a full build through the sorted sidecar and remove
       repositoryRoot,
     };
     const store = yield* CodeGraphStore;
+    const resources: string[] = [];
     yield* store.withSession(
       databasePath,
       Effect.gen(function* () {
@@ -95,10 +96,31 @@ effectIt.effect('materializes a full build through the sorted sidecar and remove
         } as const;
         yield* store.stageActivationFactBatches(databasePath, [batch], undefined, undefined, context);
         yield* store.stageActivationFactBatches(databasePath, [batch], undefined, undefined, context);
-        yield* store.finalizePersistentMaterializationPlan(databasePath, 1, undefined, undefined, context);
+        resources.length = 0;
+        const prepared = yield* store.preparePersistentMaterializationSpool(
+          databasePath,
+          1,
+          undefined,
+          context,
+          preparation =>
+            Effect.acquireUseRelease(
+              Effect.sync(() => resources.push('preparation-acquired')),
+              () => preparation,
+              () => Effect.sync(() => resources.push('preparation-released')),
+            ),
+        );
+        expect(resources).toEqual(['preparation-acquired', 'preparation-released']);
+        expect(yield* store.stagedFactCounts(databasePath)).toEqual({edges: 0, symbols: 0});
+        yield* store.finalizePersistentMaterializationPlan(databasePath, 1, undefined, undefined, context, prepared);
         expect(yield* store.stagedFactCounts(databasePath)).toEqual({edges: 0, symbols: 1});
       }),
+      {
+        onWriterAcquired: () => Effect.sync(() => resources.push('writer-acquired')),
+        onWriterReleased: () => Effect.sync(() => resources.push('writer-released')),
+        writerLockPath: path.join(root, 'writer.lock'),
+      },
     );
+    expect(resources.indexOf('preparation-released')).toBeLessThan(resources.indexOf('writer-acquired'));
     const sidecarPath = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
     for (const candidate of [sidecarPath, `${sidecarPath}-journal`, `${sidecarPath}-shm`, `${sidecarPath}-wal`]) {
       expect(yield* fs.exists(candidate)).toBe(false);
@@ -128,6 +150,115 @@ effectIt.effect('materializes a full build through the sorted sidecar and remove
           snapshot.id,
         ),
       ).toEqual({lookup: 2, postings: 3, receipts: 1, symbols: 1});
+    } finally {
+      database.close(true);
+    }
+  }).pipe(provideTestLayer(ApplicationLayer)),
+);
+
+effectIt.effect('rejects a replaced ready sidecar before registering or applying its plan', () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-materialization-spool-replaced-'});
+    const identity = repositoryIdentity(root);
+    const repositoryRoot = path.join(root, identity.checkoutId);
+    yield* fs.makeDirectory(repositoryRoot, {recursive: true});
+    const databasePath = path.join(repositoryRoot, 'graph-v3.sqlite');
+    const file: CodeGraphInventoryFile = {
+      blobId: '1'.repeat(40),
+      contentHash: '2'.repeat(64),
+      language: 'typescript',
+      mode: '100644',
+      path: 'src/replaced.ts',
+      size: 128,
+      source: 'commit',
+    };
+    const snapshot: CodeGraphSnapshot = {
+      commit: identity.headCommit,
+      dirty: false,
+      edgeCount: 0,
+      extractorSet: 'materialization-spool-replaced-test',
+      fileCount: 1,
+      graphContentId: `cgc_${'3'.repeat(40)}`,
+      id: `cgsn_${'0'.repeat(40)}-direct`,
+      repositoryId: identity.repositoryId,
+      state: 'building',
+      symbolCount: 0,
+      worktreeId: identity.worktreeId,
+    };
+    const symbol: CodeGraphSymbol = {
+      contentHash: file.contentHash,
+      exported: true,
+      id: 'symbol-replaced',
+      kind: 'function',
+      language: 'typescript',
+      lookupKeys: ['typescript:name:replaced'],
+      name: 'replaced',
+      path: file.path,
+      qualifiedName: 'replaced',
+      span: {column: 1, endColumn: 9, endLine: 1, line: 1},
+    };
+    const context = {checkoutId: identity.checkoutId, repositoryRoot};
+    const store = yield* CodeGraphStore;
+    yield* store.withSession(
+      databasePath,
+      Effect.gen(function* () {
+        const ownerToken = yield* claimPersistentBuildForTest(store, databasePath, identity, snapshot);
+        yield* store.prepareActivation(databasePath, [file], snapshot.id, undefined, ownerToken);
+        yield* store.stageActivationFactBatches(
+          databasePath,
+          [
+            {
+              batchIndex: 0,
+              edges: [],
+              finalFactBytes: 100,
+              references: [],
+              sourceBytes: file.size,
+              symbols: [symbol],
+            },
+          ],
+          undefined,
+          undefined,
+          context,
+        );
+        const prepared = yield* store.preparePersistentMaterializationSpool(
+          databasePath,
+          1,
+          undefined,
+          context,
+          preparation => preparation,
+        );
+        const replacement = `${prepared.spoolPath}.replacement`;
+        yield* fs.copy(prepared.spoolPath, replacement, {overwrite: true});
+        yield* Effect.sync(() => {
+          const database = new Database(replacement, {strict: true});
+          try {
+            database
+              .query('UPDATE materialization_spool_header SET graph_content_id = ? WHERE singleton = 1')
+              .run(`cgc_${'9'.repeat(40)}`);
+          } finally {
+            database.close(true);
+          }
+        });
+        yield* fs.remove(prepared.spoolPath);
+        yield* fs.rename(replacement, prepared.spoolPath);
+        expect(
+          (yield* Effect.exit(
+            store.finalizePersistentMaterializationPlan(databasePath, 1, undefined, undefined, context, prepared),
+          ))._tag,
+        ).toBe('Failure');
+      }),
+    );
+    const database = new Database(databasePath, {readonly: true, strict: true});
+    try {
+      expect(
+        codeGraphSqliteGet<{readonly count: number}>(
+          database,
+          'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
+          snapshot.id,
+        ),
+      ).toEqual({count: 0});
     } finally {
       database.close(true);
     }

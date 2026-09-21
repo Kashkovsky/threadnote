@@ -1,7 +1,11 @@
-import {hasManagedCursorHooks} from './cursor_hooks.js';
+import {hasManagedCursorHooks} from './cursor/hooks.js';
 import {Console, Effect, FileSystem, Path, Result, Schema} from 'effect';
 import {
-  agentIntegrationDoctorChecks,
+  repairRegisteredAgentAdapters,
+  removeRegisteredAgentAdaptersInTransaction,
+} from './agent_integration/adapter_actions.js';
+import {agentAdapterDoctorChecks} from './agent_integration/adapter_actions.js';
+import {
   migrateLegacyAgentIntegrations,
   readAgentIntegrationRegistry,
   registeredAgentClients,
@@ -14,6 +18,7 @@ import {startProgress, withProgressLine} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
+import {withSetupMutationLock} from './setup/lock.js';
 import {hasManagedOmpHooks} from './omp_hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
@@ -49,7 +54,7 @@ import {
   type RecallIndexStatus,
 } from './recall/index.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
-import {deferredCodeAnchorDoctorCheck} from './memory/deferred_code_anchor.js';
+import {deferredCodeAnchorDoctorCheck} from './memory/deferred/code_anchor.js';
 import {migrateThreadnoteStorageLayout} from './migration/layout.js';
 import {applyLegacyInstallationCleanup, planLegacyInstallationCleanup} from './migration/legacy-installations.js';
 import {stopVerifiedLegacyLocalAi} from './migration/legacy-runtime.js';
@@ -61,6 +66,9 @@ import {LocalModelStore} from './models/store.js';
 import {
   ensureVectorIndex,
   type VectorIndexProgress,
+  VectorCorpusGenerationChanged,
+  type VectorIndexGenerationReadiness,
+  vectorIndexGenerationReadiness,
   vectorIndexMatchesGeneration,
   vectorIndexStatus,
 } from './search/vector-index.js';
@@ -70,7 +78,7 @@ import {
   type CodeGraphRepairCompletion,
   repairCodeGraphIndexes,
 } from './code_graph/maintenance.js';
-import {formatCodeGraphDoctorProgressLine, formatCodeGraphRepairProgressLine} from './code_graph/cli_progress.js';
+import {formatCodeGraphDoctorProgressLine, formatCodeGraphRepairProgressLine} from './code_graph/cli/progress.js';
 import {
   isThreadnoteStorageLayoutReceipt,
   threadnoteStorageLayout,
@@ -102,6 +110,48 @@ class LifecycleOperationError extends Schema.TaggedError<LifecycleOperationError
 }) {}
 
 const LAYOUT_RECEIPT = 'layout.json';
+export const RECALL_INDEX_MAINTENANCE_GENERATION_RETRY_LIMIT = 2;
+
+export function recallIndexMaintenanceShouldRetry(error: unknown, completedRetries: number): boolean {
+  return (
+    Number.isSafeInteger(completedRetries) &&
+    completedRetries >= 0 &&
+    completedRetries < RECALL_INDEX_MAINTENANCE_GENERATION_RETRY_LIMIT &&
+    Schema.is(VectorCorpusGenerationChanged)(error)
+  );
+}
+
+export const verifyRecallIndexMaintenanceReadiness = Effect.fn('lifecycle.verifyRecallIndexMaintenanceReadiness')(
+  function* <VectorError, VectorRequirements, LexicalError, LexicalRequirements>(input: {
+    readonly manifestId: string;
+    readonly readLexicalStatus: () => Effect.Effect<RecallIndexStatus, LexicalError, LexicalRequirements>;
+    readonly readVectorReadiness: () => Effect.Effect<VectorIndexGenerationReadiness, VectorError, VectorRequirements>;
+    readonly requestedGeneration: string;
+  }) {
+    const vectorReadiness = yield* input.readVectorReadiness();
+    if (vectorReadiness !== 'current') {
+      return yield* LifecycleOperationError.make({
+        message: `The vector recall index is ${vectorReadiness} after maintenance.`,
+      });
+    }
+    const lexicalStatus = yield* input.readLexicalStatus();
+    if (lexicalStatus.ready && lexicalStatus.generation === input.requestedGeneration) return;
+    if (
+      lexicalStatus.reason === 'canonical documents changed; run `threadnote repair`' ||
+      (lexicalStatus.ready && lexicalStatus.generation !== input.requestedGeneration)
+    ) {
+      return yield* VectorCorpusGenerationChanged.make({
+        message: 'The lexical recall corpus changed while vector work was in progress.',
+        modelId: input.manifestId,
+        requestedGeneration: input.requestedGeneration,
+      });
+    }
+    return yield* LifecycleOperationError.make({
+      message: `The lexical recall index is not ready after maintenance: ${lexicalStatus.reason ?? 'unknown state'}.`,
+    });
+  },
+);
+
 interface RunInstallOptions extends InstallOptions {
   readonly skipRecallIndexes?: boolean;
   readonly skipReleaseLifecycle?: boolean;
@@ -217,9 +267,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
     yield* safeDoctorCheck('deferred code anchors', deferredCodeAnchorDoctorCheck(config)),
   );
-  checks.push(
-    ...(yield* safeDoctorChecks('agent integrations', agentIntegrationDoctorChecks(config, inferredMcpClients))),
-  );
+  checks.push(...(yield* safeDoctorChecks('agent integrations', agentAdapterDoctorChecks(config, inferredMcpClients))));
   if (config.agentContextHome.endsWith('.openviking')) {
     checks.push({
       detail: 'THREADNOTE_HOME still targets a legacy .openviking directory; run `threadnote migrate`',
@@ -432,6 +480,9 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
     const inferredMcpClients = yield* inferConfiguredMcpClients(config);
     yield* migrateLegacyAgentIntegrations(config, inferredMcpClients, dryRun);
     const repairedIntegrationClients = yield* repairAgentIntegrations(config, dryRun);
+    if (options.mcp === undefined || ['all', 'available'].includes(options.mcp.trim().toLowerCase())) {
+      yield* repairRegisteredAgentAdapters(config, dryRun);
+    }
     const registry = yield* readAgentIntegrationRegistry(config);
     const registeredClients = registry === undefined ? inferredMcpClients : registeredAgentClients(registry);
     const repairableClients = repairableAgentClients(registry);
@@ -443,7 +494,11 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
     const requestedMcpClients = options.mcp ?? (repairableClients.length === 0 ? 'none' : repairableClients.join(','));
     const mcpClients = yield* resolveMcpClients(requestedMcpClients, 'repair', receipts);
     yield* repairRegisteredMcpClients(config, registry, mcpClients, dryRun);
-    if (repairedIntegrationClients.length === 0 && registeredClients.length === 0) {
+    if (
+      repairedIntegrationClients.length === 0 &&
+      registeredClients.length === 0 &&
+      Object.keys(registry?.surfaces ?? {}).length === 0
+    ) {
       yield* Console.log('No agent integrations are registered; skipping host-specific repair.');
     }
     if (yield* hasManagedClaudeHooks()) {
@@ -552,20 +607,41 @@ const maintainRecallIndexes = Effect.fn('lifecycle.maintainRecallIndexes')(funct
     progress =>
       Effect.gen(function* () {
         const updateProgress = (message: string) => progress.update(message).pipe(Effect.ignore);
-        const index = yield* loadRecallIndexData(config, {
-          forceRefresh,
-          includeInactive: false,
-          onProgress: state => updateProgress(recallProgressMessage(state)),
-        });
-        yield* updateProgress(
-          `Preparing vector recall index for ${index.candidates.length} lexical document(s) with ${manifest.id}.`,
-        );
-        const vectors = yield* ensureVectorIndex(config, manifest, index.candidates, {
-          corpusGeneration: index.generation,
-          currentCorpusGeneration: () => currentRecallCorpusGeneration(config),
-          onProgress: state => updateProgress(vectorProgressMessage(state)),
-        });
-        return {documentCount: index.candidates.length, vectors};
+        for (
+          let completedRetries = 0;
+          completedRetries <= RECALL_INDEX_MAINTENANCE_GENERATION_RETRY_LIMIT;
+          completedRetries += 1
+        ) {
+          const attempt = yield* Effect.gen(function* () {
+            const index = yield* loadRecallIndexData(config, {
+              forceRefresh,
+              includeInactive: false,
+              onProgress: state => updateProgress(recallProgressMessage(state)),
+            });
+            yield* updateProgress(
+              `Preparing vector recall index for ${index.candidates.length} lexical document(s) with ${manifest.id}.`,
+            );
+            const vectors = yield* ensureVectorIndex(config, manifest, index.candidates, {
+              corpusGeneration: index.generation,
+              currentCorpusGeneration: () => currentRecallCorpusGeneration(config),
+              onProgress: state => updateProgress(vectorProgressMessage(state)),
+            });
+            yield* verifyRecallIndexMaintenanceReadiness({
+              manifestId: manifest.id,
+              readLexicalStatus: () => recallIndexStatus(config, false),
+              readVectorReadiness: () =>
+                vectorIndexGenerationReadiness(config.agentContextHome, manifest, index.generation),
+              requestedGeneration: index.generation,
+            });
+            return {documentCount: index.candidates.length, vectors};
+          }).pipe(Effect.result);
+          if (Result.isSuccess(attempt)) return attempt.success;
+          if (!recallIndexMaintenanceShouldRetry(attempt.failure, completedRetries)) {
+            return yield* Effect.fail(attempt.failure);
+          }
+          yield* updateProgress('Canonical documents changed during vector work; rebuilding current recall indexes.');
+        }
+        return yield* Effect.die(new Error('Recall index maintenance retry loop exhausted without a result.'));
       }),
     progress => progress.stop,
   );
@@ -644,7 +720,9 @@ export const runUninstall = Effect.fn('lifecycle.uninstall')(function* (
 ) {
   const dryRun = options.dryRun === true;
   const uninstall = runUninstallInTransaction(config, options);
-  yield* dryRun ? uninstall : withAgentIntegrationLock(config, uninstall);
+  yield* dryRun
+    ? uninstall
+    : withSetupMutationLock(config.agentContextHome, withAgentIntegrationLock(config, uninstall));
 });
 
 const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(function* (
@@ -659,6 +737,16 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
   }
   const registry = yield* readAgentIntegrationRegistry(config);
   const registeredClients = registeredAgentClients(registry);
+  if (
+    Object.keys(registry?.surfaces ?? {}).length > 0 &&
+    options.mcp !== undefined &&
+    !['all', 'available'].includes(options.mcp.trim().toLowerCase())
+  ) {
+    return yield* LifecycleOperationError.make({
+      message:
+        'Managed agent surfaces remain outside the requested MCP selection; remove them with threadnote agents remove <surface> --apply first, or uninstall without --mcp.',
+    });
+  }
   const selectedMcpClients =
     options.mcp ?? (registeredClients.length === 0 ? 'available' : registeredClients.join(','));
   const receipts = Object.fromEntries(
@@ -680,15 +768,22 @@ const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(
   }
   yield* removeMcpSnippets(config, dryRun);
   if (yield* hasManagedClaudeHooks()) {
-    yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
+    yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true, setupLockHeld: !dryRun});
   }
   if (yield* hasManagedCursorHooks()) {
-    yield* runHooksInstall(config, 'cursor', {apply: !dryRun, dryRun, remove: true});
+    yield* runHooksInstall(config, 'cursor', {apply: !dryRun, dryRun, remove: true, setupLockHeld: !dryRun});
   }
   const ompHostRoot = registry?.hosts.omp?.mcp.hostRoot;
   if (yield* hasManagedOmpHooks(ompHostRoot)) {
-    yield* runHooksInstall(config, 'omp', {apply: !dryRun, dryRun, hostRoot: ompHostRoot, remove: true});
+    yield* runHooksInstall(config, 'omp', {
+      apply: !dryRun,
+      dryRun,
+      hostRoot: ompHostRoot,
+      remove: true,
+      setupLockHeld: !dryRun,
+    });
   }
+  yield* removeRegisteredAgentAdaptersInTransaction(config, dryRun, true);
   yield* removeCommandShim(dryRun);
   yield* removeAgentIntegrationsInTransaction(config, dryRun);
   if (options.eraseMemories === true) {

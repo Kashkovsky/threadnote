@@ -6,7 +6,7 @@ import {describe, expect} from 'vitest';
 import {
   observeCodeGraphMaintenanceStatus,
   withCodeGraphReportedMaintenanceIntent,
-} from '../../src/code_graph/maintenance_gate.js';
+} from '../../src/code_graph/maintenance/gate.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {mkdtemp, rm} from '../helpers/effect-filesystem.js';
 

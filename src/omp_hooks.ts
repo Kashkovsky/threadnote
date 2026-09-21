@@ -130,3 +130,8 @@ export const hasManagedOmpHooks = Effect.fn('hooks.hasManagedOmpHooks')(function
   const current = yield* readFileIfExists((yield* resolveAgentHostPaths('omp', hostRoot))!.hookPath);
   return current !== undefined && current.startsWith(OMP_HOOK_FILE_MARKER);
 });
+
+export const hasCurrentOmpHooks = Effect.fn('hooks.hasCurrentOmpHooks')(function* (hostRoot?: string) {
+  const current = yield* readFileIfExists((yield* resolveAgentHostPaths('omp', hostRoot))!.hookPath);
+  return current === OMP_HOOK_MODULE;
+});

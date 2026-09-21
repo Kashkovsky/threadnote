@@ -11,8 +11,8 @@ import {
   readGraphWorkerEnrollmentRequest,
   requireGraphControlWorker,
   requireGraphControlPublisherWorker,
-} from '../../src/code_graph/sharing/control_enrollment.js';
-import {parseGraphControlPolicy} from '../../src/code_graph/sharing/control_authorization.js';
+} from '../../src/code_graph/sharing/control/enrollment.js';
+import {parseGraphControlPolicy} from '../../src/code_graph/sharing/control/authorization.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingFailure} from '../../src/code_graph/sharing/errors.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

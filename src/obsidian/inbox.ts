@@ -9,7 +9,7 @@ import {
   validateSessionCloseoutInput,
 } from '../memory/candidate.js';
 import {sha256Hex} from '../effect/digest.js';
-import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {withExclusiveFileLock} from '../effect/file/lock.js';
 import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {readObsidianConfiguration, requireObsidianSource} from './config.js';
 import {scrubberBlocker} from '../share/scrubber.js';

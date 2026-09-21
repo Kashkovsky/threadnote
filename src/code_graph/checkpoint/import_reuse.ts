@@ -2,21 +2,21 @@ import {Effect, Schema} from 'effect';
 import {runBinaryCommandEffect} from '../../effect/command.js';
 import {SystemInfo} from '../../effect/system.js';
 import {codeGraphCommittedContentHash} from '../content_identity.js';
-import {codeGraphUtf8ByteLength} from '../disk_capacity.js';
-import {appearsBinary, decodeUtf8} from '../inventory_content.js';
-import {retainResolutionContext} from '../inventory_content.js';
+import {codeGraphUtf8ByteLength} from '../disk/capacity.js';
+import {appearsBinary, decodeUtf8} from '../inventory/content.js';
+import {retainResolutionContext} from '../inventory/content.js';
 import {parseGitCatFileBatch} from '../inventory.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../languages/registry.js';
 import {
   CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION,
   type CodeGraphReusableBaseReceiptInput,
   type CodeGraphAttributionContextFile,
-} from '../store_models.js';
+} from '../store/models.js';
 import {
   CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
   CODE_GRAPH_INVENTORY_EXCLUSION_REASONS,
   type CodeGraphInventoryExclusionReason,
-} from '../inventory_policy.js';
+} from '../inventory/policy.js';
 import type {RepositoryIdentity} from '../types.js';
 import {
   CODE_GRAPH_CHECKPOINT_ATTRIBUTION_CONTENT_BYTES_MAXIMUM,

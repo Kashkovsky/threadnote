@@ -1,9 +1,9 @@
 import type {TraceScenario} from '../components/AgentTrace.js';
 
 export const heroScenario: TraceScenario = {
-  eyebrow: 'A real Threadnote workflow',
-  title: 'Continue the rollout without re-discovering it',
-  description: 'Historical context and current source stay separate, cited, and useful.',
+  eyebrow: 'A source-verifiable start',
+  title: 'Continue the rollout with the decision and current evidence in view',
+  description: 'One bounded brief keeps reviewed knowledge, task state, procedures, and current source distinct.',
   steps: [
     {
       kind: 'user',
@@ -12,21 +12,15 @@ export const heroScenario: TraceScenario = {
     },
     {
       kind: 'tool',
-      actor: 'recall_context',
-      text: '{"project":"mobile","query":"auth rollout","callerCwd":"/repo/mobile"}',
-      meta: 'scoped local memory recall',
+      actor: 'context_brief',
+      text: '{"mode":"trace","project":"mobile","task":"Continue the auth rollout with current evidence","callerCwd":"/repo/mobile","budgetTokens":1250}',
+      meta: 'bounded decisions + handoff + current evidence',
     },
     {
       kind: 'result',
       actor: 'Threadnote',
-      text: '2 durable memories and 1 active handoff',
-      evidence: ['threadnote://…/mobile/auth-contract.md', 'threadnote://…/mobile/auth-rollout.md'],
-    },
-    {
-      kind: 'tool',
-      actor: 'read_context',
-      text: '{"uri":"threadnote://user/me/memories/durable/projects/mobile/auth-contract.md"}',
-      meta: 'canonical Markdown · local',
+      text: 'Bounded brief: 1 reviewed decision, 1 active handoff, 3 current source cards, complete coverage',
+      evidence: ['threadnote://…/mobile/auth-contract.md', 'apps/android/SessionStore.kt:71'],
     },
     {
       kind: 'tool',
@@ -47,7 +41,7 @@ export const heroScenario: TraceScenario = {
     {
       kind: 'assistant',
       actor: 'Agent',
-      text: 'We chose rotating refresh tokens and a staged Web → Android → iOS rollout. Web is complete; Android is next. I found three affected entry points and the handoff’s last passing command.',
+      text: 'The reviewed decision requires rotating refresh tokens and a Web → Android → iOS rollout. Web is complete, Android is next, and the current worktree confirms three affected entry points. I’ll verify exact files as I work and propose only the resulting Knowledge Delta at closeout.',
     },
   ],
 };

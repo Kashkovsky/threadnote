@@ -1,7 +1,8 @@
 import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
-import * as BunServices from '@effect/platform-bun/BunServices';
-import {Effect, Option} from 'effect';
+import * as BunFileSystem from '@effect/platform-bun/BunFileSystem';
+import * as BunPath from '@effect/platform-bun/BunPath';
+import {Effect, Layer, Option} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {createRepositoryFactResolver, extractFileFacts} from '../../src/code_graph/extractor.js';
 import {
@@ -14,6 +15,27 @@ import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {createWorkspaceAttributor, discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import {SystemInfo} from '../../src/effect/system.js';
 describe('polyglot code graph language packs', () => {
+  effectIt.effect('discovers named TypeScript configs used by project references', () =>
+    Effect.gen(function* () {
+      const files = [
+        inventoryFile(
+          'tsconfig.json',
+          JSON.stringify({references: [{path: 'tsconfig.packages.json'}, {path: 'tsconfig.tests.jsonc'}]}),
+        ),
+        inventoryFile('tsconfig.packages.json', JSON.stringify({include: ['packages']})),
+        inventoryFile('tsconfig.tests.jsonc', '{"include":["test"],}'),
+      ];
+      const workspace = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.discoverWorkspace(files);
+      const root = workspace.projects.find(project => project.name === 'tsconfig.json');
+
+      expect(BUILTIN_LANGUAGE_PACK_REGISTRY.isResolutionContext('tsconfig.packages.json')).toBe(true);
+      expect(BUILTIN_LANGUAGE_PACK_REGISTRY.isResolutionContext('config/tsconfig.tests.jsonc')).toBe(true);
+      expect(BUILTIN_LANGUAGE_PACK_REGISTRY.isResolutionContext('config/tsconfig..json')).toBe(false);
+      expect(workspace.diagnostics).toEqual([]);
+      expect(root?.dependencies).toHaveLength(2);
+    }),
+  );
+
   effectIt.effect('preserves the TypeScript compiler extractor behind the registry', () =>
     Effect.gen(function* () {
       const file = inventoryFile(
@@ -902,7 +924,7 @@ describe('polyglot code graph language packs', () => {
           .pipe(
             provideTestLayer(TreeSitterRuntime.layer),
             provideTestLayer(SystemInfo.layer),
-            provideTestLayer(BunServices.layer),
+            provideTestLayer(Layer.merge(BunFileSystem.layer, BunPath.layer)),
           ),
       ).toEqual({
         diagnostics: [],
@@ -958,7 +980,7 @@ describe('polyglot code graph language packs', () => {
         effect.pipe(
           provideTestLayer(TreeSitterRuntime.layer),
           provideTestLayer(SystemInfo.layer),
-          provideTestLayer(BunServices.layer),
+          provideTestLayer(Layer.merge(BunFileSystem.layer, BunPath.layer)),
         );
       const raw = yield* provideRuntime(BUILTIN_LANGUAGE_PACK_REGISTRY.extractRawFile(file));
       const derived = BUILTIN_LANGUAGE_PACK_REGISTRY.postprocessFile(file, raw);
@@ -972,7 +994,7 @@ function runExtraction(file: CodeGraphInventoryFile) {
   return BUILTIN_LANGUAGE_PACK_REGISTRY.extractFile(file).pipe(
     provideTestLayer(TreeSitterRuntime.layer),
     provideTestLayer(SystemInfo.layer),
-    provideTestLayer(BunServices.layer),
+    provideTestLayer(Layer.merge(BunFileSystem.layer, BunPath.layer)),
   );
 }
 function inventoryFile(path: string, content: string, language?: string): CodeGraphInventoryFile {

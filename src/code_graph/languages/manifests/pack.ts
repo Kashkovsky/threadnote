@@ -14,12 +14,15 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
         catch: cause =>
           CodeGraphLanguagePackError.make({message: `Could not extract manifest facts from ${file.path}.`, cause}),
       }),
-    version: sha256HexSync('threadnote-manifest-extractors-v3-node-workspaces'),
+    version: sha256HexSync('threadnote-manifest-extractors-v4-typescript-config-patterns'),
   },
   files: [
     {kind: 'basename', language: 'npm-manifest', role: 'manifest', value: 'package.json'},
     {kind: 'basename', language: 'pnpm-workspace', role: 'workspace', value: 'pnpm-workspace.yaml'},
     {kind: 'basename', language: 'typescript-config', role: 'workspace', value: 'tsconfig.json'},
+    {kind: 'basename', language: 'typescript-config', role: 'workspace', value: 'tsconfig.jsonc'},
+    {kind: 'basename-pattern', language: 'typescript-config', role: 'workspace', value: 'tsconfig.*.json'},
+    {kind: 'basename-pattern', language: 'typescript-config', role: 'workspace', value: 'tsconfig.*.jsonc'},
     {kind: 'basename', language: 'go-manifest', role: 'manifest', value: 'go.mod'},
     {kind: 'basename', language: 'maven-manifest', role: 'manifest', value: 'pom.xml'},
     {kind: 'basename', language: 'gradle-manifest', role: 'workspace', value: 'settings.gradle'},
@@ -36,7 +39,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
     },
   ],
   id: 'manifests',
-  resolutionStrategy: {domain: 'workspace', version: 'static-manifests-v2-node-workspaces'},
-  version: '1.1.0',
+  resolutionStrategy: {domain: 'workspace', version: 'static-manifests-v3-typescript-config-patterns'},
+  version: '1.2.0',
   workspaceDetector: Option.some(manifestWorkspaceDetector),
 };

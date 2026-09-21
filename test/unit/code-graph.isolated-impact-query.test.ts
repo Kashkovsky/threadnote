@@ -7,14 +7,18 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   decodeImpactQueryRequest,
+  impactQueryWorkerStatusObservation,
   impactQueryTransportSelector,
   impactQueryWorkerInspectOptions,
   impactQueryWorkerEnvironment,
   impactQueryWorkerInvocation,
+  inspectCodeGraphIsolated,
   inspectCodeGraphImpactIsolated,
   IsolatedCodeGraphImpactQueryTimedOut,
-} from '../../src/code_graph/isolated_impact_query.js';
-import type {CodeGraphQueryResult} from '../../src/code_graph/types.js';
+} from '../../src/code_graph/isolated/impact_query.js';
+import type {CodeGraphQueryTelemetryObservation} from '../../src/code_graph/query/contract.js';
+import {codeGraphQueryScopeReceipt, type CodeGraphQueryScope} from '../../src/code_graph/query/scope.js';
+import type {CodeGraphQueryResult, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CommandExecutor, type CommandOptions} from '../../src/effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
 import type {CommandResult} from '../../src/types.js';
@@ -49,6 +53,49 @@ const input = {
   threadnoteHome: '/threadnote-home',
 } as const;
 
+const projectScope: CodeGraphQueryScope = {
+  project: {
+    graph: {closure: 'dependencies', include: ['shared'], roots: ['apps/web']},
+    name: 'web',
+    uri: 'threadnote://projects/web',
+  },
+  scope: {
+    admittedPrefixes: ['apps/web', 'shared'],
+    closureDigest: 'closure-digest',
+    completeness: 'complete',
+    controlPaths: ['package.json'],
+    definitionDigest: 'definition-digest',
+    diagnostics: [],
+    includedProjectIds: ['web', 'shared'],
+    rootProjectIds: ['web'],
+    scopeKey: 'code-graph-scope:web',
+  },
+  evidence: {
+    catalogFingerprint: 'catalog-fingerprint',
+    closureDigest: 'closure-digest',
+    definitionDigest: 'definition-digest',
+    extractorSet: 'extractor-set',
+    inventoryFingerprint: 'inventory-fingerprint',
+    observedCommit: 'b'.repeat(40),
+    policyFingerprint: 'policy-fingerprint',
+    repositoryId: 'a'.repeat(64),
+    scopeKey: 'code-graph-scope:web',
+    worktreeId: 'd'.repeat(64),
+  },
+};
+
+const identity: RepositoryIdentity = {
+  caseMode: 'sensitive',
+  checkoutId: 'checkout-id',
+  displayName: 'acme/repository',
+  gitCommonDirectory: '/workspace/repository/.git',
+  headCommit: 'b'.repeat(40),
+  objectFormat: 'sha1',
+  repoRoot: '/workspace/repository',
+  repositoryId: 'a'.repeat(64),
+  worktreeId: 'd'.repeat(64),
+};
+
 describe('isolated code graph impact query', () => {
   it('keeps request content out of process arguments and the inherited environment', () => {
     const installed = impactQueryWorkerInvocation(
@@ -78,6 +125,20 @@ describe('isolated code graph impact query', () => {
     });
     expect(development).toEqual({
       arguments: ['/workspace/src/standalone.ts', '--threadnote-code-graph-impact-query-worker'],
+      executable: '/opt/bin/bun',
+    });
+    expect(
+      impactQueryWorkerInvocation(
+        systemInfoStub({
+          executablePath: '/opt/bin/bun',
+          processArguments: ['/opt/bin/bun'],
+        }),
+      ),
+    ).toEqual({
+      arguments: [
+        Bun.fileURLToPath(new URL('../../src/standalone.ts', import.meta.url)),
+        '--threadnote-code-graph-impact-query-worker',
+      ],
       executable: '/opt/bin/bun',
     });
     expect(JSON.stringify([installed, development, environment])).not.toContain(input.query);
@@ -119,6 +180,237 @@ describe('isolated code graph impact query', () => {
       expect(JSON.stringify([observed?.arguments, observed?.options?.env])).not.toContain(input.query);
       const request = decodeImpactQueryRequest(new TextDecoder().decode(observed?.options?.input));
       expect(request).toMatchObject({...input, protocol: 1, query: 'changed paths'});
+    }),
+  );
+
+  effectIt.effect('round-trips ordinary query reads through the isolated worker', () =>
+    Effect.gen(function* () {
+      let encodedRequest: Uint8Array | undefined;
+      const queryResult = {...result, operation: 'query' as const};
+      const command = CommandExecutor.of({
+        execute: (_executable, _arguments, options) =>
+          Effect.sync(() => {
+            encodedRequest = options?.input;
+            return commandResult(JSON.stringify({ok: true, protocol: 1, result: queryResult}));
+          }),
+        executeStreaming: () => Effect.die('unused'),
+      });
+
+      const actual = yield* inspectCodeGraphIsolated({
+        cwd: input.cwd,
+        edgeLimit: input.edgeLimit,
+        nodeLimit: input.nodeLimit,
+        operation: 'query',
+        projectScope,
+        query: input.query,
+        readySnapshotId: result.snapshot.id,
+        threadnoteHome: input.threadnoteHome,
+      }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
+
+      expect(actual).toEqual(queryResult);
+      expect(decodeImpactQueryRequest(new TextDecoder().decode(encodedRequest))).toMatchObject({
+        operation: 'query',
+        projectScopeReceipt: codeGraphQueryScopeReceipt(projectScope),
+        query: input.query,
+        readySnapshotId: result.snapshot.id,
+      });
+    }),
+  );
+
+  it('reuses the parent ready snapshot and compact scope receipt in the worker', () => {
+    const projectScopeReceipt = codeGraphQueryScopeReceipt(projectScope)!;
+    const request = decodeImpactQueryRequest(
+      JSON.stringify({
+        cwd: input.cwd,
+        edgeLimit: input.edgeLimit,
+        nodeLimit: input.nodeLimit,
+        operation: 'query',
+        projectScopeReceipt,
+        protocol: 1,
+        query: input.query,
+        readySnapshotId: result.snapshot.id,
+        threadnoteHome: input.threadnoteHome,
+      }),
+    );
+
+    expect(request).toBeDefined();
+    expect(impactQueryWorkerStatusObservation(request!, identity)).toEqual({
+      borrowedSnapshotId: result.snapshot.id,
+      identity,
+    });
+    expect(impactQueryWorkerInspectOptions(request!, input.threadnoteHome)).toMatchObject({
+      deferProjectScopePresentation: true,
+      readyScopeReceipt: projectScopeReceipt,
+    });
+  });
+
+  effectIt.effect('keeps very large monorepo scope manifests out of the isolated request', () =>
+    Effect.gen(function* () {
+      let encodedRequest: Uint8Array | undefined;
+      const command = CommandExecutor.of({
+        execute: (_executable, _arguments, options) =>
+          Effect.sync(() => {
+            encodedRequest = options?.input;
+            return commandResult(JSON.stringify({ok: true, protocol: 1, result: {...result, operation: 'node'}}));
+          }),
+        executeStreaming: () => Effect.die('unused'),
+      });
+      const largeProjectScope: CodeGraphQueryScope = {
+        ...projectScope,
+        scope: {
+          ...projectScope.scope!,
+          admittedPrefixes: Array.from(
+            {length: 10_000},
+            (_, index) => `packages/team-${index.toString().padStart(5, '0')}/src/very-long-project-component`,
+          ),
+          controlPaths: Array.from({length: 10_000}, (_, index) => `packages/team-${index}/package.json`),
+          includedProjectIds: Array.from({length: 10_000}, (_, index) => `workspace-project-${index}`),
+        },
+      };
+
+      yield* inspectCodeGraphIsolated({
+        cwd: input.cwd,
+        edgeLimit: input.edgeLimit,
+        nodeId: `cgs_${'a'.repeat(32)}`,
+        nodeLimit: input.nodeLimit,
+        operation: 'node',
+        projectScope: largeProjectScope,
+        readySnapshotId: result.snapshot.id,
+        threadnoteHome: input.threadnoteHome,
+      }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
+
+      expect(encodedRequest).toBeDefined();
+      expect(encodedRequest!.byteLength).toBeLessThan(4_096);
+      expect(decodeImpactQueryRequest(new TextDecoder().decode(encodedRequest))).toMatchObject({
+        operation: 'node',
+        projectScopeReceipt: codeGraphQueryScopeReceipt(largeProjectScope),
+      });
+    }),
+  );
+
+  effectIt.effect('accepts every canonical borrowed ready-snapshot identity', () =>
+    Effect.gen(function* () {
+      const observedSnapshotIds: string[] = [];
+      const command = CommandExecutor.of({
+        execute: (_executable, _arguments, options) =>
+          Effect.sync(() => {
+            const request = decodeImpactQueryRequest(new TextDecoder().decode(options?.input));
+            observedSnapshotIds.push(request?.borrowedSnapshotId ?? 'missing');
+            return commandResult(JSON.stringify({ok: true, protocol: 1, result: {...result, operation: 'query'}}));
+          }),
+        executeStreaming: () => Effect.die('unused'),
+      });
+      const snapshotIds = [
+        `cgsn_${'a'.repeat(40)}`,
+        `cgsn_${'b'.repeat(40)}-direct`,
+        `cgsn_${'c'.repeat(40)}-full-${'d'.repeat(16)}`,
+      ];
+
+      for (const borrowedSnapshotId of snapshotIds) {
+        yield* inspectCodeGraphIsolated({
+          borrowedSnapshotId,
+          cwd: input.cwd,
+          edgeLimit: input.edgeLimit,
+          nodeLimit: input.nodeLimit,
+          operation: 'query',
+          query: input.query,
+          threadnoteHome: input.threadnoteHome,
+        }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
+      }
+
+      expect(observedSnapshotIds).toEqual(snapshotIds);
+    }),
+  );
+
+  effectIt.effect('replays bounded worker query-stage telemetry in the parent process', () =>
+    Effect.gen(function* () {
+      const observed: CodeGraphQueryTelemetryObservation[] = [];
+      const command = CommandExecutor.of({
+        execute: () =>
+          Effect.succeed(
+            commandResult(
+              JSON.stringify({
+                ok: true,
+                protocol: 1,
+                result: {...result, operation: 'query'},
+                telemetry: [
+                  {
+                    disposition: 'fallback',
+                    durationMilliseconds: 17,
+                    outcome: 'success',
+                    phase: 'graph.query.execute',
+                    stage: 'query-worktree-observation',
+                  },
+                  {
+                    disposition: 'skipped',
+                    durationMilliseconds: 0,
+                    outcome: 'success',
+                    phase: 'graph.query.execute',
+                    stage: 'query-strict-reobservation',
+                  },
+                ],
+              }),
+            ),
+          ),
+        executeStreaming: () => Effect.die('unused'),
+      });
+      const onTelemetryObservation = (observation: CodeGraphQueryTelemetryObservation) =>
+        Effect.sync(() => {
+          observed.push(observation);
+        });
+
+      yield* inspectCodeGraphIsolated(
+        {
+          cwd: input.cwd,
+          edgeLimit: input.edgeLimit,
+          nodeLimit: input.nodeLimit,
+          operation: 'query',
+          query: input.query,
+          threadnoteHome: input.threadnoteHome,
+        },
+        {onTelemetryObservation},
+      ).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
+
+      expect(observed).toEqual([
+        {
+          disposition: 'fallback',
+          durationMilliseconds: 17,
+          outcome: 'success',
+          phase: 'graph.query.execute',
+          stage: 'query-worktree-observation',
+        },
+        {
+          disposition: 'skipped',
+          durationMilliseconds: 0,
+          outcome: 'success',
+          phase: 'graph.query.execute',
+          stage: 'query-strict-reobservation',
+        },
+      ]);
+    }),
+  );
+
+  effectIt.effect('rejects a worker response for a different inspection operation', () =>
+    Effect.gen(function* () {
+      const command = CommandExecutor.of({
+        execute: () => Effect.succeed(commandResult(JSON.stringify({ok: true, protocol: 1, result}))),
+        executeStreaming: () => Effect.die('unused'),
+      });
+
+      const failure = yield* inspectCodeGraphIsolated({
+        cwd: input.cwd,
+        edgeLimit: input.edgeLimit,
+        nodeLimit: input.nodeLimit,
+        operation: 'query',
+        query: input.query,
+        threadnoteHome: input.threadnoteHome,
+      }).pipe(
+        Effect.provideService(CommandExecutor, command),
+        Effect.provideService(SystemInfo, systemInfoStub({})),
+        Effect.flip,
+      );
+
+      expect(failure._tag).toBe('IsolatedCodeGraphImpactQueryError');
     }),
   );
 
@@ -185,6 +477,7 @@ describe('isolated code graph impact query', () => {
         cwd: '/workspace/repository',
         edgeLimit: 40,
         nodeLimit: 20,
+        operation: 'impact' as const,
         protocol: 1,
         query,
         seedQueries: seeds,
@@ -192,6 +485,54 @@ describe('isolated code graph impact query', () => {
         threadnoteHome: '/threadnote-home',
       };
       expect(decodeImpactQueryRequest(JSON.stringify(request))).toEqual(request);
+    },
+    {fastCheck: {numRuns: 80}},
+  );
+
+  fcProp(
+    effectIt,
+    'round-trips every local inspection operation without changing its selector contract (property)',
+    {
+      operation: fc.constantFrom('query', 'node', 'neighbors', 'explain', 'path', 'impact'),
+      prefixes: fc.array(
+        fc.string({maxLength: 120, minLength: 1}).filter(value => !value.includes('\0')),
+        {maxLength: 200},
+      ),
+      snapshotHash: gitObjectId(40),
+      selector: fc.string({maxLength: 80, minLength: 1}).filter(value => !value.includes('\0')),
+    },
+    ({operation, prefixes, selector, snapshotHash}) => {
+      const operationFields =
+        operation === 'query' || operation === 'impact'
+          ? {query: selector}
+          : operation === 'node' || operation === 'neighbors'
+            ? {nodeId: selector, query: ''}
+            : operation === 'path'
+              ? {from: selector, query: '', to: `${selector}-target`}
+              : {query: '', symbol: selector};
+      const parentScope = {
+        ...projectScope,
+        scope: {...projectScope.scope!, admittedPrefixes: prefixes},
+      };
+      const request = {
+        cwd: '/workspace/repository',
+        edgeLimit: 40,
+        nodeLimit: 20,
+        operation,
+        projectScopeReceipt: codeGraphQueryScopeReceipt(parentScope),
+        protocol: 1,
+        readySnapshotId: `cgsn_${snapshotHash}`,
+        threadnoteHome: '/threadnote-home',
+        ...operationFields,
+      };
+      expect(request.projectScopeReceipt).toEqual(codeGraphQueryScopeReceipt(projectScope));
+      const decoded = decodeImpactQueryRequest(JSON.stringify(request));
+      expect(decoded).toEqual(request);
+      expect(impactQueryWorkerInspectOptions(decoded!, '/threadnote-home')).toMatchObject({
+        operation,
+        readyScopeReceipt: codeGraphQueryScopeReceipt(parentScope),
+        strictFreshness: operation === 'path' || operation === 'impact',
+      });
     },
     {fastCheck: {numRuns: 80}},
   );
@@ -206,6 +547,7 @@ describe('isolated code graph impact query', () => {
     const request = decodeImpactQueryRequest(
       JSON.stringify({
         ...input,
+        operation: 'impact',
         protocol: 1,
         query: 'changed paths',
         seedQueryCount: input.seedQueries.length,
@@ -221,11 +563,37 @@ describe('isolated code graph impact query', () => {
     });
   });
 
+  it('reconstructs operation-specific ready-only inspect options', () => {
+    const request = decodeImpactQueryRequest(
+      JSON.stringify({
+        cwd: input.cwd,
+        direction: 'incoming',
+        edgeLimit: input.edgeLimit,
+        nodeId: `cgs_${'a'.repeat(32)}`,
+        nodeLimit: input.nodeLimit,
+        operation: 'neighbors',
+        protocol: 1,
+        query: '',
+        threadnoteHome: input.threadnoteHome,
+      }),
+    );
+    expect(request).toBeDefined();
+    expect(impactQueryWorkerInspectOptions(request!, input.threadnoteHome)).toMatchObject({
+      direction: 'incoming',
+      nodeId: `cgs_${'a'.repeat(32)}`,
+      operation: 'neighbors',
+      refresh: false,
+      requestMaintenance: false,
+      strictFreshness: false,
+    });
+  });
+
   it('rejects NUL-bearing, over-count, and non-SHA protocol fields', () => {
     const request = {
       cwd: '/workspace/repository',
       edgeLimit: 40,
       nodeLimit: 20,
+      operation: 'impact',
       protocol: 1,
       query: 'selector',
       threadnoteHome: '/threadnote-home',

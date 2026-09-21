@@ -3,12 +3,12 @@ import {
   codeGraphEvidenceCardId,
   type CodeGraphEvidenceCardV1,
   type CompactEvidenceRelationshipV1,
-} from '../workset_evidence.js';
+} from '../workset/evidence.js';
 import type {
   CodeGraphWorksetCatalogPublishedGenerationV1,
   CodeGraphWorksetCatalogPublishedMemberV1,
 } from '../workset_catalog/types.js';
-import type {CodeGraphWorksetRouterRepositoryCandidateV1, CodeGraphWorksetRouterResultV1} from '../workset_router.js';
+import type {CodeGraphWorksetRouterRepositoryCandidateV1, CodeGraphWorksetRouterResultV1} from '../workset/router.js';
 import type {CodeGraphCrossRepositoryBridgeV1} from './resolver.js';
 import {
   readCodeGraphWorksetCatalogRepositoryBridgePage,

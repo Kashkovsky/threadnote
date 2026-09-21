@@ -1,4 +1,4 @@
-import {Cause, Effect, Schema} from 'effect';
+import {Cause, DateTime, Effect, Schema} from 'effect';
 import {succeedUndefined} from '../effect/optional.js';
 import {compileContextBrief} from '../context_brief/index.js';
 import {
@@ -15,7 +15,7 @@ import {captureConsole} from '../effect/console.js';
 import {ResourceNotFound, ResourceStore} from '../effect/resource-store.js';
 import {uriSegment} from '../manifest.js';
 import {parseMemoryDocument, type MemoryMetadata, type MemoryRecord, type MemoryRelation} from '../memory/document.js';
-import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import type {MemoryCodeCitationV1} from '../memory/code/citation.js';
 import {memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
 import {readMemoryRecordsByUri, runRecall} from '../memory/index.js';
 import {MemoryPointerNotFound, readMemoryWithRelocations} from '../memory/relocation.js';
@@ -27,13 +27,14 @@ import {
   MemoryIdentityResolutionError,
   resolveMemoryIdentityAliases,
   verifyResolvedMemoryIdentity,
-} from '../recall/memory_identity.js';
+} from '../recall/memory/identity.js';
 import {
   retrieveRecallMemoryConnections,
   type RecallMemoryConnectionCoverageV1,
   type RecallMemoryConnectionReceiptV1,
   type RecallMemoryPremiseReceiptV1,
-} from '../recall/memory_connections.js';
+} from '../recall/memory/connections.js';
+import {recordRecallFeedback, type RecallFeedbackAction} from '../recall/feedback.js';
 
 export const MANAGER_CONTEXT_RECALL_RESULT_MAXIMUM = 48 as const;
 export const MANAGER_CONTEXT_READ_PAGE_BYTES = 12_000 as const;
@@ -52,6 +53,10 @@ export interface ManagerContextApiRequest {
     config: RuntimeConfig,
     body: Record<string, unknown>,
   ) => Effect.Effect<ManagerContextConnectionsResponse, unknown, ApplicationServices>;
+  readonly feedback?: (
+    config: RuntimeConfig,
+    body: Record<string, unknown>,
+  ) => Effect.Effect<ManagerRecallFeedbackResponse, unknown, ApplicationServices>;
   readonly method: string;
   readonly readContext?: (
     config: RuntimeConfig,
@@ -107,6 +112,7 @@ export interface ManagerRecallResponse {
     readonly threshold?: number;
     readonly workset?: string;
   };
+  readonly effectiveProject?: string;
   readonly queryExpansions: readonly string[];
   readonly resultSet: {
     readonly availableResults: number;
@@ -121,6 +127,12 @@ export interface ManagerRecallResponse {
     readonly message: string;
     readonly remediation: string;
   }[];
+}
+
+export interface ManagerRecallFeedbackResponse {
+  readonly action: RecallFeedbackAction;
+  readonly recorded: boolean;
+  readonly uri: string;
 }
 
 export interface ManagerContextReadResponse {
@@ -185,6 +197,7 @@ export function isManagerContextApiPath(pathname: string): boolean {
   return (
     pathname === '/api/context/brief' ||
     pathname === '/api/context/connections' ||
+    pathname === '/api/context/feedback' ||
     pathname === '/api/context/recall' ||
     pathname === '/api/context/read'
   );
@@ -210,6 +223,8 @@ function routeManagerContextRequest(request: ManagerContextApiRequest) {
         return response(200, yield* (request.compileBrief ?? runManagerContextBrief)(request.config, body));
       case '/api/context/connections':
         return response(200, yield* (request.connections ?? runManagerContextConnections)(request.config, body));
+      case '/api/context/feedback':
+        return response(200, yield* (request.feedback ?? runManagerRecallFeedback)(request.config, body));
       case '/api/context/recall':
         return response(200, yield* (request.recall ?? runManagerRecall)(request.config, body));
       case '/api/context/read':
@@ -228,6 +243,28 @@ export const runManagerContextBrief = Effect.fn('managerContext.compileBrief')(f
   return yield* compileContextBrief(config, input).pipe(
     Effect.mapError(cause => managerContextOperationError(cause, 'context-brief-unavailable')),
   );
+});
+
+export const runManagerRecallFeedback = Effect.fn('managerContext.feedback')(function* (
+  config: RuntimeConfig,
+  body: Record<string, unknown>,
+) {
+  exactKeys(body, new Set(['action', 'project', 'query', 'uri']), 'recall feedback request');
+  const action = requiredRecallFeedbackAction(body.action);
+  const project = optionalText(body.project, 'project', MANAGER_CONTEXT_SCOPE_MAXIMUM_BYTES);
+  if (action === 'pin' && project === undefined) {
+    throw ManagerContextApiError.of('feedback-project-required', 'Pinned feedback requires a project scope.', 400);
+  }
+  const query = requiredText(body.query, 'query', MANAGER_CONTEXT_TEXT_MAXIMUM_BYTES);
+  const uri = canonicalContextUri(requiredText(body.uri, 'uri', MANAGER_CONTEXT_TEXT_MAXIMUM_BYTES));
+  const result = yield* recordRecallFeedback(config.agentContextHome, {
+    action,
+    project,
+    query,
+    timestamp: DateTime.formatIso(yield* DateTime.now),
+    uri,
+  });
+  return {action, recorded: result.recorded, uri} satisfies ManagerRecallFeedbackResponse;
 });
 
 export const runManagerRecall = Effect.fn('managerContext.recall')(function* (
@@ -268,6 +305,7 @@ export const runManagerRecall = Effect.fn('managerContext.recall')(function* (
       ...(input.threshold === undefined ? {} : {threshold: input.threshold}),
       ...(input.workset === undefined ? {} : {workset: input.workset}),
     },
+    ...(captured.value.project === undefined ? {} : {effectiveProject: captured.value.project}),
     queryExpansions: captured.value.queryExpansions.map(boundedResultText),
     resultSet: {
       availableResults: results.length,
@@ -635,6 +673,17 @@ function optionalMode(value: unknown): ContextBriefMode {
     return value;
   }
   throw ManagerContextApiError.of('invalid-mode', `Mode must be one of ${CONTEXT_BRIEF_MODES.join(', ')}.`, 400);
+}
+
+function requiredRecallFeedbackAction(value: unknown): RecallFeedbackAction {
+  if (value === 'useful' || value === 'wrong' || value === 'pin' || value === 'dismiss' || value === 'applied') {
+    return value;
+  }
+  throw ManagerContextApiError.of(
+    'invalid-feedback-action',
+    'action must be useful, wrong, pin, dismiss, or applied.',
+    400,
+  );
 }
 
 function requiredText(value: unknown, label: string, maximumBytes: number): string {

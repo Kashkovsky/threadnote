@@ -9,8 +9,13 @@ import {SystemInfo} from './effect/system.js';
 import {withProductionLogging} from './effect/production_log.js';
 import {expandPath} from './utils.js';
 import {withAnonymousTelemetry} from './effect/telemetry.js';
+import {
+  CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE,
+  CodeGraphRefreshDemandSuperseded,
+} from './code_graph/refresh/demand.js';
 
 export const cliEffect = (arguments_: readonly string[]) => {
+  const failureExitCode = inspectCliInvocation(arguments_).failureExitCode ?? 1;
   const program = Effect.gen(function* () {
     yield* initializeCliUi();
     const version = yield* getThreadnoteVersion();
@@ -39,7 +44,7 @@ export const cliEffect = (arguments_: readonly string[]) => {
       Effect.gen(function* () {
         yield* Console.error(errorMessage(defect));
         const system = yield* SystemInfo;
-        yield* Effect.sync(() => system.setExitCode(1));
+        yield* Effect.sync(() => system.setExitCode(failureExitCode));
       }),
     ),
     Effect.tapError(error =>
@@ -47,7 +52,17 @@ export const cliEffect = (arguments_: readonly string[]) => {
         ? Effect.void
         : Console.error(errorMessage(Schema.is(ApplicationError)(error) ? error.cause : error)),
     ),
-    Effect.catch(() => Effect.flatMap(SystemInfo, system => Effect.sync(() => system.setExitCode(1)))),
+    Effect.catch(error =>
+      Effect.flatMap(SystemInfo, system =>
+        Effect.sync(() =>
+          system.setExitCode(
+            Schema.is(CodeGraphRefreshDemandSuperseded)(error)
+              ? CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE
+              : failureExitCode,
+          ),
+        ),
+      ),
+    ),
   );
 };
 

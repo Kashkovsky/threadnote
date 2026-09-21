@@ -10,7 +10,7 @@ import {
   deleteCodeGraphVectorPointerWithRetirement,
   prepareCodeGraphVectorRetirement,
   retireCodeGraphVectorGenerationPage,
-} from '../../src/code_graph/vector_maintenance.js';
+} from '../../src/code_graph/vector/maintenance.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 const VectorRetirementPropertyLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);

@@ -11,12 +11,12 @@ import {
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
 import type {RemoteRememberInputV1} from '../../src/memory_domain/contracts.js';
 import type {AuthorizedRemotePrincipal, RemoteMemoryScope} from '../../src/remote_memory/authorization.js';
-import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git_canonical_store.js';
+import {GitCanonicalMemoryStore, gitCanonicalSharePath} from '../../src/remote_memory/git/canonical_store.js';
 import type {CursorWorkloadAttestation} from '../../src/remote_memory/cursor_oidc.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
 import {RemoteHandoffRetentionWorker} from '../../src/remote_memory/handoff_retention.js';
-import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres_control_plane.js';
-import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres_repository.js';
+import {PostgresRemoteControlPlane} from '../../src/remote_memory/postgres/control_plane.js';
+import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres/repository.js';
 import {PostgresRemoteRateLimiter} from '../../src/remote_memory/rate_limit.js';
 import {acquireRemoteRelationAdmissionTransactionLock} from '../../src/remote_memory/relation_admission.js';
 

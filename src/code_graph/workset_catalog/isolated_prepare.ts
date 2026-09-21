@@ -3,7 +3,7 @@ import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {SystemInfo, type SystemInfoShape} from '../../effect/system.js';
 import {withCurrentAgentSessionEnvironment} from '../../telemetry/session.js';
 import type {RuntimeConfig} from '../../types.js';
-import {developmentStandaloneScript} from '../isolated_builder.js';
+import {developmentStandaloneScript} from '../isolated/builder.js';
 import type {CodeGraphStoreRecovery} from '../types.js';
 import type {
   CodeGraphWorksetPrepareBridgeReceiptV1,
@@ -46,6 +46,7 @@ const GRAPH_WAITING_REASONS = [
   'database-writer',
   'disk-capacity',
   'home-builder-cap',
+  'prepared-spool-budget',
   'repository-lock',
   'request-lock',
   'snapshot-build',

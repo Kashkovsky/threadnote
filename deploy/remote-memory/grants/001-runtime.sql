@@ -2,8 +2,10 @@
 
 REVOKE ALL ON ALL TABLES IN SCHEMA remote_memory FROM threadnote_remote_runtime;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA remote_memory FROM threadnote_remote_runtime;
-REVOKE CREATE ON SCHEMA remote_memory FROM threadnote_remote_runtime;
+REVOKE ALL PRIVILEGES ON SCHEMA remote_memory FROM threadnote_remote_runtime;
 GRANT USAGE ON SCHEMA remote_memory TO threadnote_remote_runtime;
+REVOKE ALL PRIVILEGES ON FUNCTION remote_memory.lock_context_health_target(text, text, text, text)
+  FROM threadnote_remote_runtime;
 
 GRANT SELECT ON
   remote_memory.share_directory,
@@ -31,7 +33,7 @@ TO threadnote_remote_runtime;
 
 GRANT SELECT (id, status) ON remote_memory.tenants TO threadnote_remote_runtime;
 GRANT SELECT (tenant_id, id, status) ON remote_memory.principals TO threadnote_remote_runtime;
-GRANT SELECT (tenant_id, issuer, subject, principal_id)
+GRANT SELECT (tenant_id, issuer, subject, client_id, principal_id)
   ON remote_memory.external_identities TO threadnote_remote_runtime;
 
 GRANT INSERT ON
@@ -69,7 +71,6 @@ GRANT UPDATE (status, payload, payload_purged_at, decision_kind, decision_operat
   reviewer_workload_attestation_id,
   decision_reason, result_receipt, reviewed_at)
   ON remote_memory.durable_memory_proposals TO threadnote_remote_runtime;
-
 GRANT DELETE ON
   remote_memory.challenge_directory,
   remote_memory.attestation_challenges,

@@ -1,11 +1,12 @@
 import {Crypto, Effect, FileSystem, Path, Schema} from 'effect';
 import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
+import {succeedUndefined} from '../effect/optional.js';
 import {
   observeCodeGraphWorktreeReconciliationAuthority,
   type CodeGraphWorktreeReconciliationAuthorityObservation,
   type CodeGraphWorktreeReconciliationAuthorityTarget,
-} from './git_worktree_registration.js';
+} from './git/worktree/registration.js';
 import {
   readCodeGraphWorktreeReconciliationEvidenceCandidate,
   sameCodeGraphWorktreeReconciliationEvidenceCandidate,
@@ -15,8 +16,8 @@ import {
   codeGraphMaintenanceIntentActive,
   CodeGraphMaintenanceActiveError,
   withCodeGraphTargetWorktreeLock,
-} from './maintenance_gate.js';
-import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle_classification.js';
+} from './maintenance/gate.js';
+import {classifyCodeGraphLifecycle, type CodeGraphLifecycleProtection} from './lifecycle/classification.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import {
   CodeGraphStore,
@@ -26,6 +27,7 @@ import {
 } from './store.js';
 import {CodeGraphStoreBusyError, type RepositoryIdentity} from './types.js';
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
+import {reconcileCodeGraphScopeRetirements} from './scope/retirement.js';
 
 export {type CodeGraphWorktreeReconciliationCandidate} from './store.js';
 
@@ -107,6 +109,14 @@ export type CodeGraphWorktreeReconciliationResult =
     };
 
 export interface CodeGraphWorktreeReconciliationDependencies {
+  readonly retireScopes?: (
+    input: CodeGraphWorktreeReconciliationTick,
+    candidates: readonly CodeGraphWorktreeReconciliationCandidate[],
+  ) => Effect.Effect<
+    | {readonly candidate: CodeGraphWorktreeReconciliationCandidate; readonly result: CodeGraphViewRemovalResult}
+    | undefined,
+    unknown
+  >;
   readonly listCandidates: (
     input: CodeGraphWorktreeReconciliationTick,
     limit: number,
@@ -130,6 +140,7 @@ export interface CodeGraphWorktreeReconciliationDependencies {
     input: CodeGraphWorktreeReconciliationTick,
     worktreeId: string,
     effect: Effect.Effect<A, E>,
+    scopeId?: string,
   ) => Effect.Effect<A, E | unknown>;
 }
 
@@ -172,8 +183,12 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
               state: 'deferred',
             } as const;
           }
+          const retiredScope = yield* (dependencies.retireScopes?.(input, candidates.value) ?? succeedUndefined).pipe(
+            Effect.orElseSucceed(() => undefined),
+          );
           if (candidates.value.length === 0) return {reason: 'no-candidates', state: 'preserved'} as const;
           const nextCursor = candidates.value.at(-1)!.worktreeId;
+          if (retiredScope !== undefined) return removalResult(nextCursor, retiredScope.candidate, retiredScope.result);
           const observedEvidence = yield* Effect.forEach(
             candidates.value,
             candidate =>
@@ -380,6 +395,7 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
                     }),
                   );
               }),
+              target.candidate.scopeId,
             )
             .pipe(
               Effect.match({
@@ -428,6 +444,10 @@ export const makeLiveCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeLive
       }
     });
   return yield* makeCodeGraphWorktreeReconciler({
+    retireScopes: (input, candidates) =>
+      provideLive(reconcileCodeGraphScopeRetirements(input, candidates)).pipe(
+        Effect.provideService(CodeGraphStore, store),
+      ),
     listCandidates: (input, limit) =>
       store.claimWorktreeReconciliationCandidates(input.databasePath, limit, {
         beforeDatabaseOpen: () => verifyDatabaseAuthority(input, 'reconciliation scan'),
@@ -442,12 +462,13 @@ export const makeLiveCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeLive
       store.removeView(input.databasePath, candidate.worktreeId, candidate.snapshotId, {
         beforeDatabaseOpen: () => verifyDatabaseAuthority(input, 'reconciliation'),
         cleanupEvidence,
+        scopeId: candidate.scopeId,
         requireReconciliationSchema: true,
         waitTimeoutMilliseconds: 0,
       }),
     resolveAnchor: cwd => provideLive(resolveRepositoryIdentity(cwd)),
-    withTargetLock: (input, worktreeId, effect) =>
-      provideLive(withCodeGraphTargetWorktreeLock(input.threadnoteHome, input.checkoutId, worktreeId, effect)),
+    withTargetLock: (input, worktreeId, effect, scopeId) =>
+      provideLive(withCodeGraphTargetWorktreeLock(input.threadnoteHome, input.checkoutId, worktreeId, effect, scopeId)),
   });
 });
 

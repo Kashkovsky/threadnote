@@ -1,27 +1,58 @@
 import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
-import {codeGraphInventoryReuseContract, readCodeGraphInventoryReuseEnvironment} from './inventory_reuse.js';
+import {codeGraphInventoryReuseContract, readCodeGraphInventoryReuseEnvironment} from './inventory/reuse.js';
 import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphLayout} from './layout.js';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from './index_scope.js';
+import {codeGraphScopeIdentityCompatible, codeGraphScopeViewKey} from './scope/identity.js';
 import type {CodeGraphSnapshot, RepositoryIdentity} from './types.js';
 
 const hash = Schema.String.pipe(Schema.check(Schema.isPattern(/^[0-9a-f]{64}$/u)));
-const receiptSchema = Schema.Struct({
+const scopeEvidenceSchema = Schema.Struct({
+  scopeKey: Schema.String.pipe(Schema.check(Schema.isPattern(/^code-graph-scope:[0-9a-f]{64}$/u))),
+  definitionDigest: hash,
+  closureDigest: hash,
+  inventoryFingerprint: hash,
+  observedCommit: Schema.String.pipe(Schema.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u))),
+  scopedOverlayFingerprint: Schema.optional(hash),
+});
+/** A verified observation of one scope at a local worktree's current commit. */
+export type CodeGraphScopeAdmissionEvidence = typeof scopeEvidenceSchema.Type;
+
+const receiptFields = {
   contract: hash,
   environmentFingerprint: hash,
   includeOpaqueCorpusAssets: Schema.Boolean,
   repositoryId: hash,
   snapshotId: Schema.String,
-  version: Schema.Literal(1),
   worktreeId: hash,
+};
+const legacyReceiptSchema = Schema.Struct({...receiptFields, version: Schema.Literal(1)});
+const currentReceiptSchema = Schema.Struct({
+  ...receiptFields,
+  extractorSet: Schema.String,
+  scopeKey: Schema.String,
+  scope: Schema.optional(scopeEvidenceSchema),
+  version: Schema.Literal(2),
 });
+const receiptSchema = Schema.Union([legacyReceiptSchema, currentReceiptSchema]);
 type AdmissionReceipt = typeof receiptSchema.Type;
 
 class CodeGraphAdmissionError extends Schema.TaggedError<CodeGraphAdmissionError>()('CodeGraphAdmissionError', {
   message: Schema.String,
 }) {}
 
-function receiptPath(path: Path.Path, layout: CodeGraphLayout, worktreeId: string, clean: boolean): string {
-  return path.join(layout.repositoryRoot, 'admission', `${worktreeId}${clean ? '.clean' : ''}.json`);
+export function codeGraphSnapshotAdmissionReceiptPath(
+  path: Path.Path,
+  layout: CodeGraphLayout,
+  worktreeId: string,
+  clean = false,
+  scopeKey: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
+): string {
+  return path.join(
+    layout.repositoryRoot,
+    'admission',
+    `${codeGraphScopeViewKey(worktreeId, scopeKey)}${clean ? '.clean' : ''}.json`,
+  );
 }
 
 /** Missing cache evidence can deny freshness, but never substitutes for a ready SQLite snapshot. */
@@ -29,11 +60,12 @@ const readReceipt = Effect.fn('codeGraph.readAdmissionReceipt')(function* (
   layout: CodeGraphLayout,
   worktreeId: string,
   clean = false,
+  scopeKey: string = CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
 ) {
   if (!/^[0-9a-f]{64}$/u.test(worktreeId)) return undefined;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const target = receiptPath(path, layout, worktreeId, clean);
+  const target = codeGraphSnapshotAdmissionReceiptPath(path, layout, worktreeId, clean, scopeKey);
   for (const file of [path.dirname(target), target]) {
     if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) return undefined;
   }
@@ -53,7 +85,7 @@ const readReceipt = Effect.fn('codeGraph.readAdmissionReceipt')(function* (
       const parsed = yield* Effect.try(() =>
         JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes.subarray(0, length))),
       );
-      return Option.getOrUndefined(Schema.decodeUnknownOption(receiptSchema)(parsed));
+      return Option.getOrUndefined(Schema.decodeUnknownOption(receiptSchema, {onExcessProperty: 'error'})(parsed));
     }),
   );
 });
@@ -64,11 +96,19 @@ export const codeGraphSnapshotAdmissionCurrent = Effect.fn('codeGraph.snapshotAd
   environmentFingerprint: string,
   languagePacks: CodeGraphLanguagePackRegistryShape,
   producingWorktree = false,
+  scope?: CodeGraphScopeAdmissionEvidence,
 ) {
   const worktreeId = producingWorktree ? snapshot.worktreeId : layout.worktreeId;
   return (
-    (yield* matchingReceipt(layout, worktreeId, snapshot, environmentFingerprint, languagePacks, producingWorktree)) !==
-    undefined
+    (yield* matchingReceipt(
+      layout,
+      worktreeId,
+      snapshot,
+      environmentFingerprint,
+      languagePacks,
+      producingWorktree,
+      scope,
+    )) !== undefined
   );
 });
 
@@ -79,10 +119,14 @@ const matchingReceipt = Effect.fn('codeGraph.matchingAdmissionReceipt')(function
   environment: string,
   languagePacks: CodeGraphLanguagePackRegistryShape,
   includeClean: boolean,
+  scope: CodeGraphScopeAdmissionEvidence | undefined,
 ) {
+  if (scope !== undefined && Option.isNone(Schema.decodeOption(scopeEvidenceSchema)(scope))) return undefined;
   for (const clean of includeClean && !snapshot.dirty ? [false, true] : [false]) {
-    const receipt = yield* readReceipt(layout, worktreeId, clean).pipe(Effect.orElseSucceed(() => undefined));
-    if (receiptMatches(receipt, worktreeId, snapshot, environment, languagePacks)) return receipt;
+    const receipt = yield* readReceipt(layout, worktreeId, clean, scope?.scopeKey).pipe(
+      Effect.orElseSucceed(() => undefined),
+    );
+    if (receiptMatches(receipt, worktreeId, snapshot, environment, languagePacks, scope)) return receipt;
   }
   return undefined;
 });
@@ -93,6 +137,7 @@ function receiptMatches(
   snapshot: CodeGraphSnapshot,
   environmentFingerprint: string,
   languagePacks: CodeGraphLanguagePackRegistryShape,
+  scope: CodeGraphScopeAdmissionEvidence | undefined,
 ): boolean {
   return (
     receipt !== undefined &&
@@ -100,7 +145,15 @@ function receiptMatches(
     receipt.repositoryId === snapshot.repositoryId &&
     receipt.snapshotId === snapshot.id &&
     receipt.environmentFingerprint === environmentFingerprint &&
-    receipt.contract === codeGraphInventoryReuseContract(languagePacks, receipt.includeOpaqueCorpusAssets)
+    receipt.contract === codeGraphInventoryReuseContract(languagePacks, receipt.includeOpaqueCorpusAssets) &&
+    (receipt.version === 1
+      ? scope === undefined
+      : receipt.extractorSet === snapshot.extractorSet &&
+        receipt.scopeKey === (scope?.scopeKey ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY) &&
+        codeGraphScopeIdentityCompatible(receipt.scope, scope) &&
+        receipt.scope?.observedCommit === scope?.observedCommit &&
+        receipt.scope?.inventoryFingerprint === scope?.inventoryFingerprint &&
+        receipt.scope?.scopedOverlayFingerprint === scope?.scopedOverlayFingerprint)
   );
 }
 
@@ -111,7 +164,7 @@ export const recordCodeGraphSnapshotAdmission = Effect.fn('codeGraph.recordSnaps
   environmentFingerprint: string,
   languagePacks: CodeGraphLanguagePackRegistryShape,
   includeOpaqueCorpusAssets: boolean,
-  options?: {readonly cleanOnly?: boolean},
+  options?: {readonly cleanOnly?: boolean; readonly scope?: CodeGraphScopeAdmissionEvidence},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -122,7 +175,14 @@ export const recordCodeGraphSnapshotAdmission = Effect.fn('codeGraph.recordSnaps
   if (!/^[0-9a-f]{64}$/u.test(layout.worktreeId)) {
     return yield* CodeGraphAdmissionError.make({message: 'Invalid graph admission worktree identity.'});
   }
-  const target = receiptPath(path, layout, layout.worktreeId, false);
+  const scope =
+    options?.scope === undefined
+      ? undefined
+      : Option.getOrUndefined(Schema.decodeOption(scopeEvidenceSchema)(options.scope));
+  if (options?.scope !== undefined && scope === undefined) {
+    return yield* CodeGraphAdmissionError.make({message: 'Invalid graph admission scope applicability evidence.'});
+  }
+  const target = codeGraphSnapshotAdmissionReceiptPath(path, layout, layout.worktreeId, false, scope?.scopeKey);
   const directory = path.dirname(target);
   yield* fs.makeDirectory(directory, {recursive: true, mode: 0o700});
   if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) {
@@ -134,16 +194,26 @@ export const recordCodeGraphSnapshotAdmission = Effect.fn('codeGraph.recordSnaps
     includeOpaqueCorpusAssets,
     repositoryId: snapshot.repositoryId,
     snapshotId: snapshot.id,
-    version: 1,
+    extractorSet: snapshot.extractorSet,
+    scopeKey: scope?.scopeKey ?? CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY,
+    ...(scope === undefined ? {} : {scope}),
+    version: 2,
     worktreeId: layout.worktreeId,
   };
+  const encoded = `${JSON.stringify(receipt)}\n`;
+  if (
+    Option.isNone(Schema.decodeOption(currentReceiptSchema)(receipt)) ||
+    new TextEncoder().encode(encoded).length > 4_096
+  ) {
+    return yield* CodeGraphAdmissionError.make({message: 'Invalid or oversized graph admission evidence.'});
+  }
   // Retain the last verified clean base while its producer works on a dirty overlay.
-  // Two bounded files per worktree avoid retaining proof for every historical snapshot.
+  // Two bounded files per worktree and scope avoid retaining proof for every historical snapshot.
   for (const clean of options?.cleanOnly ? [true] : snapshot.dirty ? [false] : [false, true]) {
-    const destination = receiptPath(path, layout, layout.worktreeId, clean);
+    const destination = codeGraphSnapshotAdmissionReceiptPath(path, layout, layout.worktreeId, clean, scope?.scopeKey);
     const temporary = `${destination}.${yield* crypto.randomUUIDv4}.tmp`;
     yield* Effect.gen(function* () {
-      yield* fs.writeFileString(temporary, `${JSON.stringify(receipt)}\n`, {flag: 'wx', mode: 0o600});
+      yield* fs.writeFileString(temporary, encoded, {flag: 'wx', mode: 0o600});
       yield* fs.rename(temporary, destination);
     }).pipe(Effect.ensuring(fs.remove(temporary, {force: true}).pipe(Effect.ignore)));
   }
@@ -164,9 +234,18 @@ export const codeGraphSnapshotAdmissionCurrentForIdentity = Effect.fn('codeGraph
     identity: RepositoryIdentity,
     languagePacks: CodeGraphLanguagePackRegistryShape,
     producingWorktree = false,
+    scope?: CodeGraphScopeAdmissionEvidence,
   ) {
+    if (scope !== undefined && scope.observedCommit !== identity.headCommit) return false;
     const environment = yield* observeCodeGraphAdmissionEnvironment(identity);
-    return yield* codeGraphSnapshotAdmissionCurrent(layout, snapshot, environment, languagePacks, producingWorktree);
+    return yield* codeGraphSnapshotAdmissionCurrent(
+      layout,
+      snapshot,
+      environment,
+      languagePacks,
+      producingWorktree,
+      scope,
+    );
   },
 );
 
@@ -175,9 +254,19 @@ export const adoptCodeGraphSnapshotAdmission = Effect.fn('codeGraph.adoptSnapsho
   snapshot: CodeGraphSnapshot,
   identity: RepositoryIdentity,
   languagePacks: CodeGraphLanguagePackRegistryShape,
+  scope?: CodeGraphScopeAdmissionEvidence,
 ) {
+  if (scope !== undefined && scope.observedCommit !== identity.headCommit) return false;
   const environment = yield* observeCodeGraphAdmissionEnvironment(identity);
-  const receipt = yield* matchingReceipt(layout, snapshot.worktreeId, snapshot, environment, languagePacks, true);
+  const receipt = yield* matchingReceipt(
+    layout,
+    snapshot.worktreeId,
+    snapshot,
+    environment,
+    languagePacks,
+    true,
+    scope,
+  );
   if (receipt === undefined) return false;
   yield* recordCodeGraphSnapshotAdmission(
     layout,
@@ -185,6 +274,7 @@ export const adoptCodeGraphSnapshotAdmission = Effect.fn('codeGraph.adoptSnapsho
     environment,
     languagePacks,
     receipt.includeOpaqueCorpusAssets,
+    {scope},
   );
   return true;
 });

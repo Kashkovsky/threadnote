@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {gitCommitDistanceGroups} from '../../src/code_graph/incremental_base_selection.js';
+import {gitCommitDistanceGroups} from '../../src/code_graph/incremental/base_selection.js';
 
 function objectId(index: number): string {
   return index.toString(16).padStart(40, '0');

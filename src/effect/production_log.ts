@@ -18,7 +18,7 @@ import {credentialScrubberBlocker} from '../share/scrubber.js';
 import {LEGACY_THREADNOTE_STORAGE_LAYOUT_VERSION, THREADNOTE_STORAGE_LAYOUT_VERSION} from '../storage/layout.js';
 import type {RuntimeConfig} from '../types.js';
 import {getThreadnoteVersion} from '../release/runtime_version.js';
-import {withExclusiveFileLock} from './file_lock.js';
+import {withExclusiveFileLock} from './file/lock.js';
 import {SystemInfo} from './system.js';
 
 export const PRODUCTION_LOG_FILE_NAME = 'threadnote.log';

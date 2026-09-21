@@ -4,8 +4,8 @@ describe('remote memory PostgreSQL JSON boundary', () => {
   // These are direct checkout file boundaries, so a Promise test is appropriate.
   it('passes JSON values to the postgres.js serializer exactly once', async () => {
     const [controlPlane, operator] = await Promise.all([
-      Bun.file('src/remote_memory/postgres_control_plane.ts').text(),
-      Bun.file('src/remote_memory/operator_postgres.ts').text(),
+      Bun.file('src/remote_memory/postgres/control_plane.ts').text(),
+      Bun.file('src/remote_memory/operator/postgres.ts').text(),
     ]);
 
     expect(controlPlane).toContain('${transaction.json(desiredSharePolicy.document)}');

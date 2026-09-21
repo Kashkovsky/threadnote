@@ -4,9 +4,9 @@ import type {Sql, TransactionSql} from 'postgres';
 import type {AuthorizedRemotePrincipal} from './authorization.js';
 import {RemoteMemoryError} from './errors.js';
 import {rotateShares} from './indexer.js';
-import {PostgresRemoteMemoryRepository} from './postgres_repository.js';
-import {remoteRetentionPrincipalId} from './postgres_control_plane.js';
-import type {GitCanonicalMemoryStore} from './git_canonical_store.js';
+import {PostgresRemoteMemoryRepository} from './postgres/repository.js';
+import {remoteRetentionPrincipalId} from './postgres/control_plane.js';
+import type {GitCanonicalMemoryStore} from './git/canonical_store.js';
 import {REMOTE_MEMORY_PROPOSAL_CLAIM_LEASE_MILLISECONDS} from './proposals.js';
 
 const DEFAULT_RETENTION_LIMIT = 64;
@@ -236,7 +236,8 @@ export class RemoteHandoffRetentionWorker {
           JOIN remote_memory.share_grants g
             ON g.tenant_id = h.tenant_id AND g.share_id = h.share_id
             AND g.principal_id = ${remoteRetentionPrincipalId(share.tenant_id)}
-            AND g.status = 'active' AND 'memory:admin' = ANY(g.capabilities)
+            AND g.status = 'active' AND (g.expires_at IS NULL OR g.expires_at > now())
+            AND 'memory:admin' = ANY(g.capabilities)
           WHERE h.tenant_id = ${share.tenant_id} AND h.share_id = ${share.share_id}
             AND h.kind = 'handoff' AND h.status = 'active'
             AND h.expires_at IS NOT NULL AND h.expires_at <= ${now.toISOString()}
@@ -292,6 +293,7 @@ function retentionPrincipal(row: ExpiredHandoffRow): AuthorizedRemotePrincipal {
     allowedProjects: 'all',
     attestationRequiredForWrites: false,
     capabilities: new Set(['memory:admin']),
+    cloudAdmissionRequired: false,
     cursorOwnerIds: new Set(),
     cursorSubjects: new Set(),
     featureFlags: new Set(),

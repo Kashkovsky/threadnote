@@ -1,5 +1,5 @@
 import type {CodeGraphWorksetRoutingSymbolV1} from './types.js';
-import {normalizedTerms} from '../store_utilities.js';
+import {normalizedTerms} from '../store/utilities.js';
 import {compareCodeUnits} from '../ordering.js';
 
 export const CODE_GRAPH_WORKSET_ROUTING_EXACT_KEY_KINDS = [

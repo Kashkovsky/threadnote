@@ -1,15 +1,15 @@
 import {DateTime, Effect, Exit, FileSystem, Path, Schema} from 'effect';
 import {succeedUndefined} from '../../effect/optional.js';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {withExclusiveFileLock} from '../../effect/file_lock.js';
+import {withExclusiveFileLock} from '../../effect/file/lock.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION,
   codeGraphEvidenceCardId,
   codeGraphQualifiedRefHandle,
   codeGraphWorksetContinuationHandle,
   type CodeGraphWorksetQueryResultV2,
-} from '../workset_evidence.js';
-import {useDatabaseDirect} from '../store_session.js';
+} from '../workset/evidence.js';
+import {useDatabaseDirect} from '../store/session.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION,
   codeGraphWorksetCatalogLayout,
@@ -22,6 +22,7 @@ import {
 } from './projection.js';
 import {codeGraphWorksetResultSequenceDigest, type PreparedCodeGraphWorksetResultSequenceV1} from './result_set.js';
 import {codeGraphWorksetRoutingExactKeys} from './routing_normalization.js';
+import {decodeWorksetScopeRow, validateWorksetScopeReadSchema, type WorksetScopeRow} from './scope_receipt.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_PAGE_SIZE_BYTES,
   configureCodeGraphWorksetCatalogReadConnection,
@@ -49,7 +50,7 @@ const CATALOG_LOCK_OPTIONS = {
   waitTimeoutMilliseconds: 30_000,
 } as const;
 const PROJECTION_INSERT_BATCH_SIZE = 256;
-export {CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM} from './projection_storage.js';
+export {CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM} from './projection/storage.js';
 const CATALOG_RETIREMENT_LIMIT_MAXIMUM = 1_000;
 const GENERATION_ID = /^cgwg_[0-9a-f]{40}$/u;
 const QUALIFIED_REF = /^cgr_[0-9a-f]{40}$/u;
@@ -66,7 +67,9 @@ interface GenerationRow {
   readonly workset_name: unknown;
 }
 
-interface GenerationMemberRow {
+interface GenerationMemberRow extends WorksetScopeRow {
+  readonly member_repository_id: unknown;
+  readonly member_snapshot_id: unknown;
   readonly ordinal: unknown;
   readonly projection_digest: unknown;
   readonly repository_id: unknown;
@@ -75,7 +78,7 @@ interface GenerationMemberRow {
   readonly worktree_id: unknown;
 }
 
-interface ProjectionRow {
+interface ProjectionRow extends WorksetScopeRow {
   readonly checkout_id: unknown;
   readonly commit_id: unknown;
   readonly component_count: unknown;
@@ -204,6 +207,7 @@ export function withCatalogReader<A, E, R>(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* configureCodeGraphWorksetCatalogReadConnection(sql);
+        yield* validateWorksetScopeReadSchema(sql);
         return yield* use(sql);
       }),
     );
@@ -224,7 +228,7 @@ export function selectProjectionForSnapshot(
     .unsafe<ProjectionRow>(
       `SELECT projection_digest, repository_id, checkout_id, worktree_id, snapshot_id,
               snapshot_digest, commit_id, extractor_generation, projector_version,
-              component_count, symbol_count, state
+              component_count, symbol_count, state, scope_id, definition_digest, closure_digest, completeness
        FROM repository_snapshots
        WHERE checkout_id = ? AND worktree_id = ? AND snapshot_id = ? AND projector_version = ?
        LIMIT 1`,
@@ -238,7 +242,7 @@ export function selectProjectionByDigest(sql: SqlClient.SqlClient, projectionDig
     .unsafe<ProjectionRow>(
       `SELECT projection_digest, repository_id, checkout_id, worktree_id, snapshot_id,
               snapshot_digest, commit_id, extractor_generation, projector_version,
-              component_count, symbol_count, state
+              component_count, symbol_count, state, scope_id, definition_digest, closure_digest, completeness
        FROM repository_snapshots WHERE projection_digest = ? LIMIT 1`,
       [projectionDigest],
     )
@@ -279,8 +283,8 @@ export function insertProjectionHeader(
         `INSERT INTO repository_snapshots (
            projection_digest, repository_id, checkout_id, worktree_id, snapshot_id,
            snapshot_digest, commit_id, extractor_generation, projector_version,
-           component_count, symbol_count, state, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staging', ?)`,
+           component_count, symbol_count, state, created_at, scope_id, definition_digest, closure_digest, completeness
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staging', ?, ?, ?, ?, ?)`,
         [
           receipt.projectionDigest,
           receipt.repositoryId,
@@ -294,6 +298,10 @@ export function insertProjectionHeader(
           receipt.componentCount,
           receipt.symbolCount,
           now,
+          receipt.scopeId,
+          receipt.definitionDigest ?? null,
+          receipt.closureDigest ?? null,
+          receipt.completeness,
         ],
       );
       yield* sql.unsafe(
@@ -327,6 +335,7 @@ export function projectionReceipt(
   metadata: Effect.Success<ReturnType<typeof decodeProjectionMetadata>>,
 ): CodeGraphWorksetRoutingProjectionReceiptV1 {
   return {
+    ...metadata.scope,
     checkoutId: metadata.checkout_id,
     commitId: metadata.commit_id,
     componentCount: metadata.component_count,
@@ -413,7 +422,7 @@ export function loadAndValidateProjection(sql: SqlClient.SqlClient, projectionDi
     const projectionRows = yield* sql.unsafe<ProjectionRow>(
       `SELECT projection_digest, repository_id, checkout_id, worktree_id, snapshot_id,
               snapshot_digest, commit_id, extractor_generation, projector_version,
-              component_count, symbol_count, state
+              component_count, symbol_count, state, scope_id, definition_digest, closure_digest, completeness
        FROM repository_snapshots
        WHERE projection_digest = ?
        LIMIT 1`,
@@ -552,6 +561,7 @@ export function decodeProjectionMetadata(row: ProjectionRow) {
       throw corrupt('Routing projection metadata is invalid.');
     }
     return {
+      scope: decodeWorksetScopeRow(row),
       checkout_id: checkoutId,
       commit_id: commitId,
       component_count: requiredInteger(row.component_count, 'component count'),
@@ -883,8 +893,8 @@ export function resultSetCapacity(sql: SqlClient.SqlClient) {
 export function loadGenerationMembers(sql: SqlClient.SqlClient, generationId: string) {
   return sql
     .unsafe<GenerationMemberRow>(
-      `SELECT m.ordinal, m.repository_key, m.repository_id, m.snapshot_id, m.projection_digest,
-              p.worktree_id
+      `SELECT m.ordinal, m.repository_key, m.repository_id AS member_repository_id,
+              m.snapshot_id AS member_snapshot_id, p.*
        FROM workset_generation_members AS m
        JOIN repository_snapshots AS p ON p.projection_digest = m.projection_digest
        WHERE m.generation_id = ?
@@ -902,11 +912,12 @@ export function loadGenerationMembers(sql: SqlClient.SqlClient, generationId: st
             const ordinal = requiredInteger(row.ordinal, 'generation member ordinal');
             if (ordinal !== index) throw corrupt('Workset generation member ordinals are not contiguous.');
             return {
+              ...decodeWorksetScopeRow(row),
               ordinal,
               projection_digest: requiredText(row.projection_digest, 'projection digest'),
-              repository_id: requiredText(row.repository_id, 'repository identity'),
+              repository_id: requiredText(row.member_repository_id, 'repository identity'),
               repository_key: requiredText(row.repository_key, 'repository key'),
-              snapshot_id: requiredText(row.snapshot_id, 'snapshot identity'),
+              snapshot_id: requiredText(row.member_snapshot_id, 'snapshot identity'),
               worktree_id: requiredText(row.worktree_id, 'worktree identity'),
             };
           }),
@@ -1008,6 +1019,9 @@ export function inspectCatalogLayout(
           const pageSize = yield* inspectCodeGraphWorksetCatalogPageSize(sql);
           if (pageSize !== CODE_GRAPH_WORKSET_CATALOG_PAGE_SIZE_BYTES) {
             return {schemaVersion, state: 'incompatible'} as const;
+          }
+          if (Exit.isFailure(yield* Effect.exit(validateWorksetScopeReadSchema(sql)))) {
+            return {detail: 'Workset scope receipt schema validation failed.', state: 'corrupt'} as const;
           }
           const quick = yield* sql.unsafe<{readonly quick_check: unknown}>('PRAGMA quick_check');
           if (quick.length !== 1 || quick[0]?.quick_check !== 'ok') {

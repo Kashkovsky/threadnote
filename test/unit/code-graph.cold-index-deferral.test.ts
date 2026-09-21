@@ -6,19 +6,19 @@ import {describe, expect, it} from 'vitest';
 import {
   CodeGraphDiskCapacityPressureError,
   type CodeGraphDirectPersistentCapacityBoundary,
-} from '../../src/code_graph/disk_capacity.js';
+} from '../../src/code_graph/disk/capacity.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   codeGraphColdIndexDeferralEligible,
   deferCodeGraphQueryIndexesForColdBuild,
-} from '../../src/code_graph/store_cold_index_deferral.js';
-import type {CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store_models.js';
-import {claimPersistentSnapshotBuild} from '../../src/code_graph/store_persistent_build.js';
+} from '../../src/code_graph/store/cold_index_deferral.js';
+import type {CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store/models.js';
+import {claimPersistentSnapshotBuild} from '../../src/code_graph/store/persistent_build.js';
 import {
   CODE_GRAPH_QUERY_INDEX_DEFINITIONS,
   inspectCodeGraphQueryIndexes,
-} from '../../src/code_graph/store_query_indexes.js';
-import {codeGraphSchemaInitializationReceiptCurrent} from '../../src/code_graph/store_schema_receipt.js';
+} from '../../src/code_graph/store/query/indexes.js';
+import {codeGraphSchemaInitializationReceiptCurrent} from '../../src/code_graph/store/schema/receipt.js';
 import type {
   CodeGraphEdge,
   CodeGraphInventoryFile,

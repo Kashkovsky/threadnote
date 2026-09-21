@@ -1,7 +1,10 @@
 import type {Path} from 'effect';
+import {sha256HexSync} from '../crypto/sha256.js';
 import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
+import {codeGraphScopeViewKey} from './scope/identity.js';
 
 export interface CodeGraphLayout {
+  readonly scopeId?: string;
   readonly checkoutId: string;
   readonly databaseWriteLockPath: string;
   readonly databasePath: string;
@@ -25,6 +28,11 @@ export function codeGraphMaintenanceStatusPath(path: Path.Path, threadnoteHome: 
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'maintenance-status-v1.json');
 }
 
+/** One local host owns the bounded automatic-compaction inventory at a time. */
+export function codeGraphAutomaticCompactionSchedulerLockPath(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'automatic-compaction-scheduler.lock');
+}
+
 /** Home-global receipts coordinate capacity before any checkout writer is acquired. */
 export function codeGraphDiskReservationRoot(path: Path.Path, threadnoteHome: string): string {
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'disk-capacity-reservations');
@@ -45,6 +53,14 @@ export function codeGraphBuilderAdmissionLockPath(path: Path.Path, threadnoteHom
 
 export function codeGraphBuilderAdmissionSlotPath(path: Path.Path, threadnoteHome: string, slot: 0 | 1): string {
   return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'builder-slots', `${slot}.lock`);
+}
+
+export function codeGraphPreparedSpoolBudgetRoot(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'prepared-spool-budget');
+}
+
+export function codeGraphPreparedSpoolBudgetLockPath(path: Path.Path, threadnoteHome: string): string {
+  return path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'prepared-spool-budget.lock');
 }
 
 export function codeGraphRetainedBaseReservationRoot(path: Path.Path, threadnoteHome: string): string {
@@ -156,10 +172,14 @@ export function codeGraphWorktreeLockPath(
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId?: string,
 ): string {
   assertCheckoutId(checkoutId);
   assertWorktreeId(worktreeId);
-  return path.join(codeGraphWorktreeLockRoot(path, threadnoteHome, checkoutId), `${worktreeId}.lock`);
+  return path.join(
+    codeGraphWorktreeLockRoot(path, threadnoteHome, checkoutId),
+    `${codeGraphScopeViewKey(worktreeId, scopeId)}.lock`,
+  );
 }
 
 /**
@@ -171,6 +191,7 @@ export function codeGraphWorktreeSpawnLockPath(
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId?: string,
 ): string {
   assertCheckoutId(checkoutId);
   assertWorktreeId(worktreeId);
@@ -181,7 +202,54 @@ export function codeGraphWorktreeSpawnLockPath(
     'code-graph',
     'worktree-spawns',
     checkoutId,
-    `${worktreeId}.lock`,
+    `${codeGraphScopeViewKey(worktreeId, scopeId)}.lock`,
+  );
+}
+
+/** Bounded, reconstructible per-worktree scheduling intent; never publication state. */
+export function codeGraphRefreshDemandPath(
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+  scopeId?: string,
+): string {
+  assertCheckoutId(checkoutId);
+  assertWorktreeId(worktreeId);
+  if (scopeId !== undefined) {
+    return path.join(
+      threadnoteHome,
+      'refresh-demands',
+      checkoutId,
+      `${sha256HexSync(codeGraphScopeViewKey(worktreeId, scopeId))}.json`,
+    );
+  }
+  return path.join(
+    threadnoteHome,
+    `.code-graph-refresh-demand-v1-${checkoutId}-${codeGraphScopeViewKey(worktreeId, scopeId)}.json`,
+  );
+}
+
+export function codeGraphRefreshDemandLockPath(
+  path: Path.Path,
+  threadnoteHome: string,
+  checkoutId: string,
+  worktreeId: string,
+  scopeId?: string,
+): string {
+  assertCheckoutId(checkoutId);
+  assertWorktreeId(worktreeId);
+  if (scopeId !== undefined) {
+    return path.join(
+      threadnoteHome,
+      'refresh-demands',
+      checkoutId,
+      `${sha256HexSync(codeGraphScopeViewKey(worktreeId, scopeId))}.lock`,
+    );
+  }
+  return path.join(
+    threadnoteHome,
+    `.code-graph-refresh-demand-v1-${checkoutId}-${codeGraphScopeViewKey(worktreeId, scopeId)}.lock`,
   );
 }
 
@@ -190,16 +258,18 @@ export function codeGraphLayout(
   threadnoteHome: string,
   checkoutId: string,
   worktreeId: string,
+  scopeId?: string,
 ): CodeGraphLayout {
   const repositoryRoot = codeGraphRepositoryRoot(path, threadnoteHome, checkoutId);
   const worktreeLockRoot = codeGraphWorktreeLockRoot(path, threadnoteHome, checkoutId);
   return {
+    ...(scopeId === undefined ? {} : {scopeId}),
     checkoutId,
     databaseWriteLockPath: codeGraphDatabaseWriteLockPath(path, threadnoteHome, checkoutId),
     databasePath: path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`),
-    lockPath: codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId),
+    lockPath: codeGraphWorktreeLockPath(path, threadnoteHome, checkoutId, worktreeId, scopeId),
     repositoryRoot,
-    staleMarkerPath: path.join(repositoryRoot, 'stale', `${worktreeId}.stale`),
+    staleMarkerPath: path.join(repositoryRoot, 'stale', `${codeGraphScopeViewKey(worktreeId, scopeId)}.stale`),
     vectorRoot: path.join(repositoryRoot, 'vectors'),
     worktreeLockRoot,
     worktreeId,

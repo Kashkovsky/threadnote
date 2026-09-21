@@ -12,14 +12,14 @@ import {
 import {sha256Digest, sha256HexFromDigest} from '../../src/code_graph/sharing/digest.js';
 import {graphSharingUnavailable} from '../../src/code_graph/sharing/errors.js';
 import {graphSharingCasBlobPath} from '../../src/code_graph/sharing/layout.js';
-import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse_result.js';
+import {graphShareParseResultArtifact} from '../../src/code_graph/sharing/parse/result.js';
 import {
   acknowledgeGraphShareSignedCandidatePage,
   graphShareSignedCandidateIdentity,
   listGraphShareSignedCandidatePageIds,
   persistGraphShareSignedCandidates,
   readGraphShareSignedCandidatePage,
-} from '../../src/code_graph/sharing/signed_candidate.js';
+} from '../../src/code_graph/sharing/signed/candidate.js';
 import {
   graphWorkerDeliveryScope,
   listGraphWorkerDeliveryPrincipalScopes,
@@ -29,19 +29,19 @@ import {
   readGraphWorkerDeliveryOutboxOperation,
   retireExpiredPreparedGraphWorkerDeliveryOutbox,
   retireSupersededGraphWorkerDeliveryOutbox,
-} from '../../src/code_graph/sharing/worker_delivery_outbox.js';
+} from '../../src/code_graph/sharing/worker/delivery_outbox.js';
 import {
   finishAdmittedGraphWorkerResult,
   reclaimExpiredGraphWorkerGenerations,
   submitPreparedGraphWorkerResult,
-} from '../../src/code_graph/sharing/worker_delivery.js';
-import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker_announcement.js';
-import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker_result.js';
-import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker_signing.js';
+} from '../../src/code_graph/sharing/worker/delivery.js';
+import {signGraphWorkerResultAnnouncement} from '../../src/code_graph/sharing/worker/announcement.js';
+import {createGraphWorkerResultArtifact} from '../../src/code_graph/sharing/worker/result.js';
+import {makeGraphWorkerSigner} from '../../src/code_graph/sharing/worker/signing.js';
 import {
   advanceGraphWorkerCandidateScan,
   nextGraphWorkerCandidateScan,
-} from '../../src/code_graph/sharing/worker_candidate_scan.js';
+} from '../../src/code_graph/sharing/worker/candidate_scan.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

@@ -2,24 +2,33 @@ import type {Sql, TransactionSql} from 'postgres';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {randomUuidV4} from '../../src/crypto/uuid.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code/citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
 import type {RemoteRememberInputV1} from '../../src/memory_domain/contracts.js';
 import {formatRemoteMemoryLogicalKey, REMOTE_MEMORY_REVISION_VERSION} from '../../src/memory_domain/revisions.js';
-import type {AuthorizedRemotePrincipal, RemoteMemoryScope} from '../../src/remote_memory/authorization.js';
+import {
+  requireRemoteScope,
+  type AuthorizedRemotePrincipal,
+  type RemoteMemoryScope,
+} from '../../src/remote_memory/authorization.js';
 import {RemoteHandoffRetentionWorker} from '../../src/remote_memory/handoff_retention.js';
 import {RemoteMemoryIndexer} from '../../src/remote_memory/indexer.js';
-import {migrateRemoteMemoryDatabase} from '../../src/remote_memory/migrations.js';
+import {migrateRemoteMemoryDatabase, remoteMemoryMigrationVersions} from '../../src/remote_memory/migrations.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
-import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator_postgres.js';
-import {remoteContextBriefAnchorSelectors} from '../../src/remote_memory/context_brief.js';
+import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator/postgres.js';
+import {
+  applyRemoteMemoryProvisioningOperator,
+  planRemoteMemoryProvisioningOperator,
+} from '../../src/remote_memory/operator.js';
+import type {RemoteMemoryProvisioningRequestV1} from '../../src/remote_memory/provisioning.js';
+import {remoteContextBriefAnchorSelectors} from '../../src/remote_memory/context/brief.js';
 import type {RemoteMemoryPortableRecordV1} from '../../src/remote_memory/portability.js';
 import {
   PostgresRemoteControlPlane,
   type RemoteMemoryProvisioningInput,
-} from '../../src/remote_memory/postgres_control_plane.js';
-import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres_repository.js';
+} from '../../src/remote_memory/postgres/control_plane.js';
+import {PostgresRemoteMemoryRepository} from '../../src/remote_memory/postgres/repository.js';
 import {
   createRemoteMemoryPostgresFixture,
   type RemoteMemoryPostgresFixture,
@@ -155,7 +164,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     const before = await fixture.migratorSql<{checksum: string; version: number}[]>`
       SELECT version, checksum FROM remote_memory.schema_migrations ORDER BY version
     `;
-    expect(before).toHaveLength(5);
+    expect(before.map(migration => migration.version)).toEqual(remoteMemoryMigrationVersions());
     expect(before[0]?.checksum).toMatch(/^[a-f0-9]{64}$/u);
 
     await migrateRemoteMemoryDatabase(fixture.migratorSql);
@@ -377,6 +386,157 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     await expect(
       control.tenantForIdentity({issuer: ISSUER, requestedShareId: SHARE_B, subject: 'subject-alpha'}),
     ).resolves.toBeUndefined();
+  });
+
+  it('binds an external identity to the exact OAuth client and rejects an expired grant', async () => {
+    const operatorControl = new PostgresRemoteControlPlane(fixture.migratorSql);
+    const tenantId = 'tenant-client-bound';
+    const shareId = 'share-client-bound';
+    const principalId = 'principal-client-bound';
+    const subject = 'subject-client-bound';
+    const clientId = 'okta-native-client';
+    const input: RemoteMemoryProvisioningInput = {
+      ...provisioningFixture('alpha'),
+      clientId,
+      grantExpiresAt: '2099-01-01T00:00:00.000Z',
+      policyVersion: 'client-policy-v1',
+      principalId,
+      shareId,
+      subject,
+      tenantId,
+    };
+
+    expect(await operatorControl.inspectProvisioningState(input)).toEqual({version: 1});
+    await operatorControl.provision(input);
+    await expect(control.authorize(claimsFixture(subject), shareId)).resolves.toBeUndefined();
+    await expect(control.authorize(claimsFixture(subject, 'another-client'), shareId)).resolves.toBeUndefined();
+    await expect(control.authorize(claimsFixture(subject, clientId), shareId)).resolves.toMatchObject({
+      policyVersion: 'client-policy-v1',
+      principalId,
+      shareId,
+      tenantId,
+    });
+    await expect(
+      control.tenantForIdentity({clientId, issuer: ISSUER, requestedShareId: shareId, subject}),
+    ).resolves.toBe(tenantId);
+    await expect(
+      control.tenantForIdentity({clientId: 'another-client', issuer: ISSUER, requestedShareId: shareId, subject}),
+    ).resolves.toBeUndefined();
+    await expect(operatorControl.inspectProvisioningState(input)).resolves.toMatchObject({
+      grant: {expiresAt: '2099-01-01T00:00:00.000Z', policyVersion: 'client-policy-v1', status: 'active'},
+      identityPrincipalId: principalId,
+      principalStatus: 'active',
+      share: {status: 'active'},
+      tenant: {region: 'test-region', status: 'active'},
+      version: 1,
+    });
+
+    await withTenant(
+      fixture.migratorSql,
+      tenantId,
+      transaction => transaction`
+        UPDATE remote_memory.share_grants SET expires_at = '2000-01-01T00:00:00.000Z'
+        WHERE tenant_id = ${tenantId} AND share_id = ${shareId} AND principal_id = ${principalId}
+      `,
+    );
+    await expect(control.authorize(claimsFixture(subject, clientId), shareId)).resolves.toBeUndefined();
+  });
+
+  it('uses a bounded legacy bridge only until an exact client binding exists', async () => {
+    const clientId = 'okta-cutover-client';
+    const compatibilityControl = new PostgresRemoteControlPlane(fixture.sql, {
+      legacyClientIdCompatibilityUntil: '2099-01-01T00:00:00.000Z',
+    });
+    await expect(
+      compatibilityControl.authorize(claimsFixture('subject-alpha', clientId), SHARE_A),
+    ).resolves.toMatchObject({principalId: PRINCIPAL_A});
+    await new PostgresRemoteControlPlane(fixture.migratorSql).provision({
+      ...provisioningFixture('alpha'),
+      clientId,
+      policyVersion: 'client-cutover-v1',
+      principalId: 'principal-alpha-client-bound',
+    });
+    await expect(
+      compatibilityControl.authorize(claimsFixture('subject-alpha', clientId), SHARE_A),
+    ).resolves.toMatchObject({principalId: 'principal-alpha-client-bound'});
+    await expect(control.authorize(claimsFixture('subject-alpha', clientId), SHARE_A)).resolves.toMatchObject({
+      principalId: 'principal-alpha-client-bound',
+    });
+  });
+
+  it('atomically applies and replays a read-only pilot plan without undoing revocation', async () => {
+    const adapter = new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql);
+    const tenantId = 'tenant-plan-apply';
+    const shareId = 'share-plan-apply';
+    const principalId = 'principal-plan-apply';
+    const clientId = 'okta-plan-client';
+    const subject = 'subject-plan-apply';
+    const request: RemoteMemoryProvisioningRequestV1 = {
+      clientId,
+      displayName: 'Plan apply pilot',
+      issuer: ISSUER,
+      policyVersion: 'reader-v1',
+      principalId,
+      projects: [PROJECT],
+      region: 'test-region',
+      repositoryBindings: {[PROJECT]: ['https://github.com/example/threadnote.git']},
+      shareId,
+      sharePolicyVersion: 'share-v1',
+      subject,
+      tenantId,
+    };
+    const plannedAt = new Date().toISOString();
+    const plan = await planRemoteMemoryProvisioningOperator(adapter, {apply: true, plannedAt, request});
+    expect(plan).toMatchObject({
+      action: 'create_share_and_grant',
+      input: {
+        capabilities: ['memory:read'],
+        featureFlags: ['remote_memory_ga', 'remote_memory_read'],
+      },
+    });
+
+    const receipt = await applyRemoteMemoryProvisioningOperator(adapter, plan);
+    await expect(applyRemoteMemoryProvisioningOperator(adapter, plan)).resolves.toEqual(receipt);
+    const receipts = await withTenant(
+      fixture.migratorSql,
+      tenantId,
+      transaction => transaction<{plan_digest: string; plan_id: string}[]>`
+        SELECT plan_id, plan_digest FROM remote_memory.provisioning_receipts WHERE tenant_id = ${tenantId}
+      `,
+    );
+    expect(receipts).toEqual([{plan_digest: plan.planDigest, plan_id: plan.planId}]);
+    const authorized = await control.authorize(claimsFixture(subject, clientId), shareId);
+    if (!authorized) throw new Error('Applied pilot reader did not authorize.');
+    expect(() => requireRemoteScope(authorized, 'memory:read')).not.toThrow();
+
+    const replacement = await planRemoteMemoryProvisioningOperator(adapter, {
+      apply: true,
+      plannedAt,
+      request: {...request, policyVersion: 'reader-v2', sharePolicyVersion: undefined},
+    });
+    await withTenant(
+      fixture.migratorSql,
+      tenantId,
+      transaction => transaction`
+        UPDATE remote_memory.tenant_memberships SET status = 'revoked'
+        WHERE tenant_id = ${tenantId} AND principal_id = ${principalId}
+      `,
+    );
+    await expect(applyRemoteMemoryProvisioningOperator(adapter, replacement)).rejects.toMatchObject({
+      code: 'blocked_plan',
+    });
+    const revoked = await withTenant(
+      fixture.migratorSql,
+      tenantId,
+      transaction => transaction<{policy_version: string; status: string}[]>`
+        SELECT g.policy_version, m.status
+        FROM remote_memory.share_grants g
+        JOIN remote_memory.tenant_memberships m
+          ON m.tenant_id = g.tenant_id AND m.principal_id = g.principal_id
+        WHERE g.tenant_id = ${tenantId} AND g.share_id = ${shareId} AND g.principal_id = ${principalId}
+      `,
+    );
+    expect(revoked).toEqual([{policy_version: 'reader-v1', status: 'revoked'}]);
   });
 
   it('keeps the share project catalog independent from each member grant and requires share-policy CAS', async () => {
@@ -1683,10 +1843,62 @@ postgresDescribe('remote memory code-link migration upgrade', () => {
   });
 });
 
+postgresDescribe('remote memory identity binding migration upgrade', () => {
+  it('preserves existing identities and adds safe grant defaults', async () => {
+    if (!TEST_DATABASE_URL)
+      throw new Error('THREADNOTE_TEST_POSTGRES_URL is required for PostgreSQL integration tests.');
+    const upgradeFixture = await createRemoteMemoryPostgresFixture(TEST_DATABASE_URL);
+    try {
+      const control = new PostgresRemoteControlPlane(upgradeFixture.migratorSql);
+      await control.provision(provisioningFixture('alpha'));
+      await upgradeFixture.migratorSql.unsafe(`
+        DROP TABLE remote_memory.provisioning_receipts;
+        DROP INDEX remote_memory.share_grants_active_expiry;
+        ALTER TABLE remote_memory.share_grants DROP COLUMN expires_at;
+        ALTER TABLE remote_memory.share_grants DROP COLUMN cloud_admission_required;
+        ALTER TABLE remote_memory.external_identities DROP CONSTRAINT external_identities_pkey;
+        ALTER TABLE remote_memory.external_identities DROP COLUMN client_id;
+        ALTER TABLE remote_memory.external_identities ADD PRIMARY KEY (tenant_id, issuer, subject);
+        DELETE FROM remote_memory.schema_migrations WHERE version IN (6, 7);
+      `);
+
+      await migrateRemoteMemoryDatabase(upgradeFixture.migratorSql);
+      const identities = await withTenant(
+        upgradeFixture.migratorSql,
+        TENANT_A,
+        transaction => transaction<{client_id: string; subject: string}[]>`
+          SELECT client_id, subject FROM remote_memory.external_identities
+          WHERE tenant_id = ${TENANT_A} AND issuer = ${ISSUER}
+        `,
+      );
+      const grant = await withTenant(
+        upgradeFixture.migratorSql,
+        TENANT_A,
+        transaction => transaction<{cloud_admission_required: boolean; expires_at: Date | null}[]>`
+          SELECT cloud_admission_required, expires_at FROM remote_memory.share_grants
+          WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A} AND principal_id = ${PRINCIPAL_A}
+        `,
+      );
+      expect(identities).toEqual([{client_id: '', subject: 'subject-alpha'}]);
+      expect(grant).toEqual([{cloud_admission_required: false, expires_at: null}]);
+      await expect(control.provision(provisioningFixture('alpha'))).resolves.toBeUndefined();
+      await expect(control.authorize(claimsFixture('subject-alpha'), SHARE_A)).resolves.toMatchObject({
+        cloudAdmissionRequired: false,
+        principalId: PRINCIPAL_A,
+      });
+    } finally {
+      await upgradeFixture.dispose();
+    }
+  });
+});
+
 const tenantScopedTableNames = [
   'attestation_challenges',
   'audit_events',
   'code_link_backlinks',
+  'context_health_policies',
+  'context_health_receipts',
+  'context_health_schedules',
   'durable_memory_proposals',
   'external_identities',
   'idempotency_records',
@@ -1694,6 +1906,7 @@ const tenantScopedTableNames = [
   'memory_revisions',
   'outbox_events',
   'principals',
+  'provisioning_receipts',
   'grant_policy_versions',
   'share_policy_versions',
   'rate_limit_windows',
@@ -1709,8 +1922,8 @@ const tenantScopedTableNames = [
   'workload_attestations',
 ] as const;
 
-function claimsFixture(subject: string): OAuthPrincipalClaims {
-  return {issuer: ISSUER, scopes: new Set(ALL_SCOPES), subject};
+function claimsFixture(subject: string, clientId?: string): OAuthPrincipalClaims {
+  return {...(clientId === undefined ? {} : {clientId}), issuer: ISSUER, scopes: new Set(ALL_SCOPES), subject};
 }
 
 function provisioningFixture(
@@ -1808,7 +2021,7 @@ function operatorCitation(
   return createMemoryCodeCitation({
     extractorSet: 'native-code-graph-13',
     fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
-    path: overrides.path ?? 'src/remote_memory/operator_postgres.ts',
+    path: overrides.path ?? 'src/remote_memory/operator/postgres.ts',
     repositoryId: overrides.repositoryId ?? 'b'.repeat(64),
     repositoryIdentityKind: overrides.repositoryIdentityKind ?? 'remote',
     sourceCommit: 'c'.repeat(40),

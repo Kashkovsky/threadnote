@@ -3,7 +3,7 @@ import {describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION,
   codeGraphDatabaseIntegrity,
-} from '../../src/code_graph/store_health.js';
+} from '../../src/code_graph/store/health.js';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,

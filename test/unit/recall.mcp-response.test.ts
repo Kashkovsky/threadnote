@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {projectRecallMcpResponse, RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS} from '../../src/recall/mcp_response.js';
+import {projectRecallMcpResponse, RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS} from '../../src/recall/mcp/response.js';
 import {lexicalIndexUnavailableWarning} from '../../src/recall/warning.js';
 import type {RecallHit} from '../../src/utils.js';
 
@@ -103,6 +103,12 @@ describe('recall MCP response projection', () => {
     ).toThrow(
       `Recall response budget must be an integer from ${RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS} to 1500.`,
     );
+  });
+
+  it('surfaces all normal-workflow feedback actions and distinguishes applied', () => {
+    const projected = projectRecallMcpResponse(logical([hit(1)]));
+
+    expect(projected.text).toContain('recall_feedback useful|wrong|pin|dismiss|applied');
   });
 
   it('fits bounded notices, scope, and degraded-index guidance at the advertised minimum', () => {
