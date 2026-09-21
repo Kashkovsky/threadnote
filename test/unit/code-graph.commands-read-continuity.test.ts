@@ -5,70 +5,10 @@ import {resolveCodeGraphCliReadContinuity} from '../../src/code_graph/commands/r
 import {attachCodeGraphStatusObservation} from '../../src/code_graph/query/contract.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import type {CodeGraphStatus} from '../../src/code_graph/types.js';
-import {CodeGraphWatcher} from '../../src/code_graph/watcher.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 describe('code graph CLI shared-read continuity', () => {
-  effectIt.effect('serves a borrowed scoped query and registers its current refresh in the background', () =>
-    Effect.gen(function* () {
-      const requests: unknown[] = [];
-      const initial = attachCodeGraphStatusObservation(scopedStatus(false), statusObservation());
-      const borrowed = attachCodeGraphStatusObservation(scopedStatus(true), {
-        ...statusObservation(),
-        borrowedSnapshotId: 'scope-snapshot',
-      });
-      const service = CodeGraphQueryService.of({
-        attachSharedReadySnapshot: () => Effect.succeed(borrowed),
-        inspect: () => Effect.die('Unexpected graph inspection.'),
-        purge: () => Effect.die('Unexpected graph purge.'),
-        status: () => Effect.die('Unexpected graph status.'),
-        statusForIdentity: () => Effect.die('Unexpected identity status.'),
-        statusForPublishedIdentity: () => Effect.die('Unexpected published identity status.'),
-      });
-      const watcher = CodeGraphWatcher.of({
-        ensure: () => Effect.void,
-        metrics: Effect.succeed({
-          activeRefreshKeys: 0,
-          activeWatches: 0,
-          executingRefreshes: 0,
-          executingRefreshHighWater: 0,
-          idleSweepFibers: 0,
-          maximumWatchers: 32,
-          pendingTrailingRefreshes: 0,
-          retainedStatuses: 0,
-        }),
-        refresh: () => Effect.succeed(false),
-        request: options =>
-          Effect.sync(() => {
-            requests.push(options);
-            return {
-              refresh: {state: 'active' as const, type: 'code-graph-refresh-continuity' as const, version: 1 as const},
-              requestState: 'started' as const,
-            };
-          }),
-        status: () => Effect.succeedNone,
-        watch: () => Effect.void,
-      });
-
-      const result = yield* resolveCodeGraphCliReadContinuity(CONFIG, service, initial, 'query', 'current').pipe(
-        Effect.provideService(CodeGraphWatcher, watcher),
-      );
-
-      expect(result.borrowedContinuity).toBe(true);
-      expect(result.backgroundRefreshRegistered).toBe(true);
-      expect(result.readPlan).toEqual({refresh: false, strictFreshness: false, unavailable: false});
-      expect(result.status.readySnapshot?.id).toBe('scope-snapshot');
-      expect(requests).toEqual([
-        expect.objectContaining({
-          cwd: '/workspace/fresh',
-          key: 'fresh-worktree',
-          project: expect.objectContaining({name: 'docs'}),
-        }),
-      ]);
-    }),
-  );
-
-  effectIt.effect('reports when a borrowed current read cannot register its background refresh', () =>
+  effectIt.effect('serves a borrowed scoped query without waiting for a foreground refresh', () =>
     Effect.gen(function* () {
       const initial = attachCodeGraphStatusObservation(scopedStatus(false), statusObservation());
       const borrowed = attachCodeGraphStatusObservation(scopedStatus(true), {
@@ -83,30 +23,10 @@ describe('code graph CLI shared-read continuity', () => {
         statusForIdentity: () => Effect.die('Unexpected identity status.'),
         statusForPublishedIdentity: () => Effect.die('Unexpected published identity status.'),
       });
-      const watcher = CodeGraphWatcher.of({
-        ensure: () => Effect.void,
-        metrics: Effect.succeed({
-          activeRefreshKeys: 0,
-          activeWatches: 0,
-          executingRefreshes: 0,
-          executingRefreshHighWater: 0,
-          idleSweepFibers: 0,
-          maximumWatchers: 32,
-          pendingTrailingRefreshes: 0,
-          retainedStatuses: 0,
-        }),
-        refresh: () => Effect.succeed(false),
-        request: () => Effect.fail('refresh registration failed'),
-        status: () => Effect.succeedNone,
-        watch: () => Effect.void,
-      });
 
-      const result = yield* resolveCodeGraphCliReadContinuity(CONFIG, service, initial, 'query', 'current').pipe(
-        Effect.provideService(CodeGraphWatcher, watcher),
-      );
+      const result = yield* resolveCodeGraphCliReadContinuity(CONFIG, service, initial, 'query', 'current');
 
       expect(result.borrowedContinuity).toBe(true);
-      expect(result.backgroundRefreshRegistered).toBe(false);
       expect(result.readPlan).toEqual({refresh: false, strictFreshness: false, unavailable: false});
       expect(result.status.readySnapshot?.id).toBe('scope-snapshot');
     }),

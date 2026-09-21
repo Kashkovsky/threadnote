@@ -8,7 +8,6 @@ import {
 } from '../cli/freshness.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../query.js';
 import type {CodeGraphQueryOptions, CodeGraphStatus} from '../types.js';
-import {CodeGraphWatcher} from '../watcher.js';
 
 type CodeGraphQueryServiceShape = Parameters<typeof CodeGraphQueryService.of>[0];
 
@@ -33,25 +32,8 @@ export const resolveCodeGraphCliReadContinuity = Effect.fn('codeGraph.command.re
     status,
     statusObservation?.borrowedSnapshotId !== undefined,
   );
-  let backgroundRefreshRegistered = false;
-  if (borrowedContinuity) {
-    const watcher = yield* CodeGraphWatcher;
-    backgroundRefreshRegistered = yield* watcher
-      .request({
-        cwd: status.identity.repoRoot,
-        key: status.identity.worktreeId,
-        ...(statusObservation?.projectScope?.project === undefined
-          ? {}
-          : {project: statusObservation.projectScope.project}),
-        threadnoteHome: config.agentContextHome,
-      })
-      .pipe(
-        Effect.as(true),
-        Effect.orElseSucceed(() => false),
-      );
-  }
   const readPlan = borrowedContinuity
     ? ({refresh: false, strictFreshness: false, unavailable: false} satisfies CodeGraphCliReadPlan)
     : codeGraphCliReadPlan(freshness, status);
-  return {backgroundRefreshRegistered, borrowedContinuity, readPlan, status, statusObservation};
+  return {borrowedContinuity, readPlan, status, statusObservation};
 });

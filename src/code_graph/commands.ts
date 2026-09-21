@@ -1171,8 +1171,13 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
     manifestPath: config.manifestPath,
     ...(options.project === undefined ? {} : {project: options.project}),
   });
-  const {backgroundRefreshRegistered, borrowedContinuity, readPlan, status, statusObservation} =
-    yield* resolveCodeGraphCliReadContinuity(config, service, initialStatus, options.operation, freshness);
+  const {borrowedContinuity, readPlan, status, statusObservation} = yield* resolveCodeGraphCliReadContinuity(
+    config,
+    service,
+    initialStatus,
+    options.operation,
+    freshness,
+  );
   if (readPlan.unavailable) {
     const unavailable = codeGraphCliReadState(status, freshness, options.operation, 'no-ready-snapshot');
     yield* writeFinalCliOutput(
@@ -1226,9 +1231,7 @@ export const runCodeGraphInspect = Effect.fn('codeGraph.command.inspect')(functi
         ...result.value,
         warnings: [
           ...result.value.warnings,
-          backgroundRefreshRegistered
-            ? 'Serving compatible shared graph evidence while the current worktree refreshes in the background.'
-            : 'Serving compatible shared graph evidence; the background refresh could not be registered, so run graph index to refresh it.',
+          'Serving compatible shared graph evidence. Run graph index to create a current snapshot for this worktree.',
         ],
       }
     : result.value;
