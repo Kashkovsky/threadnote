@@ -606,6 +606,12 @@ describe('manager graph focus', () => {
       readySnapshotCommit: '1111111111111111111111111111111111111111',
       staleReady: true,
     });
+    const otherScopeWaiter = {
+      ...waiter,
+      buildId: 'other-scope-waiter',
+      identity: {...waiter.identity, scopeId: `code-graph-scope:${'a'.repeat(64)}`},
+    };
+    expect(graphBuildConcurrencyState(build, [waiter, otherScopeWaiter], [repository]).queuedRequests).toBe(1);
 
     const markup = renderToStaticMarkup(
       createElement(GraphWorkspace, {
@@ -874,11 +880,16 @@ describe('manager graph focus', () => {
   it('shows one build card when an exact-target request is queued behind its owner', () => {
     const owner = {...graphBuildStatus('queued'), buildId: 'owner', request: {key: 'same-request'}};
     const waiter = {...graphBuildStatus('queued'), buildId: 'waiter', request: {key: 'same-request'}};
+    const otherScopeWaiter = {
+      ...waiter,
+      buildId: 'other-scope-waiter',
+      identity: {...waiter.identity, scopeId: `code-graph-scope:${'a'.repeat(64)}`},
+    };
     const selection = graphAdministrationJobSelection([owner], [waiter]);
 
     expect(selection.jobs).toEqual([owner]);
     expect(selection.total).toBe(1);
-    expect(graphWaiterCountForBuild(owner, [waiter])).toBe(1);
+    expect(graphWaiterCountForBuild(owner, [waiter, otherScopeWaiter])).toBe(1);
     expect(graphWaiterCountForBuild(waiter, [waiter])).toBe(0);
     expect(graphBuildConcurrencyState(owner, [waiter], []).queuedRequests).toBe(1);
   });

@@ -786,13 +786,16 @@ export function GraphAdministration(props: {
                   <div className="graph-database-views">
                     {database.views.map(candidate => {
                       const removalTarget = graphViewRemovalTarget(database.checkoutId, {
+                        scopeId: candidate.viewScopeId,
                         snapshot: candidate.snapshot,
                         worktreeId: candidate.viewWorktreeId,
                       });
                       const partialTopology = candidate.analysis?.coverage.topology.state === 'partial';
                       const boundedNodePrefix = partialTopology && !candidate.analysis?.coverage.nodesComplete;
                       return (
-                        <div key={`${database.checkoutId}:${candidate.viewWorktreeId}`}>
+                        <div
+                          key={`${database.checkoutId}:${candidate.viewWorktreeId}:${candidate.viewScopeId ?? 'full-repository'}`}
+                        >
                           <strong>{candidate.repository.displayName}</strong>
                           <span>
                             {candidate.snapshot.fileCount.toLocaleString()} files ·{' '}

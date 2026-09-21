@@ -210,6 +210,7 @@ export function GraphWorkspace(props: {
     build =>
       repository !== undefined &&
       build.identity.checkoutId === repository.checkoutId &&
+      build.identity.scopeId === repository.scopeId &&
       build.identity.worktreeId === repository.worktreeId &&
       (build.state === 'queued' || build.state === 'running'),
   );

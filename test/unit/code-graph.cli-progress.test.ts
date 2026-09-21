@@ -32,6 +32,18 @@ describe('code graph compact CLI progress', () => {
     expect(formatCodeGraphPurgeProgressLine({phase: 'quarantining', dryRun: true})).toBe(
       'Would purge · quarantining files',
     );
+    expect(
+      formatCodeGraphIndexProgressLine({
+        admission: {
+          admissionClass: 'current-required',
+          enqueuedAt: '2026-09-21T08:00:00.000Z',
+          position: 1,
+          size: 2,
+        },
+        phase: 'waiting',
+        reason: 'home-builder-cap',
+      }),
+    ).toBe('Waiting for graph builder slot · queue 1/2');
   });
 
   fcEffectProp(

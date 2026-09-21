@@ -170,6 +170,114 @@ describe('code graph CLI project selection', () => {
       await rm(fixture, {force: true, recursive: true});
     }
   }, 60_000);
+
+  it('selects the sole configured scope from the monorepo root without building the full repository', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-graph-cli-root-scope-'));
+    const home = join(root, '.threadnote-home');
+    const manifest = join(home, 'seed-manifest.yaml');
+    try {
+      await mkdir(join(root, 'apps', 'web'), {recursive: true});
+      await mkdir(join(root, 'apps', 'unrelated'), {recursive: true});
+      await writeFile(join(root, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+      await writeFile(join(root, 'apps', 'web', 'package.json'), JSON.stringify({name: '@fixture/web'}));
+      await writeFile(join(root, 'apps', 'web', 'index.ts'), 'export const web = true;\n');
+      await writeFile(join(root, 'apps', 'unrelated', 'package.json'), JSON.stringify({name: '@fixture/unrelated'}));
+      await writeFile(join(root, 'apps', 'unrelated', 'index.ts'), 'export const unrelated = true;\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+      await mkdir(home, {recursive: true});
+      await writeFile(
+        manifest,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: web',
+          `    path: ${root}`,
+          '    seed: []',
+          '    uri: threadnote://resources/repos/web',
+          '    graph:',
+          '      closure: dependencies',
+          '      roots: [apps/web]',
+          '',
+        ].join('\n'),
+      );
+
+      const base = ['--home', home, '--manifest', manifest, '--cwd', root];
+      const indexed = JSON.parse((await runCli(['graph', 'index', ...base, '--no-vectors', '--json'])).stdout);
+      expect(indexed).toMatchObject({snapshot: {scopeId: expect.stringMatching(/^code-graph-scope:/u)}});
+      expect(indexed.snapshot.fileCount).toBeLessThan(4);
+      const status = JSON.parse((await runCli(['graph', 'status', ...base, '--json'])).stdout);
+      expect(status).toMatchObject({projectCoverage: {kind: 'project', project: 'web'}});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 60_000);
+
+  it('resolves a configured graph root alias to its owning multi-app project', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-graph-cli-root-alias-'));
+    const home = join(root, '.threadnote-home');
+    const manifest = join(home, 'seed-manifest.yaml');
+    try {
+      for (const name of ['docs', 'docs-mobile', 'unrelated']) {
+        await mkdir(join(root, 'apps', name), {recursive: true});
+        await writeFile(join(root, 'apps', name, 'package.json'), JSON.stringify({name: `@fixture/${name}`}));
+        await writeFile(join(root, 'apps', name, 'index.ts'), `export const ${name.replace('-', '_')} = true;\n`);
+      }
+      await writeFile(join(root, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+      await mkdir(home, {recursive: true});
+      await writeFile(
+        manifest,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: docs',
+          `    path: ${root}`,
+          '    seed: []',
+          '    uri: threadnote://resources/repos/docs',
+          '    graph:',
+          '      closure: dependencies',
+          '      roots: [apps/docs, apps/docs-mobile]',
+          '',
+        ].join('\n'),
+      );
+
+      const base = ['--home', home, '--manifest', manifest, '--cwd', join(root, 'apps', 'docs-mobile')];
+      const indexed = JSON.parse((await runCli(['graph', 'index', ...base, '--no-vectors', '--json'])).stdout);
+      expect(indexed.snapshot.fileCount).toBeLessThan(6);
+      expect(indexed.snapshot.scopeId).toMatch(/^code-graph-scope:/u);
+
+      const status = JSON.parse(
+        (await runCli(['graph', 'status', ...base, '--project', 'docs-mobile', '--json'])).stdout,
+      );
+      expect(status).toMatchObject({projectCoverage: {kind: 'project', project: 'docs'}});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 60_000);
 });
 
 function asProcessError(cause: unknown): NodeJS.ErrnoException & {stderr?: string} {

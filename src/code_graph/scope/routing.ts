@@ -37,10 +37,20 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
   const caller = path.resolve(cwd);
   if (explicitProject !== undefined) {
     const requested = explicitProject.trim().toLowerCase();
-    const project = manifest.projects.find(candidate => candidate.name.toLowerCase() === requested);
+    const exactProject = manifest.projects.find(candidate => candidate.name.toLowerCase() === requested);
+    const aliasProjects = exactProject === undefined ? graphRootAliasProjects(manifest.projects, requested) : [];
+    if (aliasProjects.length > 1) {
+      return yield* CodeGraphScopeRoutingError.make({
+        message: `Graph root alias "${explicitProject}" belongs to multiple configured projects. Select one of: ${aliasProjects
+          .map(project => project.name)
+          .sort()
+          .join(', ')}.`,
+      });
+    }
+    const project = exactProject ?? aliasProjects[0];
     if (project === undefined) {
       return yield* CodeGraphScopeRoutingError.make({
-        message: `No configured project named "${explicitProject}" exists.`,
+        message: `No configured project named "${explicitProject}" exists. --project accepts a configured project name or an unambiguous graph root.`,
       });
     }
     const root = yield* expandPath(project.path);
@@ -62,7 +72,12 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
     expandPath(project.path).pipe(Effect.map(root => ({project, root}))),
   );
   const localMatches = expanded.filter(candidate => pathContains(path, candidate.root, caller));
-  let matches = localMatches.map(candidate => candidate.project);
+  const localGraphRootMatches = localMatches.filter(candidate =>
+    candidate.project.graph?.roots.some(root => pathContains(path, path.resolve(candidate.root, root), caller)),
+  );
+  let matches = (localGraphRootMatches.length > 0 ? localGraphRootMatches : localMatches).map(
+    candidate => candidate.project,
+  );
   if (matches.length === 0) {
     const worktreeRoots = yield* resolveCheckoutWorktreeRoots(caller).pipe(Effect.option);
     if (Option.isSome(worktreeRoots)) {
@@ -196,6 +211,20 @@ function parseGitWorktreeRoot(output: Uint8Array): string | undefined {
 function pathContains(path: Path.Path, root: string, target: string): boolean {
   const relative = path.relative(path.resolve(root), target);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function graphRootAliasProjects(projects: readonly ProjectManifest[], requested: string): readonly ProjectManifest[] {
+  const normalizedRequested = normalizeGraphRootAlias(requested);
+  return projects.filter(project =>
+    project.graph?.roots.some(root => {
+      const normalizedRoot = normalizeGraphRootAlias(root);
+      return normalizedRoot === normalizedRequested || normalizedRoot.split('/').at(-1) === normalizedRequested;
+    }),
+  );
+}
+
+function normalizeGraphRootAlias(value: string): string {
+  return value.trim().replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/+$/u, '').toLowerCase();
 }
 
 function selectedRoute(

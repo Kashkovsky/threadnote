@@ -272,6 +272,7 @@ const MANAGER_CONTEXT_SCHEMA_VERSION = 1 as const;
 const BUILD_HISTORY_INVALID_RETRY_MILLISECONDS = 30_000;
 const BUILD_HISTORY_IO_RETRY_MILLISECONDS = 1_000;
 const BUILD_STATUS_FILE = /^([0-9a-f-]{16,64})\.json$/;
+const BUILD_STATUS_VIEW_DIRECTORY = /^[0-9a-f]{64}(?:\.scope-[0-9a-f]{64})?$/;
 
 export type CodeGraphBuildHistoryPruneResult =
   | {readonly state: 'complete'}
@@ -1162,7 +1163,7 @@ function attachCodeGraphManagerContexts(
         repositoriesRoot,
         checkoutId,
         STATUS_DIRECTORY,
-        status.identity.worktreeId,
+        codeGraphScopeViewKey(status.identity.worktreeId, status.identity.scopeId),
         `${status.buildId}.json`,
       );
       const contextFile = codeGraphManagerContextPath(path, statusFile, status.buildId);
@@ -1213,7 +1214,7 @@ function ensurePrivateRegularDirectory(fs: FileSystem.FileSystem, path: Path.Pat
 function readBuildStatusesBelow(fs: FileSystem.FileSystem, path: Path.Path, root: string) {
   return Effect.gen(function* () {
     if (!(yield* regularDirectory(fs, root))) return [];
-    const worktrees = (yield* fs.readDirectory(root)).filter(name => HASH_ID.test(name)).sort();
+    const worktrees = (yield* fs.readDirectory(root)).filter(name => BUILD_STATUS_VIEW_DIRECTORY.test(name)).sort();
     const groups = yield* Effect.forEach(
       worktrees,
       worktreeId => readWorktreeStatuses(fs, path, path.join(root, worktreeId)),
@@ -1232,7 +1233,12 @@ function readWorktreeStatuses(fs: FileSystem.FileSystem, path: Path.Path, direct
     const statuses = yield* Effect.forEach(files, name => readStatusFile(fs, path.join(directory, name)), {
       concurrency: 8,
     });
-    return statuses.filter((status): status is ObservedCodeGraphBuildStatus => status !== undefined);
+    const expectedViewKey = path.basename(directory);
+    return statuses.filter(
+      (status): status is ObservedCodeGraphBuildStatus =>
+        status !== undefined &&
+        codeGraphScopeViewKey(status.identity.worktreeId, status.identity.scopeId) === expectedViewKey,
+    );
   });
 }
 
@@ -1939,7 +1945,7 @@ export function selectCodeGraphBuildStatuses(
 ): CodeGraphBuildStatusSelection {
   const byWorktree = new Map<string, ObservedCodeGraphBuildStatus[]>();
   for (const status of statuses) {
-    const key = `${status.identity.checkoutId}\0${status.identity.worktreeId}`;
+    const key = `${status.identity.checkoutId}\0${status.identity.worktreeId}\0${status.identity.scopeId ?? ''}`;
     const current = byWorktree.get(key) ?? [];
     current.push(status);
     byWorktree.set(key, current);

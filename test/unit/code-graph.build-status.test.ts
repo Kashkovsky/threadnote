@@ -240,6 +240,59 @@ describe('code graph cross-process build status', () => {
     expect(result.global.every(status => status.managerContext?.branch === 'feature/manager-labels')).toBe(true);
   });
 
+  effectIt.effect('keeps scoped Manager progress separate and verifies each scope-specific owner lock', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* Effect.acquireRelease(
+            fs.makeTempDirectory({prefix: 'threadnote-graph-scoped-manager-status-'}),
+            directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.ignore),
+          );
+          const identity = fixtureIdentity(home);
+          const fullLayout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+          const scopeId = `code-graph-scope:${'a'.repeat(64)}`;
+          const scopedLayout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId, scopeId);
+          const full = yield* makeCodeGraphBuildReporter(identity, fullLayout);
+          const scoped = yield* makeCodeGraphBuildReporter(identity, scopedLayout);
+
+          const observed = yield* withExclusiveFileLock(
+            fs,
+            fullLayout.lockPath,
+            {
+              onAcquired: () => full.markWorktreeLockHeld(true),
+              retryIntervalMilliseconds: 5,
+              staleAfterMilliseconds: 1_000,
+              waitTimeoutMilliseconds: 1_000,
+            },
+            withExclusiveFileLock(
+              fs,
+              scopedLayout.lockPath,
+              {
+                onAcquired: () => scoped.markWorktreeLockHeld(true),
+                retryIntervalMilliseconds: 5,
+                staleAfterMilliseconds: 1_000,
+                waitTimeoutMilliseconds: 1_000,
+              },
+              readAllCodeGraphBuildStatuses(home),
+            ),
+          );
+          const selected = selectCodeGraphBuildStatuses(observed);
+
+          expect(selected.builds).toHaveLength(2);
+          expect(selected.builds.map(status => status.identity.scopeId ?? 'full-repository').sort()).toEqual([
+            scopeId,
+            'full-repository',
+          ]);
+          expect(selected.builds.every(status => status.coordination?.role === 'owner')).toBe(true);
+          expect(selected.builds.every(status => status.coordination?.lockVerified === true)).toBe(true);
+          expect(selected.builds.every(status => status.managerContext?.worktreePath === identity.repoRoot)).toBe(true);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    ),
+  );
+
   effectIt.effect('resumes the builder status when it acquires a contended writer lock', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -935,6 +935,48 @@ describe('Manager logical repository and workspace catalogs', () => {
     }),
   );
 
+  effectIt.effect('retains and identifies a scoped Manager view independently from the full-repository view', () =>
+    Effect.gen(function* () {
+      const home = temporaryRoot('threadnote-manager-scoped-view-');
+      const identity = repositoryIdentity(home, '9'.repeat(64));
+      const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
+      const full = readySnapshot(identity, 0, 0, 0, '2026-09-21T08:00:00.000Z');
+      const scopeId = `code-graph-scope:${'a'.repeat(64)}`;
+      const scoped = {
+        ...readySnapshot(identity, 0, 0, 0, '2026-09-21T08:01:00.000Z'),
+        scopeId,
+      };
+
+      const catalog = yield* Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.activate(databasePath, identity, full, [], [], []);
+        yield* store.promote(databasePath, identity, full.id);
+        yield* store.activate(databasePath, identity, scoped, [], [], []);
+        yield* store.promote(databasePath, identity, scoped.id);
+        return yield* managerGraphCatalog(home);
+      }).pipe(provideTestLayer(storeLayer));
+
+      expect(catalog.diagnostics).toEqual([]);
+      expect(catalog.repositories).toHaveLength(1);
+      expect(catalog.repositories[0]?.views).toHaveLength(2);
+      expect(catalog.repositories[0]?.views.map(view => view.scopeId ?? 'full-repository').sort()).toEqual([
+        scopeId,
+        'full-repository',
+      ]);
+      expect(new Set(catalog.repositories[0]?.views.map(view => view.id)).size).toBe(2);
+      expect(catalog.repositories[0]?.views.find(view => view.scopeId === scopeId)?.id).toMatch(
+        /^[0-9a-f]{64}\.[0-9a-f]{64}\.[0-9a-f]{64}$/u,
+      );
+      const scopedView = catalog.repositories[0]?.views.find(view => view.scopeId === scopeId);
+      expect(scopedView).toBeDefined();
+      const analysis = yield* managerGraphAnalysis(home, scopedView!.id, Option.some(scoped.id)).pipe(
+        provideTestLayer(storeLayer),
+      );
+      expect(analysis.snapshot.id).toBe(scoped.id);
+      yield* releaseManagerGraphSnapshotLeases().pipe(provideTestLayer(storeLayer));
+    }),
+  );
+
   effectIt.effect('migrates a readable legacy lease table while retaining the Manager catalog', () =>
     Effect.gen(function* () {
       const home = temporaryRoot('threadnote-manager-legacy-lease-');

@@ -109,7 +109,7 @@ export function withCodeGraphBuilderAdmission<A, E, R>(
                 if (result.state === 'completed') return result.value;
               }
             }
-            if (!waitingReported && options.onQueue === undefined) {
+            if (!waitingReported) {
               yield* options.onWaiting ?? Effect.void;
               waitingReported = true;
             }

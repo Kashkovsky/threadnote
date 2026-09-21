@@ -89,7 +89,7 @@ const managerSnapshotLeases = new Map<
   }
 >();
 const managerSnapshotLeaseGates = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
-const INDEXED_VIEW_ID = /^[0-9a-f]{64}(?:\.[0-9a-f]{64})?$/;
+const INDEXED_VIEW_ID = /^[0-9a-f]{64}(?:\.[0-9a-f]{64}(?:\.[0-9a-f]{64})?)?$/;
 const NODE_ID_MAX_LENGTH = 512;
 const NODE_DETAIL_PROVENANCES: readonly CodeGraphProvenance[] = [
   'declared',
@@ -132,6 +132,7 @@ export interface ManagerGraphIndexedView {
   readonly projectCount: number;
   readonly projectsTruncated: boolean;
   readonly snapshot: CodeGraphSnapshot;
+  readonly scopeId?: string;
   readonly worktreeId: string;
   readonly workspaces: readonly {
     readonly buildSystem: string;
@@ -350,6 +351,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
               database,
               catalog.viewWorktreeId,
               catalog.snapshot.id,
+              catalog.viewScopeId,
               MANAGER_OPERATION_LEASE_MINIMUM_MILLISECONDS,
             ).pipe(Effect.map(result => ({catalog, result}))),
           {concurrency: 1},
@@ -476,6 +478,7 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
         views: catalogs.map(({catalog}) => ({
           ...(catalog.activatedAt === undefined ? {} : {activatedAt: catalog.activatedAt}),
           repositoryId: catalog.repository.repositoryId,
+          ...(catalog.viewScopeId === undefined ? {} : {scopeId: catalog.viewScopeId}),
           snapshotId: catalog.snapshot.id,
           worktreeId: catalog.viewWorktreeId,
         })),
@@ -499,6 +502,7 @@ const retainManagerSnapshot = Effect.fn('codeGraph.retainManagerSnapshot')(funct
   database: string,
   worktreeId: string,
   snapshotId: string,
+  scopeId?: string,
   minimumRemainingMilliseconds = 0,
   reader = false,
 ) {
@@ -511,6 +515,7 @@ const retainManagerSnapshot = Effect.fn('codeGraph.retainManagerSnapshot')(funct
         store.retainViewSnapshotLease(database, worktreeId, snapshotId, MANAGER_CATALOG_SNAPSHOT_LEASE_MILLISECONDS, {
           ...(existing ? {existingToken: existing.token} : {}),
           minimumRemainingMilliseconds,
+          ...(scopeId === undefined ? {} : {scopeId}),
           waitTimeoutMilliseconds: MANAGER_LEASE_WRITER_WAIT_MILLISECONDS,
         }),
       );
@@ -784,7 +789,7 @@ export const managerGraphViewsPage = Effect.fn('codeGraph.managerViewsPage')(fun
   const retention = yield* Effect.forEach(
     visible,
     catalog =>
-      retainManagerSnapshot(store, database, catalog.viewWorktreeId, catalog.snapshot.id).pipe(
+      retainManagerSnapshot(store, database, catalog.viewWorktreeId, catalog.snapshot.id, catalog.viewScopeId).pipe(
         Effect.map(result => ({catalog, result})),
       ),
     {concurrency: 1},
@@ -1450,7 +1455,7 @@ function repositoryFromCatalog(
   catalog: CodeGraphVisualizationCatalog,
   localAssociation: CodeGraphLocalAssociation = {available: false, state: 'legacy-unknown'},
 ): ManagerGraphIndexedView {
-  const viewId = `${checkoutId}.${catalog.viewWorktreeId}`;
+  const viewId = managerIndexedViewId(checkoutId, catalog.viewWorktreeId, catalog.viewScopeId);
   return {
     accounting: catalog.accounting,
     ...(catalog.activatedAt ? {activatedAt: catalog.activatedAt} : {}),
@@ -1475,6 +1480,7 @@ function repositoryFromCatalog(
     })),
     projectsTruncated: catalog.projectsTruncated,
     snapshot: catalog.snapshot,
+    ...(catalog.viewScopeId === undefined ? {} : {scopeId: catalog.viewScopeId}),
     worktreeId: catalog.viewWorktreeId,
     workspaceCount: catalog.workspaceCount,
     workspaces: catalog.workspaces.map(workspace => ({
@@ -1498,6 +1504,7 @@ const managerGraphLocalAssociationForCatalog = Effect.fn('codeGraph.managerLocal
     status =>
       status.identity.checkoutId === checkoutId &&
       status.identity.worktreeId === catalog.viewWorktreeId &&
+      status.identity.scopeId === catalog.viewScopeId &&
       status.identity.repositoryId === catalog.repository.repositoryId &&
       status.managerContext !== undefined,
   );
@@ -1538,9 +1545,10 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
 ) {
   const path = yield* Path.Path;
   const store = yield* CodeGraphStore;
-  const [checkoutId, worktreeId] = indexedViewId.split('.', 2);
-  if (checkoutId === undefined)
+  const parsedView = parseManagerIndexedViewId(indexedViewId);
+  if (parsedView === undefined)
     return yield* CodeGraphVisualizationError.make({message: 'Indexed graph checkout is invalid.'});
+  const {checkoutId, scopeId, worktreeId} = parsedView;
   const databases = yield* codeGraphDatabasePaths(threadnoteHome);
   const database = databases.find(candidate => path.basename(path.dirname(candidate)) === checkoutId);
   if (!database) return yield* CodeGraphVisualizationError.make({message: 'Indexed graph checkout was not found.'});
@@ -1551,6 +1559,7 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
     projectLimit: options.projectLimit,
     projectQuery: options.projectQuery ?? Option.none(),
     snapshotId: options.expectedSnapshotId,
+    ...(scopeId === undefined ? {} : {scopeId}),
     workspaceLimit: MANAGER_CATALOG_WORKSPACE_LIMIT,
     workspaceOffset: options.workspaceOffset,
     workspaceQuery: options.workspaceQuery ?? Option.none(),
@@ -1559,7 +1568,7 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
     ? yield* store.loadVisualizationCatalog(database, 'deferred', catalogOptions)
     : worktreeId
       ? (yield* store.loadVisualizationCatalogs(database, 'deferred', catalogOptions)).find(
-          candidate => candidate.viewWorktreeId === worktreeId,
+          candidate => candidate.viewWorktreeId === worktreeId && candidate.viewScopeId === scopeId,
         )
       : yield* store.loadVisualizationCatalog(database, 'deferred', catalogOptions);
   if (!catalog) {
@@ -1579,6 +1588,7 @@ const resolveManagerGraphView = Effect.fn('codeGraph.resolveManagerGraphView')(f
     database,
     catalog.viewWorktreeId,
     catalog.snapshot.id,
+    catalog.viewScopeId,
     MANAGER_OPERATION_LEASE_MINIMUM_MILLISECONDS,
     true,
   );
@@ -1678,7 +1688,23 @@ function indexedViewLabel(catalog: CodeGraphVisualizationCatalog): string {
   const state = catalog.snapshot.dirty ? 'dirty' : 'clean';
   const indexed = catalog.activatedAt ?? catalog.snapshot.completedAt;
   const indexedLabel = indexed ? new Date(indexed).toISOString().slice(0, 16).replace('T', ' ') + 'Z' : 'time unknown';
-  return `${commit} · ${state} · indexed ${indexedLabel}`;
+  return `${commit} · ${state}${catalog.viewScopeId === undefined ? '' : ' · scoped graph'} · indexed ${indexedLabel}`;
+}
+
+function managerIndexedViewId(checkoutId: string, worktreeId: string, scopeId?: string): string {
+  return `${checkoutId}.${worktreeId}${scopeId === undefined ? '' : `.${scopeId.slice('code-graph-scope:'.length)}`}`;
+}
+
+function parseManagerIndexedViewId(
+  indexedViewId: string,
+): {readonly checkoutId: string; readonly scopeId?: string; readonly worktreeId?: string} | undefined {
+  if (!INDEXED_VIEW_ID.test(indexedViewId)) return undefined;
+  const [checkoutId, worktreeId, scopeDigest] = indexedViewId.split('.');
+  return {
+    checkoutId,
+    ...(scopeDigest === undefined ? {} : {scopeId: `code-graph-scope:${scopeDigest}`}),
+    ...(worktreeId === undefined ? {} : {worktreeId}),
+  };
 }
 
 function privacySafeCatalogError(cause: unknown): string {

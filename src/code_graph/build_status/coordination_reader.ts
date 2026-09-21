@@ -3,7 +3,7 @@ import {readExclusiveFileLockOwner} from '../../effect/file/lock.js';
 import {codeGraphScopeViewKey} from '../scope/identity.js';
 import type {CodeGraphLayout} from '../layout.js';
 import type {ObservedCodeGraphBuildStatus} from '../build_status.js';
-import {annotateBuildCoordination, groupBuildStatusesByWorktree} from './coordination.js';
+import {annotateBuildCoordination, groupBuildStatusesByView} from './coordination.js';
 
 export function annotateCheckoutBuildCoordination(
   fs: FileSystem.FileSystem,
@@ -12,11 +12,11 @@ export function annotateCheckoutBuildCoordination(
   statuses: readonly ObservedCodeGraphBuildStatus[],
 ) {
   return Effect.forEach(
-    groupBuildStatusesByWorktree(statuses),
-    ([worktreeId, worktreeStatuses]) =>
+    groupBuildStatusesByView(statuses),
+    ([worktreeId, scopeId, worktreeStatuses]) =>
       readExclusiveFileLockOwner(
         fs,
-        path.join(layout.worktreeLockRoot, `${codeGraphScopeViewKey(worktreeId, layout.scopeId)}.lock`),
+        path.join(layout.worktreeLockRoot, `${codeGraphScopeViewKey(worktreeId, scopeId)}.lock`),
       ).pipe(Effect.map(lockOwner => annotateBuildCoordination(worktreeStatuses, Option.getOrUndefined(lockOwner)))),
     {concurrency: 8},
   ).pipe(Effect.map(groups => groups.flat().sort(compareObservedBuildStatus)));
@@ -30,11 +30,19 @@ export function annotateBuildCoordinationByWorktree(
   statuses: readonly ObservedCodeGraphBuildStatus[],
 ) {
   return Effect.forEach(
-    groupBuildStatusesByWorktree(statuses),
-    ([worktreeId, worktreeStatuses]) =>
+    groupBuildStatusesByView(statuses),
+    ([worktreeId, scopeId, worktreeStatuses]) =>
       readExclusiveFileLockOwner(
         fs,
-        path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'worktrees', checkoutId, `${worktreeId}.lock`),
+        path.join(
+          threadnoteHome,
+          'locks',
+          'indexes',
+          'code-graph',
+          'worktrees',
+          checkoutId,
+          `${codeGraphScopeViewKey(worktreeId, scopeId)}.lock`,
+        ),
       ).pipe(Effect.map(lockOwner => annotateBuildCoordination(worktreeStatuses, Option.getOrUndefined(lockOwner)))),
     {concurrency: 8},
   ).pipe(Effect.map(groups => groups.flat().sort(compareObservedBuildStatus)));
