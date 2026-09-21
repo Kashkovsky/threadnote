@@ -174,6 +174,7 @@ describe('code graph home builder admission', () => {
         const firstAdmitted = yield* Deferred.make<void>();
         const releaseContenders = yield* Deferred.make<void>();
         const admitted = yield* Ref.make(0);
+        const resumed = yield* Ref.make(0);
         const latestProgress = yield* Ref.make<unknown>(undefined);
         const contender = (index: 0 | 1) =>
           withCodeGraphBuilderAdmission(
@@ -188,6 +189,7 @@ describe('code graph home builder admission', () => {
                   Effect.andThen(Deferred.succeed(queued[index], undefined)),
                   Effect.asVoid,
                 ),
+              onResumed: Ref.update(resumed, count => count + 1),
               onWaiting: Effect.void,
               threadnoteHome: home,
             },
@@ -216,6 +218,7 @@ describe('code graph home builder admission', () => {
 
         yield* Deferred.succeed(releaseContenders, undefined);
         yield* Effect.forEach(contenders, Fiber.join, {concurrency: 'unbounded', discard: true});
+        expect(yield* Ref.get(resumed)).toBe(2);
         yield* Deferred.succeed(releaseLegacy[1], undefined);
         yield* Effect.forEach(legacyFibers, Fiber.join, {concurrency: 'unbounded', discard: true});
       }).pipe(provideTestLayer(BUILDER_ADMISSION_TEST_LAYER)),
@@ -225,11 +228,13 @@ describe('code graph home builder admission', () => {
   effectIt.effect('does not report waiting when an observed queue is admitted immediately', () =>
     Effect.gen(function* () {
       const queued = yield* Ref.make(0);
+      const resumed = yield* Ref.make(0);
       const waited = yield* Ref.make(0);
       const result = yield* withCodeGraphBuilderAdmission(
         {
           admissionClass: 'current-required',
           identity: {checkoutId: 'a'.repeat(64), worktreeId: 'b'.repeat(64)},
+          onResumed: Ref.update(resumed, count => count + 1),
           onQueue: () => Ref.update(queued, count => count + 1),
           onWaiting: Ref.update(waited, count => count + 1),
           threadnoteHome: home,
@@ -239,6 +244,7 @@ describe('code graph home builder admission', () => {
 
       expect(result).toBe('admitted');
       expect(yield* Ref.get(queued)).toBe(1);
+      expect(yield* Ref.get(resumed)).toBe(0);
       expect(yield* Ref.get(waited)).toBe(0);
     }).pipe(provideTestLayer(BUILDER_ADMISSION_TEST_LAYER)),
   );

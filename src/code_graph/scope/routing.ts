@@ -39,31 +39,36 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
     const requested = explicitProject.trim().toLowerCase();
     const exactProject = manifest.projects.find(candidate => candidate.name.toLowerCase() === requested);
     const aliasProjects = exactProject === undefined ? graphRootAliasProjects(manifest.projects, requested) : [];
-    if (aliasProjects.length > 1) {
+    const localAliasProjects =
+      aliasProjects.length === 0 ? [] : yield* projectsInCallerRepository(aliasProjects, caller);
+    if (localAliasProjects.length > 1) {
       return yield* CodeGraphScopeRoutingError.make({
-        message: `Graph root alias "${explicitProject}" belongs to multiple configured projects. Select one of: ${aliasProjects
+        message: `Graph root alias "${explicitProject}" belongs to multiple configured projects. Select one of: ${localAliasProjects
           .map(project => project.name)
           .sort()
           .join(', ')}.`,
       });
     }
-    const project = exactProject ?? aliasProjects[0];
+    const project = exactProject ?? localAliasProjects[0];
     if (project === undefined) {
+      if (aliasProjects.length > 0) {
+        return yield* CodeGraphScopeRoutingError.make({
+          message: `Graph root alias "${explicitProject}" is outside this cwd. Choose a project in this repository.`,
+        });
+      }
       return yield* CodeGraphScopeRoutingError.make({
         message: `No configured project named "${explicitProject}" exists. --project accepts a configured project name or an unambiguous graph root.`,
       });
     }
     const root = yield* expandPath(project.path);
-    if (!pathContains(path, root, caller) && !pathContains(path, caller, root)) {
-      const [callerIdentity, projectIdentity] = yield* Effect.all([
-        resolveRepositoryIdentity(caller),
-        resolveRepositoryIdentity(root).pipe(Effect.option),
-      ]);
-      if (!sameCheckoutRepository(callerIdentity, projectIdentity)) {
-        return yield* CodeGraphScopeRoutingError.make({
-          message: `Configured project "${project.name}" is outside this cwd. Choose a project in this repository.`,
-        });
-      }
+    const [callerIdentity, projectIdentity] = yield* Effect.all([
+      resolveRepositoryIdentity(caller),
+      resolveRepositoryIdentity(root).pipe(Effect.option),
+    ]);
+    if (!sameCheckoutRepository(callerIdentity, projectIdentity)) {
+      return yield* CodeGraphScopeRoutingError.make({
+        message: `Configured project "${project.name}" is outside this cwd. Choose a project in this repository.`,
+      });
     }
     return selectedRoute(project);
   }
@@ -134,6 +139,23 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
       .join(', ')}.`,
   });
 });
+
+function projectsInCallerRepository(projects: readonly ProjectManifest[], caller: string) {
+  return Effect.gen(function* () {
+    const callerIdentity = yield* resolveRepositoryIdentity(caller);
+    const candidates = yield* Effect.forEach(
+      projects,
+      project =>
+        Effect.gen(function* () {
+          const root = yield* expandPath(project.path);
+          const projectIdentity = yield* resolveRepositoryIdentity(root).pipe(Effect.option);
+          return sameCheckoutRepository(callerIdentity, projectIdentity) ? project : undefined;
+        }),
+      {concurrency: 4},
+    );
+    return candidates.filter((project): project is ProjectManifest => project !== undefined);
+  });
+}
 
 function sameCheckoutRepository(
   caller: {readonly checkoutId: string; readonly repositoryId: string},

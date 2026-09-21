@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path, Schema} from 'effect';
+import {Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {
   CODE_GRAPH_SOURCE_SPAN_CANONICALIZATION_V1,
   createCodeGraphSourceSpanCanonicalizer,
@@ -7,6 +7,7 @@ import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../../co
 import {decodeUtf8} from '../../code_graph/inventory/content.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../../code_graph/query.js';
 import {codeGraphScopeAdmitsPath} from '../../code_graph/scope/applicability.js';
+import {resolveCodeGraphScopeRoute} from '../../code_graph/scope/routing.js';
 import {CodeGraphStore} from '../../code_graph/store.js';
 import {type CodeGraphStatus, type CodeGraphSymbol, isCodeGraphStoreError} from '../../code_graph/types.js';
 import {
@@ -105,6 +106,16 @@ export function memoryCodeCitationProjectScopeMatches(
         actual.closureDigest === expected.closureDigest;
 }
 
+const resolveCodeGraphProjectForCaller = Effect.fn('memoryCodeCitation.resolveGraphProject')(function* (
+  config: RuntimeConfig,
+  callerCwd: string,
+  requestedProject?: string,
+) {
+  if (requestedProject === undefined || config.manifestSource === 'bundled-example') return requestedProject;
+  const route = yield* resolveCodeGraphScopeRoute(config.manifestPath, callerCwd, requestedProject).pipe(Effect.option);
+  return Option.isSome(route) && route.value.state === 'selected' ? route.value.project.name : requestedProject;
+});
+
 export class MemoryCodeCitationCaptureError extends Schema.TaggedError<MemoryCodeCitationCaptureError>()(
   'MemoryCodeCitationCaptureError',
   {
@@ -161,7 +172,10 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   // The bundled example manifest is instructional fallback metadata, not a
   // configured graph catalog. Preserve the historical full-repository route
   // when callers supply the memory project name against that fallback.
-  const project = config.manifestSource === 'bundled-example' ? undefined : input.project;
+  const project =
+    config.manifestSource === 'bundled-example'
+      ? undefined
+      : yield* resolveCodeGraphProjectForCaller(config, input.callerCwd, input.project);
   const path = yield* Path.Path;
   if (!path.isAbsolute(input.callerCwd)) {
     return yield* MemoryCodeCitationCaptureError.of('Code citation callerCwd must be absolute.');

@@ -33,6 +33,8 @@ import {
 const CHECKOUT_ID = 'a'.repeat(64);
 const WORKTREE_ID = '1'.repeat(64);
 const SNAPSHOT_ID = `cgsn_${'c'.repeat(40)}-direct`;
+const SCOPED_SNAPSHOT_ID = `cgsn_${'d'.repeat(40)}-direct`;
+const SCOPE_ID = `code-graph-scope:${'e'.repeat(64)}`;
 const ViewRemovalCommandTestLayer = Layer.merge(CodeGraphStore.layer, CommandExecutor.layer).pipe(
   Layer.provideMerge(SystemInfo.layer),
   Layer.provideMerge(BunServices.layer),
@@ -84,6 +86,30 @@ describe('code graph remove-view command core', () => {
           expect(renderCodeGraphViewRemovalResult(first)).toContain(
             'Derived cleanup: vector retirement queued; provenance',
           );
+        }),
+      ),
+    );
+
+    layerIt.effect('removes one scoped view while preserving its full-repository sibling', () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* viewActionFixture;
+          yield* Effect.sync(() => seedScopedView(fixture.databasePath));
+          const target = {
+            checkoutId: CHECKOUT_ID,
+            scopeId: SCOPE_ID,
+            snapshotId: SCOPED_SNAPSHOT_ID,
+            worktreeId: WORKTREE_ID,
+          };
+
+          const preview = yield* removeCodeGraphView(fixture.home, target);
+          expect(preview).toMatchObject({applied: false, scopeId: SCOPE_ID, state: 'ready'});
+
+          const applied = yield* removeCodeGraphView(fixture.home, target, {apply: true});
+          expect(applied).toMatchObject({applied: true, scopeId: SCOPE_ID, state: 'removed'});
+          expect(activeView(fixture.databasePath)).toBe(SNAPSHOT_ID);
+          expect(activeView(fixture.databasePath, SCOPE_ID)).toBeUndefined();
+          expect(removedView(fixture.databasePath, SCOPE_ID)).toBe(SCOPED_SNAPSHOT_ID);
         }),
       ),
     );
@@ -471,6 +497,37 @@ function seedGraph(databasePath: string): void {
   }
 }
 
+function seedScopedView(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database
+      .query(
+        `INSERT INTO snapshots (
+           id, repository_id, worktree_id, scope_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
+           dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at, completed_at,
+           failure_summary
+         ) VALUES (?, ?, ?, ?, ?, 'content-command-scoped', NULL, 'view-command-test', 0, NULL, 'ready', 0, 0, 0, ?, ?, NULL)`,
+      )
+      .run(
+        SCOPED_SNAPSHOT_ID,
+        'b'.repeat(64),
+        WORKTREE_ID,
+        SCOPE_ID,
+        'f'.repeat(40),
+        new Date(0).toISOString(),
+        new Date(1).toISOString(),
+      );
+    database
+      .query('INSERT INTO snapshot_extractor_generations (snapshot_id, generation) VALUES (?, ?)')
+      .run(SCOPED_SNAPSHOT_ID, CODE_GRAPH_EXTRACTOR_GENERATION);
+    database
+      .query('INSERT INTO active_snapshots (worktree_id, scope_id, snapshot_id, activated_at) VALUES (?, ?, ?, ?)')
+      .run(WORKTREE_ID, SCOPE_ID, SCOPED_SNAPSHOT_ID, new Date(3).toISOString());
+  } finally {
+    database.close(false);
+  }
+}
+
 function seedVectorDatabase(home: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -502,25 +559,27 @@ function seedVectorDatabase(home: string) {
   });
 }
 
-function activeView(databasePath: string): string | undefined {
+function activeView(databasePath: string, scopeId = 'full-repository'): string | undefined {
   const database = new Database(databasePath, {readonly: true, strict: true});
   try {
     return database
-      .query<{readonly snapshot_id: string}, [string]>('SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?')
-      .get(WORKTREE_ID)?.snapshot_id;
+      .query<{readonly snapshot_id: string}, [string, string]>(
+        'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ? AND scope_id = ?',
+      )
+      .get(WORKTREE_ID, scopeId)?.snapshot_id;
   } finally {
     database.close(false);
   }
 }
 
-function removedView(databasePath: string): string | undefined {
+function removedView(databasePath: string, scopeId = 'full-repository'): string | undefined {
   const database = new Database(databasePath, {readonly: true, strict: true});
   try {
     return database
-      .query<{readonly expected_snapshot_id: string}, [string]>(
-        'SELECT expected_snapshot_id FROM removed_views WHERE worktree_id = ?',
+      .query<{readonly expected_snapshot_id: string}, [string, string]>(
+        'SELECT expected_snapshot_id FROM removed_views WHERE worktree_id = ? AND scope_id = ?',
       )
-      .get(WORKTREE_ID)?.expected_snapshot_id;
+      .get(WORKTREE_ID, scopeId)?.expected_snapshot_id;
   } finally {
     database.close(false);
   }

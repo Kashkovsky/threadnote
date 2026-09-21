@@ -585,7 +585,9 @@ export const readCodeGraphBuildStatuses = Effect.fn('codeGraph.buildStatus.readC
   const path = yield* Path.Path;
   const statuses =
     layout.scopeId === undefined
-      ? yield* readBuildStatusesBelow(fs, path, path.join(layout.repositoryRoot, STATUS_DIRECTORY))
+      ? (yield* readBuildStatusesBelow(fs, path, path.join(layout.repositoryRoot, STATUS_DIRECTORY))).filter(
+          status => status.identity.scopeId === undefined,
+        )
       : yield* readWorktreeStatuses(
           fs,
           path,

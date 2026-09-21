@@ -58,6 +58,7 @@ export function withCodeGraphBuilderAdmission<A, E, R>(
     readonly identity?: CodeGraphBuilderAdmissionIdentity;
     readonly onQueue?: (queue: CodeGraphBuilderAdmissionQueue) => Effect.Effect<void, never>;
     readonly onAdmitted?: Effect.Effect<void, never>;
+    readonly onResumed?: Effect.Effect<void, never>;
     readonly onWaiting?: Effect.Effect<void, never>;
     readonly threadnoteHome: string;
   },
@@ -97,6 +98,7 @@ export function withCodeGraphBuilderAdmission<A, E, R>(
                     const ownership = yield* claimSlot(fs, path, system, options.threadnoteHome, ticket, slot);
                     if (!ownership) return {state: 'contended' as const};
                     return yield* (options.onAdmitted ?? Effect.void).pipe(
+                      Effect.andThen(waitingReported ? (options.onResumed ?? Effect.void) : Effect.void),
                       Effect.andThen(effect),
                       Effect.map(value => ({state: 'completed' as const, value})),
                     );

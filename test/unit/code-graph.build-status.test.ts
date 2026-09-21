@@ -257,6 +257,12 @@ describe('code graph cross-process build status', () => {
           const full = yield* makeCodeGraphBuildReporter(identity, fullLayout);
           const scoped = yield* makeCodeGraphBuildReporter(identity, scopedLayout);
 
+          const fullStatuses = yield* readCodeGraphBuildStatuses(fullLayout);
+          const scopedStatuses = yield* readCodeGraphBuildStatuses(scopedLayout);
+
+          expect(fullStatuses.map(status => status.identity.scopeId ?? 'full-repository')).toEqual(['full-repository']);
+          expect(scopedStatuses.map(status => status.identity.scopeId)).toEqual([scopeId]);
+
           const observed = yield* withExclusiveFileLock(
             fs,
             fullLayout.lockPath,

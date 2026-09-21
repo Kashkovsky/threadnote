@@ -10,6 +10,7 @@ import {extractorSetIdentityFromPackProvenance} from '../../src/code_graph/index
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../../src/code_graph/query.js';
+import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CodeGraphStoreError, type CodeGraphSnapshot, type RepositoryIdentity} from '../../src/code_graph/types.js';
@@ -21,6 +22,7 @@ import {
   observeCodeGraphAdmissionEnvironment,
   recordCodeGraphSnapshotAdmission,
 } from '../../src/code_graph/admission_freshness.js';
+import type {ProjectManifest} from '../../src/types.js';
 
 const fixturePackProvenance = BUILTIN_LANGUAGE_PACK_REGISTRY.activePackProvenance(['main.ts']);
 const incompatiblePackProvenance = fixturePackProvenance.map((pack, index) =>
@@ -566,6 +568,156 @@ describe('shared ready view attachment locking', () => {
       expect(observed.attached.stale).toBe(true);
       expect(observed.pointer?.id).toBe(observed.snapshot.id);
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect(
+    'borrows the same scoped project graph in a fresh divergent worktree without publishing a pointer',
+    () =>
+      Effect.gen(function* () {
+        const root = yield* temporaryRepository();
+        const repositoryRoot = join(root, 'repository');
+        const sourceWorktree = join(root, 'scope-source');
+        const freshWorktree = join(root, 'scope-fresh');
+        const threadnoteHome = join(root, 'threadnote-home');
+        const manifestPath = join(root, 'seed-manifest.yaml');
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fs.makeDirectory(join(repositoryRoot, 'apps', 'docs'), {recursive: true});
+        yield* fs.writeFileString(
+          join(repositoryRoot, 'apps', 'docs', 'index.ts'),
+          'export const scopedDocs = true;\n',
+        );
+        yield* fs.writeFileString(
+          join(repositoryRoot, 'package.json'),
+          JSON.stringify({private: true, workspaces: ['apps/*']}),
+        );
+        yield* fs.writeFileString(
+          join(repositoryRoot, 'apps', 'docs', 'package.json'),
+          JSON.stringify({name: '@fixture/docs'}),
+        );
+        yield* fs.makeDirectory(join(repositoryRoot, 'apps', 'other'), {recursive: true});
+        yield* fs.writeFileString(join(repositoryRoot, 'apps', 'other', 'index.ts'), 'export const other = true;\n');
+        yield* fs.writeFileString(
+          join(repositoryRoot, 'apps', 'other', 'package.json'),
+          JSON.stringify({name: '@fixture/other'}),
+        );
+        yield* Effect.sync(() => {
+          git(repositoryRoot, ['add', 'package.json', 'apps']);
+          git(repositoryRoot, ['commit', '-m', 'add scoped docs']);
+          git(repositoryRoot, ['branch', 'scope-source']);
+          git(repositoryRoot, ['branch', 'scope-fresh']);
+          git(repositoryRoot, ['worktree', 'add', sourceWorktree, 'scope-source']);
+          git(repositoryRoot, ['worktree', 'add', freshWorktree, 'scope-fresh']);
+          writeFileSync(join(freshWorktree, 'fresh.ts'), 'export const freshOnly = true;\n');
+          git(freshWorktree, ['add', 'fresh.ts']);
+          git(freshWorktree, ['commit', '-m', 'diverge fresh worktree']);
+        });
+        const project = {
+          graph: {closure: 'dependencies' as const, roots: ['apps/docs']},
+          name: 'docs',
+          path: sourceWorktree,
+          seed: [],
+          uri: 'threadnote://resources/repos/docs',
+        } satisfies ProjectManifest;
+        yield* fs.writeFileString(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: docs',
+            `    path: ${sourceWorktree}`,
+            '    seed: []',
+            '    uri: threadnote://resources/repos/docs',
+            '    graph:',
+            '      closure: dependencies',
+            '      roots: [apps/docs]',
+            '',
+          ].join('\n'),
+        );
+
+        const indexer = yield* CodeGraphIndexer;
+        const graph = yield* CodeGraphQueryService;
+        const store = yield* CodeGraphStore;
+        const indexed = yield* indexer.index({cwd: sourceWorktree, project, threadnoteHome});
+        const freshIdentity = yield* resolveRepositoryIdentity(freshWorktree);
+        const before = yield* graph.status(threadnoteHome, freshWorktree, {
+          manifestPath,
+          project: 'docs',
+          requestMaintenance: false,
+        });
+        const borrowed = yield* graph.attachSharedReadySnapshot(threadnoteHome, freshIdentity, before, {
+          allowBorrowedStale: true,
+          requestMaintenance: false,
+        });
+        const scopeKey = observationFromCodeGraphStatus(borrowed)?.projectScope?.scope?.scopeKey;
+        if (!scopeKey) throw new Error('Expected the borrowed status to preserve its project scope.');
+        const layout = codeGraphLayout(
+          path,
+          threadnoteHome,
+          freshIdentity.checkoutId,
+          freshIdentity.worktreeId,
+          scopeKey,
+        );
+        const active = yield* store.readySnapshot(layout.databasePath, freshIdentity.worktreeId, scopeKey);
+        const found = yield* graph.inspect({
+          cwd: freshWorktree,
+          manifestPath,
+          operation: 'query',
+          project: 'docs',
+          query: 'scopedDocs',
+          refresh: false,
+          requestMaintenance: false,
+          statusObservation: observationFromCodeGraphStatus(borrowed),
+          strictFreshness: false,
+          threadnoteHome,
+        });
+
+        expect(before).toMatchObject({
+          projectCoverage: {kind: 'project', project: 'docs'},
+          readySnapshot: undefined,
+          stale: true,
+        });
+        expect(borrowed).toMatchObject({
+          freshness: 'stale',
+          projectCoverage: {kind: 'project', project: 'docs'},
+          readySnapshot: {id: indexed.snapshot.id, scopeId: indexed.snapshot.scopeId},
+          stale: true,
+        });
+        expect(active).toBeUndefined();
+        expect(found).toMatchObject({
+          freshness: 'stale',
+          projectCoverage: {kind: 'project', project: 'docs'},
+          snapshot: {id: indexed.snapshot.id},
+        });
+        expect(found.nodes.some(node => node.name === 'scopedDocs')).toBe(true);
+        expect(found.nodes.some(node => node.name === 'freshOnly')).toBe(false);
+
+        yield* fs.writeFileString(
+          manifestPath,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: docs',
+            `    path: ${sourceWorktree}`,
+            '    seed: []',
+            '    uri: threadnote://resources/repos/docs',
+            '    graph:',
+            '      closure: dependencies',
+            '      roots: [apps/other]',
+            '',
+          ].join('\n'),
+        );
+        const changedDefinition = yield* graph.status(threadnoteHome, freshWorktree, {
+          manifestPath,
+          project: 'docs',
+          requestMaintenance: false,
+        });
+        const refused = yield* graph.attachSharedReadySnapshot(threadnoteHome, freshIdentity, changedDefinition, {
+          allowBorrowedStale: true,
+          requestMaintenance: false,
+        });
+        expect(refused.readySnapshot).toBeUndefined();
+      }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('cleans up idempotently when the fixture root disappears before finalization', () =>

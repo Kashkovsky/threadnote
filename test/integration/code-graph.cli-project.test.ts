@@ -278,6 +278,208 @@ describe('code graph CLI project selection', () => {
       await rm(root, {force: true, recursive: true});
     }
   }, 60_000);
+
+  it('resolves duplicate graph root aliases within the caller repository', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'threadnote-graph-cli-repository-alias-'));
+    const first = join(fixture, 'first');
+    const second = join(fixture, 'second');
+    const home = join(fixture, '.threadnote-home');
+    const manifest = join(home, 'seed-manifest.yaml');
+    try {
+      for (const root of [first, second]) {
+        await mkdir(join(root, 'apps', 'web'), {recursive: true});
+        await writeFile(join(root, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+        await writeFile(join(root, 'apps', 'web', 'package.json'), JSON.stringify({name: '@fixture/web'}));
+        await writeFile(join(root, 'apps', 'web', 'index.ts'), `export const repository = '${root}';\n`);
+        await execFilePromise('git', ['-C', root, 'init', '-q']);
+        await execFilePromise('git', ['-C', root, 'add', '.']);
+        await execFilePromise('git', [
+          '-C',
+          root,
+          '-c',
+          'user.name=Threadnote Test',
+          '-c',
+          'user.email=test@threadnote.local',
+          'commit',
+          '-qm',
+          'fixture',
+        ]);
+      }
+      await mkdir(home, {recursive: true});
+      await writeFile(
+        manifest,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: first-web',
+          `    path: ${first}`,
+          '    seed: []',
+          '    uri: threadnote://resources/repos/first-web',
+          '    graph:',
+          '      closure: dependencies',
+          '      roots: [apps/web]',
+          '  - name: second-web',
+          `    path: ${second}`,
+          '    seed: []',
+          '    uri: threadnote://resources/repos/second-web',
+          '    graph:',
+          '      closure: dependencies',
+          '      roots: [apps/web]',
+          '',
+        ].join('\n'),
+      );
+
+      const selected = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'index',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            join(second, 'apps', 'web'),
+            '--project',
+            'web',
+            '--no-vectors',
+            '--json',
+          ])
+        ).stdout,
+      );
+      expect(selected).toMatchObject({snapshot: {scopeId: expect.stringMatching(/^code-graph-scope:/u)}});
+      const status = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'status',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            join(second, 'apps', 'web'),
+            '--project',
+            'web',
+            '--json',
+          ])
+        ).stdout,
+      );
+      expect(status).toMatchObject({projectCoverage: {kind: 'project', project: 'second-web'}});
+    } finally {
+      await rm(fixture, {force: true, recursive: true});
+    }
+  }, 60_000);
+
+  it('does not treat a nested independent repository as an alias candidate for its parent repository', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'threadnote-graph-cli-nested-repository-alias-'));
+    const outer = join(fixture, 'outer');
+    const nested = join(outer, 'nested');
+    const home = join(fixture, '.threadnote-home');
+    const manifest = join(home, 'seed-manifest.yaml');
+    try {
+      await mkdir(join(outer, 'apps', 'web'), {recursive: true});
+      await writeFile(join(outer, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+      await writeFile(join(outer, 'apps', 'web', 'package.json'), JSON.stringify({name: '@fixture/outer-web'}));
+      await writeFile(join(outer, 'apps', 'web', 'index.ts'), 'export const outerWeb = true;\n');
+      await writeFile(join(outer, '.gitignore'), 'nested/\n');
+      await execFilePromise('git', ['-C', outer, 'init', '-q']);
+      await execFilePromise('git', ['-C', outer, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        outer,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'outer fixture',
+      ]);
+
+      await mkdir(join(nested, 'apps', 'web'), {recursive: true});
+      await writeFile(join(nested, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+      await writeFile(join(nested, 'apps', 'web', 'package.json'), JSON.stringify({name: '@fixture/nested-web'}));
+      await writeFile(join(nested, 'apps', 'web', 'index.ts'), 'export const nestedWeb = true;\n');
+      await execFilePromise('git', ['-C', nested, 'init', '-q']);
+      await execFilePromise('git', ['-C', nested, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        nested,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'nested fixture',
+      ]);
+
+      await mkdir(home, {recursive: true});
+      await writeFile(
+        manifest,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: outer-web',
+          `    path: ${outer}`,
+          '    seed: []',
+          '    uri: threadnote://resources/repos/outer-web',
+          '    graph:',
+          '      closure: dependencies',
+          '      roots: [apps/web]',
+          '  - name: nested-web',
+          `    path: ${nested}`,
+          '    seed: []',
+          '    uri: threadnote://resources/repos/nested-web',
+          '    graph:',
+          '      closure: dependencies',
+          '      roots: [apps/web]',
+          '',
+        ].join('\n'),
+      );
+
+      const indexed = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'index',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            outer,
+            '--project',
+            'web',
+            '--no-vectors',
+            '--json',
+          ])
+        ).stdout,
+      );
+      expect(indexed).toMatchObject({snapshot: {scopeId: expect.stringMatching(/^code-graph-scope:/u)}});
+      const status = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'status',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            outer,
+            '--project',
+            'web',
+            '--json',
+          ])
+        ).stdout,
+      );
+      expect(status).toMatchObject({projectCoverage: {kind: 'project', project: 'outer-web'}});
+    } finally {
+      await rm(fixture, {force: true, recursive: true});
+    }
+  }, 60_000);
 });
 
 function asProcessError(cause: unknown): NodeJS.ErrnoException & {stderr?: string} {

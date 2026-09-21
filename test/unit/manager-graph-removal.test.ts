@@ -1,4 +1,6 @@
 import fc from 'fast-check';
+import {it as effectIt} from '@effect/vitest';
+import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
   graphViewRemovalApprovalDialog,
@@ -8,6 +10,7 @@ import {
   withoutRemovedGraphCatalogView,
   withoutRemovedGraphDiagnosticsView,
 } from '../../src/manager/graph/removal.js';
+import {managerGraphViewRemovalApprovalDigest} from '../../src/manager/graph/removal_digest.js';
 import type {CodeGraphLocalDiagnosticsReport} from '../../src/code_graph/diagnostics.js';
 import type {GraphCatalog, GraphRepository, GraphRepositoryGroup} from '../../src/manager/graph.js';
 
@@ -52,7 +55,7 @@ describe('Manager graph view removal', () => {
 
   it('removes only the selected scope when full and scoped views share a worktree', () => {
     const worktreeId = 'worktree-a';
-    const scopeId = 'code-graph-scope:scope-a';
+    const scopeId = `code-graph-scope:${'a'.repeat(64)}`;
     const full = viewFixture(worktreeId);
     const scoped = {...viewFixture(worktreeId), id: 'view-worktree-a-scope-a', scopeId};
     const catalog: GraphCatalog = {
@@ -89,6 +92,24 @@ describe('Manager graph view removal', () => {
       diagnostics.databases[0].views[0],
     ]);
   });
+
+  effectIt.effect('binds the selected scope into the destructive approval digest', () =>
+    Effect.gen(function* () {
+      const target = {
+        checkoutId: 'a'.repeat(64),
+        snapshotId: `cgsn_${'b'.repeat(40)}-direct`,
+        worktreeId: 'c'.repeat(64),
+      };
+      const full = yield* managerGraphViewRemovalApprovalDigest(target);
+      const scoped = yield* managerGraphViewRemovalApprovalDigest({
+        ...target,
+        scopeId: `code-graph-scope:${'d'.repeat(64)}`,
+      });
+
+      expect(scoped).toMatch(/^sha256:[0-9a-f]{64}$/u);
+      expect(scoped).not.toBe(full);
+    }),
+  );
 
   it('applies removal projections idempotently for any selected view', () => {
     fc.assert(

@@ -40,7 +40,7 @@ interface ContextBriefGraphRetryBudget {
   remaining: number;
 }
 
-/** Read only ready graph state. This boundary never attaches, builds, or requests maintenance. */
+/** Read only ready graph state. This boundary may borrow compatible shared evidence, but never builds or requests maintenance. */
 export const retrieveContextBriefGraphEvidence = Effect.fn('contextBrief.retrieveGraphEvidence')(function* (
   config: RuntimeConfig,
   plan: ContextBriefPlanV1['graph'],
@@ -75,7 +75,13 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
   const callerCwd = plan.scope.callerCwd;
   const query = yield* CodeGraphQueryService;
   const scopeOptions = {project: plan.scope.project, manifestPath: config.manifestPath};
-  const status = yield* query.status(config.agentContextHome, callerCwd, {...scopeOptions, requestMaintenance: false});
+  let status = yield* query.status(config.agentContextHome, callerCwd, {...scopeOptions, requestMaintenance: false});
+  if (status.readySnapshot === undefined) {
+    status = yield* query.attachSharedReadySnapshot(config.agentContextHome, status.identity, status, {
+      allowBorrowedStale: true,
+      requestMaintenance: false,
+    });
+  }
   const readySnapshot = status.readySnapshot;
   if (readySnapshot === undefined) {
     return {

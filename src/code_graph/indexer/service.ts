@@ -158,9 +158,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             Effect.sync(() => {
               latestAdmissionQueue = queue;
             }).pipe(Effect.andThen(input.reporter.admission(queue)), Effect.ignore),
-          onAdmitted: input.reporter
-            .admission()
-            .pipe(Effect.andThen(Effect.suspend(input.resumeProgress)), Effect.ignore),
+          onAdmitted: input.reporter.admission().pipe(Effect.ignore),
+          onResumed: Effect.suspend(input.resumeProgress).pipe(Effect.ignore),
           onWaiting: Effect.suspend(() =>
             (
               input.onProgress?.({

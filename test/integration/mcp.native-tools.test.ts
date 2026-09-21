@@ -1666,6 +1666,134 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
+  it('preserves a memory project while resolving its graph root alias for code citations', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const repository = join(fixture.root, 'monorepo');
+        const docsMobile = join(repository, 'apps', 'docs-mobile');
+        await mkdir(join(repository, 'apps', 'docs'), {recursive: true});
+        await mkdir(docsMobile, {recursive: true});
+        await writeFile(join(repository, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+        await writeFile(join(repository, 'apps', 'docs', 'package.json'), JSON.stringify({name: '@fixture/docs'}));
+        await writeFile(join(repository, 'apps', 'docs', 'index.ts'), 'export const docs = true;\n');
+        await writeFile(join(docsMobile, 'package.json'), JSON.stringify({name: '@fixture/docs-mobile'}));
+        await writeFile(join(docsMobile, 'index.ts'), 'export const docsMobile = true;\n');
+        execFileSync('git', ['init', '-q'], {cwd: repository});
+        execFileSync('git', ['add', '.'], {cwd: repository});
+        execFileSync(
+          'git',
+          ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture'],
+          {cwd: repository},
+        );
+        const manifest = join(fixture.home, 'seed-manifest.yaml');
+        await writeFile(
+          manifest,
+          [
+            'version: 1',
+            'projects:',
+            '  - name: docs',
+            `    path: ${JSON.stringify(repository)}`,
+            '    uri: threadnote://resources/repos/docs',
+            '    seed: []',
+            '    graph:',
+            '      closure: dependencies',
+            '      roots: [apps/docs, apps/docs-mobile]',
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+        execFileSync(
+          process.execPath,
+          [join(process.cwd(), 'src', 'standalone.ts'), 'graph', 'index', '--project', 'docs-mobile', '--no-vectors'],
+          {
+            cwd: docsMobile,
+            env: {
+              ...process.env,
+              THREADNOTE_ACCOUNT: 'local',
+              THREADNOTE_AGENT_ID: 'threadnote',
+              THREADNOTE_HOME: fixture.home,
+              THREADNOTE_MANIFEST: manifest,
+              THREADNOTE_USER: 'test-user',
+            },
+            stdio: 'pipe',
+          },
+        );
+
+        const stored = await client.callTool(
+          {
+            arguments: {
+              callerCwd: docsMobile,
+              citationPolicy: 'require-current',
+              codeRefs: ['apps/docs-mobile/index.ts'],
+              kind: 'durable',
+              project: 'docs-mobile',
+              text: 'The native docs application uses the shared docs project graph.',
+              topic: 'root-alias-memory',
+            },
+            name: 'remember_context',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(stored.isError, JSON.stringify(stored)).not.toBe(true);
+        expect(stored.structuredContent).toMatchObject({
+          memoryUri: 'threadnote://user/test-user/memories/durable/projects/docs-mobile/root-alias-memory.md',
+        });
+        const memory = parseMemoryDocument(
+          'threadnote://user/test-user/memories/durable/projects/docs-mobile/root-alias-memory.md',
+          await readFile(
+            join(
+              fixture.home,
+              'data',
+              'local',
+              'user',
+              'test-user',
+              'memories',
+              'durable',
+              'projects',
+              'docs-mobile',
+              'root-alias-memory.md',
+            ),
+            'utf8',
+          ),
+        );
+        expect(memory?.metadata).toMatchObject({
+          codeCitations: [expect.objectContaining({path: 'apps/docs-mobile/index.ts'})],
+          project: 'docs-mobile',
+        });
+        const closeout = await client.callTool(
+          {
+            arguments: {
+              callerCwd: docsMobile,
+              codeRefs: ['apps/docs-mobile/index.ts'],
+              decisions: ['Keep native docs memories in the docs-mobile project.'],
+              evidence: ['apps/docs-mobile/index.ts'],
+              outcome: 'Kept memory ownership separate from graph scope ownership.',
+              project: 'docs-mobile',
+              task: 'Close out native docs work',
+              topic: 'root-alias-closeout',
+            },
+            name: 'review_session_context',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(closeout.isError, JSON.stringify(closeout)).not.toBe(true);
+        expect(closeout.structuredContent).toMatchObject({
+          knowledgeDelta: {
+            items: [
+              expect.objectContaining({
+                proposedDestination: expect.objectContaining({project: 'docs-mobile'}),
+                sourceEvidence: expect.arrayContaining([expect.stringMatching(/^code-citation:/u)]),
+              }),
+            ],
+          },
+        });
+      },
+      {toolset: 'core'},
+    );
+  }, 60_000);
+
   it('lets remember_context relate to a shared durable that has no memory_id', async () => {
     await withMcpClient(
       async (client, fixture) => {
