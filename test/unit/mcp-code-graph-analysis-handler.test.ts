@@ -269,7 +269,9 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         if (input.inspectDelayMilliseconds === undefined || status === undefined || options?.input === undefined) {
           return yield* Effect.die('Unexpected isolated graph inspection.');
         }
-        const request = JSON.parse(new TextDecoder().decode(options.input)) as {readonly operation: CodeGraphQueryResult['operation']};
+        const request = JSON.parse(new TextDecoder().decode(options.input)) as {
+          readonly operation: CodeGraphQueryResult['operation'];
+        };
         yield* Effect.sleep(input.inspectDelayMilliseconds);
         return commandResult(
           JSON.stringify({ok: true, protocol: 1, result: codeGraphInspectionResult(status, request.operation)}),

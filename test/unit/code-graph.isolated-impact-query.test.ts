@@ -158,10 +158,7 @@ describe('isolated code graph impact query', () => {
         operation: 'query',
         query: input.query,
         threadnoteHome: input.threadnoteHome,
-      }).pipe(
-        Effect.provideService(CommandExecutor, command),
-        Effect.provideService(SystemInfo, systemInfoStub({})),
-      );
+      }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
 
       expect(actual).toEqual(queryResult);
       expect(decodeImpactQueryRequest(new TextDecoder().decode(encodedRequest))).toMatchObject({
@@ -198,10 +195,7 @@ describe('isolated code graph impact query', () => {
           operation: 'query',
           query: input.query,
           threadnoteHome: input.threadnoteHome,
-        }).pipe(
-          Effect.provideService(CommandExecutor, command),
-          Effect.provideService(SystemInfo, systemInfoStub({})),
-        );
+        }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
       }
 
       expect(observedSnapshotIds).toEqual(snapshotIds);
@@ -255,10 +249,7 @@ describe('isolated code graph impact query', () => {
           threadnoteHome: input.threadnoteHome,
         },
         {onTelemetryObservation},
-      ).pipe(
-        Effect.provideService(CommandExecutor, command),
-        Effect.provideService(SystemInfo, systemInfoStub({})),
-      );
+      ).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
 
       expect(observed).toEqual([
         {

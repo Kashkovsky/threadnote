@@ -275,9 +275,7 @@ function encodeImpactQueryRequest(input: IsolatedCodeGraphQueryInput): Uint8Arra
     ...(input.packageName === undefined ? {} : {packageName: input.packageName}),
     protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
     query:
-      input.operation === 'impact'
-        ? impactQueryTransportSelector(input.query, input.seedQueries)
-        : (input.query ?? ''),
+      input.operation === 'impact' ? impactQueryTransportSelector(input.query, input.seedQueries) : (input.query ?? ''),
     ...(input.seedQueries === undefined ? {} : {seedQueries, seedQueryCount: input.seedQueries.length}),
     ...(input.symbol === undefined ? {} : {symbol: input.symbol}),
     threadnoteHome: input.threadnoteHome,
