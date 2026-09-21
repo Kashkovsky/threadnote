@@ -43,11 +43,13 @@ import {selectCompatibleReadyCodeGraphSnapshot} from './query/ready_snapshot.js'
 import {
   codeGraphProjectCoverage,
   codeGraphQueryScopeCurrent,
+  codeGraphQueryScopeReceipt,
   codeGraphQueryScopeSnapshotCompatible,
   discloseCodeGraphProjectCoverage,
   observeCodeGraphQueryScope,
   outsideCodeGraphProjectPaths,
   type CodeGraphQueryScope,
+  type CodeGraphQueryScopeReceipt,
 } from './query/scope.js';
 import {codeGraphScopeAdmitsPath} from './scope/applicability.js';
 import {isCodeGraphCapacityPause} from './disk/capacity.js';
@@ -105,18 +107,16 @@ export interface CodeGraphInspectOptions extends CodeGraphQueryOptions {
   /** @internal Bounded read workers may reuse a ready base but must never start repository-sized indexing. */
   readonly baseCommitPolicy?: 'ensure' | 'ready-only';
   readonly interlock?: CodeGraphQueryInterlock;
-  /** @internal Evidence harnesses can isolate query work from the detached maintenance lane. */
   readonly requestMaintenance?: boolean;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>;
   readonly refresh?: boolean;
-  /** @internal Original changed-path count when a process boundary bounds seedQueries. */
+  readonly readyScopeReceipt?: CodeGraphQueryScopeReceipt;
+  readonly deferProjectScopePresentation?: boolean;
   readonly seedQueryCount?: number;
   readonly seedQueries?: readonly string[];
   /** Internal pre-read observation returned by status; never serialized to command or MCP output. */
   readonly statusObservation?: CodeGraphStatusObservation;
-  /** @internal Closed anonymous query-stage observer supplied only by reviewed request surfaces. */
   readonly telemetry?: CodeGraphQueryTelemetryObserver;
-  /** Internal override for command surfaces that auto-refresh before a non-strict read. */
   readonly strictFreshness?: boolean;
   readonly threadnoteHome: string;
 }
@@ -664,19 +664,22 @@ export class CodeGraphQueryService extends Context.Service<
                 )).identity;
               const projectScope =
                 statusObservation?.projectScope ??
-                (yield* observeCodeGraphQueryScope(
-                  options.threadnoteHome,
-                  options.cwd,
-                  identity,
-                  languagePacks,
-                  options,
-                ));
+                (options.readyScopeReceipt === undefined
+                  ? yield* observeCodeGraphQueryScope(
+                      options.threadnoteHome,
+                      options.cwd,
+                      identity,
+                      languagePacks,
+                      options,
+                    )
+                  : undefined);
+              const scopeReceipt = options.readyScopeReceipt ?? codeGraphQueryScopeReceipt(projectScope);
               const layout = codeGraphLayout(
                 path,
                 options.threadnoteHome,
                 identity.checkoutId,
                 identity.worktreeId,
-                projectScope?.scope?.scopeKey,
+                scopeReceipt?.scope.scopeKey,
               );
               const existing =
                 options.refresh === false
@@ -686,7 +689,7 @@ export class CodeGraphQueryService extends Context.Service<
                     : yield* store.readySnapshot(
                         layout.databasePath,
                         identity.worktreeId,
-                        projectScope?.scope?.scopeKey,
+                        scopeReceipt?.scope.scopeKey,
                       );
               const freshnessRequired =
                 options.refresh === true || options.operation === 'impact' || options.operation === 'path';
@@ -721,9 +724,9 @@ export class CodeGraphQueryService extends Context.Service<
                         ).pipe(Effect.as(undefined))
                       : undefined;
               const stale =
-                projectScope?.scope !== undefined
+                scopeReceipt !== undefined
                   ? !existing ||
-                    !(yield* codeGraphQueryScopeCurrent(projectScope, store, layout, existing, identity, languagePacks))
+                    !(yield* codeGraphQueryScopeCurrent(scopeReceipt, store, layout, existing, identity, languagePacks))
                   : !existing ||
                     !runtimeCurrent ||
                     existing.commit !== identity.headCommit ||
@@ -753,6 +756,7 @@ export class CodeGraphQueryService extends Context.Service<
                       observation: rebuilt ? undefined : {identity, ...(overlay === undefined ? {} : {overlay})},
                       options,
                       projectScope,
+                      projectScopeReceipt: scopeReceipt,
                       store,
                       strictFreshness,
                     });
@@ -782,7 +786,7 @@ export class CodeGraphQueryService extends Context.Service<
                     identity.repositoryId,
                     options.baseCommit,
                     undefined,
-                    projectScope?.scope?.scopeKey,
+                    scopeReceipt?.scope.scopeKey,
                   );
                   const readyBaseCurrent = readyBase
                     ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, readyBase, languagePacks)
@@ -1407,6 +1411,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
   };
   readonly options: CodeGraphInspectOptions;
   readonly projectScope?: CodeGraphQueryScope;
+  readonly projectScopeReceipt?: CodeGraphQueryScopeReceipt;
   readonly store: CodeGraphStoreShape;
   readonly strictFreshness: boolean;
 }) {
@@ -1426,7 +1431,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
   }
   const overlay =
     input.observation?.overlay ??
-    (input.deferWorktreeObservation || input.projectScope?.scope !== undefined
+    (input.deferWorktreeObservation || input.projectScopeReceipt !== undefined
       ? undefined
       : yield* withCodeGraphQueryTelemetryStage(
           input.options.telemetry,
@@ -1440,7 +1445,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       borrowedSnapshotId: input.borrowedSnapshotId,
       databasePath: input.layout.databasePath,
       identity,
-      projectScope: input.projectScope,
+      projectScope: input.projectScopeReceipt,
       store: input.store,
     });
     if (!storedSnapshot) {
@@ -1456,7 +1461,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       input.layout.databasePath,
       snapshot,
       input.languagePacks,
-      overlay === undefined || input.projectScope?.scope !== undefined ? undefined : {layout: input.layout, identity},
+      overlay === undefined || input.projectScopeReceipt !== undefined ? undefined : {layout: input.layout, identity},
     );
     yield* input.options.interlock?.afterSnapshotSelected?.() ?? Effect.void;
     const nodeLimit = boundedInteger(input.options.nodeLimit, 20, 1, 200);
@@ -1468,9 +1473,12 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       8,
     );
     const allowedProvenances = selectedProvenances(input.options);
-    const outsidePaths = outsideCodeGraphProjectPaths(input.options, input.projectScope?.scope);
-    const scopedSeedQueries = input.options.seedQueries?.filter(candidate =>
-      codeGraphScopeAdmitsPath(input.projectScope?.scope, candidate),
+    const outsidePaths = input.options.deferProjectScopePresentation
+      ? []
+      : outsideCodeGraphProjectPaths(input.options, input.projectScope?.scope);
+    const scopedSeedQueries = input.options.seedQueries?.filter(
+      candidate =>
+        input.options.deferProjectScopePresentation || codeGraphScopeAdmitsPath(input.projectScope?.scope, candidate),
     );
     const selected = yield* outsidePaths.length > 0 ||
     (scopedSeedQueries !== undefined && scopedSeedQueries.length === 0)
@@ -1588,7 +1596,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             return {
               identity: strictIdentity,
               overlay:
-                input.projectScope?.scope !== undefined
+                input.projectScopeReceipt !== undefined
                   ? undefined
                   : yield* observeWorktree(strictIdentity, input.options.interlock),
             };
@@ -1602,7 +1610,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
     const finalIdentity = finalObservation.identity;
     const finalOverlay = finalObservation.overlay;
     const finalScope =
-      input.projectScope?.scope !== undefined && input.strictFreshness
+      input.projectScopeReceipt !== undefined && input.strictFreshness
         ? yield* observeCodeGraphQueryScope(
             input.options.threadnoteHome,
             input.options.cwd,
@@ -1611,10 +1619,11 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             input.options,
           )
         : input.projectScope;
+    const finalScopeReceipt = codeGraphQueryScopeReceipt(finalScope) ?? input.projectScopeReceipt;
     const scopeCurrent =
-      finalScope?.scope !== undefined &&
+      finalScopeReceipt !== undefined &&
       (yield* codeGraphQueryScopeCurrent(
-        finalScope,
+        finalScopeReceipt,
         input.store,
         input.layout,
         snapshot,
@@ -1624,7 +1633,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
     if (
       input.strictFreshness &&
       !(yield* codeGraphQueryScopeSnapshotCompatible(
-        finalScope,
+        finalScopeReceipt,
         input.store,
         input.layout.databasePath,
         finalIdentity.worktreeId,
@@ -1636,7 +1645,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       });
     }
     const admissionCurrent =
-      input.projectScope?.scope !== undefined
+      input.projectScopeReceipt !== undefined
         ? scopeCurrent
         : !input.strictFreshness ||
           (yield* codeGraphSnapshotAdmissionCurrentForIdentity(
@@ -1646,7 +1655,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             input.languagePacks,
           ));
     const freshness =
-      input.projectScope?.scope !== undefined
+      input.projectScopeReceipt !== undefined
         ? scopeCurrent
           ? 'current'
           : 'stale'
@@ -1660,7 +1669,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
               ? 'current'
               : 'stale';
     const source =
-      input.projectScope?.scope !== undefined
+      input.projectScopeReceipt !== undefined
         ? undefined
         : yield* loadSharedGraphQuerySource({
             checkoutId: identity.checkoutId,
@@ -1695,14 +1704,16 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
       warnings: safeSelection.warnings,
     } satisfies CodeGraphQueryResult;
     yield* input.options.interlock?.beforeReadCompletion?.() ?? Effect.void;
-    return discloseCodeGraphProjectCoverage(
-      result,
-      codeGraphProjectCoverage(finalScope, finalIdentity, snapshot, freshness === 'current'),
-      outsidePaths,
-      input.options.seedQueries === undefined
-        ? undefined
-        : input.options.seedQueries.length - (scopedSeedQueries?.length ?? 0),
-    );
+    return input.options.deferProjectScopePresentation
+      ? result
+      : discloseCodeGraphProjectCoverage(
+          result,
+          codeGraphProjectCoverage(finalScope, finalIdentity, snapshot, freshness === 'current'),
+          outsidePaths,
+          input.options.seedQueries === undefined
+            ? undefined
+            : input.options.seedQueries.length - (scopedSeedQueries?.length ?? 0),
+        );
   });
   return yield* input.store.withSession(
     input.layout.databasePath,

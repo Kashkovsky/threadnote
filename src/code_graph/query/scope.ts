@@ -34,6 +34,30 @@ export interface CodeGraphQueryScope {
   readonly evidence?: CodeGraphScopeApplicabilityEvidence;
 }
 
+/**
+ * Compact proof that an already-selected ready snapshot belongs to the
+ * parent-observed project graph. Large path and workspace lists stay in the
+ * parent process; the isolated reader only needs these persisted identities.
+ */
+export interface CodeGraphQueryScopeReceipt {
+  readonly scope: Pick<ResolvedCodeGraphIndexScope, 'closureDigest' | 'definitionDigest' | 'scopeKey'>;
+  readonly evidence: CodeGraphScopeApplicabilityEvidence;
+}
+
+export function codeGraphQueryScopeReceipt(
+  selection: CodeGraphQueryScope | undefined,
+): CodeGraphQueryScopeReceipt | undefined {
+  if (selection?.scope === undefined || selection.evidence === undefined) return undefined;
+  return {
+    scope: {
+      closureDigest: selection.scope.closureDigest,
+      definitionDigest: selection.scope.definitionDigest,
+      scopeKey: selection.scope.scopeKey,
+    },
+    evidence: selection.evidence,
+  };
+}
+
 export function discloseCodeGraphAnalysisProjectCoverage(
   result: CodeGraphAnalysisResult,
   projectCoverage: CodeGraphProjectCoverage | undefined,
@@ -89,7 +113,7 @@ export const observeCodeGraphQueryScope = Effect.fn('codeGraph.observeQueryScope
 });
 
 export const codeGraphQueryScopeCurrent = Effect.fn('codeGraph.queryScopeCurrent')(function* (
-  selection: CodeGraphQueryScope,
+  selection: CodeGraphQueryScope | CodeGraphQueryScopeReceipt,
   store: CodeGraphStoreShape,
   layout: CodeGraphLayout,
   snapshot: CodeGraphSnapshot,
@@ -121,7 +145,7 @@ export const codeGraphQueryScopeCurrent = Effect.fn('codeGraph.queryScopeCurrent
 });
 
 export const codeGraphQueryScopeSnapshotCompatible = Effect.fn('codeGraph.queryScopeSnapshotCompatible')(function* (
-  selection: CodeGraphQueryScope | undefined,
+  selection: CodeGraphQueryScope | CodeGraphQueryScopeReceipt | undefined,
   store: CodeGraphStoreShape,
   databasePath: string,
   worktreeId: string,
@@ -140,7 +164,7 @@ export const codeGraphQueryScopeSnapshotCompatible = Effect.fn('codeGraph.queryS
 export function codeGraphProjectCoverage(
   selection: CodeGraphQueryScope | undefined,
   identity: RepositoryIdentity,
-  snapshot: CodeGraphSnapshot | undefined,
+  snapshot: Pick<CodeGraphSnapshot, 'commit'> | undefined,
   current: boolean,
 ): CodeGraphProjectCoverage | undefined {
   if (selection === undefined) return undefined;

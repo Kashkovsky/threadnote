@@ -17,7 +17,7 @@ import {
   IsolatedCodeGraphImpactQueryTimedOut,
 } from '../../src/code_graph/isolated/impact_query.js';
 import type {CodeGraphQueryTelemetryObservation} from '../../src/code_graph/query/contract.js';
-import type {CodeGraphQueryScope} from '../../src/code_graph/query/scope.js';
+import {codeGraphQueryScopeReceipt, type CodeGraphQueryScope} from '../../src/code_graph/query/scope.js';
 import type {CodeGraphQueryResult, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CommandExecutor, type CommandOptions} from '../../src/effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
@@ -210,21 +210,22 @@ describe('isolated code graph impact query', () => {
       expect(actual).toEqual(queryResult);
       expect(decodeImpactQueryRequest(new TextDecoder().decode(encodedRequest))).toMatchObject({
         operation: 'query',
-        projectScope,
+        projectScopeReceipt: codeGraphQueryScopeReceipt(projectScope),
         query: input.query,
         readySnapshotId: result.snapshot.id,
       });
     }),
   );
 
-  it('reuses the parent ready snapshot and resolved project scope in the worker', () => {
+  it('reuses the parent ready snapshot and compact scope receipt in the worker', () => {
+    const projectScopeReceipt = codeGraphQueryScopeReceipt(projectScope)!;
     const request = decodeImpactQueryRequest(
       JSON.stringify({
         cwd: input.cwd,
         edgeLimit: input.edgeLimit,
         nodeLimit: input.nodeLimit,
         operation: 'query',
-        projectScope,
+        projectScopeReceipt,
         protocol: 1,
         query: input.query,
         readySnapshotId: result.snapshot.id,
@@ -236,9 +237,56 @@ describe('isolated code graph impact query', () => {
     expect(impactQueryWorkerStatusObservation(request!, identity)).toEqual({
       borrowedSnapshotId: result.snapshot.id,
       identity,
-      projectScope,
+    });
+    expect(impactQueryWorkerInspectOptions(request!, input.threadnoteHome)).toMatchObject({
+      deferProjectScopePresentation: true,
+      readyScopeReceipt: projectScopeReceipt,
     });
   });
+
+  effectIt.effect('keeps very large monorepo scope manifests out of the isolated request', () =>
+    Effect.gen(function* () {
+      let encodedRequest: Uint8Array | undefined;
+      const command = CommandExecutor.of({
+        execute: (_executable, _arguments, options) =>
+          Effect.sync(() => {
+            encodedRequest = options?.input;
+            return commandResult(JSON.stringify({ok: true, protocol: 1, result: {...result, operation: 'node'}}));
+          }),
+        executeStreaming: () => Effect.die('unused'),
+      });
+      const largeProjectScope: CodeGraphQueryScope = {
+        ...projectScope,
+        scope: {
+          ...projectScope.scope!,
+          admittedPrefixes: Array.from(
+            {length: 10_000},
+            (_, index) => `packages/team-${index.toString().padStart(5, '0')}/src/very-long-project-component`,
+          ),
+          controlPaths: Array.from({length: 10_000}, (_, index) => `packages/team-${index}/package.json`),
+          includedProjectIds: Array.from({length: 10_000}, (_, index) => `workspace-project-${index}`),
+        },
+      };
+
+      yield* inspectCodeGraphIsolated({
+        cwd: input.cwd,
+        edgeLimit: input.edgeLimit,
+        nodeId: `cgs_${'a'.repeat(32)}`,
+        nodeLimit: input.nodeLimit,
+        operation: 'node',
+        projectScope: largeProjectScope,
+        readySnapshotId: result.snapshot.id,
+        threadnoteHome: input.threadnoteHome,
+      }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
+
+      expect(encodedRequest).toBeDefined();
+      expect(encodedRequest!.byteLength).toBeLessThan(4_096);
+      expect(decodeImpactQueryRequest(new TextDecoder().decode(encodedRequest))).toMatchObject({
+        operation: 'node',
+        projectScopeReceipt: codeGraphQueryScopeReceipt(largeProjectScope),
+      });
+    }),
+  );
 
   effectIt.effect('accepts every canonical borrowed ready-snapshot identity', () =>
     Effect.gen(function* () {
@@ -447,8 +495,8 @@ describe('isolated code graph impact query', () => {
     {
       operation: fc.constantFrom('query', 'node', 'neighbors', 'explain', 'path', 'impact'),
       prefixes: fc.array(
-        fc.string({maxLength: 40, minLength: 1}).filter(value => !value.includes('\0')),
-        {maxLength: 8},
+        fc.string({maxLength: 120, minLength: 1}).filter(value => !value.includes('\0')),
+        {maxLength: 200},
       ),
       snapshotHash: gitObjectId(40),
       selector: fc.string({maxLength: 80, minLength: 1}).filter(value => !value.includes('\0')),
@@ -462,24 +510,27 @@ describe('isolated code graph impact query', () => {
             : operation === 'path'
               ? {from: selector, query: '', to: `${selector}-target`}
               : {query: '', symbol: selector};
+      const parentScope = {
+        ...projectScope,
+        scope: {...projectScope.scope!, admittedPrefixes: prefixes},
+      };
       const request = {
         cwd: '/workspace/repository',
         edgeLimit: 40,
         nodeLimit: 20,
         operation,
-        projectScope: {
-          ...projectScope,
-          scope: {...projectScope.scope!, admittedPrefixes: prefixes},
-        },
+        projectScopeReceipt: codeGraphQueryScopeReceipt(parentScope),
         protocol: 1,
         readySnapshotId: `cgsn_${snapshotHash}`,
         threadnoteHome: '/threadnote-home',
         ...operationFields,
       };
+      expect(request.projectScopeReceipt).toEqual(codeGraphQueryScopeReceipt(projectScope));
       const decoded = decodeImpactQueryRequest(JSON.stringify(request));
       expect(decoded).toEqual(request);
       expect(impactQueryWorkerInspectOptions(decoded!, '/threadnote-home')).toMatchObject({
         operation,
+        readyScopeReceipt: codeGraphQueryScopeReceipt(parentScope),
         strictFreshness: operation === 'path' || operation === 'impact',
       });
     },

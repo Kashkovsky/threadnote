@@ -14,6 +14,7 @@ import {
   type CodeGraphStatusOptions,
 } from '../../src/code_graph/query.js';
 import type {CodeGraphQueryScope} from '../../src/code_graph/query/scope.js';
+import {codeGraphQueryScopeReceipt} from '../../src/code_graph/query/scope.js';
 import {attachCodeGraphStatusObservation} from '../../src/code_graph/query/contract.js';
 import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {
@@ -83,6 +84,16 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         expect.objectContaining({operation: 'query', readySnapshotId: ready.readySnapshot?.id}),
         expect.objectContaining({operation: 'node', readySnapshotId: ready.readySnapshot?.id}),
       ]);
+      expect(harness.observation.lifecycleEvents).toEqual([
+        'isolated-read-start',
+        'isolated-read-complete',
+        'watcher-ensure',
+        'background-refresh-request',
+        'isolated-read-start',
+        'isolated-read-complete',
+        'watcher-ensure',
+        'background-refresh-request',
+      ]);
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -122,20 +133,31 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       const result = yield* Fiber.join(fiber);
 
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
+        projectCoverage: {
+          completeness: 'complete',
+          configuredRoots: ['apps/web'],
+          dependencyComponents: 1,
+          kind: 'project',
+          project: 'web',
+          rootComponents: 1,
+        },
+      });
       expect(harness.observation.isolatedRequests).toEqual([
         expect.objectContaining({
           operation: 'query',
-          projectScope,
+          projectScopeReceipt: codeGraphQueryScopeReceipt(projectScope),
           readySnapshotId: ready.readySnapshot?.id,
         }),
       ]);
     }).pipe(provideTestLayer(harness.layer));
   });
 
-  effectIt.effect('returns a structured timeout before the MCP client deadline', () => {
-    const ready = codeGraphStatus({ready: true, stale: false});
+  effectIt.effect('returns a structured timeout and schedules stale-ready recovery after the read exits', () => {
+    const ready = codeGraphStatus({ready: true, stale: true});
     const harness = analyzeHandlerHarness({
-      attachResults: [],
+      allowBackgroundRequest: true,
+      attachResults: [ready],
       inspectDelayMilliseconds: 60_000,
       refresh: false,
       statuses: [ready],
@@ -155,6 +177,11 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         type: 'code-graph-query-state',
       });
       expect(harness.observation.isolatedInspectCalls).toBe(1);
+      expect(harness.observation.lifecycleEvents).toEqual([
+        'isolated-read-start',
+        'watcher-ensure',
+        'background-refresh-request',
+      ]);
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -244,6 +271,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   const attachOptions: Array<CodeGraphSharedReadyAttachInterlock | undefined> = [];
   const ensureOptions: CodeGraphWatchOptions[] = [];
   const refreshOptions: CodeGraphWatchOptions[] = [];
+  const lifecycleEvents: string[] = [];
   let analysisCalls = 0;
   let isolatedInspectCalls = 0;
   const isolatedRequests: Array<Record<string, unknown>> = [];
@@ -276,6 +304,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   const watcher = CodeGraphWatcher.of({
     ensure: options =>
       Effect.sync(() => {
+        lifecycleEvents.push('watcher-ensure');
         ensureOptions.push(options);
       }),
     metrics: Effect.succeed({
@@ -293,13 +322,15 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         refreshOptions.push(options);
         return input.refresh;
       }),
-    request: () =>
-      input.allowBackgroundRequest
+    request: () => {
+      lifecycleEvents.push('background-refresh-request');
+      return input.allowBackgroundRequest
         ? Effect.succeed({
             requestState: 'started',
             refresh: {state: 'active', type: 'code-graph-refresh-continuity', version: 1},
           })
-        : Effect.die('Unexpected graph request.'),
+        : Effect.die('Unexpected graph request.');
+    },
     status: () =>
       Effect.sync(() => {
         watcherStatusCalls += 1;
@@ -325,8 +356,10 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         const request = JSON.parse(new TextDecoder().decode(options.input)) as Record<string, unknown> & {
           readonly operation: CodeGraphQueryResult['operation'];
         };
+        lifecycleEvents.push('isolated-read-start');
         isolatedRequests.push(request);
         yield* Effect.sleep(input.inspectDelayMilliseconds);
+        lifecycleEvents.push('isolated-read-complete');
         return commandResult(
           JSON.stringify({ok: true, protocol: 1, result: codeGraphInspectionResult(status, request.operation)}),
         );
@@ -389,6 +422,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
         return isolatedInspectCalls;
       },
       isolatedRequests,
+      lifecycleEvents,
       refreshOptions,
       statusOptions,
       get watcherStatusCalls() {
