@@ -159,10 +159,25 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
 
   const writer = await driver.lock(churn, 'writer');
   await driver.change(churn, 'f1', true);
-  const requested = await driver.call(hostA, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
-  const firstRefresh = stage3Refresh(requested.refresh);
+  // Ready discovery reads deliberately never schedule a hidden rebuild. Start
+  // refresh through a current-required operation, then prove that discovery
+  // can keep using the stale ready snapshot while that explicit refresh waits.
+  const requested = await driver.call(hostA, churn, selectors('path', churnAnchor.entry, churnAnchor.leaf));
+  const requestedState = assertStage3StrictStateEnvelope('path', requested);
+  const firstRefresh = requested.refresh === undefined ? undefined : stage3Refresh(requested.refresh);
+  observations.push({
+    phase: 'strict-current-boundary',
+    state: requestedState,
+    operation: 'path',
+    host: hostA.label,
+    ...(firstRefresh === undefined ? {} : {refresh: firstRefresh}),
+    ...(requested.retryAfterMilliseconds === undefined
+      ? {}
+      : {retryAfterMilliseconds: Number(requested.retryAfterMilliseconds)}),
+  });
   const f1 = await adopted(driver, churn, hostA, writer);
-  assertStage3(firstRefresh.currentTargetToken === f1.active.targetToken, 'initial-continuity-token');
+  if (firstRefresh !== undefined)
+    assertStage3(firstRefresh.currentTargetToken === f1.active.targetToken, 'initial-continuity-token');
   for (const host of [hostA, hostB]) {
     for (const operation of discovery) {
       driver.held(writer);
