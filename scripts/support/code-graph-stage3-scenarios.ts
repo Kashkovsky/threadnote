@@ -141,6 +141,37 @@ async function current(
   return ready;
 }
 
+async function primeBackgroundRefreshEligibility(
+  driver: Stage3Driver,
+  host: Stage3Host,
+  tree: Stage3Worktree,
+  entry: string,
+  leaf: string,
+) {
+  await driver.change(tree, 'eligibility');
+  const exact = await driver.until(async () => {
+    const response = await driver.call(host, tree, selectors('path', entry, leaf));
+    return response.type === 'code-graph-inspection' && response.freshness === 'current' ? response : undefined;
+  }, 'eligibility-prime-not-current');
+  const snapshot = stage3Record(exact.snapshot).id;
+  assertStage3(typeof snapshot === 'string', 'eligibility-prime-snapshot');
+  assertStage3(
+    nodes(exact).some(node => node.id === entry) && nodes(exact).some(node => node.id === leaf),
+    'eligibility-prime-path-evidence',
+  );
+  const query = await driver.call(host, tree, {operation: 'query', query: 'stage3Target_eligibility'});
+  assertStage3(stage3Record(query.snapshot).id === snapshot, 'eligibility-prime-query-binding');
+  assertStage3(
+    nodes(query).some(node => node.name === 'stage3Target_eligibility'),
+    'eligibility-prime-target-evidence',
+  );
+  const status = (await driver.statuses(tree)).find(
+    candidate => candidate.observation.liveness === 'completed' && candidate.result?.snapshotId === snapshot,
+  );
+  assertStage3(status?.result?.overlayAssessment?.outcome === 'overlay-success', 'eligibility-prime-assessment');
+  return snapshot;
+}
+
 export async function runStage3Scenarios(driver: Stage3Driver) {
   const observations: Stage3Observation[] = [];
   const [seed, churn, recovery] = driver.worktrees;
@@ -149,7 +180,7 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   const hostB = await driver.host('b');
   assertStage3(hostA.processId !== hostB.processId, 'independent-mcp-hosts');
   const seedAnchor = await anchors(driver, hostB, seed);
-  const churnAnchor = await anchors(driver, hostA, churn);
+  let churnAnchor = await anchors(driver, hostA, churn);
   const recoveryAnchor = await anchors(driver, hostA, recovery);
   assertStage3(
     seedAnchor.entry === churnAnchor.entry && seedAnchor.entry === recoveryAnchor.entry,
@@ -157,27 +188,17 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   );
   observations.push({phase: 'linked-worktrees', state: 'observed'});
 
+  // Background refresh is fail-closed until an explicit current read proves a
+  // bounded overlay succeeds. Prime that production contract before testing
+  // watcher-owned durable demand and latest-target convergence.
+  churnAnchor = {
+    ...churnAnchor,
+    snapshot: await primeBackgroundRefreshEligibility(driver, hostA, churn, churnAnchor.entry, churnAnchor.leaf),
+  };
+
   const writer = await driver.lock(churn, 'writer');
   await driver.change(churn, 'f1', true);
-  // Ready discovery reads deliberately never schedule a hidden rebuild. Start
-  // refresh through a current-required operation, then prove that discovery
-  // can keep using the stale ready snapshot while that explicit refresh waits.
-  const requested = await driver.call(hostA, churn, selectors('path', churnAnchor.entry, churnAnchor.leaf));
-  const requestedState = assertStage3StrictStateEnvelope('path', requested);
-  const firstRefresh = requested.refresh === undefined ? undefined : stage3Refresh(requested.refresh);
-  observations.push({
-    phase: 'strict-current-boundary',
-    state: requestedState,
-    operation: 'path',
-    host: hostA.label,
-    ...(firstRefresh === undefined ? {} : {refresh: firstRefresh}),
-    ...(requested.retryAfterMilliseconds === undefined
-      ? {}
-      : {retryAfterMilliseconds: Number(requested.retryAfterMilliseconds)}),
-  });
   const f1 = await adopted(driver, churn, hostA, writer);
-  if (firstRefresh !== undefined)
-    assertStage3(firstRefresh.currentTargetToken === f1.active.targetToken, 'initial-continuity-token');
   for (const host of [hostA, hostB]) {
     for (const operation of discovery) {
       driver.held(writer);
