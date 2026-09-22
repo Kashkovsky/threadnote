@@ -13,7 +13,7 @@ import {
   Schema,
 } from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {fromPromise, fromPromiseInterruptible, fromPromiseInterruptibleAwaiting} from '../effect/errors.js';
+import {fromPromise, fromPromiseInterruptibleAwaiting} from '../effect/errors.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file/lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {
@@ -481,7 +481,7 @@ class ParserWorkerSlot {
   ) {}
 
   extract(file: CodeGraphInventoryFile, threadnoteHome: string): Effect.Effect<CodeGraphParserResult, Error> {
-    return fromPromiseInterruptible(
+    return fromPromiseInterruptibleAwaiting(
       async signal => {
         if (this.closed) throw ParserWorkerError.of('exit');
         this.cancelIdleEviction();

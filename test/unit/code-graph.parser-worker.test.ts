@@ -777,6 +777,51 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
+  it.effect('keeps an interrupted session slot owned until its initial spawn settles', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const pendingSpawns: Array<(process: ParserWorkerProcess) => void> = [];
+    const spawn: ParserWorkerSpawner = () =>
+      new Promise(resolve => {
+        pendingSpawns.push(resolve);
+      });
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-session-interrupt-'});
+      const pool = yield* CodeGraphParserPool;
+      const firstFile = inventoryFile('src/interrupted-session.ts', 'export const interrupted = true;');
+      const secondFile = inventoryFile('src/next-session.ts', 'export const next = true;');
+
+      const first = yield* Effect.forkScoped(pool.withParserSlot(home, [firstFile], extract => extract(firstFile)));
+      yield* waitUntil(() => pendingSpawns.length === 1);
+      const interrupted = yield* Effect.forkScoped(Fiber.interrupt(first));
+      yield* Effect.yieldNow;
+      const second = yield* Effect.forkScoped(
+        pool.withParserSlot(home, [secondFile], extract => extract(secondFile)),
+      );
+      yield* Effect.yieldNow;
+
+      expect(pendingSpawns).toHaveLength(1);
+      const interruptedWorker = echoProcess();
+      processes.push(interruptedWorker);
+      pendingSpawns[0](interruptedWorker);
+      yield* Fiber.join(interrupted);
+      yield* waitUntil(() => pendingSpawns.length === 2);
+      const activeWorker = echoProcess();
+      processes.push(activeWorker);
+      pendingSpawns[1](activeWorker);
+      const result = yield* Fiber.join(second);
+      yield* pool.trimIdle;
+
+      expect(result.degraded).toBe(false);
+      expect(processes).toHaveLength(2);
+      expect(interruptedWorker.writes).toHaveLength(0);
+      expect(interruptedWorker.inputClosed).toBe(true);
+      expect(activeWorker.writes.map(request => request.file.path)).toEqual([secondFile.path]);
+      expect(activeWorker.inputClosed).toBe(true);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
   it.effect('warms concurrently admitted parser slots before extraction', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
     const spawn: ParserWorkerSpawner = () => {

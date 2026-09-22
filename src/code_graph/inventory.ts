@@ -1455,7 +1455,10 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       unit: 'files',
     }) ?? Effect.void;
     const prepareParserWork = !parserWorkPrepared && batch.some(entry => entry.parse);
-    if (prepareParserWork) parserWorkPrepared = true;
+    if (prepareParserWork) {
+      parserWorkPrepared = true;
+      yield* onParserWorkPlanned?.() ?? Effect.void;
+    }
     const expectedBytes = batch.reduce((total, entry) => total + entry.size, 0) + batch.length * 256;
     const readBatch = Effect.gen(function* () {
       const readingStarted = performance.now();
@@ -1466,9 +1469,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       });
       return {readingMilliseconds: performance.now() - readingStarted, result};
     });
-    const read = prepareParserWork
-      ? (yield* Effect.all([readBatch, onParserWorkPlanned?.() ?? Effect.void], {concurrency: 2}))[0]
-      : yield* readBatch;
+    const read = yield* readBatch;
     const decodingStarted = performance.now();
     const result = read.result;
     const blobs = parseGitCatFileBatch(result.stdout, batch);
