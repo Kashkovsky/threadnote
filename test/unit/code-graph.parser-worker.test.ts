@@ -771,7 +771,6 @@ describe('code graph parser worker pool', () => {
       expect(afterSession.degraded).toBe(false);
       expect(processes).toHaveLength(1);
       expect(processes[0].writes.map(request => request.file.path)).toEqual([
-        '.threadnote/parser-warmup.ts',
         ...files.map(file => file.path),
         'src/session-after.ts',
       ]);
