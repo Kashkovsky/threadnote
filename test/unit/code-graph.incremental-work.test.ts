@@ -98,6 +98,23 @@ describe('incremental rewrite work', () => {
     expect(assessCodeGraphIncrementalFactBytes({aggregateBytes: 2, factBytes: [1]})).toEqual({mode: 'invalid'});
   });
 
+  it('rejects a combined added-and-deleted cache envelope that only exceeds in aggregate', () => {
+    const perFile = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
+    const addedFactBytes = [perFile, perFile];
+    const deletedFactBytes = [perFile, perFile, 1];
+
+    expect(
+      assessCodeGraphIncrementalFactBytes({
+        aggregateBytes: [...addedFactBytes, ...deletedFactBytes].reduce((total, bytes) => total + bytes, 0),
+        factBytes: [...addedFactBytes, ...deletedFactBytes],
+      }),
+    ).toEqual({
+      limit: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
+      mode: 'exceeded',
+      observedAtDecision: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES + 1,
+    });
+  });
+
   it('plans carried and cumulative paths as a deterministic bounded set union', () => {
     const paths = fc
       .uniqueArray(fc.integer({max: 400, min: 0}), {maxLength: 80})
@@ -238,5 +255,22 @@ describe('incremental rewrite work', () => {
     expect(codeGraphIncrementalWorkFitsBudget({...boundary, inventoryFilesInspected: boundary.totalFiles + 1})).toBe(
       false,
     );
+  });
+
+  it('admits a bounded deletion-only staged delta', () => {
+    const deletionOnly = {
+      attributionContextFiles: 0,
+      baseFactsLoaded: 0,
+      changedFiles: 0,
+      deletedFiles: 1,
+      factBytes: 0,
+      plannedRows: 1,
+      probedDependencyPaths: 0,
+      sourceBytes: 0,
+      totalFiles: 12,
+      inventoryFilesInspected: 12,
+    };
+    expect(codeGraphIncrementalWorkFitsBudget(deletionOnly)).toBe(true);
+    expect(codeGraphIncrementalWorkFitsBudget({...deletionOnly, deletedFiles: 0})).toBe(false);
   });
 });

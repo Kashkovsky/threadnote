@@ -592,12 +592,35 @@ function parseOverlayFallbackAssessment(
   ) {
     return undefined;
   }
+  const unownedResolutionDomains =
+    value.unownedResolutionDomains === undefined
+      ? undefined
+      : Array.isArray(value.unownedResolutionDomains) &&
+          value.unownedResolutionDomains.every(domain => typeof domain === 'string' && domain.length > 0) &&
+          new Set(value.unownedResolutionDomains).size === value.unownedResolutionDomains.length
+        ? [...value.unownedResolutionDomains].sort()
+        : undefined;
+  if (value.unownedResolutionDomains !== undefined && unownedResolutionDomains === undefined) return undefined;
+  const unownedResolutionDomainFiles =
+    value.unownedResolutionDomainFiles === undefined
+      ? undefined
+      : isNonNegativeSafeInteger(value.unownedResolutionDomainFiles)
+        ? Number(value.unownedResolutionDomainFiles)
+        : undefined;
+  if (
+    value.unownedResolutionDomainFiles !== undefined &&
+    (unownedResolutionDomainFiles === undefined || unownedResolutionDomains === undefined)
+  ) {
+    return undefined;
+  }
   return {
     addedFiles: Number(value.addedFiles),
     changedFiles: Number(value.changedFiles),
     deletedFiles: Number(value.deletedFiles),
     detail,
     stage: 'file-set-seed-assessment',
+    ...(unownedResolutionDomains === undefined ? {} : {unownedResolutionDomains}),
+    ...(unownedResolutionDomainFiles === undefined ? {} : {unownedResolutionDomainFiles}),
   };
 }
 

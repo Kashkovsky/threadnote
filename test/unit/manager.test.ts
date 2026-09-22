@@ -2211,6 +2211,9 @@ describe('manager http API', () => {
         `    path: ${JSON.stringify(projectPath)}`,
         '    uri: threadnote://resources/repos/configured-project',
         '    seed: []',
+        '    graph:',
+        '      roots: [src]',
+        '      closure: dependencies',
         '',
       ].join('\n');
     await writeFile(config.manifestPath, manifestFor(repositoryRoot));
@@ -2247,6 +2250,7 @@ describe('manager http API', () => {
           readonly graphState: string;
           readonly name: string;
           readonly path: string;
+          readonly scopeId?: string;
         }[];
         readonly manifestRevision: string;
         readonly repositories: readonly unknown[];
@@ -2259,6 +2263,7 @@ describe('manager http API', () => {
           graphState: 'not-indexed',
           name: 'configured-project',
           path: repositoryRoot,
+          scopeId: `code-graph-scope:${sha256HexSync('threadnote://resources/repos/configured-project')}`,
         },
       ]);
       expect(catalog.manifestRevision).toMatch(/^[0-9a-f]{64}$/);

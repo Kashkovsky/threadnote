@@ -304,10 +304,12 @@ function loadManagerGraphViewsPage(
   repositoryId: string,
   offset: number,
   query: string,
+  scopeIds: readonly string[],
   signal: AbortSignal,
 ): Promise<GraphViewPage> {
+  const scopeQuery = scopeIds.map(scopeId => `&scope=${encodeURIComponent(scopeId)}`).join('');
   return api<GraphViewPage>(
-    `/api/graphs/views?repository=${encodeURIComponent(repositoryId)}&offset=${offset}${query ? `&query=${encodeURIComponent(query)}` : ''}`,
+    `/api/graphs/views?repository=${encodeURIComponent(repositoryId)}&offset=${offset}${query ? `&query=${encodeURIComponent(query)}` : ''}${scopeQuery}`,
     undefined,
     {signal, timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS},
   );

@@ -56,6 +56,14 @@ export const threadnote5JourneyDocsArticle: DocsArticle = {
       text: 'You do not need two agents or a team share to get started. [Connect your first agent](/docs/connect-an-agent/) and Threadnote will prepare the current repository, build its code map, check the installation, and produce a real Context Brief. After restart, just give the agent a normal task; the installed lifecycle guidance handles the brief and closeout. On a new project, the first brief may contain mostly current code and repository guidance. Its value grows as you approve decisions and handoffs over time.',
     },
     {
+      type: 'heading',
+      text: 'If the repository is a large monorepo',
+    },
+    {
+      type: 'paragraph',
+      text: 'Before the first graph build, define a [graph scope](/docs/graph-monorepos/) for the application or library roots you work on. Threadnote follows their declared dependencies, keeps unrelated packages out of that project graph, and shows the selection for review. A scope is different from a Workset: scope narrows one monorepo graph, while a Workset deliberately combines prepared projects or repositories for one cross-project task.',
+    },
+    {
       type: 'code',
       language: 'sh',
       code: `threadnote agents list

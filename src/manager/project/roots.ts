@@ -34,8 +34,10 @@ interface ObservedRoot {
 }
 
 /**
- * Canonicalize one candidate and reject another manifest project that resolves
- * to the same worktree root. Missing/foreign paths remain byte-preserved.
+ * Canonicalize one candidate and bind the validation receipt to the other
+ * manifest roots. Several graph-scoped projects may intentionally share one
+ * monorepo root; their names, resource URIs, and graph definitions remain the
+ * distinct routing identities. Missing/foreign paths remain byte-preserved.
  */
 export const validateManagerProjectRoots = Effect.fn('managerProjectRoots.validate')(function* (
   projects: readonly ProjectManifest[],
@@ -49,9 +51,6 @@ export const validateManagerProjectRoots = Effect.fn('managerProjectRoots.valida
       const cheap = observed[index];
       const root = rootsCanCollide(cheap, candidateRoot) ? yield* observeRoot(projects[index]) : cheap;
       confirmed.push(root);
-      if (root.key === candidateRoot.key) {
-        return yield* ManagerProjectRootError.make({message: 'Another manifest project owns this repository root.'});
-      }
     }
     return {
       fingerprint: sha256HexSync([...confirmed, candidateRoot].map(root => root.receipt).join('\n')),

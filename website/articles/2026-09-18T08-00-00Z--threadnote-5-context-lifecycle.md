@@ -2,155 +2,106 @@
 author: Denys Kashkovskyi
 publishedAt: 2026-09-18T08:00:00Z
 slug: threadnote-5-context-lifecycle
-summary: Threadnote 5.0.0 gives coding agents a source-verifiable context lifecycle across vendors—from a cited task brief to a reviewed Knowledge Delta, Git sharing, reuse, and ongoing health.
+summary: 'Threadnote 5 gives coding agents a trustworthy context lifecycle: a focused, cited start; reviewed learning at closeout; and maintenance that keeps knowledge connected to the code.'
 title: Threadnote 5.0.0 — Context that keeps up with the work
 ---
 
-Coding agents are good at producing a change. They are much less reliable at inheriting the decisions behind the last
-change, checking whether those decisions still match the code, and leaving something trustworthy for the engineer who
-comes next.
+Coding agents can make a change quickly. The harder part is starting the next task with the decisions that still
+matter, checking them against the code that exists today, and leaving something better than a chat summary behind.
 
-That problem gets harder when a team uses more than one agent vendor. Each surface has its own chat history, rules, and
-memory features. A decision that was obvious in one session can become invisible—or look current long after the source
-has moved—in another.
+Threadnote 5 turns that into one lifecycle:
 
-Threadnote 5.0.0 turns that gap into one reviewable lifecycle:
+> Start with the useful context and current source evidence, then review the lessons worth carrying forward.
 
-> Coding agents start with the right decisions and current code evidence across vendors, and leave a reviewed knowledge
-> delta for the next engineer.
+It works across supported coding-agent environments without treating vendor chat history as a source of truth. The
+repository and current worktree still decide what the code does. Threadnote makes the relevant history, current-source
+connections, and uncertainty available at the right time—and leaves the decision to preserve or share knowledge with
+you.
 
-This is not generic memory, a replacement code-search portal, or an internal developer portal. Threadnote compiles the
-smallest useful evidence set for an engineering task, preserves provenance and uncertainty, and asks a person before a
-suggestion becomes durable or shared.
+## Begin a task with a Context Brief
 
-## Start with a bounded, cited brief
+A **Context Brief** is the small, cited starting packet for a real task. It can combine reviewed decisions, unfinished
+work, compatible verified procedures, and current code evidence. Just as importantly, it shows when evidence is old,
+incomplete, or unavailable.
 
-A Context Brief brings together the pieces an agent needs to begin: relevant reviewed decisions, an active handoff,
-current code-graph evidence, freshness checks, and compatible verified procedures. It stays inside a bounded token
-budget and reports coverage gaps instead of hiding them.
+After connecting an agent, give it a normal engineering task. The concise Threadnote guidance installed for that agent
+automatically prepares a brief for meaningful work; you do not have to request it in every prompt. The agent can use
+the brief to orient itself, then verify consequential claims in the files and worktree it is changing.
 
-After setup installs Threadnote's concise instructions and skills, the agent compiles this brief automatically at the
-start of non-trivial work. Give it a normal engineering task; you do not need to name Context Brief in the prompt.
+Setup is designed around that first useful moment rather than a collection of configuration steps. It connects a
+selected agent, prepares the repository, checks the installation, and finishes by producing a real brief. The journey
+is resumable and preview-first, and it does not publish anything just because setup ran.
 
-The distinction matters. Historical knowledge can explain _why_ a boundary exists. The current worktree shows _what_
-exists now. Threadnote keeps those sources separate and carries their provenance into the same task view. Exact local
-files remain authoritative, and missing or incomplete evidence stays `unknown` rather than becoming a confident clean
-answer.
+For a large monorepo, start by defining a **graph scope** for the app or library roots that matter to a project.
+Threadnote follows their declared dependencies and leaves unrelated packages out of that project graph. The scope can
+be previewed before indexing, carries coverage information into graph answers, and remains available across compatible
+linked worktrees without mixing dirty local changes. It is a durable, reviewable boundary—not a personal ignore file
+that must be copied into every worktree.
 
-Setup is now a resumable journey rather than a pile of integration steps. Choose a surface from the public agent
-catalog, preview the plan, and apply it to the current repository. Threadnote installs only the capabilities declared
-for that surface, prepares the local project context, verifies the runtime, and finishes with a real source-backed
-brief. The catalog remains the source of truth as support expands; the workflow is not built around a four-product
-allowlist.
+A **Workset** solves a different problem: it deliberately groups prepared projects or repositories for one
+cross-project investigation. Scopes focus one monorepo graph; worksets compose evidence across selected projects.
 
-Setup uses a built-in general repository-orientation task for that verification brief; it is not needed for everyday
-agent work.
+## End with a Knowledge Delta, not a transcript
 
-For teams that want to prove the whole loop, guided activation connects two catalog-supported surfaces, imports
-selected guidance or ADRs into review, reaches the first cited brief, and later asks the second surface to retrieve the
-approved decision. The journey is local, offline-capable, restartable, and explicit at every review or publication
-boundary.
+At meaningful closeout, Threadnote guidance asks the agent to record a private handoff for the next person continuing
+the task. When the task produces reusable knowledge, it also prepares a **Knowledge Delta**: a concise proposal for
+changing the context available to future work.
 
-## Import guidance without silently canonizing it
+A good delta identifies the decision and rationale, the constraints that must hold, what was verified, knowledge that
+is no longer valid, and unresolved risks. It is deliberately a small review artifact rather than a copy of the
+conversation.
 
-Most repositories already contain useful instructions in agent-native files. Threadnote 5 can preview and import
-selected project guidance into a private review, then project approved durable knowledge into another supported
-surface’s native project instructions.
+You can approve, edit, defer, or reject each proposed item. Nothing is silently written as durable knowledge. A private
+handoff remains private task state; an approved durable decision remains private until you choose to share it. Teams
+that want normal code-review controls can materialize a proposal for their existing Git and CODEOWNERS workflow.
 
-Import never means approval. Projection never means “overwrite the file.” Managed blocks carry provenance and hashes,
-unmanaged bytes are preserved, shared physical targets have one owner receipt, and status reports missing, modified,
-stale, conflicting, unsupported, or evidence-unavailable states. This lets a team reuse one reviewed decision without
-maintaining divergent copies for every agent host.
+That boundary is central to Threadnote 5: agents discover and propose context, while people decide what becomes a
+lasting engineering record.
 
-## End the task with a Knowledge Delta
+## Reuse knowledge without copying it everywhere
 
-The most important change in Threadnote 5 happens at closeout.
+Repositories often already have useful instructions and ADRs. Threadnote can bring selected guidance into review before
+it becomes reusable knowledge. Once a decision is approved, it can be projected into another supported agent’s native
+project guidance while preserving the text and policy the repository already owns.
 
-Installed Threadnote guidance makes closeout part of the agent's normal lifecycle too. At meaningful closeout, the
-agent writes the required private handoff and prepares the optional Knowledge Delta without waiting for a special
-command. The person remains responsible for deciding whether any proposed durable knowledge is applied.
+This means one reviewed decision can support several agent environments without maintaining drifting copies. Related
+memories can also be connected explicitly, so a later reader can follow a decision to its constraints, replacement, or
+supporting record without receiving an unbounded bundle of notes.
 
-Instead of treating a transcript or session summary as knowledge, Threadnote forms a small Knowledge Delta. It can
-contain decisions and rationale, constraints, verification performed, knowledge invalidated by the change, and
-unresolved risks. Each proposal shows its evidence, comparison with current memory, confidence, destination, and exact
-mutation preview.
+Threadnote 5 also makes **verified procedures** first-class context. A procedure is a reviewed, versioned workflow with
+compatibility and verification evidence. It is not an instruction that Threadnote downloads and runs automatically.
+Only procedures that are relevant, compatible, current, and verified can accompany a Context Brief.
 
-A person can approve, edit, defer, or reject each item at the reviewed revision. The required handoff stays separate:
-it captures current status, checks, blockers, and the next step, but it is not publishable team knowledge. That
-separation keeps temporary branch mechanics from masquerading as a durable engineering contract.
+## Keep context healthy as the code changes
 
-Approved knowledge still does not cross into a team automatically. Small teams can preview and publish one selected
-durable decision directly to their Git-backed share. Teams that require branch review can export a provider-neutral,
-content-addressed proposal and materialize it as a deterministic local branch and commit. Threadnote does not switch
-or dirty the current checkout, run Git hooks, push, or open a provider pull request. Normal Git policy and CODEOWNERS
-remain in charge.
+Saved knowledge is useful only while it remains connected to reality. Threadnote 5 adds optional ownership, review
+dates, and expiry dates to support that maintenance work. Existing memories remain readable, and upgrading does not
+invent an owner or a deadline for them.
 
-## Keep context healthy after it is shared
+Context health identifies code citations that changed or disappeared, records that are overdue or expired, conflicting
+or duplicate knowledge, broken memory connections, and drift in projected guidance. It proposes repair, replacement,
+supersession, or retirement for review. It never silently rewrites a record, deletes it, or decides which side of a
+contradiction is right.
 
-Useful context decays. Files move, implementation changes, ownership changes, and two reasonable records can begin to
-contradict each other.
+The same lifecycle can be checked next to code changes, making it easier to notice when a decision or document should
+be revisited instead of discovering the mismatch months later.
 
-Memory schema v5 provides the compatibility foundation for maintenance: optional opaque ownership, review dates,
-explicit validity, and safe lifecycle transitions. Existing v4 memory remains readable, and migration does not invent
-an owner or review date.
+## Measure whether the loop helps
 
-Context health distinguishes current, changed, missing, unknown, overdue, expired, duplicate, contradictory, drifted,
-and broken-relation states. Repairs are preview-first and preserve history. Personal lifecycle-safe repairs still need
-explicit approval; shared, cited, guidance, ambiguous, and semantic changes stay review-only. Threadnote never silently
-deletes durable knowledge or guesses which side of a contradiction is correct.
+Threadnote distinguishes context that merely looked relevant from context that actually helped. Mark recalled material
+useful, wrong, pinned, dismissed, or applied when it informed a plan or change. A local value report then summarizes
+reuse, closeout, and health outcomes without collecting source code, memory bodies, queries, paths, repository names,
+or raw logs.
 
-Teams can aggregate personal and selected local Git-team health without fetching or writing those repositories. A
-provider-neutral schedule contract describes a read-only, network-disabled invocation for a local scheduler or CI, but
-does not pretend that rendering a plan installed or ran a schedule.
+The point is not to maximize the number of stored notes. It is to make the next engineer or agent more effective with a
+reviewed, source-aware decision.
 
-## Put context checks beside code checks
+## Follow the journey
 
-`threadnote context check` brings the same lifecycle into CI. It compares a checkout with a Git base and reports five
-bounded evidence lanes: directly cited changes, exact-current reverse graph impact, active conflicts, changed or
-missing cited documentation, and advisories for important affected code that may need a new decision captured.
+Start with [How Threadnote helps on a real task](/docs/threadnote-5-journey/), then see the
+[Context Brief workflow](/docs/context-brief-workflow/), [Knowledge Delta review](/docs/knowledge-delta/), and
+[monorepo graph scopes](/docs/graph-monorepos/). Existing Threadnote 4 users can follow
+[Upgrade from Threadnote 4](/docs/upgrade-from-4/); the separate [3.x migration guide](/docs/upgrade-from-3/) remains
+for legacy OpenViking installations.
 
-Text, JSON, and SARIF outputs are deterministic and content-free. The check does not prepare a graph, mutate memory,
-push a branch, or contact a provider. Findings return one exit class; incomplete Git, graph, citation, or health
-evidence returns another. Unavailable evidence can never pass as clean.
-
-The checked-in GitHub Actions example is one adapter for that provider-neutral report. Hosted scheduling, organization
-dashboards, identity, and automatic pull-request orchestration remain a separate deployment track. The local and
-Git-team lifecycle does not depend on them.
-
-## Reuse reviewed procedures, not mystery automation
-
-Threadnote 5 also makes procedures first-class reviewed artifacts. A procedure declares stable identity and version,
-ownership and review date, dependencies, compatible catalog surfaces and capabilities, task keywords, rollout policy,
-and exact verification commands and fixtures.
-
-Verification is preview-first. Nothing downloaded executes automatically. Apply runs only the reviewed local commands
-with the current user’s permissions and emits a receipt only while the manifest, artifact, fixtures, and resulting
-bytes remain exact. Publication has its own explicit preview and approval.
-
-When a Context Brief considers procedures, it admits only a bounded, task-relevant, compatible, current, verified
-dependency closure. The brief carries reviewed metadata and Git provenance—not procedure bodies or executable
-commands.
-
-## See whether the loop is actually helping
-
-Threadnote now distinguishes context that merely looked useful from context that was actually applied to a plan or
-change. `Useful`, `Wrong`, `Pin`, `Dismiss`, and `Applied` feedback appears in the normal recall workflow and Manager.
-
-The local value report summarizes activation, time to first evidence, second-surface reuse, Knowledge Delta outcomes,
-feedback, and health resolution. It is count-only and independent from optional telemetry. It excludes query text,
-memory bodies, source code, paths, repository names, and stable user IDs. A design-partner export is redacted,
-preview-first, and written only with explicit consent.
-
-That measurement keeps the release honest. Threadnote should be judged by whether another engineer or agent can use a
-reviewed, source-verifiable decision—not by how many memories or graph nodes it stores.
-
-## Follow the complete journey
-
-The new [Threadnote 5 journey](/docs/threadnote-5-journey/) walks from installation and catalog-driven setup through a
-cited brief, reviewed closeout, Git sharing, second-surface reuse, health, and local value evidence. The
-[context-lifecycle workflow docs](/docs/context-brief-workflow/) cover each stage in detail, and the stable
-[3.x migration route](/docs/upgrade-from-3/) now explains how to move a legacy OpenViking home directly into
-Threadnote 5 without deleting the rollback source.
-
-Threadnote 5 is the same local-first project with a sharper job: keep engineering context trustworthy as work moves
-between tasks, people, repositories, and agent vendors.
+Threadnote 5 has one job: help context keep up with the work, from the first brief to the next task.

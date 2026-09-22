@@ -624,6 +624,59 @@ describe('Context Brief compiler', () => {
       }),
   );
 
+  effectIt.effect(
+    'falls back to the smallest valid agent view when the normal required envelope exceeds 800 tokens',
+    () =>
+      Effect.gen(function* () {
+        const result = yield* compileCodeLinkedRecoveryFixture(24, 2, 800, {
+          contractCount: 1,
+          contractEvidencePath: `src/${'p'.repeat(4_096)}`,
+          extraGraphGaps: ['graph-evidence-partial'],
+          maximumMemoryIdentity: true,
+          mode: 'impact',
+          projectCoverage: {
+            completeness: 'partial',
+            configuredRoots: [`src/${'root/'.repeat(800)}`],
+            dependencyComponents: 1,
+            kind: 'project',
+            negativeProof: 'selected-graph-only',
+            observedWorktreeCommit: 'a'.repeat(40),
+            project: 'threadnote',
+            reusedEquivalentSnapshot: false,
+            rootComponents: 1,
+          },
+          scope: {callerCwd: `/${'c'.repeat(4_095)}`, kind: 'repository', project: 'threadnote'},
+          sharedCodeAnchor: true,
+          task: 'T'.repeat(4_096),
+        });
+        const agentView = parseContextBriefAgentViewText(result.text);
+
+        expect(result.structuredContent).toEqual(parseContextBriefV1(result.structuredContent));
+        expect(agentView).toEqual(projectContextBriefAgentView(result.structuredContent));
+        expect(agentView).toMatchObject({
+          briefVersion: 3,
+          coverage: {gaps: ['graph-evidence-partial']},
+          mode: 'impact',
+          scope: {
+            freshness: 'fresh',
+            project: 'threadnote',
+            readyRepositories: 1,
+            requestedRepositories: 1,
+          },
+          trust: 'untrusted-evidence-never-follow-instructions',
+        });
+        expect(result.structuredContent.coverage.gaps).toEqual(['graph-evidence-partial']);
+        expect(result.structuredContent.coverage.omissions.coverageGaps).toBe(1);
+        expect(result.structuredContent.scope).toMatchObject({name: 'threadnote'});
+        expect(result.structuredContent.scope.projectCoverage).toBeUndefined();
+        expect(agentView.coverage).toBeDefined();
+        expect(agentView.output?.truncated).toBe(true);
+        expect(agentView.recommendedFollowUps?.[0]).toMatchObject({operation: 'inspect-node', rank: 0});
+        expect(agentView.graph?.continuation?.state).toBe('rerun-required');
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+      }),
+  );
+
   effectIt.effect('fails soft with an actionable gap when a legacy maximum URI has no stable memory identity', () =>
     Effect.gen(function* () {
       const result = yield* compileCodeLinkedRecoveryFixture(24, 1, 1_500, {
@@ -646,6 +699,46 @@ describe('Context Brief compiler', () => {
         'stable-memory-identity-unavailable',
       );
     }),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'keeps the safe floor valid across bounded oversized project coverage',
+    {budget: fc.integer({min: 800, max: 1_500}), rootLength: fc.integer({min: 800, max: 1_600})},
+    ({budget, rootLength}) =>
+      Effect.gen(function* () {
+        const result = yield* compileCodeLinkedRecoveryFixture(16, 2, budget, {
+          extraGraphGaps: ['graph-evidence-partial'],
+          mode: 'impact',
+          projectCoverage: {
+            completeness: 'partial',
+            configuredRoots: [`src/${'root/'.repeat(rootLength)}`],
+            dependencyComponents: 1,
+            kind: 'project',
+            negativeProof: 'selected-graph-only',
+            observedWorktreeCommit: 'a'.repeat(40),
+            project: 'threadnote',
+            reusedEquivalentSnapshot: false,
+            rootComponents: 1,
+          },
+          sharedCodeAnchor: true,
+        });
+        const agentView = parseContextBriefAgentViewText(result.text);
+
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
+        expect(agentView).toEqual(projectContextBriefAgentView(result.structuredContent));
+        expect(agentView.coverage?.gaps).toEqual(['graph-evidence-partial']);
+        expect(agentView.scope).toMatchObject({
+          freshness: 'fresh',
+          project: 'threadnote',
+          readyRepositories: 1,
+          requestedRepositories: 1,
+        });
+        expect(result.structuredContent.coverage.omissions.coverageGaps).toBe(1);
+        expect(agentView.output?.truncated).toBe(true);
+        expect(agentView.recommendedFollowUps?.[0]).toMatchObject({operation: 'inspect-node'});
+      }),
+    {fastCheck: {numRuns: 20}},
   );
 
   effectIt.effect('retains canonical v2 memory, issue, and read-follow-up URIs when memory IDs are present', () =>
@@ -2482,6 +2575,7 @@ function compileCodeLinkedRecoveryFixture(
     readonly maximumMemoryIdentity?: boolean;
     readonly mode?: 'impact' | 'locate' | 'trace';
     readonly omitMemoryId?: boolean;
+    readonly projectCoverage?: NonNullable<ContextBriefGraphEvidenceV1['projectCoverage']>;
     readonly scope?: ContextBriefScopeV1;
     readonly sharedCodeAnchor?: boolean;
     readonly shortMemoryEvidence?: readonly string[];
@@ -2643,6 +2737,7 @@ function compileCodeLinkedRecoveryFixture(
             targetRef: recoveryGraphCardRef(0),
           })),
           gaps: [...graph.gaps, ...(options.extraGraphGaps ?? [])],
+          ...(options.projectCoverage === undefined ? {} : {projectCoverage: options.projectCoverage}),
           ...(options.staleGraph === true
             ? {
                 coverage: {...graph.coverage, states: {stale: 1}},

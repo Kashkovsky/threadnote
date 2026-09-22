@@ -658,6 +658,7 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
       yield* managerGraphViewsPage(context.config.agentContextHome, requiredQuery(url, 'repository'), {
         offset: Option.getOrUndefined(optionalNonNegativeIntegerQuery(url, 'offset')),
         query: Option.getOrUndefined(optionalNonEmptyQuery(url, 'query')),
+        scopeIds: url.searchParams.getAll('scope'),
       }),
     );
     return;

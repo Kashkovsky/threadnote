@@ -69,6 +69,11 @@ const questions = [
       'There is no repository-size admission cap. Threadnote stores graph generations in SQLite instead of one monolithic JSON document; a bounded parser pool, one backpressured writer, generated-root pruning, and metadata-only snapshot data bound transient work. Individual query responses still honor explicit node, edge, and result limits so an agent receives a useful evidence set rather than an unbounded dump.',
   },
   {
+    question: 'How do graph scopes help in a monorepo?',
+    answer:
+      'A graph scope is a positive, project-level selection of one or more app or library roots plus their declared forward dependencies. It keeps unrelated packages out of that project graph, so changes elsewhere do not constantly make it stale. Preview the scope before indexing; every result reports its coverage, and a path outside the selection is reported as outside the project graph rather than missing. A Workset is different: it combines prepared projects or repositories for one cross-project task.',
+  },
+  {
     question: 'Will every new worktree rebuild its graph from scratch?',
     answer:
       'No. Linked worktrees share one checkout graph store. Threadnote can immediately alias a graph-equivalent commit, build a compatible clean commit as a bounded delta from a ready full anchor, or construct an already-dirty worktree directly from that anchor. Extractor, workspace, manifest, or unbounded resolution changes still fall back to a full build for correctness.',

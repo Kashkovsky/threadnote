@@ -87,14 +87,14 @@ export const completeCodeGraphReadyReadRefresh = Effect.fn('codeGraph.completeRe
 }) {
   if (input.ensureWatcher) yield* input.watcher.ensure({...input.target, key: input.key});
   if (!input.backgroundRefreshRequested) return input.refresh;
-  return yield* input.watcher.request({...input.target, key: input.key, admissionClass: 'background'}).pipe(
-    Effect.map(receipt => receipt.refresh),
-    Effect.orElseSucceed(() => ({
-      type: 'code-graph-refresh-continuity' as const,
-      version: 1 as const,
-      state: 'deferred' as const,
-    })),
-  );
+  // A compatible ready read may establish a watcher, but never turns its
+  // successful response into a hidden build request. Current-required reads,
+  // explicit indexing, and watcher-observed changes own refresh admission.
+  return {
+    type: 'code-graph-refresh-continuity' as const,
+    version: 1 as const,
+    state: 'deferred' as const,
+  };
 });
 
 export function selectCodeGraphReadyReadChangedPaths(

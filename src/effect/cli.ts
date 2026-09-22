@@ -85,9 +85,10 @@ import {
   runObsidianSourceStatus,
   runObsidianSourceSync,
 } from '../obsidian/source.js';
-import {getRuntimeConfig} from '../runtime.js';
+import {ensureUserManifestRuntimeConfig, getRuntimeConfig} from '../runtime.js';
 import {runInitManifest, runSeed, runSeedSkills} from '../seeding.js';
 import {makeWorksetCommand} from './workset_cli.js';
+import {makeProjectCommand} from './project_cli.js';
 import {makeCodeGraphScopeCommand} from './graph_scope_cli.js';
 import {
   runShareConflictResolve,
@@ -224,6 +225,8 @@ const withRuntimeEffect = <E, R>(
       Effect.flatMap(effect),
     ),
   );
+const withManifestManagementRuntimeEffect = <E, R>(effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>) =>
+  withRuntimeEffect(config => ensureUserManifestRuntimeConfig(config).pipe(Effect.flatMap(effect)));
 const manage = Command.make(
   'manage',
   {
@@ -235,7 +238,7 @@ const manage = Command.make(
       ),
     ),
   },
-  options => withRuntimeEffect(config => runManage(config, options)),
+  options => withManifestManagementRuntimeEffect(config => runManage(config, options)),
 ).pipe(Command.withDescription('Open the local Threadnote web manager'));
 const processes = Command.make(
   'processes',
@@ -685,7 +688,7 @@ const graphIndex = Command.make(
   options => withRuntimeEffect(config => runCodeGraphIndex(config, options)),
 ).pipe(Command.withDescription('Build and atomically activate a current native code graph snapshot'));
 
-const withScopedRuntime = withRuntimeEffect as <E, R>(
+const withScopedRuntime = withManifestManagementRuntimeEffect as <E, R>(
   effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
 ) => Effect.Effect<void, E, R>;
 const graphScope = makeCodeGraphScopeCommand(withScopedRuntime, graphBounds.json);
@@ -1409,6 +1412,7 @@ const recallFeedback = makeRecallFeedbackCommand(options =>
 );
 
 const workset = makeWorksetCommand(withScopedRuntime);
+const project = makeProjectCommand(withScopedRuntime);
 const contextBrief = makeContextBriefCommand(options => withRuntimeEffect(config => runContextBrief(config, options)));
 const contextHealth = makeContextHealthCommand(
   options => withRuntimeEffect(config => runContextHealth(config, options)),
@@ -1940,6 +1944,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('recall', recall),
   registerTopLevelCommand('recall-feedback', recallFeedback),
   registerTopLevelCommand('workset', workset),
+  registerTopLevelCommand('project', project),
   registerTopLevelCommand('context', context),
   registerTopLevelCommand('value', value, {productionLog: {subcommands: {report: 'requires-apply', pilot: 'never'}}}),
   registerTopLevelCommand('procedure', procedure, {productionLog: {subcommands: {verify: 'requires-apply'}}}),

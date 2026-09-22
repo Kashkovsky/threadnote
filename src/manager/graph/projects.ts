@@ -87,7 +87,18 @@ export const managerGraphProjectCatalog = Effect.fn('managerGraphProjects.catalo
         project.manifest.path,
         readyWorktreePaths,
         readinessMayBeTruncated,
-      ).pipe(Effect.map(graphState => ({...project.display, graphState}) satisfies GraphConfiguredProject)),
+      ).pipe(
+        Effect.map(
+          graphState =>
+            ({
+              ...project.display,
+              graphState,
+              ...(project.manifest.graph === undefined
+                ? {}
+                : {scopeId: `code-graph-scope:${sha256HexSync(project.manifest.uri)}`}),
+            }) satisfies GraphConfiguredProject,
+        ),
+      ),
     {concurrency: 16},
   );
   return {

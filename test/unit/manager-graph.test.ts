@@ -9,6 +9,7 @@ import {
   graphAnalysisCoverageLabel,
   graphAnalysisTopologyAvailable,
   graphAdministrationJobSelection,
+  graphAdministrationJobView,
   graphAdministrationTarget,
   graphBuildConcurrencyState,
   graphBuildIsActive,
@@ -17,6 +18,7 @@ import {
   graphCatalogEmptyState,
   graphCatalogRequiresAuthoritativeRefresh,
   graphCatalogSearchOptions,
+  graphConfiguredProjectScopeIds,
   graphCatalogPageOffsets,
   graphCatalogContinuationHasMore,
   graphCompletedBuildResultIdentity,
@@ -34,6 +36,8 @@ import {
   graphRelationshipSampleLabel,
   graphRequestIsCurrent,
   graphRepositoryOptionLabel,
+  graphRepositoryGroupScopeId,
+  graphRepositoryScopeLabel,
   graphStatusPollDelay,
   graphStatusRequiresCatalogRefresh,
   graphViewRemovalTarget,
@@ -79,12 +83,27 @@ describe('manager graph focus', () => {
     const checkoutId = 'a'.repeat(64);
     const worktreeId = 'b'.repeat(64);
     const snapshotId = `cgsn_${'c'.repeat(40)}-direct`;
+    const scopeId = `code-graph-scope:${'d'.repeat(64)}`;
+    const docsScopeId = `code-graph-scope:${'e'.repeat(64)}`;
     const markup = renderToStaticMarkup(
       createElement(GraphWorkspace, {
         administration: {
           databases: [
             {
-              builds: [],
+              builds: [
+                {
+                  ...graphBuildStatus('running'),
+                  buildId: 'build-docs',
+                  identity: {
+                    checkoutId,
+                    commit: 'abcdef01',
+                    repositoryId: 'd'.repeat(64),
+                    scopeId: docsScopeId,
+                    worktreeId,
+                  },
+                  phase: 'resolving',
+                },
+              ],
               checkoutId,
               health: {integrity: 'migration-pending', readySnapshots: 3},
               healthState: 'checked',
@@ -100,6 +119,31 @@ describe('manager graph focus', () => {
                   projectsTruncated: false,
                   repository: {displayName: 'acme/platform', repositoryId: 'd'.repeat(64)},
                   snapshot: {edgeCount: 0, fileCount: 0, id: snapshotId, symbolCount: 0},
+                  viewScopeId: scopeId,
+                  viewWorktreeId: worktreeId,
+                  workspaceCount: 0,
+                  workspacesTruncated: false,
+                },
+                {
+                  localAssociation: {
+                    available: true,
+                    displayPath: '~/docs',
+                    path: '/repos/platform/apps/docs',
+                    state: 'verified',
+                  },
+                  managementAvailable: false,
+                  metrics: 'complete',
+                  model: 'workspace',
+                  projectCount: 0,
+                  projectsTruncated: false,
+                  repository: {displayName: 'acme/platform', repositoryId: 'd'.repeat(64)},
+                  snapshot: {
+                    edgeCount: 0,
+                    fileCount: 0,
+                    id: `cgsn_${'e'.repeat(40)}-direct`,
+                    symbolCount: 0,
+                  },
+                  viewScopeId: docsScopeId,
                   viewWorktreeId: worktreeId,
                   workspaceCount: 0,
                   workspacesTruncated: false,
@@ -111,10 +155,21 @@ describe('manager graph focus', () => {
           generatedAt: '2026-08-08T12:00:00.000Z',
           mode: {analyze: false, deep: false},
           obsoleteStores: {bytes: 0, checkouts: [], fileCount: 0, unsafeEntryCount: 0},
-          summary: {databaseCount: 1, readySnapshotCount: 3, viewCount: 1},
+          summary: {databaseCount: 1, readySnapshotCount: 3, viewCount: 2},
           type: 'code-graph-diagnostics',
           version: 2,
         } as never,
+        catalog: {
+          builds: [],
+          configuredProjects: [
+            {folder: 'mobile', graphState: 'ready', name: 'mobile', path: '/repos/platform', scopeId},
+            {folder: 'docs', graphState: 'ready', name: 'docs', path: '/repos/platform', scopeId: docsScopeId},
+          ],
+          diagnostics: [],
+          repositories: [],
+          waiterCount: 0,
+          waiters: [],
+        },
         loadAnalysis: neverResolves,
         loadCatalogPage: neverResolves,
         loadGraph: neverResolves,
@@ -126,15 +181,18 @@ describe('manager graph focus', () => {
       }),
     );
 
-    expect(markup).toContain('1 graph database · 3 stored ready snapshots · 1 active worktree view');
+    expect(markup).toContain('1 graph database · 3 stored ready snapshots · 2 active worktree views');
     expect(markup).toContain('<details class="graph-administration" open="">');
     expect(markup).toContain('class="graph-administration-caret"');
     expect(markup).toContain('<dt>Stored ready snapshots</dt><dd>3</dd>');
-    expect(markup).toContain('<dt>Active worktree views</dt><dd>1</dd>');
+    expect(markup).toContain('<dt>Active worktree views</dt><dd>2</dd>');
     expect(markup).toContain('Snapshot and view counts can differ');
-    expect(markup).toContain('<strong>acme/platform</strong>');
+    expect(markup).toContain('<strong>acme/platform: mobile</strong>');
     expect(markup).not.toContain('Active view bbbbbbbb');
-    expect(markup.match(/aria-label="Remove active worktree view bbbbbbbb"/g)).toHaveLength(1);
+    expect(markup.match(/aria-label="Remove active worktree view bbbbbbbb"/g)).toHaveLength(2);
+    expect(markup).toContain(
+      '<p class="graph-database-job">acme/platform: docs · folder ~/docs · active · resolving · active</p>',
+    );
     expect(markup).toContain('title="Remove active worktree view"');
     expect(markup).not.toContain('Preview remove');
     expect(markup).toContain('class="is-migration-pending">migrating</em>');
@@ -1023,6 +1081,48 @@ describe('manager graph focus', () => {
     expect(graphRepositoryOptionLabel(second, [first, second])).toBe('mobile-native · repository 22222222');
   });
 
+  it('uses configured project names for scoped repository labels with a bounded identity fallback', () => {
+    const scopeId = `code-graph-scope:${'a'.repeat(64)}`;
+    expect(graphRepositoryScopeLabel('acme/platform', scopeId, [{name: 'mobile', scopeId}])).toBe(
+      'acme/platform: mobile',
+    );
+    expect(graphRepositoryScopeLabel('acme/platform', scopeId)).toBe('acme/platform: scope aaaaaaaa');
+    expect(graphRepositoryScopeLabel('acme/platform', undefined)).toBe('acme/platform');
+    expect(
+      graphRepositoryGroupScopeId({
+        views: [{scopeId}] as never,
+        viewsTruncated: false,
+      }),
+    ).toBe(scopeId);
+    expect(
+      graphRepositoryGroupScopeId({
+        views: [{scopeId}] as never,
+        viewsTruncated: true,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('matches administration jobs to the exact worktree scope', () => {
+    const worktreeId = 'b'.repeat(64);
+    const firstScope = `code-graph-scope:${'1'.repeat(64)}`;
+    const secondScope = `code-graph-scope:${'2'.repeat(64)}`;
+    const views = [
+      {viewScopeId: firstScope, viewWorktreeId: worktreeId},
+      {viewScopeId: secondScope, viewWorktreeId: worktreeId},
+    ] as never;
+    expect(
+      graphAdministrationJobView(views, {
+        identity: {
+          checkoutId: 'checkout',
+          commit: 'commit',
+          repositoryId: 'repository',
+          scopeId: secondScope,
+          worktreeId,
+        },
+      }),
+    ).toMatchObject({viewScopeId: secondScope});
+  });
+
   it('labels build banners with their global repository and home-abbreviated worktree path', () => {
     const baseRepository = repositoryGroup('repo-a', ['view-a'], 'view-a');
     const repository = {
@@ -1057,6 +1157,17 @@ describe('manager graph focus', () => {
       repositoryLabel: 'repo-a',
       worktreeLabel: 'view-a',
     });
+    const scopeId = `code-graph-scope:${'a'.repeat(64)}`;
+    expect(
+      graphBuildTarget(
+        {...build, identity: {...build.identity, scopeId}},
+        [repository],
+        [{folder: 'mobile', graphState: 'ready', name: 'mobile', path: '/repos/platform', scopeId}],
+      ),
+    ).toEqual({
+      repositoryLabel: 'repo-a: mobile',
+      worktreeLabel: 'build-start branch feature/manager-labels · /tmp/jobs/repo-a-task-17',
+    });
     const {managerContext: _managerContext, ...buildWithoutContext} = build;
     expect(graphBuildTarget({...build, identity: {...build.identity, repositoryId: 'missing'}}, [])).toEqual({
       repositoryLabel: 'example/repo-a',
@@ -1068,6 +1179,63 @@ describe('manager graph focus', () => {
       repositoryLabel: 'example/repo-a',
       worktreeLabel: 'Local folder unavailable · commit abcdef01',
     });
+  });
+
+  it('shows graph scope names in first-build progress and indexed snapshot selectors', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const docsScopeId = `code-graph-scope:${'a'.repeat(64)}`;
+    const mobileScopeId = `code-graph-scope:${'b'.repeat(64)}`;
+    const baseRepository = repositoryGroup('acme/platform', ['docs-view', 'mobile-view'], 'docs-view');
+    const repository = {
+      ...baseRepository,
+      views: baseRepository.views.map((view, index) => ({
+        ...view,
+        checkoutId: 'checkout',
+        scopeId: index === 0 ? docsScopeId : mobileScopeId,
+        worktreeId: 'worktree',
+      })),
+    };
+    const build = {
+      ...graphBuildStatus('running'),
+      identity: {
+        ...graphBuildStatus('running').identity,
+        displayName: 'acme/platform',
+        repositoryId: 'not-ready-yet',
+        scopeId: mobileScopeId,
+      },
+    };
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {
+          builds: [build],
+          configuredProjects: [
+            {folder: 'docs', graphState: 'ready', name: 'docs', path: '/repos/platform', scopeId: docsScopeId},
+            {
+              folder: 'mobile',
+              graphState: 'ready',
+              name: 'mobile',
+              path: '/repos/platform',
+              scopeId: mobileScopeId,
+            },
+          ],
+          diagnostics: [],
+          repositories: [repository],
+          waiterCount: 0,
+          waiters: [],
+        },
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('<strong>acme/platform: mobile</strong>');
+    expect(markup).toContain('acme/platform: docs · docs-view');
+    expect(markup).toContain('acme/platform: mobile · mobile-view');
   });
 
   it('rejects an analysis response after its repository, snapshot, or request generation changes', () => {
@@ -1471,6 +1639,7 @@ describe('manager graph focus', () => {
     const matchingView = {
       ...group.views[1],
       label: 'feature/mobile-auth',
+      scopeId: `code-graph-scope:${'a'.repeat(64)}`,
       localAssociation: {
         available: true,
         displayPath: '~/src/mobile-auth',
@@ -1479,7 +1648,12 @@ describe('manager graph focus', () => {
       },
     };
 
-    const result = graphCatalogSearchOptions(currentView, [{...group, views: [matchingView]}]);
+    const configuredProjects = [
+      {name: 'mobile', scopeId: matchingView.scopeId},
+      {name: 'mobile-admin', scopeId: `code-graph-scope:${'b'.repeat(64)}`},
+      {name: 'full-repository'},
+    ];
+    const result = graphCatalogSearchOptions(currentView, [{...group, views: [matchingView]}], configuredProjects);
 
     expect(result.projects).toEqual([
       expect.objectContaining({
@@ -1493,10 +1667,22 @@ describe('manager graph focus', () => {
       expect.objectContaining({
         description: expect.stringContaining('folder ~/src/mobile-auth'),
         id: 'view-match',
-        label: 'feature/mobile-auth',
+        label: 'feature/mobile-auth: mobile',
         repositoryId: 'repo',
       }),
     ]);
+    expect(graphConfiguredProjectScopeIds('MOBILE', configuredProjects)).toEqual([
+      matchingView.scopeId,
+      `code-graph-scope:${'b'.repeat(64)}`,
+    ]);
+    expect(graphConfiguredProjectScopeIds('full', configuredProjects)).toEqual([]);
+    const broadMatches = Array.from({length: 40}, (_, index) => ({
+      name: `mobile-${index.toString().padStart(2, '0')}`,
+      scopeId: `code-graph-scope:${index.toString(16).padStart(64, '0')}`,
+    }));
+    expect(graphConfiguredProjectScopeIds('mobile', broadMatches)).toEqual(
+      broadMatches.slice(0, 32).map(project => project.scopeId),
+    );
   });
 
   it('keeps the selected node anchored while separating highlighted node labels', () => {

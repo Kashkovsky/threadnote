@@ -1,7 +1,9 @@
 import {Console, Effect} from 'effect';
 import {Command} from 'effect/unstable/cli';
+import {uriSegment} from '../manifest.js';
 import {applicationError} from './errors.js';
 import {argument, boolean, defaultChoice, repeatedString} from './cli/flags.js';
+import {SystemInfo} from './system.js';
 import {
   mutateManagerManifestProject,
   previewManagerManifestProjectGraphScope,
@@ -30,21 +32,39 @@ export function runCodeGraphScopeSet(
         validateManagerProjectGraph({closure: options.closure, include: options.include, roots: options.roots}),
       catch: cause => applicationError('set graph scope', cause),
     });
-    const [catalog, project] = yield* Effect.all([
-      readManagerWorksetCatalog(config),
-      readManagerManifestProject(config, options.project),
-    ]);
+    const catalog = yield* readManagerWorksetCatalog(config);
+    const project = yield* readManagerManifestProject(config, options.project).pipe(
+      Effect.map(value => ({_tag: 'Found' as const, value})),
+      Effect.catchIf(
+        error => 'code' in error && error.code === 'project-not-found',
+        () => Effect.succeed({_tag: 'Missing' as const}),
+      ),
+    );
+    if (project._tag === 'Missing') {
+      const system = yield* SystemInfo;
+      const result = yield* mutateManagerManifestProject(config, {
+        expectedRevision: catalog.revision,
+        graph,
+        name: options.project,
+        operation: 'create',
+        path: system.currentDirectory(),
+        seed: [],
+        uri: `threadnote://resources/repos/${uriSegment(options.project)}`,
+      });
+      yield* renderMutation(result.changed, 'created', options.project, options.json, result.warnings);
+      return;
+    }
     const result = yield* mutateManagerManifestProject(config, {
       expectedRevision: catalog.revision,
       graph,
-      name: project.name,
+      name: project.value.name,
       operation: 'update',
-      path: project.path,
-      project: project.name,
-      seed: project.seed,
-      uri: project.uri,
+      path: project.value.path,
+      project: project.value.name,
+      seed: project.value.seed,
+      uri: project.value.uri,
     });
-    yield* renderMutation(result.changed, 'set', project.name, options.json, result.warnings);
+    yield* renderMutation(result.changed, 'set', project.value.name, options.json, result.warnings);
   });
 }
 
@@ -109,11 +129,15 @@ export function makeCodeGraphScopeCommand(
       closure: defaultChoice('closure', ['dependencies'], 'Dependency closure policy', 'dependencies'),
       include: repeatedString('include', 'Additional repository-relative path to include; repeat for multiple'),
       json,
-      project: argument('project', 'Manifest project name'),
+      project: argument('project', 'Threadnote project name'),
       roots: repeatedString('root', 'Repository-relative component root; repeat for multiple'),
     },
     options => withRuntime(config => runCodeGraphScopeSet(config, options)),
-  ).pipe(Command.withDescription('Configure a project graph scope; this does not index the project'));
+  ).pipe(
+    Command.withDescription(
+      'Configure a project graph scope, creating the project at the current repository when needed; does not index',
+    ),
+  );
   const clear = Command.make(
     'clear',
     {
@@ -122,11 +146,11 @@ export function makeCodeGraphScopeCommand(
         'Required: remove this project graph scope and return to full-repository configuration',
       ),
       json,
-      project: argument('project', 'Manifest project name'),
+      project: argument('project', 'Threadnote project name'),
     },
     options => withRuntime(config => runCodeGraphScopeClear(config, options)),
   ).pipe(Command.withDescription('Remove a project graph scope (requires --confirm)'));
-  const preview = Command.make('preview', {json, project: argument('project', 'Manifest project name')}, options =>
+  const preview = Command.make('preview', {json, project: argument('project', 'Threadnote project name')}, options =>
     withRuntime(config => runCodeGraphScopePreview(config, options)),
   ).pipe(Command.withDescription('Resolve a project graph scope without indexing, storing, or routing queries'));
   return Command.make('scope').pipe(
@@ -137,7 +161,7 @@ export function makeCodeGraphScopeCommand(
 
 function renderMutation(
   changed: boolean,
-  operation: 'set' | 'cleared',
+  operation: 'set' | 'created' | 'cleared',
   project: string,
   json: boolean,
   warnings: readonly string[],
@@ -145,7 +169,13 @@ function renderMutation(
   if (json) return Console.log(JSON.stringify({changed, operation, project, version: 1, warnings}));
   return Effect.gen(function* () {
     yield* Console.log(
-      `${operation === 'set' ? 'Updated' : 'Cleared'} graph scope for ${project}${changed ? '' : ' (no changes)'}.`,
+      `${
+        operation === 'created'
+          ? 'Created project and graph scope for'
+          : operation === 'set'
+            ? 'Updated graph scope for'
+            : 'Cleared graph scope for'
+      } ${project}${changed ? '' : ' (no changes)'}.`,
     );
     for (const warning of warnings) yield* Console.log(`WARN ${warning}`);
   });

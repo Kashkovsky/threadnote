@@ -55,7 +55,11 @@ export const previewConfiguredManagerProjectGraphScope = Effect.fn('managerProje
     );
     const project = manifest.projects.find(item => item.name.toLowerCase() === projectName.toLowerCase());
     if (!project)
-      return yield* ManagerProjectGraphScopeError.of('project-not-found', 'Manifest project not found.', 404);
+      return yield* ManagerProjectGraphScopeError.of(
+        'project-not-found',
+        'Threadnote project not found. Create it in Manager or with `threadnote project create <name>`.',
+        404,
+      );
     const system = yield* SystemInfo;
     if (managerProjectPathIsForeign(project.path, system.platform)) {
       return yield* ManagerProjectGraphScopeError.of(

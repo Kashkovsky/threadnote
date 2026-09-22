@@ -779,11 +779,12 @@ The body remains ordinary **Markdown**.
       slug: 'threadnote-5-context-lifecycle',
       title: 'Threadnote 5.0.0 — Context that keeps up with the work',
     });
-    expect(latest?.summary).toContain('source-verifiable context lifecycle across vendors');
-    expect(latest?.body).toContain('## Start with a bounded, cited brief');
-    expect(latest?.body).toContain('## End the task with a Knowledge Delta');
-    expect(latest?.body).toContain('## Keep context healthy after it is shared');
-    expect(latest?.body).toContain('Git sharing, second-surface reuse, health, and local value evidence');
+    expect(latest?.summary).toContain('trustworthy context lifecycle');
+    expect(latest?.body).toContain('## Begin a task with a Context Brief');
+    expect(latest?.body).toContain('## End with a Knowledge Delta, not a transcript');
+    expect(latest?.body).toContain('## Keep context healthy as the code changes');
+    expect(latest?.body).toContain('## Measure whether the loop helps');
+    expect(latest?.body).toContain('graph scope');
     expect(latest?.body).not.toContain('SetupReceiptV1');
     expect(latest?.body).not.toMatch(/Codex, Claude(?: Code)?, Cursor, (?:and )?Copilot/i);
     expect(landingSource).toContain("import articles from 'virtual:threadnote-articles'");

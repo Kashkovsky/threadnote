@@ -30,7 +30,7 @@ import {
   type CodeGraphRepairCompletion,
   type ObsoleteCodeGraphStoreInventory,
 } from './maintenance.js';
-import {CodeGraphQueryService, renderCodeGraphResult} from './query.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus, renderCodeGraphResult} from './query.js';
 import {repositoryChangesSince, repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from './repository.js';
 import {CodeGraphStore} from './store.js';
 import type {
@@ -325,12 +325,13 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
     ...(options.project === undefined ? {} : {project: options.project}),
   });
   const identity = ready.identity;
+  const statusScopeKey = observationFromCodeGraphStatus(ready)?.projectScope?.scope?.scopeKey;
   const layout = codeGraphLayout(
     path,
     config.agentContextHome,
     identity.checkoutId,
     identity.worktreeId,
-    ready.readySnapshot?.scopeId,
+    statusScopeKey ?? ready.readySnapshot?.scopeId,
   );
   const obsoleteStores = yield* inspectObsoleteCodeGraphStores(config.agentContextHome, identity.checkoutId);
   const storage = yield* inspectCodeGraphStorage(config.agentContextHome, identity.checkoutId);

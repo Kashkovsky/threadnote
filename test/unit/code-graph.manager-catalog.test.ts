@@ -16,6 +16,7 @@ import {
   managerGraphAnalysis,
   managerGraphCatalog,
   managerGraphQuery,
+  managerGraphViewsPage,
   releaseManagerGraphSnapshotLeases,
   withManagerGraphSnapshotLeaseInvalidated,
 } from '../../src/code_graph/visualization.js';
@@ -942,9 +943,14 @@ describe('Manager logical repository and workspace catalogs', () => {
       const databasePath = join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId, 'graph-v3.sqlite');
       const full = readySnapshot(identity, 0, 0, 0, '2026-09-21T08:00:00.000Z');
       const scopeId = `code-graph-scope:${'a'.repeat(64)}`;
+      const otherScopeId = `code-graph-scope:${'b'.repeat(64)}`;
       const scoped = {
         ...readySnapshot(identity, 0, 0, 0, '2026-09-21T08:01:00.000Z'),
         scopeId,
+      };
+      const otherScoped = {
+        ...readySnapshot(identity, 0, 0, 0, '2026-09-21T08:02:00.000Z'),
+        scopeId: otherScopeId,
       };
 
       const catalog = yield* Effect.gen(function* () {
@@ -953,17 +959,20 @@ describe('Manager logical repository and workspace catalogs', () => {
         yield* store.promote(databasePath, identity, full.id);
         yield* store.activate(databasePath, identity, scoped, [], [], []);
         yield* store.promote(databasePath, identity, scoped.id);
+        yield* store.activate(databasePath, identity, otherScoped, [], [], []);
+        yield* store.promote(databasePath, identity, otherScoped.id);
         return yield* managerGraphCatalog(home);
       }).pipe(provideTestLayer(storeLayer));
 
       expect(catalog.diagnostics).toEqual([]);
       expect(catalog.repositories).toHaveLength(1);
-      expect(catalog.repositories[0]?.views).toHaveLength(2);
+      expect(catalog.repositories[0]?.views).toHaveLength(3);
       expect(catalog.repositories[0]?.views.map(view => view.scopeId ?? 'full-repository').sort()).toEqual([
         scopeId,
+        otherScopeId,
         'full-repository',
       ]);
-      expect(new Set(catalog.repositories[0]?.views.map(view => view.id)).size).toBe(2);
+      expect(new Set(catalog.repositories[0]?.views.map(view => view.id)).size).toBe(3);
       expect(catalog.repositories[0]?.views.find(view => view.scopeId === scopeId)?.id).toMatch(
         /^[0-9a-f]{64}\.[0-9a-f]{64}\.[0-9a-f]{64}$/u,
       );
@@ -973,6 +982,23 @@ describe('Manager logical repository and workspace catalogs', () => {
         provideTestLayer(storeLayer),
       );
       expect(analysis.snapshot.id).toBe(scoped.id);
+      const searched = yield* managerGraphViewsPage(home, scopedView!.id, {
+        query: 'project-only-mobile',
+        scopeIds: [scopeId],
+      }).pipe(provideTestLayer(storeLayer));
+      expect(searched.query).toBe('project-only-mobile');
+      expect(searched.repositories.flatMap(repository => repository.views).map(view => view.scopeId)).toEqual([
+        scopeId,
+      ]);
+      const textSearched = yield* managerGraphViewsPage(home, scopedView!.id, {
+        query: 'acme/mobile',
+        scopeIds: [`code-graph-scope:${'c'.repeat(64)}`],
+      }).pipe(provideTestLayer(storeLayer));
+      expect(textSearched.repositories.flatMap(repository => repository.views)).toHaveLength(3);
+      const invalidScope = yield* managerGraphViewsPage(home, scopedView!.id, {
+        scopeIds: ['not-a-scope'],
+      }).pipe(provideTestLayer(storeLayer), Effect.flip);
+      expect(invalidScope.message).toBe('Graph scope selection is invalid.');
       yield* releaseManagerGraphSnapshotLeases().pipe(provideTestLayer(storeLayer));
     }),
   );

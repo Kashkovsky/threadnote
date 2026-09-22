@@ -24,6 +24,14 @@ describe('CLI production log policy', () => {
       operation: 'closeout',
       writeProductionLog: true,
     });
+    expect(inspectCliInvocation(['project', 'create', 'mobile'])).toMatchObject({
+      operation: 'project',
+      writeProductionLog: true,
+    });
+    expect(inspectCliInvocation(['project', 'update', 'mobile'])).toMatchObject({
+      operation: 'project',
+      writeProductionLog: true,
+    });
   });
 
   it('does not log explicit or implicit preview operations', () => {

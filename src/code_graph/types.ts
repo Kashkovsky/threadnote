@@ -594,6 +594,9 @@ export interface CodeGraphOverlayFallbackAssessment {
   readonly deletedFiles: number;
   readonly detail: CodeGraphProjectFileSetFallbackDetail;
   readonly stage: 'file-set-seed-assessment';
+  /** Resolver domains are retained while changed paths remain private. */
+  readonly unownedResolutionDomains?: readonly string[];
+  readonly unownedResolutionDomainFiles?: number;
 }
 
 /** Additive path-free evidence, kept separate from the stable fallback-assessment wire contract. */

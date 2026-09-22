@@ -302,7 +302,14 @@ function projectContextBriefCore(
     minimumBytes = Math.min(minimumBytes, measurement.totalBytes);
     if (measurement.totalBytes <= maximumBytes) selectedCount = count;
   }
-  if (selectedCount === undefined) throw AgentResponseBudgetTooSmallError.of(maximumBytes, minimumBytes);
+  if (selectedCount === undefined) {
+    const structuredContent = parseContextBriefV1(renderMinimumProjection(logical, baseRequiredItems));
+    const text = renderContextBriefText(structuredContent);
+    const measurement = measureAgentToolResponse({structuredContent, text});
+    if (measurement.totalBytes > maximumBytes)
+      throw AgentResponseBudgetTooSmallError.of(maximumBytes, measurement.totalBytes);
+    return {maximumBytes, measurement, structuredContent, text};
+  }
   const structuredContent = parseContextBriefV1(
     renderProjection(logical, selectItems(selectedCount), protectedMemoryUri, compactMemoryUris),
   );
@@ -336,6 +343,13 @@ export function projectContextBriefAgentView(brief: ContextBriefV1): ContextBrie
   const nonZeroOmissions = Object.fromEntries(
     Object.entries(brief.coverage.omissions).filter(([, count]) => count > 0),
   ) as Partial<ContextBriefV1['coverage']['omissions']>;
+  const minimumProjectSelector =
+    brief.scope.projectCoverage === undefined &&
+    brief.scope.kind === 'repository' &&
+    brief.scope.name !== '' &&
+    brief.scope.name !== 'current-repository'
+      ? brief.scope.name
+      : undefined;
   return {
     ...(brief.activeHandoffs.length === 0 ? {} : {activeHandoffs: brief.activeHandoffs.map(projectAgentViewMemory)}),
     briefVersion: brief.version,
@@ -365,6 +379,7 @@ export function projectContextBriefAgentView(brief: ContextBriefV1): ContextBrie
     ...(brief.output.truncated ? {output: {omissions: nonZeroOmissions, truncated: true as const}} : {}),
     ...(brief.recommendedFollowUps.length === 0 ? {} : {recommendedFollowUps: brief.recommendedFollowUps}),
     scope: {
+      ...(minimumProjectSelector === undefined ? {} : {project: minimumProjectSelector}),
       ...(brief.scope.projectCoverage === undefined ? {} : {projectCoverage: brief.scope.projectCoverage}),
       freshness: brief.scope.freshness,
       readyRepositories: brief.scope.readyRepositories,
@@ -430,9 +445,12 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
   }
   assertAgentViewKeys(
     value.scope,
-    ['freshness', 'readyRepositories', 'requestedRepositories', 'projectCoverage'],
+    ['freshness', 'project', 'readyRepositories', 'requestedRepositories', 'projectCoverage'],
     'scope',
   );
+  if (value.scope.project !== undefined && typeof value.scope.project !== 'string') {
+    throw invalid('scope project is invalid');
+  }
   if (value.scope.projectCoverage !== undefined) {
     const coverage = value.scope.projectCoverage;
     if (
@@ -981,6 +999,90 @@ function renderProjection(
     type: 'context-brief',
     version: logical.version,
     ...(logicalVerifiedProcedures.length === 0 ? {} : {verifiedProcedures}),
+  };
+}
+
+/**
+ * Last-resort MCP projection for a valid public budget whose normal safety core is inflated by
+ * optional diagnostic detail. Keep the actionable recovery, scope counts, and omission receipts;
+ * omit unbounded task and project-coverage display detail rather than failing the entire brief.
+ */
+function renderMinimumProjection(
+  logical: ContextBriefLogicalResultV1,
+  requiredItems: readonly ProjectionItem[],
+): ContextBriefV1 {
+  const recoveryIds = new Set(requiredItems.filter(item => item.lane === 'follow-up').map(item => item.id));
+  const recommendedFollowUps = logical.recommendedFollowUps.filter(followUp => recoveryIds.has(followUp.id));
+  const gaps = logical.coverage.gaps.slice(0, 1);
+  const omissions = {
+    activeHandoffs: logical.activeHandoffs.length,
+    coverageGaps: logical.coverage.gaps.length - gaps.length,
+    durableDecisions: logical.durableDecisions.length,
+    graphCards: logical.graph.cards.length,
+    graphContracts: logical.graph.contracts.length,
+    recommendedFollowUps: logical.recommendedFollowUps.length - recommendedFollowUps.length,
+    stalenessAndConflicts: logical.stalenessAndConflicts.length,
+    ...(logical.verifiedProcedures === undefined ? {} : {verifiedProcedures: logical.verifiedProcedures.length}),
+  };
+  const omittedItems = Object.values(omissions).reduce((total, value) => total + value, 0) + 1;
+  return {
+    activeHandoffs: [],
+    coverage: {
+      gaps,
+      graph: {
+        complete: logical.coverage.graph.complete,
+        consideredRepositories: logical.coverage.graph.consideredRepositories,
+        readyRepositories: logical.coverage.graph.readyRepositories,
+        requestedRepositories: logical.coverage.graph.requestedRepositories,
+        states: {},
+      },
+      memory: {
+        ...(logical.coverage.memory.codeAnchors === undefined
+          ? {}
+          : {codeAnchors: logical.coverage.memory.codeAnchors}),
+        consideredCandidates: logical.coverage.memory.consideredCandidates,
+        durableCandidates: logical.coverage.memory.durableCandidates,
+        fresh: logical.coverage.memory.fresh,
+        handoffCandidates: logical.coverage.memory.handoffCandidates,
+        stale: logical.coverage.memory.stale,
+        unknown: logical.coverage.memory.unknown,
+      },
+      omissions,
+    },
+    durableDecisions: [],
+    graph: {
+      cards: [],
+      ...(logical.graph.cards.length === 0
+        ? {}
+        : {continuation: {omittedCards: logical.graph.cards.length, state: 'rerun-required' as const}}),
+      contracts: [],
+    },
+    mode: logical.mode,
+    output: {
+      omittedItems,
+      projectorVersion:
+        logical.version === CONTEXT_BRIEF_LEGACY_VERSION
+          ? CONTEXT_BRIEF_LEGACY_PROJECTOR_VERSION
+          : logical.version === CONTEXT_BRIEF_VERSION
+            ? CONTEXT_BRIEF_PROJECTOR_VERSION
+            : CONTEXT_BRIEF_PROCEDURE_PROJECTOR_VERSION,
+      returnedItems: recommendedFollowUps.length,
+      truncated: true,
+    },
+    recommendedFollowUps,
+    scope: {
+      freshness: logical.scope.freshness,
+      kind: logical.scope.kind,
+      name: logical.scope.projectCoverage?.project ?? '',
+      readyRepositories: logical.scope.readyRepositories,
+      requestedRepositories: logical.scope.requestedRepositories,
+    },
+    stalenessAndConflicts: [],
+    task: {summary: '', truncated: true},
+    trust: logical.trust,
+    type: 'context-brief',
+    version: logical.version,
+    ...(logical.version === CONTEXT_BRIEF_PROCEDURE_VERSION ? {verifiedProcedures: []} : {}),
   };
 }
 

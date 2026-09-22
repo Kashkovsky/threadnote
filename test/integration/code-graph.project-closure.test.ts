@@ -889,13 +889,16 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  it.effect('fails closed when an existing unowned-domain publication changes beside an owned addition', () =>
+  it.effect('keeps the owned closure while scanning an existing unowned-domain publication change', () =>
     Effect.acquireUseRelease(
       Effect.sync(createProjectClosureRepository),
       root =>
         Effect.gen(function* () {
           const indexer = yield* CodeGraphIndexer;
+          const store = yield* CodeGraphStore;
+          const path = yield* Path.Path;
           const home = join(root, '.threadnote-file-set-changed-publication');
+          const fullHome = join(root, '.threadnote-file-set-changed-publication-full');
           yield* Effect.sync(() => {
             writeFile(root, 'README.md', '# Fixture\n');
             git(root, ['add', 'README.md']);
@@ -908,12 +911,24 @@ describe('project-closure incremental indexing', () => {
             writeFile(root, 'packages/core/added.ts', 'export function added() { return "added"; }\n');
           });
           const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+          const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
 
           expect(indexed.materialization).toMatchObject({
-            fallbackReason: 'resolution-surface-changed',
-            mode: 'full',
+            closureProjects: 3,
+            mode: 'incremental-overlay',
+            resolutionClosure: 'project',
           });
-          expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
+          expect(indexed.materialization?.stagedFiles).toBeLessThan(indexed.materialization?.totalFiles ?? 0);
+          const incrementalLayout = codeGraphLayout(
+            path,
+            home,
+            indexed.identity.checkoutId,
+            indexed.identity.worktreeId,
+          );
+          const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+          expect(normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, indexed.snapshot.id))).toEqual(
+            normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)),
+          );
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
@@ -992,13 +1007,16 @@ describe('project-closure incremental indexing', () => {
     {timeout: 120_000},
   );
 
-  it.effect('reports an unowned-domain fallback for a newly added document', () =>
+  it.effect('uses a bounded candidate closure for an unowned-domain document rename', () =>
     Effect.acquireUseRelease(
       Effect.sync(createProjectClosureRepository),
       root =>
         Effect.gen(function* () {
           const indexer = yield* CodeGraphIndexer;
+          const store = yield* CodeGraphStore;
+          const path = yield* Path.Path;
           const home = join(root, '.threadnote-file-set-fallback-detail');
+          const fullHome = join(root, '.threadnote-file-set-full');
           yield* Effect.sync(() => {
             writeFile(root, 'README.md', '# Existing documentation\n');
             git(root, ['add', 'README.md']);
@@ -1006,26 +1024,97 @@ describe('project-closure incremental indexing', () => {
           });
           yield* indexer.index({cwd: root, threadnoteHome: home});
           yield* Effect.sync(() => {
+            rmSync(join(root, 'README.md'));
             writeFile(root, 'NEW.md', '# Added documentation\n');
-            writeFile(root, 'packages/core/added.ts', 'export function added() { return "added"; }\n');
           });
           const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+          const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
 
           expect(indexed.materialization).toMatchObject({
-            fallbackAssessment: {
-              addedFiles: 2,
-              changedFiles: 2,
-              deletedFiles: 0,
-              detail: 'resolution-domain-unowned',
-              stage: 'file-set-seed-assessment',
-            },
-            fallbackReason: 'project-closure-incomplete',
-            mode: 'full',
+            closureProjects: 0,
+            mode: 'incremental-overlay',
+            resolutionClosure: 'project',
           });
-          expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
+          expect(indexed.materialization?.stagedFiles).toBeLessThan(indexed.materialization?.totalFiles ?? 0);
+          const incrementalLayout = codeGraphLayout(
+            path,
+            home,
+            indexed.identity.checkoutId,
+            indexed.identity.worktreeId,
+          );
+          const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+          expect(normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, indexed.snapshot.id))).toEqual(
+            normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)),
+          );
+          expect(deltaPaths(incrementalLayout.databasePath, indexed.snapshot.id)).toEqual(['NEW.md']);
         }),
       root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  it.effect(
+    'keeps zero-publication Swift and Bash file-set changes incremental',
+    () =>
+      Effect.forEach(
+        [
+          {extension: 'swift', language: 'Swift', operation: 'add'},
+          {extension: 'swift', language: 'Swift', operation: 'delete'},
+          {extension: 'swift', language: 'Swift', operation: 'rename'},
+          {extension: 'sh', language: 'Bash', operation: 'add'},
+          {extension: 'sh', language: 'Bash', operation: 'delete'},
+          {extension: 'sh', language: 'Bash', operation: 'rename'},
+        ] as const,
+        scenario =>
+          Effect.acquireUseRelease(
+            Effect.sync(() => {
+              const root = createProjectClosureRepository();
+              writeFile(root, `scripts/existing.${scenario.extension}`, '// no published symbols\n');
+              if (scenario.operation !== 'add') {
+                writeFile(root, `scripts/retiring.${scenario.extension}`, '// no published symbols\n');
+              }
+              git(root, ['add', 'scripts']);
+              git(root, ['commit', '-qm', `add ${scenario.language} fixture`]);
+              return root;
+            }),
+            root =>
+              Effect.gen(function* () {
+                const indexer = yield* CodeGraphIndexer;
+                const path = yield* Path.Path;
+                const store = yield* CodeGraphStore;
+                const home = join(root, `.threadnote-${scenario.language.toLowerCase()}-${scenario.operation}`);
+                const fullHome = `${home}-full`;
+                yield* indexer.index({cwd: root, threadnoteHome: home});
+                yield* Effect.sync(() => {
+                  if (scenario.operation !== 'delete') {
+                    writeFile(root, `scripts/current.${scenario.extension}`, '// no published symbols\n');
+                  }
+                  if (scenario.operation !== 'add') rmSync(join(root, `scripts/retiring.${scenario.extension}`));
+                });
+                const incremental = yield* indexer.index({cwd: root, threadnoteHome: home});
+                const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+                const incrementalLayout = codeGraphLayout(
+                  path,
+                  home,
+                  incremental.identity.checkoutId,
+                  incremental.identity.worktreeId,
+                );
+                const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+
+                expect(incremental.materialization?.fallbackReason).toBeUndefined();
+                expect(incremental.materialization).toMatchObject({
+                  closureProjects: 0,
+                  mode: 'incremental-overlay',
+                  resolutionClosure: 'project',
+                });
+                expect(
+                  normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id)),
+                ).toEqual(normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)));
+              }),
+            root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+          ),
+        {concurrency: 1},
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    {timeout: 120_000},
   );
 
   it.effect(
