@@ -9,6 +9,7 @@ import {
   failCodeGraphRefreshDemand,
   recoverCodeGraphRefreshDemand,
   registerCodeGraphRefreshDemand,
+  resumeCodeGraphRefreshDemand,
 } from '../../src/code_graph/refresh/demand_scheduler.js';
 import {codeGraphRefreshDemandContinuity} from '../../src/code_graph/refresh/demand.js';
 
@@ -92,6 +93,38 @@ describe('code graph refresh demand scheduler', () => {
     expect(current.type).toBe('claimed');
     expect(current.state.active?.targetKey).toBe(key('4'));
     expect(current.state.desired).toBeUndefined();
+  });
+
+  it('resumes only the latest admitted target and preserves its token', () => {
+    const idle = resumeCodeGraphRefreshDemand(initial(), {
+      now: 1,
+      ownerLive: false,
+      targetKey: key('1'),
+      token: token('1'),
+    });
+    expect(idle).toBeUndefined();
+
+    const active = registerCodeGraphRefreshDemand(initial(), {now: 1, targetKey: key('1'), token: token('1')});
+    const queued = registerCodeGraphRefreshDemand(active.state, {now: 2, targetKey: key('2'), token: token('2')});
+    const latest = resumeCodeGraphRefreshDemand(queued.state, {
+      now: 3,
+      ownerLive: true,
+      targetKey: key('3'),
+      token: token('3'),
+    });
+    expect(latest).toMatchObject({
+      type: 'queued',
+      state: {active: {targetKey: key('1')}, desired: {targetKey: key('3'), targetToken: token('3')}},
+    });
+    const resumed = resumeCodeGraphRefreshDemand(queued.state, {
+      now: 4,
+      owner: {processId: 4},
+      ownerLive: false,
+      targetKey: key('2'),
+      token: token('4'),
+    });
+    expect(resumed).toMatchObject({type: 'claimed', target: {targetKey: key('2'), targetToken: token('2')}});
+    expect(resumed?.state.desired).toBeUndefined();
   });
 
   it('drops obsolete desired demand when the worktree returns to the active target', () => {

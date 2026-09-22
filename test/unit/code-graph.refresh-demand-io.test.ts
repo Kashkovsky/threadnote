@@ -14,9 +14,12 @@ import {worktreeBuildRequestState} from '../../src/code_graph/inventory.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {
   adoptCodeGraphBackgroundDemand,
+  beginCodeGraphBackgroundPublication,
   CodeGraphRefreshDemandSuperseded,
+  completeCodeGraphBackgroundDemand,
   recoverCodeGraphBackgroundDemand,
   registerCodeGraphBackgroundDemand,
+  resumeCodeGraphBackgroundDemand,
 } from '../../src/code_graph/refresh/demand.js';
 import {
   codeGraphRefreshDemandLockPath,
@@ -145,6 +148,68 @@ describe('code graph refresh demand sidecar', () => {
 
         const recovered = yield* recoverCodeGraphBackgroundDemand(identity, {liveness: 'inactive'});
         expect(recovered.active).toBeUndefined();
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
+  effectIt.effect('never admits a target when resume acquires an idle sidecar lane', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-resume-'});
+        const identity = {checkoutId, threadnoteHome: home, worktreeId};
+        const claimed = yield* registerCodeGraphBackgroundDemand(identity, firstKey);
+        expect(claimed.type).toBe('claimed');
+        yield* completeCodeGraphBackgroundDemand(identity, claimed.target.targetToken, firstKey);
+
+        const absent = yield* resumeCodeGraphBackgroundDemand(identity, secondKey, {liveness: 'inactive'});
+        expect(absent).toBeUndefined();
+        const retained = yield* recoverCodeGraphBackgroundDemand(identity, {liveness: 'inactive'});
+        expect(retained.active).toBeUndefined();
+        expect(retained.desired).toBeUndefined();
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
+  effectIt.effect('queues the latest observed target while a live admitted lane is active', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-converge-'});
+        const identity = {checkoutId, threadnoteHome: home, worktreeId};
+        const claimed = yield* registerCodeGraphBackgroundDemand(identity, firstKey);
+        expect(claimed.type).toBe('claimed');
+
+        const queued = yield* resumeCodeGraphBackgroundDemand(identity, secondKey, {
+          liveness: 'active',
+          owner: claimed.state.active?.claimOwner,
+          requestKey: firstKey,
+        });
+        expect(queued).toMatchObject({
+          type: 'queued',
+          state: {active: {targetKey: firstKey}, desired: {targetKey: secondKey}},
+        });
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
+  effectIt.effect('does not displace a live publisher when status evidence is stale', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-publishing-'});
+        const identity = {checkoutId, threadnoteHome: home, worktreeId};
+        const claimed = yield* registerCodeGraphBackgroundDemand(identity, firstKey);
+        expect(claimed.type).toBe('claimed');
+        expect(yield* beginCodeGraphBackgroundPublication(identity, claimed.target.targetToken, firstKey)).toBe(
+          'publish',
+        );
+
+        const resumed = yield* resumeCodeGraphBackgroundDemand(identity, firstKey, {liveness: 'inactive'});
+        expect(resumed).toMatchObject({
+          type: 'attached',
+          target: {phase: 'publishing', targetToken: claimed.target.targetToken},
+        });
       }),
     ).pipe(provideTestLayer(TestLayer)),
   );

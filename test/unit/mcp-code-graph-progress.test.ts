@@ -111,37 +111,65 @@ describe('MCP code graph indexing progress', () => {
     }
   });
 
-  effectIt.effect('never registers a build demand after a successful ready read', () =>
-    Effect.gen(function* () {
-      let ensured = 0;
-      let requested = 0;
-      const watcher = {
-        ensure: () =>
-          Effect.sync(() => {
-            ensured += 1;
-          }),
-        request: () =>
-          Effect.sync(() => {
-            requested += 1;
-            return {
-              refresh: {state: 'active' as const, type: 'code-graph-refresh-continuity' as const, version: 1 as const},
-              requestState: 'started' as const,
-            };
-          }),
-      } as unknown as CodeGraphWatcherShape;
+  effectIt.effect(
+    'never registers a build demand after a successful ready read and preserves observed continuity',
+    () =>
+      Effect.gen(function* () {
+        let ensured = 0;
+        let requested = 0;
+        let resumed = 0;
+        const watcher = {
+          ensure: () =>
+            Effect.sync(() => {
+              ensured += 1;
+            }),
+          request: () =>
+            Effect.sync(() => {
+              requested += 1;
+              return {
+                refresh: {
+                  state: 'active' as const,
+                  type: 'code-graph-refresh-continuity' as const,
+                  version: 1 as const,
+                },
+                requestState: 'started' as const,
+              };
+            }),
+          resume: () =>
+            Effect.sync(() => {
+              resumed += 1;
+              return undefined;
+            }),
+        } as unknown as CodeGraphWatcherShape;
 
-      const continuity = yield* completeCodeGraphReadyReadRefresh({
-        backgroundRefreshRequested: true,
-        ensureWatcher: true,
-        key: 'worktree',
-        target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
-        watcher,
-      });
+        const continuity = yield* completeCodeGraphReadyReadRefresh({
+          backgroundRefreshRequested: true,
+          ensureWatcher: true,
+          key: 'worktree',
+          target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
+          watcher,
+        });
 
-      expect(continuity).toEqual({state: 'deferred', type: 'code-graph-refresh-continuity', version: 1});
-      expect(ensured).toBe(1);
-      expect(requested).toBe(0);
-    }),
+        expect(continuity).toEqual({state: 'deferred', type: 'code-graph-refresh-continuity', version: 1});
+        const active = {
+          currentTargetToken: `cgdq_${'1'.repeat(32)}`,
+          state: 'active' as const,
+          type: 'code-graph-refresh-continuity' as const,
+          version: 1 as const,
+        };
+        const preserved = yield* completeCodeGraphReadyReadRefresh({
+          backgroundRefreshRequested: true,
+          ensureWatcher: true,
+          key: 'worktree',
+          refresh: active,
+          target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
+          watcher,
+        });
+        expect(preserved).toEqual(active);
+        expect(ensured).toBe(2);
+        expect(requested).toBe(0);
+        expect(resumed).toBe(2);
+      }),
   );
 
   fcProp(

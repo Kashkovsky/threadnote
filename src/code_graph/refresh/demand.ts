@@ -19,6 +19,7 @@ import {
   failCodeGraphRefreshDemand as failDemandState,
   recoverCodeGraphRefreshDemand as recoverDemandState,
   registerCodeGraphRefreshDemand,
+  resumeCodeGraphRefreshDemand as resumeDemandState,
   validCodeGraphRefreshDemand,
   type CodeGraphRefreshDemandState,
 } from './demand_scheduler.js';
@@ -41,6 +42,13 @@ export interface CodeGraphRefreshDemandIdentity {
   readonly scopeId?: string;
   readonly threadnoteHome: string;
   readonly worktreeId: string;
+}
+
+interface CodeGraphRefreshDemandLivenessObservation {
+  readonly liveness: 'active' | 'inactive';
+  readonly owner?: {readonly processId: number; readonly processStartIdentity?: string};
+  readonly requestKey?: string;
+  readonly spawnOwner?: {readonly processId: number; readonly processStartIdentity?: string};
 }
 
 type Mutation<A, E = never, R = never> = (
@@ -152,6 +160,33 @@ export const registerCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDem
   );
 });
 
+/** Atomically resumes an existing lane and converges it to the latest observed target. */
+export const resumeCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDemand.resume')(function* (
+  identity: CodeGraphRefreshDemandIdentity,
+  targetKey: string,
+  observed?: CodeGraphRefreshDemandLivenessObservation,
+) {
+  const crypto = yield* Crypto.Crypto;
+  const system = yield* SystemInfo;
+  const now = yield* Clock.currentTimeMillis;
+  const token = `cgdq_${(yield* crypto.randomUUIDv4).replaceAll('-', '')}`;
+  const processStartIdentity = yield* system.canonicalProcessStartIdentity?.(system.processId) ??
+    system.processStartIdentity(system.processId);
+  return yield* mutate(identity, state =>
+    Effect.gen(function* () {
+      const ownerLive = yield* activeDemandOwnerLive(state, observed, now, system);
+      const registration = resumeDemandState(state, {
+        now,
+        owner: {processId: system.processId, ...(processStartIdentity === undefined ? {} : {processStartIdentity})},
+        ownerLive,
+        targetKey,
+        token,
+      });
+      return {state: registration?.state ?? state, value: registration};
+    }),
+  );
+});
+
 export const enqueueCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDemand.enqueue')(function* (
   identity: CodeGraphRefreshDemandIdentity,
   targetKey: string,
@@ -242,35 +277,13 @@ export const failCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDemand.
 /** Build-status and spawn-lock remain liveness authority; this only repairs intent. */
 export const recoverCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDemand.recover')(function* (
   identity: CodeGraphRefreshDemandIdentity,
-  observed?: {
-    readonly liveness: 'active' | 'inactive';
-    readonly owner?: {readonly processId: number; readonly processStartIdentity?: string};
-    readonly requestKey?: string;
-    readonly spawnOwner?: {readonly processId: number; readonly processStartIdentity?: string};
-  },
+  observed?: CodeGraphRefreshDemandLivenessObservation,
 ) {
   const system = yield* SystemInfo;
   const now = yield* Clock.currentTimeMillis;
   return yield* mutate(identity, state =>
     Effect.gen(function* () {
-      const owner = state.active?.claimOwner;
-      const livePreStatusOwner =
-        state.active !== undefined &&
-        (state.active.phase === 'claimed' || state.active.phase === 'preparing') &&
-        now - state.active.claimStartedAt <= PRE_STATUS_OWNER_GRACE_MILLISECONDS &&
-        (yield* processOwnerIsLive(system, owner));
-      const livePreStatusSpawnOwner =
-        state.active !== undefined &&
-        (state.active.phase === 'claimed' || state.active.phase === 'preparing') &&
-        now - state.active.claimStartedAt <= PRE_STATUS_OWNER_GRACE_MILLISECONDS &&
-        sameProcessOwner(observed?.spawnOwner, owner);
-      const ownerLive =
-        state.active !== undefined &&
-        ((observed?.liveness === 'active' &&
-          observed.requestKey === state.active.targetKey &&
-          sameProcessOwner(observed.owner, owner)) ||
-          livePreStatusSpawnOwner ||
-          livePreStatusOwner);
+      const ownerLive = yield* activeDemandOwnerLive(state, observed, now, system);
       const next = recoverDemandState(state, ownerLive);
       return {state: next, value: next};
     }),
@@ -499,6 +512,33 @@ function sameDirectories(left: readonly DirectoryAuthority[], right: readonly Di
       );
     })
   );
+}
+
+function activeDemandOwnerLive(
+  state: CodeGraphRefreshDemandState,
+  observed: CodeGraphRefreshDemandLivenessObservation | undefined,
+  now: number,
+  system: SystemInfoShape,
+) {
+  return Effect.gen(function* () {
+    const active = state.active;
+    if (active === undefined) return false;
+    const owner = active.claimOwner;
+    const withinPreStatusGrace =
+      (active.phase === 'claimed' || active.phase === 'preparing') &&
+      now - active.claimStartedAt <= PRE_STATUS_OWNER_GRACE_MILLISECONDS;
+    const livePreStatusOwner = withinPreStatusGrace && (yield* processOwnerIsLive(system, owner));
+    const livePreStatusSpawnOwner = withinPreStatusGrace && sameProcessOwner(observed?.spawnOwner, owner);
+    const livePublishingOwner = active.phase === 'publishing' && (yield* processOwnerIsLive(system, owner));
+    return (
+      (observed?.liveness === 'active' &&
+        observed.requestKey === active.targetKey &&
+        sameProcessOwner(observed.owner, owner)) ||
+      livePreStatusSpawnOwner ||
+      livePreStatusOwner ||
+      livePublishingOwner
+    );
+  });
 }
 
 function sameProcessOwner(

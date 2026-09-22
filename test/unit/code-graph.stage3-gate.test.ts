@@ -47,16 +47,21 @@ async function gitResult(directory: string): Promise<Stage3CommandResult> {
   return {exitCode, stdout, stderr, timedOut: false};
 }
 
-function cleanupStatus(processId: number) {
+function cleanupStatus(processId: number, processStartIdentity = 'identity') {
   return {
     buildId: `build-${processId}`,
     identity: {worktreeId: 'stage3-tree'},
     observation: {liveness: 'active'},
-    owner: {processId, processStartIdentity: 'identity'},
+    owner: {processId, processStartIdentity},
   } as never;
 }
 
-function cleanupDriver(events: string[], statuses: readonly ReturnType<typeof cleanupStatus>[], closeFails = false) {
+function cleanupDriver(
+  events: string[],
+  statuses: readonly ReturnType<typeof cleanupStatus>[],
+  closeFails = false,
+  observedIdentity = 'identity',
+) {
   const driver = new Stage3Driver(parseStage3Arguments(arguments_));
   const system = {
     isProcessRunning: (processId: number) => processId >= 3,
@@ -91,7 +96,7 @@ function cleanupDriver(events: string[], statuses: readonly ReturnType<typeof cl
   } as never);
   Object.assign(driver, {
     root: 'retained-fixture',
-    runtime: {runPromise: async () => 'identity'},
+    runtime: {runPromise: async () => observedIdentity},
     services: async () => ({
       fs: {remove: () => undefined},
       system,
@@ -346,6 +351,14 @@ describe('Stage 3 artifact lifecycle', () => {
     const driver = cleanupDriver(events, [cleanupStatus(3), cleanupStatus(4)]);
     await driver.cleanup();
     expect(events).toEqual(expect.arrayContaining(['signal-3', 'signal-4']));
+  });
+
+  it('terminates a live Darwin child when its status predates canonical process identities', async () => {
+    const events: string[] = [];
+    const status = cleanupStatus(3, 'darwin:Tue Sep 22 05:54:18 2026');
+    const driver = cleanupDriver(events, [status], false, 'darwin-v2:Tue Sep 22 05:54:18 2026');
+    await driver.cleanup();
+    expect(events).toContain('signal-3');
   });
 
   it.each(['work', 'cleanup', 'publish'])(

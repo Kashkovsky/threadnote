@@ -141,6 +141,37 @@ async function current(
   return ready;
 }
 
+async function primeBackgroundRefreshEligibility(
+  driver: Stage3Driver,
+  host: Stage3Host,
+  tree: Stage3Worktree,
+  entry: string,
+  leaf: string,
+) {
+  await driver.change(tree, 'eligibility');
+  const exact = await driver.until(async () => {
+    const response = await driver.call(host, tree, selectors('path', entry, leaf));
+    return response.type === 'code-graph-inspection' && response.freshness === 'current' ? response : undefined;
+  }, 'eligibility-prime-not-current');
+  const snapshot = stage3Record(exact.snapshot).id;
+  assertStage3(typeof snapshot === 'string', 'eligibility-prime-snapshot');
+  assertStage3(
+    nodes(exact).some(node => node.id === entry) && nodes(exact).some(node => node.id === leaf),
+    'eligibility-prime-path-evidence',
+  );
+  const query = await driver.call(host, tree, {operation: 'query', query: 'stage3Target_eligibility'});
+  assertStage3(stage3Record(query.snapshot).id === snapshot, 'eligibility-prime-query-binding');
+  assertStage3(
+    nodes(query).some(node => node.name === 'stage3Target_eligibility'),
+    'eligibility-prime-target-evidence',
+  );
+  const status = (await driver.statuses(tree)).find(
+    candidate => candidate.observation.liveness === 'completed' && candidate.result?.snapshotId === snapshot,
+  );
+  assertStage3(status?.result?.overlayAssessment?.outcome === 'overlay-success', 'eligibility-prime-assessment');
+  return snapshot;
+}
+
 export async function runStage3Scenarios(driver: Stage3Driver) {
   const observations: Stage3Observation[] = [];
   const [seed, churn, recovery] = driver.worktrees;
@@ -148,21 +179,40 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   let hostA = await driver.host('a');
   const hostB = await driver.host('b');
   assertStage3(hostA.processId !== hostB.processId, 'independent-mcp-hosts');
-  const seedAnchor = await anchors(driver, hostB, seed);
-  const churnAnchor = await anchors(driver, hostA, churn);
-  const recoveryAnchor = await anchors(driver, hostA, recovery);
+  let seedAnchor = await anchors(driver, hostB, seed);
+  let churnAnchor = await anchors(driver, hostA, churn);
+  let recoveryAnchor = await anchors(driver, hostA, recovery);
   assertStage3(
     seedAnchor.entry === churnAnchor.entry && seedAnchor.entry === recoveryAnchor.entry,
     'shared-stable-symbol',
   );
   observations.push({phase: 'linked-worktrees', state: 'observed'});
 
+  // Background refresh is fail-closed per worktree until an explicit current
+  // read proves a bounded overlay succeeds. Prime that production contract in
+  // every worktree before testing watcher-owned durable demand and recovery.
+  seedAnchor = {
+    ...seedAnchor,
+    snapshot: await primeBackgroundRefreshEligibility(driver, hostB, seed, seedAnchor.entry, seedAnchor.leaf),
+  };
+  churnAnchor = {
+    ...churnAnchor,
+    snapshot: await primeBackgroundRefreshEligibility(driver, hostA, churn, churnAnchor.entry, churnAnchor.leaf),
+  };
+  recoveryAnchor = {
+    ...recoveryAnchor,
+    snapshot: await primeBackgroundRefreshEligibility(
+      driver,
+      hostA,
+      recovery,
+      recoveryAnchor.entry,
+      recoveryAnchor.leaf,
+    ),
+  };
+
   const writer = await driver.lock(churn, 'writer');
   await driver.change(churn, 'f1', true);
-  const requested = await driver.call(hostA, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
-  const firstRefresh = stage3Refresh(requested.refresh);
   const f1 = await adopted(driver, churn, hostA, writer);
-  assertStage3(firstRefresh.currentTargetToken === f1.active.targetToken, 'initial-continuity-token');
   for (const host of [hostA, hostB]) {
     for (const operation of discovery) {
       driver.held(writer);
@@ -203,13 +253,20 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   }
 
   await driver.change(churn, 'f2');
-  const second = await driver.call(hostA, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
-  const f2 = await driver.demand(churn);
+  const f2 = await driver.until(async () => {
+    const demand = await driver.demand(churn);
+    return demand?.active?.targetKey === f1.active.targetKey &&
+      demand.desired &&
+      demand.desired.targetKey !== f1.active.targetKey
+      ? demand
+      : undefined;
+  }, 'f2-not-queued');
   assertStage3(
     f2?.active?.targetKey === f1.active.targetKey && f2.desired && f2.desired.targetKey !== f1.active.targetKey,
     'f2-not-queued',
   );
   const f2Key = f2.desired.targetKey;
+  const second = await driver.call(hostA, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
   observations.push({
     phase: 'latest-demand-convergence',
     state: 'observed',
@@ -217,8 +274,15 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
     refresh: stage3Refresh(second.refresh),
   });
   await driver.change(churn, 'f3');
-  const third = await driver.call(hostB, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
-  const f3 = await driver.demand(churn);
+  const f3 = await driver.until(async () => {
+    const demand = await driver.demand(churn);
+    return demand?.active?.targetKey === f1.active.targetKey &&
+      demand.desired &&
+      demand.desired.targetKey !== f2Key &&
+      demand.desired.targetKey !== f1.active.targetKey
+      ? demand
+      : undefined;
+  }, 'f3-not-latest');
   assertStage3(
     f3?.active?.targetKey === f1.active.targetKey &&
       f3.desired &&
@@ -227,6 +291,7 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
     'f3-not-latest',
   );
   const f3Key = f3.desired.targetKey;
+  const third = await driver.call(hostB, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
   const latestRefresh = stage3Refresh(third.refresh);
   assertStage3(
     latestRefresh.currentTargetToken === f1.active.targetToken &&
@@ -317,7 +382,14 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   observations.push({phase: 'adopted-child-recovery', state: 'observed', refresh: attachedRefresh});
   await driver.change(seed, 'after-adoption-latest', true);
   await driver.call(hostA, seed, selectors('query', seedAnchor.entry, seedAnchor.leaf));
-  const pending = await driver.demand(seed);
+  const pending = await driver.until(async () => {
+    const demand = await driver.demand(seed);
+    return demand?.active?.targetKey === child.active.targetKey &&
+      demand.desired &&
+      demand.desired.targetKey !== child.active.targetKey
+      ? demand
+      : undefined;
+  }, 'adopted-latest-not-queued');
   assertStage3(
     pending?.active?.targetKey === child.active.targetKey &&
       pending.desired &&

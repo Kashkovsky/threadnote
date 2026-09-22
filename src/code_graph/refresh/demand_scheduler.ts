@@ -176,6 +176,60 @@ export function registerCodeGraphRefreshDemand(
   return {state: {...state, desired: target, revision: nextRevision(state)}, target, type: 'queued'};
 }
 
+/** Atomically resumes an admitted lane and advances it to the caller's latest observed target. */
+export function resumeCodeGraphRefreshDemand(
+  state: CodeGraphRefreshDemandState,
+  input: {
+    readonly now: number;
+    readonly owner?: CodeGraphRefreshDemandActive['claimOwner'];
+    readonly ownerLive: boolean;
+    readonly targetKey: string;
+    readonly token: string;
+  },
+): CodeGraphRefreshDemandRegistration | undefined {
+  const candidate = state.desired ?? state.active;
+  if (candidate === undefined) return undefined;
+  if (candidate.targetKey !== input.targetKey) {
+    const resumable =
+      state.active === undefined || input.ownerLive
+        ? state
+        : {...state, active: undefined, revision: nextRevision(state)};
+    return registerCodeGraphRefreshDemand(resumable, input);
+  }
+  if (state.active !== undefined && input.ownerLive) {
+    if (state.desired !== undefined) {
+      const target = attach(state.desired, input.now);
+      return {
+        state: {...state, desired: target, revision: nextRevision(state)},
+        target,
+        type: target.retry && target.retry.notBefore > input.now ? 'deferred' : 'attached',
+      };
+    }
+    const target = attach(state.active, input.now);
+    return {
+      state: {...state, active: target, revision: nextRevision(state)},
+      target,
+      type: 'attached',
+    };
+  }
+  const desired: CodeGraphRefreshDemandTarget = {
+    attachmentCount: candidate.attachmentCount,
+    requestedAt: candidate.requestedAt,
+    ...(candidate.retry === undefined ? {} : {retry: candidate.retry}),
+    targetKey: candidate.targetKey,
+    targetToken: candidate.targetToken,
+    updatedAt: candidate.updatedAt,
+  };
+  const resumable =
+    state.active === undefined ? state : {...state, active: undefined, desired, revision: nextRevision(state)};
+  return registerCodeGraphRefreshDemand(resumable, {
+    now: input.now,
+    owner: input.owner,
+    targetKey: desired.targetKey,
+    token: desired.targetToken,
+  });
+}
+
 /** A child may adopt only the exact claim it was spawned for. */
 export function adoptCodeGraphRefreshDemand(
   state: CodeGraphRefreshDemandState,

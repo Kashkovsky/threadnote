@@ -49,6 +49,7 @@ import {
   failCodeGraphBackgroundDemand,
   recoverCodeGraphBackgroundDemand,
   registerCodeGraphBackgroundDemand,
+  resumeCodeGraphBackgroundDemand,
   observeCodeGraphBackgroundDemand,
   CodeGraphRefreshDemandSuperseded,
 } from './refresh/demand.js';
@@ -184,6 +185,8 @@ export interface CodeGraphWatcherShape {
   readonly refresh: (options: CodeGraphWatchOptions) => Effect.Effect<boolean>;
   /** Registers background demand before scheduling; never waits for a build. */
   readonly request: (options: CodeGraphWatchOptions) => Effect.Effect<CodeGraphRefreshRequestReceipt, unknown>;
+  /** Resumes existing durable background demand without creating new demand. */
+  readonly resume?: (options: CodeGraphWatchOptions) => Effect.Effect<CodeGraphRefreshContinuity | undefined, unknown>;
   readonly status: (
     key: string,
     target?: Pick<CodeGraphWatchOptions, 'cwd' | 'project' | 'threadnoteHome'>,
@@ -829,70 +832,124 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
         recover,
         prepareRefresh,
       );
+      const requestBackgroundDemand = (options: CodeGraphWatchOptions) =>
+        Effect.gen(function* () {
+          const target = yield* observeTarget({...options, admissionClass: 'background'});
+          // Reconcile only the durable scheduling hint against the existing
+          // build-status and spawn-lock liveness authorities before claim.
+          const build = yield* currentCodeGraphBuildStatus(target.layout, target.identity.worktreeId).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, systemInfo),
+          );
+          const spawnOwner = Option.getOrUndefined(
+            yield* readExclusiveFileLockOwner(
+              fs,
+              codeGraphWorktreeSpawnLockPath(
+                path,
+                options.threadnoteHome,
+                target.identity.checkoutId,
+                target.identity.worktreeId,
+                target.scopeId,
+              ),
+            ),
+          );
+          const observed = {
+            liveness: build?.observation.liveness === 'active' ? ('active' as const) : ('inactive' as const),
+            ...(build?.owner === undefined ? {} : {owner: build.owner}),
+            ...(build?.request?.key === undefined ? {} : {requestKey: build.request.key}),
+            ...(spawnOwner === undefined ? {} : {spawnOwner}),
+          };
+          yield* provideDemandServices(recoverCodeGraphBackgroundDemand(target.demandIdentity, observed));
+          return yield* Effect.uninterruptibleMask(() =>
+            Effect.gen(function* () {
+              const registration = yield* provideDemandServices(
+                registerCodeGraphBackgroundDemand(target.demandIdentity, target.requestKey),
+              );
+              const continuity = codeGraphRefreshDemandContinuity(registration.state, yield* Clock.currentTimeMillis);
+              const receipt = codeGraphRefreshRequestReceipt(registration, continuity);
+              // Attachments and queued/deferred targets already have a durable
+              // owner; starting another local driver would duplicate work.
+              if (registration.type !== 'claimed') return receipt;
+              const prepared = {registration, target} satisfies CodeGraphPreparedRefreshDemand;
+              return yield* handoffCodeGraphPreparedDemand({
+                // A failed handoff releases the exact persisted claim into
+                // the retry lane; later work cannot pair its token to a new
+                // observation.
+                defer: provideDemandServices(
+                  deferCodeGraphBackgroundDemand(
+                    target.demandIdentity,
+                    registration.target.targetToken,
+                    target.requestKey,
+                  ),
+                ),
+                receipt,
+                schedule: watcher.refresh({
+                  ...options,
+                  admissionClass: 'background',
+                  refreshDemandPrepared: prepared,
+                }),
+              });
+            }),
+          );
+        });
+      const resumeBackgroundDemand = (options: CodeGraphWatchOptions) =>
+        Effect.gen(function* () {
+          const target = yield* observeTarget({...options, admissionClass: 'background'});
+          const build = yield* currentCodeGraphBuildStatus(target.layout, target.identity.worktreeId).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, systemInfo),
+          );
+          const spawnOwner = Option.getOrUndefined(
+            yield* readExclusiveFileLockOwner(
+              fs,
+              codeGraphWorktreeSpawnLockPath(
+                path,
+                options.threadnoteHome,
+                target.identity.checkoutId,
+                target.identity.worktreeId,
+                target.scopeId,
+              ),
+            ),
+          );
+          return yield* Effect.uninterruptibleMask(() =>
+            Effect.gen(function* () {
+              const registration = yield* provideDemandServices(
+                resumeCodeGraphBackgroundDemand(target.demandIdentity, target.requestKey, {
+                  liveness: build?.observation.liveness === 'active' ? 'active' : 'inactive',
+                  ...(build?.owner === undefined ? {} : {owner: build.owner}),
+                  ...(build?.request?.key === undefined ? {} : {requestKey: build.request.key}),
+                  ...(spawnOwner === undefined ? {} : {spawnOwner}),
+                }),
+              );
+              if (registration === undefined) return undefined;
+              const continuity = codeGraphRefreshDemandContinuity(registration.state, yield* Clock.currentTimeMillis);
+              const receipt = codeGraphRefreshRequestReceipt(registration, continuity);
+              if (registration.type !== 'claimed') return receipt.refresh;
+              const prepared = {registration, target} satisfies CodeGraphPreparedRefreshDemand;
+              return (yield* handoffCodeGraphPreparedDemand({
+                defer: provideDemandServices(
+                  deferCodeGraphBackgroundDemand(
+                    target.demandIdentity,
+                    registration.target.targetToken,
+                    target.requestKey,
+                  ),
+                ),
+                receipt,
+                schedule: watcher.refresh({
+                  ...options,
+                  admissionClass: 'background',
+                  refreshDemandPrepared: prepared,
+                }),
+              })).refresh;
+            }),
+          );
+        });
       return CodeGraphWatcher.of({
         ...watcher,
-        request: options =>
-          Effect.gen(function* () {
-            const target = yield* observeTarget({...options, admissionClass: 'background'});
-            // Reconcile only the durable scheduling hint against the existing
-            // build-status and spawn-lock liveness authorities before claim.
-            const build = yield* currentCodeGraphBuildStatus(target.layout, target.identity.worktreeId).pipe(
-              Effect.provideService(FileSystem.FileSystem, fs),
-              Effect.provideService(Path.Path, path),
-              Effect.provideService(SystemInfo, systemInfo),
-            );
-            const spawnOwner = Option.getOrUndefined(
-              yield* readExclusiveFileLockOwner(
-                fs,
-                codeGraphWorktreeSpawnLockPath(
-                  path,
-                  options.threadnoteHome,
-                  target.identity.checkoutId,
-                  target.identity.worktreeId,
-                  target.scopeId,
-                ),
-              ),
-            );
-            yield* provideDemandServices(
-              recoverCodeGraphBackgroundDemand(target.demandIdentity, {
-                liveness: build?.observation.liveness === 'active' ? 'active' : 'inactive',
-                ...(build?.owner === undefined ? {} : {owner: build.owner}),
-                ...(build?.request?.key === undefined ? {} : {requestKey: build.request.key}),
-                ...(spawnOwner === undefined ? {} : {spawnOwner}),
-              }),
-            );
-            return yield* Effect.uninterruptibleMask(() =>
-              Effect.gen(function* () {
-                const registration = yield* provideDemandServices(
-                  registerCodeGraphBackgroundDemand(target.demandIdentity, target.requestKey),
-                );
-                const continuity = codeGraphRefreshDemandContinuity(registration.state, yield* Clock.currentTimeMillis);
-                const receipt = codeGraphRefreshRequestReceipt(registration, continuity);
-                // Attachments and queued/deferred targets already have a durable
-                // owner; starting another local driver would duplicate work.
-                if (registration.type !== 'claimed') return receipt;
-                const prepared = {registration, target} satisfies CodeGraphPreparedRefreshDemand;
-                return yield* handoffCodeGraphPreparedDemand({
-                  // A failed handoff releases the exact persisted claim into
-                  // the retry lane; later work cannot pair its token to a new
-                  // observation.
-                  defer: provideDemandServices(
-                    deferCodeGraphBackgroundDemand(
-                      target.demandIdentity,
-                      registration.target.targetToken,
-                      target.requestKey,
-                    ),
-                  ),
-                  receipt,
-                  schedule: watcher.refresh({
-                    ...options,
-                    admissionClass: 'background',
-                    refreshDemandPrepared: prepared,
-                  }),
-                });
-              }),
-            );
-          }),
+        request: requestBackgroundDemand,
+        resume: resumeBackgroundDemand,
         status: (key, target) =>
           watcher.status(target?.project?.graph === undefined ? key : `${key}\0${target.project.uri}`).pipe(
             Effect.filterOrElse(
