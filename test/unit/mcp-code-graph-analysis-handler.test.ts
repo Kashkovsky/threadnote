@@ -236,17 +236,17 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     );
     const harness = analyzeHandlerHarness({
       attachResults: [],
-      inspectDelayMilliseconds: 1,
       refresh: false,
       statuses: [ready],
     });
 
     return Effect.gen(function* () {
-      const fiber = yield* harness
-        .invokeInspect({callerCwd: ready.identity.repoRoot, operation: 'query', project: 'web', query: 'value'})
-        .pipe(Effect.forkChild({startImmediately: true}));
-      yield* TestClock.adjust(1);
-      const result = yield* Fiber.join(fiber);
+      const result = yield* harness.invokeInspect({
+        callerCwd: ready.identity.repoRoot,
+        operation: 'query',
+        project: 'web',
+        query: 'value',
+      });
 
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
       expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
