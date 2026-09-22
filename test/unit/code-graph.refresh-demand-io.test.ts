@@ -16,6 +16,7 @@ import {
   adoptCodeGraphBackgroundDemand,
   beginCodeGraphBackgroundPublication,
   CodeGraphRefreshDemandSuperseded,
+  completeCodeGraphBackgroundDemand,
   recoverCodeGraphBackgroundDemand,
   registerCodeGraphBackgroundDemand,
   resumeCodeGraphBackgroundDemand,
@@ -151,7 +152,7 @@ describe('code graph refresh demand sidecar', () => {
     ).pipe(provideTestLayer(TestLayer)),
   );
 
-  effectIt.effect('never admits a target that was absent when resume acquired the sidecar lock', () =>
+  effectIt.effect('never admits a target when resume acquires an idle sidecar lane', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -159,12 +160,35 @@ describe('code graph refresh demand sidecar', () => {
         const identity = {checkoutId, threadnoteHome: home, worktreeId};
         const claimed = yield* registerCodeGraphBackgroundDemand(identity, firstKey);
         expect(claimed.type).toBe('claimed');
+        yield* completeCodeGraphBackgroundDemand(identity, claimed.target.targetToken, firstKey);
 
         const absent = yield* resumeCodeGraphBackgroundDemand(identity, secondKey, {liveness: 'inactive'});
         expect(absent).toBeUndefined();
         const retained = yield* recoverCodeGraphBackgroundDemand(identity, {liveness: 'inactive'});
-        expect(retained.active?.targetKey).toBe(firstKey);
+        expect(retained.active).toBeUndefined();
         expect(retained.desired).toBeUndefined();
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
+  effectIt.effect('queues the latest observed target while a live admitted lane is active', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-converge-'});
+        const identity = {checkoutId, threadnoteHome: home, worktreeId};
+        const claimed = yield* registerCodeGraphBackgroundDemand(identity, firstKey);
+        expect(claimed.type).toBe('claimed');
+
+        const queued = yield* resumeCodeGraphBackgroundDemand(identity, secondKey, {
+          liveness: 'active',
+          owner: claimed.state.active?.claimOwner,
+          requestKey: firstKey,
+        });
+        expect(queued).toMatchObject({
+          type: 'queued',
+          state: {active: {targetKey: firstKey}, desired: {targetKey: secondKey}},
+        });
       }),
     ).pipe(provideTestLayer(TestLayer)),
   );

@@ -69,7 +69,7 @@ describe('code graph refresh demand properties', () => {
     );
   });
 
-  it('never manufactures a target or token while resuming admitted demand', () => {
+  it('never creates an idle lane and uses only persisted or caller-provided demand tokens', () => {
     fc.assert(
       fc.property(fc.array(target, {maxLength: 40}), target, fc.boolean(), (targets, requested, ownerLive) => {
         const state = targets.reduce(
@@ -82,18 +82,23 @@ describe('code graph refresh demand properties', () => {
           emptyCodeGraphRefreshDemand(checkout, worktree),
         );
         const admitted = state.desired ?? state.active;
+        const replacementToken = `cgdq_${'f'.repeat(32)}`;
         const resumed = resumeCodeGraphRefreshDemand(state, {
           now: targets.length + 1,
           owner: {processId: 1},
           ownerLive,
           targetKey: requested,
+          token: replacementToken,
         });
 
-        expect(resumed !== undefined).toBe(admitted?.targetKey === requested);
+        expect(resumed !== undefined).toBe(admitted !== undefined);
         if (resumed === undefined || admitted === undefined) return;
-        expect(resumed.target.targetKey).toBe(admitted.targetKey);
-        expect(resumed.target.targetToken).toBe(admitted.targetToken);
-        const admittedKeys = new Set([state.active?.targetKey, state.desired?.targetKey].filter(Boolean));
+        expect(resumed.target.targetKey).toBe(requested);
+        const persisted = [state.active, state.desired].find(candidate => candidate?.targetKey === requested);
+        expect(resumed.target.targetToken).toBe(
+          persisted === undefined ? replacementToken : persisted.targetToken,
+        );
+        const admittedKeys = new Set([state.active?.targetKey, state.desired?.targetKey, requested].filter(Boolean));
         for (const key of [resumed.state.active?.targetKey, resumed.state.desired?.targetKey].filter(Boolean))
           expect(admittedKeys.has(key)).toBe(true);
       }),

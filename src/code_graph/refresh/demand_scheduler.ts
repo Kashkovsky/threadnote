@@ -176,7 +176,7 @@ export function registerCodeGraphRefreshDemand(
   return {state: {...state, desired: target, revision: nextRevision(state)}, target, type: 'queued'};
 }
 
-/** Atomically resumes only the latest target already admitted in this state. */
+/** Atomically resumes an admitted lane and advances it to the caller's latest observed target. */
 export function resumeCodeGraphRefreshDemand(
   state: CodeGraphRefreshDemandState,
   input: {
@@ -184,10 +184,18 @@ export function resumeCodeGraphRefreshDemand(
     readonly owner?: CodeGraphRefreshDemandActive['claimOwner'];
     readonly ownerLive: boolean;
     readonly targetKey: string;
+    readonly token: string;
   },
 ): CodeGraphRefreshDemandRegistration | undefined {
   const candidate = state.desired ?? state.active;
-  if (candidate === undefined || candidate.targetKey !== input.targetKey) return undefined;
+  if (candidate === undefined) return undefined;
+  if (candidate.targetKey !== input.targetKey) {
+    const resumable =
+      state.active === undefined || input.ownerLive
+        ? state
+        : {...state, active: undefined, revision: nextRevision(state)};
+    return registerCodeGraphRefreshDemand(resumable, input);
+  }
   if (state.active !== undefined && input.ownerLive) {
     if (state.desired !== undefined) {
       const target = attach(state.desired, input.now);

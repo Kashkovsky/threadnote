@@ -100,17 +100,28 @@ describe('code graph refresh demand scheduler', () => {
       now: 1,
       ownerLive: false,
       targetKey: key('1'),
+      token: token('1'),
     });
     expect(idle).toBeUndefined();
 
     const active = registerCodeGraphRefreshDemand(initial(), {now: 1, targetKey: key('1'), token: token('1')});
     const queued = registerCodeGraphRefreshDemand(active.state, {now: 2, targetKey: key('2'), token: token('2')});
-    expect(resumeCodeGraphRefreshDemand(queued.state, {now: 3, ownerLive: false, targetKey: key('3')})).toBeUndefined();
+    const latest = resumeCodeGraphRefreshDemand(queued.state, {
+      now: 3,
+      ownerLive: true,
+      targetKey: key('3'),
+      token: token('3'),
+    });
+    expect(latest).toMatchObject({
+      type: 'queued',
+      state: {active: {targetKey: key('1')}, desired: {targetKey: key('3'), targetToken: token('3')}},
+    });
     const resumed = resumeCodeGraphRefreshDemand(queued.state, {
       now: 4,
       owner: {processId: 4},
       ownerLive: false,
       targetKey: key('2'),
+      token: token('4'),
     });
     expect(resumed).toMatchObject({type: 'claimed', target: {targetKey: key('2'), targetToken: token('2')}});
     expect(resumed?.state.desired).toBeUndefined();

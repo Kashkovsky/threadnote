@@ -160,14 +160,16 @@ export const registerCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDem
   );
 });
 
-/** Atomically resumes a target already present in durable demand. */
+/** Atomically resumes an existing lane and converges it to the latest observed target. */
 export const resumeCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDemand.resume')(function* (
   identity: CodeGraphRefreshDemandIdentity,
   targetKey: string,
   observed?: CodeGraphRefreshDemandLivenessObservation,
 ) {
+  const crypto = yield* Crypto.Crypto;
   const system = yield* SystemInfo;
   const now = yield* Clock.currentTimeMillis;
+  const token = `cgdq_${(yield* crypto.randomUUIDv4).replaceAll('-', '')}`;
   const processStartIdentity = yield* system.canonicalProcessStartIdentity?.(system.processId) ??
     system.processStartIdentity(system.processId);
   return yield* mutate(identity, state =>
@@ -178,6 +180,7 @@ export const resumeCodeGraphBackgroundDemand = Effect.fn('codeGraph.refreshDeman
         owner: {processId: system.processId, ...(processStartIdentity === undefined ? {} : {processStartIdentity})},
         ownerLive,
         targetKey,
+        token,
       });
       return {state: registration?.state ?? state, value: registration};
     }),
