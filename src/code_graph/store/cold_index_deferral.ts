@@ -8,10 +8,12 @@ import {
 } from './models.js';
 import {CODE_GRAPH_QUERY_INDEX_DEFINITIONS, inspectCodeGraphQueryIndexes} from './query/indexes.js';
 import {recordCodeGraphSchemaInitializationReceipt} from './schema/receipt.js';
-import {CodeGraphStoreError} from '../types.js';
+import {CodeGraphStoreError, type CodeGraphInventoryFile} from '../types.js';
 
 const DEFERRED_QUERY_INDEX_STATE_KEY = 'query_indexes_deferred';
 const DEFERRED_QUERY_INDEX_STATE_VALUE = '1';
+const COLD_INDEX_DEFERRAL_MINIMUM_FILES = 512;
+const COLD_INDEX_DEFERRAL_MINIMUM_SOURCE_BYTES = 16 * 1_048_576;
 
 export interface CodeGraphColdIndexDeferralObservation {
   readonly activeSnapshotPresent: boolean;
@@ -30,6 +32,21 @@ export function codeGraphColdIndexDeferralEligible(observation: CodeGraphColdInd
     !observation.readySnapshotPresent &&
     !observation.symbolPresent
   );
+}
+
+/**
+ * Rebuilding every query index has a fixed SQLite cost that exceeds incremental
+ * index maintenance for small cold graphs. Defer only when either admitted
+ * source dimension reaches the production-sized materialization envelope.
+ */
+export function codeGraphColdIndexDeferralWorthwhile(files: readonly Pick<CodeGraphInventoryFile, 'size'>[]): boolean {
+  if (files.length >= COLD_INDEX_DEFERRAL_MINIMUM_FILES) return true;
+  let sourceBytes = 0;
+  for (const file of files) {
+    sourceBytes += file.size;
+    if (sourceBytes >= COLD_INDEX_DEFERRAL_MINIMUM_SOURCE_BYTES) return true;
+  }
+  return false;
 }
 
 export const deferCodeGraphQueryIndexesForColdBuild = Effect.fn('codeGraph.deferQueryIndexesForColdBuild')(function* (

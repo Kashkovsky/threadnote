@@ -652,6 +652,71 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
+  it.effect('prewarms every idle slot without protocol requests and reuses the workers for extraction', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-warm-'});
+      const pool = yield* CodeGraphParserPool;
+
+      yield* pool.warm(home);
+      expect(processes).toHaveLength(2);
+      expect(processes.every(process => process.writes.length === 0)).toBe(true);
+
+      const results = yield* Effect.all(
+        [
+          pool.extract(inventoryFile('src/warm-a.ts', 'export const warmA = true;'), home),
+          pool.extract(inventoryFile('src/warm-b.ts', 'export const warmB = true;'), home),
+        ],
+        {concurrency: 'unbounded'},
+      );
+
+      expect(results.every(result => !result.degraded)).toBe(true);
+      expect(processes).toHaveLength(2);
+      expect(processes.reduce((total, process) => total + process.writes.length, 0)).toBe(2);
+    }).pipe(provideTestLayer(parserLayer({capacity: 2, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('reuses one admitted parser slot across a serial extraction window', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-session-'});
+      const pool = yield* CodeGraphParserPool;
+      const files = [
+        inventoryFile('src/session-a.ts', 'export const sessionA = true;'),
+        inventoryFile('src/session-b.ts', 'export const sessionB = true;'),
+        inventoryFile('src/session-c.ts', 'export const sessionC = true;'),
+      ];
+
+      const results = yield* pool.withParserSlot(home, extract => Effect.forEach(files, extract));
+      const afterSession = yield* pool.extract(
+        inventoryFile('src/session-after.ts', 'export const sessionAfter = true;'),
+        home,
+      );
+
+      expect(results.map(result => result.facts.path)).toEqual(files.map(file => file.path));
+      expect(afterSession.degraded).toBe(false);
+      expect(processes).toHaveLength(1);
+      expect(processes[0].writes.map(request => request.file.path)).toEqual([
+        ...files.map(file => file.path),
+        'src/session-after.ts',
+      ]);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
   it.effect('does not terminate an active extraction when idle slots are trimmed', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
     const spawn: ParserWorkerSpawner = () => {

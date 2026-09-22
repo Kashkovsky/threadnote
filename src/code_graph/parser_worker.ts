@@ -191,7 +191,18 @@ export interface CodeGraphParserPoolShape {
     file: CodeGraphInventoryFile,
     threadnoteHome: string,
   ) => Effect.Effect<CodeGraphParserResult, never>;
+  readonly withParserSlot: <A, E, R>(
+    threadnoteHome: string,
+    use: (
+      extract: (file: CodeGraphInventoryFile) => Effect.Effect<CodeGraphParserResult, never>,
+    ) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
+  readonly warm: (threadnoteHome: string) => Effect.Effect<void, never>;
   readonly trimIdle: Effect.Effect<void, never>;
+}
+
+class ParserWorkerSessionUseError<E> {
+  constructor(readonly error: E) {}
 }
 
 export interface ParserWorkerCapacityInput {
@@ -264,28 +275,43 @@ export function codeGraphParserPoolLayer(
         );
         const available = yield* Queue.unbounded<ParserWorkerSlot>();
         yield* Queue.offerAll(available, slots);
+        const degradedResult = (file: CodeGraphInventoryFile, cause: unknown): CodeGraphParserResult => {
+          const reason = Schema.is(ParserWorkerError)(cause) ? cause.reason : 'protocol';
+          return {
+            degradationReason: reason,
+            degraded: true,
+            facts: degradedFacts(file, cause),
+            parseMilliseconds: 0,
+          };
+        };
+        const sourceBudgetResult = (file: CodeGraphInventoryFile): CodeGraphParserResult | undefined => {
+          const sourceByteBudget = parserWorkerSourceByteBudget(file, maxSourceBytes);
+          if (!sourceByteBudget.exceeded) return undefined;
+          return degradedResult(
+            file,
+            ParserWorkerError.of('source-bytes', {
+              code: 'source-bytes',
+              maximum: sourceByteBudget.maximumBytes,
+              observed: sourceByteBudget.observedBytes,
+              unit: 'bytes',
+            }),
+          );
+        };
+        const extractFromSlot = (slot: ParserWorkerSlot, file: CodeGraphInventoryFile, threadnoteHome: string) => {
+          const budgeted = sourceBudgetResult(file);
+          return budgeted === undefined
+            ? slot
+                .extract(file, threadnoteHome)
+                .pipe(Effect.catch(cause => Effect.succeed(degradedResult(file, cause))))
+            : Effect.succeed(budgeted);
+        };
 
         return {
           service: CodeGraphParserPool.of({
             capacity,
             extract: (file, threadnoteHome) => {
-              const sourceByteBudget = parserWorkerSourceByteBudget(file, maxSourceBytes);
-              if (sourceByteBudget.exceeded) {
-                return Effect.succeed({
-                  degradationReason: 'source-bytes',
-                  degraded: true,
-                  facts: degradedFacts(
-                    file,
-                    ParserWorkerError.of('source-bytes', {
-                      code: 'source-bytes',
-                      maximum: sourceByteBudget.maximumBytes,
-                      observed: sourceByteBudget.observedBytes,
-                      unit: 'bytes',
-                    }),
-                  ),
-                  parseMilliseconds: 0,
-                });
-              }
+              const budgeted = sourceBudgetResult(file);
+              if (budgeted !== undefined) return Effect.succeed(budgeted);
               return Effect.acquireUseRelease(
                 Queue.take(available),
                 slot =>
@@ -296,21 +322,48 @@ export function codeGraphParserPoolLayer(
                     system,
                     threadnoteHome,
                     capacity,
-                    slot.extract(file, threadnoteHome),
-                  ).pipe(
-                    Effect.catch(cause => {
-                      const reason = Schema.is(ParserWorkerError)(cause) ? cause.reason : 'protocol';
-                      return Effect.succeed({
-                        degradationReason: reason,
-                        degraded: true,
-                        facts: degradedFacts(file, cause),
-                        parseMilliseconds: 0,
-                      });
-                    }),
-                  ),
+                    extractFromSlot(slot, file, threadnoteHome),
+                  ).pipe(Effect.catch(cause => Effect.succeed(degradedResult(file, cause)))),
                 slot => Queue.offer(available, slot),
               );
             },
+            withParserSlot: (threadnoteHome, use) =>
+              Effect.acquireUseRelease(
+                Queue.take(available),
+                slot =>
+                  withGlobalParserSlot(
+                    crypto,
+                    fs,
+                    path,
+                    system,
+                    threadnoteHome,
+                    capacity,
+                    use(file => extractFromSlot(slot, file, threadnoteHome)).pipe(
+                      Effect.mapError(error => new ParserWorkerSessionUseError(error)),
+                    ),
+                  ).pipe(
+                    Effect.catch(error =>
+                      error instanceof ParserWorkerSessionUseError
+                        ? Effect.fail(error.error)
+                        : use(file => Effect.succeed(degradedResult(file, error))),
+                    ),
+                  ),
+                slot => Queue.offer(available, slot),
+              ),
+            warm: threadnoteHome =>
+              Effect.acquireUseRelease(
+                Queue.clear(available),
+                idleSlots =>
+                  Effect.forEach(
+                    idleSlots,
+                    slot => fromPromise('warm parser worker', () => slot.warm(threadnoteHome)),
+                    {
+                      concurrency: 'unbounded',
+                      discard: true,
+                    },
+                  ).pipe(Effect.ignore),
+                idleSlots => Queue.offerAll(available, idleSlots),
+              ).pipe(Effect.asVoid),
             trimIdle: Effect.acquireUseRelease(
               Queue.clear(available),
               idleSlots =>
@@ -333,15 +386,15 @@ export function codeGraphParserPoolLayer(
   );
 }
 
-function withGlobalParserSlot<A, E>(
+function withGlobalParserSlot<A, E, R>(
   crypto: Crypto.Crypto,
   fs: FileSystem.FileSystem,
   path: Path.Path,
   system: SystemInfoShape,
   threadnoteHome: string,
   capacity: number,
-  effect: Effect.Effect<A, E>,
-): Effect.Effect<A, E | unknown> {
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E | unknown, R> {
   const slotRoot = path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'parser-slots');
   const attempt = (slot: number) =>
     withExclusiveFileLock(
@@ -457,6 +510,16 @@ class ParserWorkerSlot {
     this.connection = Option.none();
     this.connectionHome = Option.none();
     await connection.close();
+  }
+
+  async warm(threadnoteHome: string): Promise<void> {
+    if (this.closed) return;
+    this.cancelIdleEviction();
+    try {
+      await this.activeConnection(threadnoteHome);
+    } finally {
+      this.scheduleIdleEviction();
+    }
   }
 
   async trimIdle(): Promise<void> {

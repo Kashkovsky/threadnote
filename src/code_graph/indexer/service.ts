@@ -776,6 +776,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           options.force || bypassCachedFacts
                             ? new Set<string>()
                             : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
+                        yield* parserPool.warm(options.threadnoteHome);
                         return yield* inventoryRepository(identity, {
                           ...options,
                           cachedCommittedFileKeys,
@@ -827,7 +828,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       // Inventory and extraction build large, short-lived maps and Git payloads. Reclaim them before
                       // the SQLite activation phase so their heap high-water does not overlap the writer page cache.
                       yield* Effect.sync(() => {
-                        Bun.gc(true);
                         Bun.shrink();
                       });
                       yield* Effect.yieldNow;

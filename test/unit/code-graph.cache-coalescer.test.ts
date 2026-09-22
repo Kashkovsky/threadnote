@@ -615,16 +615,19 @@ function coalescerHarness(options: {
   readonly preparationGate?: CodeGraphIndexResourceGate;
 }) {
   const calls: CacheCall[] = [];
+  const extract = (file: CodeGraphInventoryFile) => {
+    const result = options.facts?.(file) ?? {
+      degraded: false,
+      facts: emptyFacts(file.path),
+      parseMilliseconds: 0,
+    };
+    return Effect.isEffect(result) ? result : Effect.succeed(result);
+  };
   const parserPool = {
     capacity: options.capacity,
-    extract: (file: CodeGraphInventoryFile) => {
-      const result = options.facts?.(file) ?? {
-        degraded: false,
-        facts: emptyFacts(file.path),
-        parseMilliseconds: 0,
-      };
-      return Effect.isEffect(result) ? result : Effect.succeed(result);
-    },
+    extract,
+    withParserSlot: (_threadnoteHome, use) => use(extract),
+    warm: () => Effect.void,
     trimIdle: Effect.void,
   } satisfies CodeGraphParserPoolShape;
   const store = {

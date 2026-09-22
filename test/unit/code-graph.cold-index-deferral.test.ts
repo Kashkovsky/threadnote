@@ -10,6 +10,7 @@ import {
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   codeGraphColdIndexDeferralEligible,
+  codeGraphColdIndexDeferralWorthwhile,
   deferCodeGraphQueryIndexesForColdBuild,
 } from '../../src/code_graph/store/cold_index_deferral.js';
 import type {CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store/models.js';
@@ -49,6 +50,18 @@ describe('code graph cold query-index deferral', () => {
       ),
       {numRuns: 150},
     );
+  });
+
+  it('defers only when file count or source bytes reaches the bulk-build envelope', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({min: 0, max: 256 * 1_024}), {maxLength: 511}), sizes => {
+        const files = sizes.map(size => ({size}));
+        const totalBytes = sizes.reduce((total, size) => total + size, 0);
+        expect(codeGraphColdIndexDeferralWorthwhile(files)).toBe(totalBytes >= 16 * 1_048_576);
+      }),
+      {numRuns: 150},
+    );
+    expect(codeGraphColdIndexDeferralWorthwhile(Array.from({length: 512}, () => ({size: 0})))).toBe(true);
   });
 
   effectIt.effect('restores every exact index through one capacity boundary before reference resolution', () =>
@@ -335,7 +348,9 @@ const coldIndexFixture = Effect.fn('test.coldIndexFixture')(function* (suffix: s
     language: 'typescript',
     mode: '100644',
     path: 'src/cold-index.ts',
-    size: 128,
+    // Exercise the deferred bulk-build path rather than the small-graph eager
+    // index path covered by the pure admission property above.
+    size: 16 * 1_048_576,
     source: 'commit',
   };
   const symbol: CodeGraphSymbol = {

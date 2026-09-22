@@ -61,7 +61,10 @@ import {
 import {promotionRemovedSnapshotId, stagePersistedFullFacts} from '../resolution/core.js';
 import {selectReusableBaseReceipt} from '../queries.js';
 import {CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION} from '../models.js';
-import {deferCodeGraphQueryIndexesForColdBuild} from '../cold_index_deferral.js';
+import {
+  codeGraphColdIndexDeferralWorthwhile,
+  deferCodeGraphQueryIndexesForColdBuild,
+} from '../cold_index_deferral.js';
 
 /** @internal Exposed for deterministic SQLite snapshot-contract tests. */
 
@@ -248,7 +251,7 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
   // Production full builds discover their final batch count while attributed
   // facts are decoded. Known-count callers retain the existing eager-index
   // contract; only the dynamically finalized path enters cold deferral.
-  if (expectedBatchCount === undefined) {
+  if (expectedBatchCount === undefined && codeGraphColdIndexDeferralWorthwhile(files)) {
     yield* deferCodeGraphQueryIndexesForColdBuild(sql, snapshotId, ownerToken, runWrite);
   }
 });
