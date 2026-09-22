@@ -1,7 +1,7 @@
 import {BunFileSystem} from '@effect/platform-bun';
 import * as BunPath from '@effect/platform-bun/BunPath';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Fiber, Layer, Option} from 'effect';
+import {Deferred, Effect, FileSystem, Fiber, Layer, Option} from 'effect';
 import {TestClock} from 'effect/testing';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {describe, expect} from 'vitest';
@@ -186,9 +186,11 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         {operation: 'query' as const, query: 'value'},
         {nodeId: `cgs_${'a'.repeat(32)}`, operation: 'node' as const},
       ]) {
+        const started = harness.awaitIsolatedInspectCall(harness.observation.isolatedInspectCalls + 1);
         const fiber = yield* harness
           .invokeInspect({callerCwd: ready.identity.repoRoot, ...request})
           .pipe(Effect.forkChild({startImmediately: true}));
+        yield* started;
         yield* TestClock.adjust('30 seconds');
         const result = yield* Fiber.join(fiber);
 
@@ -280,9 +282,11 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     });
 
     return Effect.gen(function* () {
+      const started = harness.awaitIsolatedInspectCall(1);
       const fiber = yield* harness
         .invokeInspect({callerCwd: ready.identity.repoRoot, operation: 'query', query: 'value'})
         .pipe(Effect.forkChild({startImmediately: true}));
+      yield* started;
       yield* TestClock.adjust('55 seconds');
       const result = yield* Fiber.join(fiber);
 
@@ -386,12 +390,20 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   const ensureOptions: CodeGraphWatchOptions[] = [];
   const refreshOptions: CodeGraphWatchOptions[] = [];
   const lifecycleEvents: string[] = [];
+  const isolatedInspectStartSignals: Array<Deferred.Deferred<void>> = [];
   let analysisCalls = 0;
   let isolatedInspectCalls = 0;
   const isolatedRequests: Array<Record<string, unknown>> = [];
   let watcherStatusCalls = 0;
   let statusIndex = 0;
   let attachIndex = 0;
+  const isolatedInspectStartSignal = (call: number) => {
+    const existing = isolatedInspectStartSignals[call - 1];
+    if (existing !== undefined) return existing;
+    const signal = Deferred.makeUnsafe<void>();
+    isolatedInspectStartSignals[call - 1] = signal;
+    return signal;
+  };
   const query = CodeGraphQueryService.of({
     attachSharedReadySnapshot: (_threadnoteHome, _identity, _observedStatus, options) =>
       Effect.sync(() => {
@@ -476,6 +488,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
           })
         : Effect.gen(function* () {
             isolatedInspectCalls += 1;
+            yield* Deferred.succeed(isolatedInspectStartSignal(isolatedInspectCalls), undefined);
             const status = input.statuses[0];
             if (status === undefined || options?.input === undefined) {
               return yield* Effect.die('Unexpected isolated graph inspection.');
@@ -542,6 +555,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   const layer = registrationLayer.pipe(Layer.provideMerge(mcpLayer), Layer.provideMerge(applicationLayer));
 
   return {
+    awaitIsolatedInspectCall: (call: number) => Deferred.await(isolatedInspectStartSignal(call)),
     invoke: (arguments_: Record<string, unknown>) =>
       Effect.suspend(() => {
         const handle = analyzeHandle;
