@@ -342,6 +342,7 @@ export function codeGraphParserPoolLayer(
                     system,
                     threadnoteHome,
                     capacity,
+                    slot.index,
                     extractFromSlot(slot, file, threadnoteHome),
                   ).pipe(Effect.catch(cause => Effect.succeed(degradedResult(file, cause)))),
                 slot => Queue.offer(available, slot),
@@ -359,6 +360,7 @@ export function codeGraphParserPoolLayer(
                         system,
                         threadnoteHome,
                         capacity,
+                        slot.index,
                         (capacity === 1
                           ? Effect.void
                           : fromPromiseInterruptibleAwaiting(
@@ -426,6 +428,7 @@ function withGlobalParserSlot<A, E, R>(
   system: SystemInfoShape,
   threadnoteHome: string,
   capacity: number,
+  preferredSlot: number,
   effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E | unknown, R> {
   const slotRoot = path.join(threadnoteHome, 'locks', 'indexes', 'code-graph', 'parser-slots');
@@ -450,8 +453,8 @@ function withGlobalParserSlot<A, E, R>(
 
   return Effect.gen(function* () {
     while (true) {
-      for (let slot = 0; slot < capacity; slot += 1) {
-        const acquired = yield* attempt(slot);
+      for (let offset = 0; offset < capacity; offset += 1) {
+        const acquired = yield* attempt((preferredSlot + offset) % capacity);
         if (Option.isSome(acquired)) return acquired.value;
       }
       yield* Effect.sleep(SLOT_RETRY_MILLISECONDS);
@@ -470,7 +473,7 @@ class ParserWorkerSlot {
   private sequence = 0;
 
   constructor(
-    private readonly index: number,
+    readonly index: number,
     private readonly system: SystemInfoShape,
     private readonly timeoutMilliseconds: number,
     private readonly idleTimeoutMilliseconds: number,

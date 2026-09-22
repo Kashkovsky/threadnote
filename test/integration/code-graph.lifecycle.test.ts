@@ -19,6 +19,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {execFileSync, spawn} from '../helpers/node-child-process.js';
 import {Database} from 'bun:sqlite';
+import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Clock, Context, DateTime, Deferred, Effect, Fiber, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
@@ -2614,28 +2615,38 @@ describe('native code graph lifecycle', () => {
     }
   });
 
-  it('releases ordinary source content across the 128-entry batch boundary', async () => {
-    const root = createManySourceRepository(129);
-    const observedBatches: string[][] = [];
+  effectIt.effect('releases ordinary source content across the 512-entry batch boundary', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => createManySourceRepository(513)),
+      root =>
+        Effect.gen(function* () {
+          const observedBatches: string[][] = [];
+          const identity = yield* resolveRepositoryIdentity(root);
+          const inventory = yield* inventoryRepository(identity, {
+            onContentBatch: files =>
+              Effect.sync(() => {
+                observedBatches.push(files.map(file => file.path));
+              }),
+          });
 
-    const inventory = await runEffect(
-      Effect.gen(function* () {
-        const identity = yield* resolveRepositoryIdentity(root);
-        return yield* inventoryRepository(identity, {
-          onContentBatch: files =>
-            Effect.sync(() => {
-              observedBatches.push(files.map(file => file.path));
-            }),
-        });
-      }),
-    );
-
-    expect(observedBatches.map(batch => batch.length)).toEqual([128, 1]);
-    expect(observedBatches[0]?.at(0)).toBe('src/file-000.ts');
-    expect(observedBatches[1]).toEqual(['src/file-128.ts']);
-    expect(inventory.parsedFiles).toBe(129);
-    expect(inventory.files.every(file => file.content === undefined)).toBe(true);
-  });
+          expect(observedBatches.map(batch => batch.length)).toEqual([512, 1]);
+          expect(observedBatches[0]?.at(0)).toBe('src/file-000.ts');
+          expect(observedBatches[1]).toEqual(['src/file-512.ts']);
+          expect(inventory.parsedFiles).toBe(513);
+          expect(inventory.files.every(file => file.content === undefined)).toBe(true);
+        }),
+      root =>
+        FileSystem.FileSystem.pipe(
+          Effect.flatMap(fs => fs.remove(root, {recursive: true})),
+          Effect.orDie,
+        ),
+    ).pipe(
+      provideTestLayer(
+        CommandExecutor.layer.pipe(Layer.provideMerge(Layer.mergeAll(BunServices.layer, SystemInfo.layer))),
+      ),
+      TestClock.withLive,
+    ),
+  );
 
   it('indexes committed source above the former 128 MiB aggregate limit in bounded batches', async () => {
     const root = createLargeInventoryRepository(129);

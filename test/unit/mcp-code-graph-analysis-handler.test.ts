@@ -85,7 +85,11 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       });
 
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(result.content)).toContain('api, web');
+      const message = JSON.stringify(result.content);
+      expect(message).toContain('2 configured scopes match');
+      expect(message).toContain('Set project (or CLI --project)');
+      expect(message).toContain('- api: src');
+      expect(message).toContain('- web: src');
       expect(harness.observation.statusOptions).toHaveLength(0);
     }).pipe(
       Effect.ensuring(FileSystem.FileSystem.pipe(Effect.flatMap(fs => fs.remove(manifestPath).pipe(Effect.ignore)))),

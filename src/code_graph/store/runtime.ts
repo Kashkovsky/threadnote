@@ -124,7 +124,10 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
         Option.isSome(session) && session.value.databasePath === databasePath ? session.value : undefined;
       if (matching?.schemaInitialized) return;
       yield* withWriterGate(databasePath, initializeSchema(sql), waitTimeoutMilliseconds);
-      if (matching?.sqliteWriterTuning) {
+      // Schema setup can reset connection-level SQLite settings. Reapply only
+      // settings that initializeSchema can affect; NORMAL durability is applied
+      // later at the reconstructible-build boundary and needs no second report.
+      if (matching?.sqliteWriterTuning && hasConnectionLevelWriterTuning(matching.sqliteWriterTuning)) {
         yield* configureSqliteWriterConnection(
           sql,
           matching.sqliteWriterTuning,
@@ -289,5 +292,13 @@ export const makeCodeGraphStoreRuntime = Effect.gen(function* () {
     path,
   } as const;
 });
+
+function hasConnectionLevelWriterTuning(tuning: CodeGraphDatabaseSessionOptions['sqliteWriterTuning']): boolean {
+  return (
+    tuning?.mainCacheKiB !== undefined ||
+    tuning?.mmapSizeBytes !== undefined ||
+    tuning?.walAutoCheckpointPages !== undefined
+  );
+}
 
 export type CodeGraphStoreRuntime = Effect.Success<typeof makeCodeGraphStoreRuntime>;

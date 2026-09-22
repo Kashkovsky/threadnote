@@ -5,7 +5,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
-import {Effect, FileSystem, Fiber, Layer} from 'effect';
+import {Deferred, Effect, FileSystem, Fiber, Layer} from 'effect';
 import {cachedCodeGraphFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact/budget.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
@@ -28,6 +28,7 @@ import {
 import {TreeSitterRuntime} from '../../src/code_graph/tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 
 const encoder = new TextEncoder();
 
@@ -429,6 +430,100 @@ describe('code graph parser worker pool', () => {
         expect(parallel.every(result => !result.degraded)).toBe(true);
       }).pipe(provideTestLayer(baseLayer), Effect.scoped),
     {fastCheck: {numRuns: 30}},
+  );
+
+  it.effect.each([1, 2, 3, 4, 5, 6, 7, 8])('admits %i idle workers without colliding on another local slot', capacity =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-local-admission-'});
+      const attempts: string[] = [];
+      const trackedFs = FileSystem.FileSystem.of({
+        ...fs,
+        writeFileString: (path, content, options) => {
+          if (options?.flag === 'wx' && /\/parser-slots\/\d+\.lock$/.test(path)) attempts.push(path);
+          return fs.writeFileString(path, content, options);
+        },
+      });
+      const processes: ScriptedParserWorkerProcess[] = [];
+      const spawn: ParserWorkerSpawner = () => {
+        const worker = new ScriptedParserWorkerProcess(() => {});
+        processes.push(worker);
+        return worker;
+      };
+      yield* Effect.gen(function* () {
+        const pool = yield* CodeGraphParserPool;
+        const requests = yield* Effect.forkScoped(
+          Effect.forEach(
+            Array.from({length: capacity}, (_, index) =>
+              inventoryFile(`src/${index}.ts`, `export const a${index} = 1;`),
+            ),
+            file => pool.extract(file, home),
+            {concurrency: 'unbounded'},
+          ),
+        );
+        yield* waitUntil(() => processes.filter(worker => worker.writes.length === 1).length === capacity);
+
+        expect(attempts).toHaveLength(capacity);
+        expect(new Set(attempts).size).toBe(capacity);
+        for (const worker of processes) {
+          const request = worker.writes[0];
+          worker.respond(request, factsFor(request.file));
+        }
+        expect((yield* Fiber.join(requests)).every(result => !result.degraded)).toBe(true);
+      }).pipe(
+        provideTestLayer(parserLayer({capacity, spawnWorker: spawn}, SystemInfo.layer, trackedFs)),
+        Effect.scoped,
+      );
+    }).pipe(provideTestLayer(baseLayer)),
+  );
+
+  it.effect.each([0, 1])('falls back from preferred global slot %i held by another pool', preferredSlot =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-preferred-busy-'});
+      const held = yield* Deferred.make<void>();
+      const owner = yield* Effect.forkScoped(
+        withExclusiveFileLock(
+          fs,
+          `${home}/locks/indexes/code-graph/parser-slots/${preferredSlot}.lock`,
+          {
+            onAcquired: () => Deferred.succeed(held, undefined).pipe(Effect.asVoid),
+            retryIntervalMilliseconds: 1,
+            staleAfterMilliseconds: 30_000,
+            waitTimeoutMilliseconds: 0,
+          },
+          Effect.never,
+        ),
+      );
+      yield* Deferred.await(held);
+      const attempts: string[] = [];
+      const trackedFs = FileSystem.FileSystem.of({
+        ...fs,
+        writeFileString: (path, content, options) => {
+          if (options?.flag === 'wx' && /\/parser-slots\/\d+\.lock$/.test(path)) attempts.push(path);
+          return fs.writeFileString(path, content, options);
+        },
+      });
+      const result = yield* Effect.gen(function* () {
+        const pool = yield* CodeGraphParserPool;
+        if (preferredSlot === 1) {
+          yield* pool.extract(inventoryFile('src/first-slot.ts', 'export const first = true;'), home);
+          attempts.length = 0;
+        }
+        return yield* pool.extract(inventoryFile('src/fallback.ts', 'export const fallback = true;'), home);
+      }).pipe(
+        provideTestLayer(parserLayer({capacity: 2, spawnWorker: () => echoProcess()}, SystemInfo.layer, trackedFs)),
+        Effect.scoped,
+      );
+
+      expect(result.degraded).toBe(false);
+      expect(attempts.map(path => path.split('/').at(-1))).toEqual([
+        `${preferredSlot}.lock`,
+        `${1 - preferredSlot}.lock`,
+      ]);
+      expect(yield* fs.exists(`${home}/locks/indexes/code-graph/parser-slots/${preferredSlot}.lock`)).toBe(true);
+      yield* Fiber.interrupt(owner);
+    }).pipe(provideTestLayer(baseLayer)),
   );
 
   for (const capacity of [2, 4, 6, 8]) {
@@ -992,9 +1087,16 @@ const baseLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
 function parserLayer(
   options: Parameters<typeof codeGraphParserPoolLayer>[0],
   systemLayer: Layer.Layer<SystemInfo> = SystemInfo.layer,
+  fileSystem?: FileSystem.FileSystem,
 ) {
   const dependencies = Layer.mergeAll(BunServices.layer, systemLayer);
-  return codeGraphParserPoolLayer(options).pipe(Layer.provideMerge(dependencies));
+  return codeGraphParserPoolLayer(options).pipe(
+    Layer.provideMerge(
+      fileSystem === undefined
+        ? dependencies
+        : Layer.merge(dependencies, Layer.succeed(FileSystem.FileSystem, fileSystem)),
+    ),
+  );
 }
 
 function inventoryFile(path: string, content: string, language = 'typescript'): CodeGraphInventoryFile {
