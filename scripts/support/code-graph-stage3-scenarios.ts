@@ -179,21 +179,35 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   let hostA = await driver.host('a');
   const hostB = await driver.host('b');
   assertStage3(hostA.processId !== hostB.processId, 'independent-mcp-hosts');
-  const seedAnchor = await anchors(driver, hostB, seed);
+  let seedAnchor = await anchors(driver, hostB, seed);
   let churnAnchor = await anchors(driver, hostA, churn);
-  const recoveryAnchor = await anchors(driver, hostA, recovery);
+  let recoveryAnchor = await anchors(driver, hostA, recovery);
   assertStage3(
     seedAnchor.entry === churnAnchor.entry && seedAnchor.entry === recoveryAnchor.entry,
     'shared-stable-symbol',
   );
   observations.push({phase: 'linked-worktrees', state: 'observed'});
 
-  // Background refresh is fail-closed until an explicit current read proves a
-  // bounded overlay succeeds. Prime that production contract before testing
-  // watcher-owned durable demand and latest-target convergence.
+  // Background refresh is fail-closed per worktree until an explicit current
+  // read proves a bounded overlay succeeds. Prime that production contract in
+  // every worktree before testing watcher-owned durable demand and recovery.
+  seedAnchor = {
+    ...seedAnchor,
+    snapshot: await primeBackgroundRefreshEligibility(driver, hostB, seed, seedAnchor.entry, seedAnchor.leaf),
+  };
   churnAnchor = {
     ...churnAnchor,
     snapshot: await primeBackgroundRefreshEligibility(driver, hostA, churn, churnAnchor.entry, churnAnchor.leaf),
+  };
+  recoveryAnchor = {
+    ...recoveryAnchor,
+    snapshot: await primeBackgroundRefreshEligibility(
+      driver,
+      hostA,
+      recovery,
+      recoveryAnchor.entry,
+      recoveryAnchor.leaf,
+    ),
   };
 
   const writer = await driver.lock(churn, 'writer');
@@ -325,6 +339,10 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   );
   await driver.killHost(hostA);
   await driver.call(hostB, recovery, selectors('query', recoveryAnchor.entry, recoveryAnchor.leaf));
+  // Starting a host observes but does not mutate durable demand. Re-emit the
+  // unchanged file after its watcher is active so normal watcher recovery owns
+  // the dead claim without changing the target key under test.
+  await driver.change(recovery, 'before-spawn');
   const recovered = await driver.until(async () => {
     const demand = await driver.demand(recovery);
     return demand?.active?.phase === 'claimed' && demand.active.claimOwner?.processId === hostB.processId
@@ -368,7 +386,14 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   observations.push({phase: 'adopted-child-recovery', state: 'observed', refresh: attachedRefresh});
   await driver.change(seed, 'after-adoption-latest', true);
   await driver.call(hostA, seed, selectors('query', seedAnchor.entry, seedAnchor.leaf));
-  const pending = await driver.demand(seed);
+  const pending = await driver.until(async () => {
+    const demand = await driver.demand(seed);
+    return demand?.active?.targetKey === child.active.targetKey &&
+      demand.desired &&
+      demand.desired.targetKey !== child.active.targetKey
+      ? demand
+      : undefined;
+  }, 'adopted-latest-not-queued');
   assertStage3(
     pending?.active?.targetKey === child.active.targetKey &&
       pending.desired &&
