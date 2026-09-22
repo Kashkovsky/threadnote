@@ -117,6 +117,7 @@ describe('MCP code graph indexing progress', () => {
       Effect.gen(function* () {
         let ensured = 0;
         let requested = 0;
+        let resumed = 0;
         const watcher = {
           ensure: () =>
             Effect.sync(() => {
@@ -133,6 +134,11 @@ describe('MCP code graph indexing progress', () => {
                 },
                 requestState: 'started' as const,
               };
+            }),
+          resume: () =>
+            Effect.sync(() => {
+              resumed += 1;
+              return undefined;
             }),
         } as unknown as CodeGraphWatcherShape;
 
@@ -162,6 +168,7 @@ describe('MCP code graph indexing progress', () => {
         expect(preserved).toEqual(active);
         expect(ensured).toBe(2);
         expect(requested).toBe(0);
+        expect(resumed).toBe(2);
       }),
   );
 

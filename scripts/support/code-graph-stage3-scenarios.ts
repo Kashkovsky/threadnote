@@ -339,10 +339,6 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   );
   await driver.killHost(hostA);
   await driver.call(hostB, recovery, selectors('query', recoveryAnchor.entry, recoveryAnchor.leaf));
-  // Starting a host observes but does not mutate durable demand. Re-emit the
-  // unchanged file after its watcher is active so normal watcher recovery owns
-  // the dead claim without changing the target key under test.
-  await driver.change(recovery, 'before-spawn');
   const recovered = await driver.until(async () => {
     const demand = await driver.demand(recovery);
     return demand?.active?.phase === 'claimed' && demand.active.claimOwner?.processId === hostB.processId

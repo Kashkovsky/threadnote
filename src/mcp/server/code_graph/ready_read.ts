@@ -88,9 +88,15 @@ export const completeCodeGraphReadyReadRefresh = Effect.fn('codeGraph.completeRe
   if (input.ensureWatcher) yield* input.watcher.ensure({...input.target, key: input.key});
   if (!input.backgroundRefreshRequested) return input.refresh;
   // A compatible ready read may establish a watcher, but never turns its
-  // successful response into a hidden build request. Current-required reads,
-  // explicit indexing, and watcher-observed changes own refresh admission.
+  // successful response into new hidden build demand. It may resume a demand
+  // already admitted by a watcher on another process so abandoned work does
+  // not remain permanently claimed after that process exits.
+  const resumed =
+    input.watcher.resume === undefined
+      ? undefined
+      : yield* input.watcher.resume({...input.target, key: input.key}).pipe(Effect.orElseSucceed(() => undefined));
   return (
+    resumed ??
     input.refresh ?? {
       type: 'code-graph-refresh-continuity' as const,
       version: 1 as const,
