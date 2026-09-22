@@ -1802,6 +1802,32 @@ describe('Effect CLI', () => {
     }
   });
 
+  it('keeps packaged examples immutable while bootstrapping project and scope state under --home', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-isolated-home-'));
+    const repository = join(home, 'repository');
+    const packagedExample = join(process.cwd(), 'config', 'seed-manifest.example.yaml');
+    const packagedBefore = await readFile(packagedExample, 'utf8');
+    try {
+      await mkdir(join(repository, 'apps', 'demo'), {recursive: true});
+      await execFilePromise('git', ['init', '-q', '-b', 'main'], {cwd: repository});
+
+      await runCli(['project', 'create', 'isolated', '--home', home, '--path', repository, '--json'], {}, repository);
+      await runCli(
+        ['graph', 'scope', 'set', 'isolated', '--home', home, '--root', 'apps/demo', '--json'],
+        {},
+        repository,
+      );
+
+      const userManifest = await readFile(join(home, 'seed-manifest.yaml'), 'utf8');
+      expect(userManifest).toContain('name: isolated');
+      expect(userManifest).toContain('roots:');
+      expect(userManifest).toContain('apps/demo');
+      expect(await readFile(packagedExample, 'utf8')).toBe(packagedBefore);
+    } finally {
+      await rm(home, {recursive: true, force: true});
+    }
+  });
+
   it('manages workset definitions through the CLI with stable JSON output and explicit deletion confirmation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-worksets-'));
     const manifestPath = join(root, 'seed-manifest.yaml');

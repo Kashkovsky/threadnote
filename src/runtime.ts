@@ -1,13 +1,16 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Path, PlatformError} from 'effect';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, USER_MANIFEST_NAME} from './constants.js';
 import {readCursorCloudIdentityProfile} from './cursor/profile.js';
 import {expandPath, toolRoot} from './utils.js';
 import {SystemInfo} from './effect/system.js';
+import type {RuntimeConfig} from './types.js';
 
 export interface RuntimeOptions {
   readonly home?: string;
   readonly manifest?: string;
 }
+
+const EMPTY_USER_MANIFEST = 'version: 1\nprojects: []\n';
 
 export const getRuntimeConfig = Effect.fn('runtime.getRuntimeConfig')(function* (
   options: RuntimeOptions = {},
@@ -59,4 +62,26 @@ export const defaultManifestPath = Effect.fn('runtime.defaultManifestPath')(func
 export const builtInExampleManifestPath = Effect.fn('runtime.builtInExampleManifestPath')(function* () {
   const pathService = yield* Path.Path;
   return pathService.join(yield* toolRoot(), 'config', 'seed-manifest.example.yaml');
+});
+
+/**
+ * Select a user-owned manifest for project, graph-scope, and workset management.
+ * The bundled example is a read-only compatibility fallback and must never be
+ * used as a mutation target.
+ */
+export const ensureUserManifestRuntimeConfig = Effect.fn('runtime.ensureUserManifestRuntimeConfig')(function* (
+  config: RuntimeConfig,
+) {
+  if (config.manifestSource !== 'bundled-example') return config;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const manifestPath = path.join(config.agentContextHome, USER_MANIFEST_NAME);
+  yield* fs.makeDirectory(path.dirname(manifestPath), {recursive: true});
+  yield* fs.writeFileString(manifestPath, EMPTY_USER_MANIFEST, {flag: 'wx', mode: 0o600}).pipe(
+    Effect.catchIf(
+      error => error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists',
+      () => Effect.void,
+    ),
+  );
+  return {...config, manifestPath, manifestSource: 'user' as const};
 });

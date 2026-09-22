@@ -85,7 +85,7 @@ import {
   runObsidianSourceStatus,
   runObsidianSourceSync,
 } from '../obsidian/source.js';
-import {getRuntimeConfig} from '../runtime.js';
+import {ensureUserManifestRuntimeConfig, getRuntimeConfig} from '../runtime.js';
 import {runInitManifest, runSeed, runSeedSkills} from '../seeding.js';
 import {makeWorksetCommand} from './workset_cli.js';
 import {makeProjectCommand} from './project_cli.js';
@@ -225,6 +225,8 @@ const withRuntimeEffect = <E, R>(
       Effect.flatMap(effect),
     ),
   );
+const withManifestManagementRuntimeEffect = <E, R>(effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>) =>
+  withRuntimeEffect(config => ensureUserManifestRuntimeConfig(config).pipe(Effect.flatMap(effect)));
 const manage = Command.make(
   'manage',
   {
@@ -236,7 +238,7 @@ const manage = Command.make(
       ),
     ),
   },
-  options => withRuntimeEffect(config => runManage(config, options)),
+  options => withManifestManagementRuntimeEffect(config => runManage(config, options)),
 ).pipe(Command.withDescription('Open the local Threadnote web manager'));
 const processes = Command.make(
   'processes',
@@ -686,7 +688,7 @@ const graphIndex = Command.make(
   options => withRuntimeEffect(config => runCodeGraphIndex(config, options)),
 ).pipe(Command.withDescription('Build and atomically activate a current native code graph snapshot'));
 
-const withScopedRuntime = withRuntimeEffect as <E, R>(
+const withScopedRuntime = withManifestManagementRuntimeEffect as <E, R>(
   effect: (config: RuntimeConfig) => Effect.Effect<void, E, R>,
 ) => Effect.Effect<void, E, R>;
 const graphScope = makeCodeGraphScopeCommand(withScopedRuntime, graphBounds.json);
