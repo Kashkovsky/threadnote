@@ -784,8 +784,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           overlayObservation: inventoryOverlayObservation,
                           onContentBatch: cacheCoalescer.onContentBatch,
                           onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
-                          onParserWorkPlanned: () =>
-                            parserPool.capacity === 1 ? parserPool.warm(options.threadnoteHome) : Effect.void,
+                          onParserWorkPlanned: () => parserPool.warm(options.threadnoteHome),
                         });
                       }).pipe(
                         Effect.tap(() => cacheCoalescer.flush),
