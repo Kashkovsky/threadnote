@@ -239,7 +239,6 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   }
 
   await driver.change(churn, 'f2');
-  const second = await driver.call(hostA, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
   const f2 = await driver.until(async () => {
     const demand = await driver.demand(churn);
     return demand?.active?.targetKey === f1.active.targetKey &&
@@ -253,6 +252,7 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
     'f2-not-queued',
   );
   const f2Key = f2.desired.targetKey;
+  const second = await driver.call(hostA, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
   observations.push({
     phase: 'latest-demand-convergence',
     state: 'observed',
@@ -260,7 +260,6 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
     refresh: stage3Refresh(second.refresh),
   });
   await driver.change(churn, 'f3');
-  const third = await driver.call(hostB, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
   const f3 = await driver.until(async () => {
     const demand = await driver.demand(churn);
     return demand?.active?.targetKey === f1.active.targetKey &&
@@ -278,6 +277,7 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
     'f3-not-latest',
   );
   const f3Key = f3.desired.targetKey;
+  const third = await driver.call(hostB, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
   const latestRefresh = stage3Refresh(third.refresh);
   assertStage3(
     latestRefresh.currentTargetToken === f1.active.targetToken &&
