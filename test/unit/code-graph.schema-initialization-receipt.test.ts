@@ -2,7 +2,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, Exit, FileSystem, Path} from 'effect';
+import {Effect, Exit, FileSystem, Path, Schema} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CodeGraphStore} from '../../src/code_graph/store.js';
@@ -15,7 +15,11 @@ import {
   currentCodeGraphSchemaInitializationReceipt,
 } from '../../src/code_graph/store/schema/receipt.js';
 import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store/schema/metadata.js';
-import {REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY} from '../../src/code_graph/store/removed/view_schema_contracts.js';
+import {
+  REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY,
+  REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY,
+} from '../../src/code_graph/store/removed/view_schema_contracts.js';
+import {codeGraphScopeCursor} from '../../src/code_graph/store/scope/cursor.js';
 import {CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION} from '../../src/code_graph/store/schema/revision.js';
 import {CODE_GRAPH_WAL_JOURNAL_SIZE_LIMIT_BYTES, configureConnection} from '../../src/code_graph/store/session.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage} from '../../src/code_graph/storage.js';
@@ -224,6 +228,78 @@ describe('code graph schema initialization receipt', () => {
         });
       }).pipe(provideTestLayer(ApplicationLayer)),
     ),
+  );
+
+  effectIt.effect('admits a scoped cleanup cursor without replaying schema initialization', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-scoped-cursor-receipt-'});
+        const databasePath = path.join(root, 'graph.sqlite');
+        const writerLockPath = path.join(root, 'writer.lock');
+        const cursor = codeGraphScopeCursor('a'.repeat(64), `code-graph-scope:${'b'.repeat(64)}`);
+
+        yield* store.initialize(databasePath);
+        yield* useWritableDatabase(databasePath, database => {
+          database
+            .query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)')
+            .run(REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY, cursor);
+        });
+
+        const observer = yield* Effect.acquireRelease(
+          Effect.sync(() => new Database(databasePath, {readonly: true, strict: true})),
+          database => Effect.sync(() => database.close(false)),
+        );
+        const beforeFastPath = dataVersion(observer);
+
+        yield* store.withSession(databasePath, store.initialize(databasePath), {writerLockPath});
+
+        expect(dataVersion(observer)).toBe(beforeFastPath);
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect.prop(
+    'admits scoped cleanup cursors across the SQL receipt path',
+    {
+      scopeSeed: Schema.Int.check(Schema.isBetween({minimum: 0, maximum: 65_535})),
+      worktreeSeed: Schema.Int.check(Schema.isBetween({minimum: 0, maximum: 65_535})),
+    },
+    ({scopeSeed, worktreeSeed}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-scoped-cursor-property-'});
+          const databasePath = path.join(root, 'graph.sqlite');
+          const writerLockPath = path.join(root, 'writer.lock');
+          const cursor = codeGraphScopeCursor(
+            worktreeSeed.toString(16).padStart(64, '0'),
+            `code-graph-scope:${scopeSeed.toString(16).padStart(64, '0')}`,
+          );
+
+          yield* store.initialize(databasePath);
+          yield* useWritableDatabase(databasePath, database => {
+            database
+              .query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)')
+              .run(REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY, cursor);
+          });
+
+          const observer = yield* Effect.acquireRelease(
+            Effect.sync(() => new Database(databasePath, {readonly: true, strict: true})),
+            database => Effect.sync(() => database.close(false)),
+          );
+          const beforeFastPath = dataVersion(observer);
+
+          yield* store.withSession(databasePath, store.initialize(databasePath), {writerLockPath});
+
+          expect(dataVersion(observer)).toBe(beforeFastPath);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    {arbitrary: {runs: 16, seed: 'schema-receipt-scoped-cleanup-cursor'}},
   );
 
   effectIt.effect('restores the endpoint index when opening a valid pre-index receipt', () =>
