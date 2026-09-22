@@ -1691,8 +1691,8 @@ describe('exact-head development runtime', () => {
       expect(result.preserved).toMatchObject({
         cleanupComplete: false,
         cleanupIssues: [],
-        preservedMcpSessionProcesses: 3,
-        remainingSupersededProcesses: 1,
+        preservedMcpSessionProcesses: 1,
+        remainingSupersededProcesses: 3,
         terminatedSupersededProcesses: 0,
       });
       expect(result.signals).toEqual([

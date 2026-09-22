@@ -1025,7 +1025,10 @@ export const CODE_GRAPH_LOCK_OPTIONS = {
 } as const;
 
 export const CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS = 10 * 60_000;
-const FACT_MATERIALIZATION_BATCH_FILES = 128;
+// Keep small-file materialization aligned with the direct-persistent transaction
+// envelope. Source and cached-fact byte caps remain the primary memory and
+// SQLite-work bounds for dense repositories.
+const FACT_MATERIALIZATION_BATCH_FILES = 512;
 const FACT_MATERIALIZATION_BATCH_SOURCE_BYTES = 16 * 1_048_576;
 const FACT_MATERIALIZATION_BATCH_CACHED_FACT_BYTES = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
 const PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES = 4;

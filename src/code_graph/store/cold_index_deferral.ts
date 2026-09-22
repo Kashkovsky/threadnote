@@ -163,36 +163,34 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
       });
     const restoration = Effect.gen(function* () {
       yield* report();
-      for (const definition of missing) {
-        yield* runWrite(
-          sql.withTransaction(
-            Effect.gen(function* () {
-              yield* assertPersistentBuildOwner(sql, options.snapshotId, options.ownerToken);
-              const marker = yield* sql<{readonly value: string}>`
-                SELECT value FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY} LIMIT 1
-              `;
-              if (marker[0]?.value !== DEFERRED_QUERY_INDEX_STATE_VALUE) {
-                return yield* CodeGraphStoreError.of('Code graph query index restoration changed.');
-              }
+      yield* runWrite(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* assertPersistentBuildOwner(sql, options.snapshotId, options.ownerToken);
+            const marker = yield* sql<{readonly value: string}>`
+              SELECT value FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY} LIMIT 1
+            `;
+            if (marker[0]?.value !== DEFERRED_QUERY_INDEX_STATE_VALUE) {
+              return yield* CodeGraphStoreError.of('Code graph query index restoration changed.');
+            }
+            for (const definition of missing) {
               yield* sql.unsafe(definition.createSql);
               yield* options.observeTransaction?.() ?? Effect.void;
-            }),
-          ),
-        );
+            }
+            const restored = yield* inspectCodeGraphQueryIndexes(sql);
+            if (restored.missing.length > 0) {
+              return yield* CodeGraphStoreError.of('Code graph query index restoration is incomplete.');
+            }
+            yield* recordCodeGraphSchemaInitializationReceipt(sql);
+            yield* sql`DELETE FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY}`;
+          }),
+        ),
+      );
+      for (const _definition of missing) {
         completed += 1;
         yield* report();
         yield* Effect.yieldNow;
       }
-      yield* runWrite(
-        Effect.gen(function* () {
-          const restored = yield* inspectCodeGraphQueryIndexes(sql);
-          if (restored.missing.length > 0) {
-            return yield* CodeGraphStoreError.of('Code graph query index restoration is incomplete.');
-          }
-          yield* recordCodeGraphSchemaInitializationReceipt(sql);
-          yield* sql`DELETE FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY}`;
-        }),
-      );
     });
     yield* options.persistentCapacityProtector
       ? options.persistentCapacityProtector(boundary, restoration)
