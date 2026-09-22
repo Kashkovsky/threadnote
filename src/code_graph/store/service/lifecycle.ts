@@ -21,6 +21,7 @@ import {
   type CodeGraphDatabaseSessionShape,
   configureConnection,
   configureReadConnection,
+  configureReconstructibleBuildDurability,
   configureSqliteWriterConnection,
   tableExists,
   useDatabase,
@@ -42,7 +43,7 @@ import {validateViewRemovalTarget, observeActiveView} from '../reconciliation/co
 import {
   associateMaterializedFileShardBatch,
   cacheCapacityPlanningError,
-  prepareFreshFactCacheChunks,
+  prepareFreshFactCacheBatchChunks,
   storeFreshFactRows,
   prepareMaterializedShardCacheChunks,
   prepareMaterializedShardCacheBatchChunks,
@@ -89,6 +90,7 @@ type CodeGraphStoreLifecycleMethods = Pick<
   | 'activate'
   | 'activateStaged'
   | 'activateCleanSnapshotAlias'
+  | 'cacheFactBatches'
   | 'cacheFacts'
   | 'cacheMaterializedFileShards'
   | 'cacheMaterializedFileShardBatches'
@@ -150,6 +152,53 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
         });
       }
     }).pipe(Effect.mapError(cause => storeError('cache materialized code graph file shard batches', cause)));
+  const cacheFactBatches: CodeGraphStoreLifecycleMethods['cacheFactBatches'] = (
+    databasePath,
+    batches,
+    persistentCapacityProtector,
+  ) =>
+    Effect.gen(function* () {
+      if (batches.length === 0) return;
+      const createdAt = DateTime.formatIso(yield* DateTime.now);
+      const chunks = yield* Effect.try({
+        catch: cause => cacheCapacityPlanningError('file facts', cause),
+        try: () => prepareFreshFactCacheBatchChunks(batches, createdAt),
+      });
+      const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
+      const initializedSession =
+        Option.isSome(session) && session.value.databasePath === databasePath && session.value.schemaInitialized;
+      if (!initializedSession) {
+        yield* prepare(databasePath);
+        yield* useDatabase(
+          databasePath,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* ensureSchemaInitialized(databasePath, sql);
+          }),
+        );
+      }
+      yield* useDatabase(
+        databasePath,
+        Effect.gen(function* () {
+          yield* configureReconstructibleBuildDurability(yield* SqlClient.SqlClient);
+        }),
+      );
+      for (const chunk of chunks) {
+        yield* persistentCapacityProtector(
+          chunk.boundary,
+          withWriterGate(
+            databasePath,
+            useDatabase(
+              databasePath,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                yield* sql.withTransaction(storeFreshFactRows(sql, chunk.rows));
+              }),
+            ),
+          ),
+        );
+      }
+    }).pipe(Effect.mapError(cause => storeError('cache code graph file facts', cause)));
 
   return {
     shrinkMemory: databasePath =>
@@ -177,25 +226,17 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             // indexing writer. Read/query sessions retain SQLite's small
             // default cache, so concurrent agents do not multiply this
             // bounded 32 MiB writer budget.
-            if (options.sqliteWriterTuning) {
-              yield* configureSqliteWriterConnection(
-                sql,
-                options.sqliteWriterTuning,
-                'connection',
-                options.onSqliteWriterConfigured,
-              );
-            } else {
-              yield* configureSqliteWriterConnection(
-                sql,
-                {mainCacheKiB: CODE_GRAPH_WRITER_MAIN_CACHE_KIB},
-                'connection',
-                options.onSqliteWriterConfigured,
-              );
-            }
+            yield* configureSqliteWriterConnection(
+              sql,
+              {mainCacheKiB: CODE_GRAPH_WRITER_MAIN_CACHE_KIB, ...options.sqliteWriterTuning},
+              'connection',
+              options.onSqliteWriterConfigured,
+            );
           }
           const session = {
             databasePath,
             detachedCleanupRequest,
+            reconstructibleDurabilityConfigured: false as boolean,
             schemaInitialized: false as boolean,
             sql,
             ...options,
@@ -504,37 +545,9 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
         ),
         Effect.mapError(cause => storeError('activate clean code graph snapshot alias', cause)),
       ),
+    cacheFactBatches,
     cacheFacts: (databasePath, files, facts, extractorSet, persistentCapacityProtector) =>
-      Effect.gen(function* () {
-        const createdAt = DateTime.formatIso(yield* DateTime.now);
-        const chunks = yield* Effect.try({
-          catch: cause => cacheCapacityPlanningError('file facts', cause),
-          try: () => prepareFreshFactCacheChunks(files, facts.map(ensureBoundedCodeGraphFact), extractorSet, createdAt),
-        });
-        yield* prepare(databasePath);
-        yield* useDatabase(
-          databasePath,
-          Effect.gen(function* () {
-            const sql = yield* SqlClient.SqlClient;
-            yield* ensureSchemaInitialized(databasePath, sql);
-          }),
-        );
-        for (const chunk of chunks) {
-          yield* persistentCapacityProtector(
-            chunk.boundary,
-            withWriterGate(
-              databasePath,
-              useDatabase(
-                databasePath,
-                Effect.gen(function* () {
-                  const sql = yield* SqlClient.SqlClient;
-                  yield* sql.withTransaction(storeFreshFactRows(sql, chunk.rows));
-                }),
-              ),
-            ),
-          );
-        }
-      }).pipe(Effect.mapError(cause => storeError('cache code graph file facts', cause))),
+      cacheFactBatches(databasePath, [{extractorSet, facts, files}], persistentCapacityProtector),
     cacheMaterializedFileShards: (
       databasePath,
       files,

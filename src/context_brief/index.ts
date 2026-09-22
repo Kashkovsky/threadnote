@@ -1,4 +1,5 @@
-import {Clock, DateTime, Effect, Exit} from 'effect';
+import {Clock, DateTime, Effect, Exit, Schema} from 'effect';
+import {CodeGraphScopeRoutingError} from '../code_graph/scope/routing.js';
 import {succeedUndefined} from '../effect/optional.js';
 import type {AnonymousTelemetryContextBriefCitationUnknownReason} from '../effect/telemetry.js';
 import {
@@ -117,8 +118,9 @@ export function instrumentContextBriefCompilerDependencies<
       reporter
         .graph(sources.graphEvidence(graphPlan), contextBriefGraphPhaseOutcome)
         .pipe(
-          Effect.orElseSucceed(() =>
-            unavailableContextBriefGraphEvidence('graph-query-unavailable', requestedRepositories),
+          Effect.catchIf(
+            error => !Schema.is(CodeGraphScopeRoutingError)(error),
+            () => Effect.succeed(unavailableContextBriefGraphEvidence('graph-query-unavailable', requestedRepositories)),
           ),
         ),
     ...(sources.codeLinkedMemoryEvidence === undefined

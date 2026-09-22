@@ -33,6 +33,12 @@ import {
   codeGraphExtractorSetIdentityFromPackProvenance,
 } from '../graph_identity.js';
 import {CodeGraphIndexOperationError} from './shared.js';
+import {
+  codeGraphFileProgressDimensions,
+  emitContentProgress,
+  flushCombinedCodeGraphCacheGroups,
+  type CodeGraphPendingCacheGroup,
+} from './cache_flush.js';
 import type {CodeGraphIndexResourceGate} from './types.js';
 import type {DirectPersistentCapacityProtection, IncrementalOverlayAssessment} from './types.js';
 import {type CodeGraphContentBatchContext, type CodeGraphInventoryOptions} from '../inventory.js';
@@ -183,18 +189,6 @@ export interface CodeGraphCacheContentCoalescer {
 
 const CODE_GRAPH_CACHE_TIMESTAMP_CAPACITY_PLACEHOLDER = '1970-01-01T00:00:00.000Z';
 
-function codeGraphFileProgressDimensions(
-  file: CodeGraphInventoryFile,
-  languagePacks: CodeGraphLanguagePackRegistryShape,
-) {
-  const matched = Option.getOrUndefined(languagePacks.match(file.path));
-  return {
-    classifier: matched?.pack.id ?? 'unmatched',
-    role: matched?.role ?? 'unmatched',
-    sizeBucket: codeGraphSourceSizeBucket(file.size),
-  } as const;
-}
-
 /** @internal Exposed for cache coalescing/cancellation contract tests. */
 export function cacheContentBatch(options: {
   readonly databasePath: string;
@@ -237,14 +231,7 @@ export function cacheContentBatch(options: {
   let pendingBytes = 0;
   let pendingRows = 0;
   let latestContext: CodeGraphContentBatchContext | undefined;
-  type PendingCacheGroup = {
-    readonly cacheIdentity: string;
-    readonly facts: BoundedCodeGraphFact[];
-    readonly files: CodeGraphInventoryFile[];
-    readonly paths: Set<string>;
-    payloadBytes: number;
-  };
-  const pendingGroups = new Map<string, PendingCacheGroup>();
+  const pendingGroups = new Map<string, CodeGraphPendingCacheGroup>();
   const currentScanningMetrics = (): CodeGraphScanningMetrics | undefined =>
     extractionPlan === undefined
       ? undefined
@@ -467,10 +454,10 @@ export function cacheContentBatch(options: {
         const window = groupWindow
           .flatMap(group => group.files)
           .sort((left, right) => compareCodeUnits(left.path, right.path));
-        const runExtraction = (parserExtract: CodeGraphParserPoolShape['extract']) =>
+        const runExtraction = () =>
           Effect.gen(function* () {
             let windowCompleted = 0;
-            const extractGroup = (group: ExtractionReuseGroup) =>
+            const extractGroup = (group: ExtractionReuseGroup, parserExtract: CodeGraphParserPoolShape['extract']) =>
               Effect.forEach(
                 group.files,
                 file =>
@@ -570,7 +557,25 @@ export function cacheContentBatch(options: {
                   }),
                 {concurrency: 1},
               );
-            const groupedResults = yield* Effect.forEach(groupWindow, extractGroup, {concurrency: lane.concurrency});
+            let nextGroupIndex = 0;
+            const drainGroups = (parserExtract: CodeGraphParserPoolShape['extract']) =>
+              Effect.gen(function* () {
+                const drained = [];
+                while (nextGroupIndex < groupWindow.length) {
+                  const group = groupWindow[nextGroupIndex];
+                  nextGroupIndex += 1;
+                  if (group !== undefined) drained.push(yield* extractGroup(group, parserExtract));
+                }
+                return drained;
+              });
+            const groupedResults = (yield* Effect.forEach(
+              Array.from({length: Math.min(lane.concurrency, groupWindow.length)}),
+              () =>
+                options.parserPool.withParserSlot(options.threadnoteHome, window, extract =>
+                  drainGroups((file, _threadnoteHome) => extract(file)),
+                ),
+              {concurrency: 'unbounded'},
+            )).flat();
             const results = groupedResults.flat();
             for (const observed of [...results].sort((left, right) =>
               compareCodeUnits(left.file.path, right.file.path),
@@ -604,12 +609,7 @@ export function cacheContentBatch(options: {
             }
             return extractedRows;
           });
-        const extraction =
-          parserCapacity === 1
-            ? options.parserPool.withParserSlot(options.threadnoteHome, extract =>
-                runExtraction((file, _threadnoteHome) => extract(file)),
-              )
-            : runExtraction(options.parserPool.extract);
+        const extraction = runExtraction();
         const admittedExtraction = options.preparationGate ? options.preparationGate(extraction) : extraction;
         yield* acceptExtracted(yield* admittedExtraction, cumulativeContext);
       }
@@ -634,7 +634,26 @@ export function cacheContentBatch(options: {
     }),
     extractedFactBytes: Effect.sync(() => terminalExtractedFactBytes),
     flush: Effect.gen(function* () {
-      while (pendingGroups.size > 0) yield* flushOldestPendingGroup();
+      const result = yield* flushCombinedCodeGraphCacheGroups({
+        context: latestContext,
+        databasePath: options.databasePath,
+        extractionMilliseconds,
+        languagePacks: options.languagePacks,
+        metrics: currentScanningMetrics(),
+        onCachedParserBatch: options.onCachedParserBatch,
+        onProgress: options.onProgress,
+        onSourceParserBatch: options.onSourceParserBatch,
+        pendingBytes,
+        pendingGroups,
+        pendingRows,
+        persistenceMilliseconds,
+        persistentCapacityProtector: options.persistentCapacityProtector,
+        serializationMilliseconds,
+        store: options.store,
+      });
+      pendingBytes = result.pendingBytes;
+      pendingRows = result.pendingRows;
+      persistenceMilliseconds = result.persistenceMilliseconds;
       reusableExtractions.clear();
       reusableExtractionUses.clear();
     }),
@@ -698,7 +717,10 @@ function extractParserFacts(
   },
   parserExtract: CodeGraphParserPoolShape['extract'] = options.parserPool.extract,
 ): Effect.Effect<CodeGraphParserResult, unknown> {
-  if (file.bytes === undefined) return parserExtract(file, options.threadnoteHome);
+  const match = options.languagePacks.match(file.path);
+  const boundedManifestExtraction =
+    file.size <= 1_048_576 && Option.isSome(match) && match.value.pack.id === 'manifests';
+  if (file.bytes === undefined && !boundedManifestExtraction) return parserExtract(file, options.threadnoteHome);
   return Effect.gen(function* () {
     const startedAt = performance.now();
     const facts = yield* options.languagePacks
@@ -711,30 +733,6 @@ function extractParserFacts(
       parseMilliseconds: Math.max(0, performance.now() - startedAt),
     };
   });
-}
-
-function emitContentProgress(
-  onProgress: ((progress: CodeGraphProgress) => Effect.Effect<void, unknown>) | undefined,
-  context: CodeGraphContentBatchContext,
-  activity: NonNullable<Extract<CodeGraphProgress, {readonly phase: 'scanning'}>['activity']>,
-  extractionMilliseconds: number,
-  persistenceMilliseconds: number,
-  serializationMilliseconds: number,
-  metrics?: CodeGraphScanningMetrics,
-) {
-  return (
-    onProgress?.({
-      ...context.progress,
-      activity,
-      ...(metrics === undefined ? {} : {metrics}),
-      timings: {
-        extractionMilliseconds,
-        persistenceMilliseconds,
-        readingMilliseconds: context.readingMilliseconds,
-        serializationMilliseconds,
-      },
-    }) ?? Effect.void
-  );
 }
 
 function degradedParserCacheIdentity(activeIdentity: string): string {
@@ -1035,10 +1033,10 @@ export const CODE_GRAPH_LOCK_OPTIONS = {
 } as const;
 
 export const CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS = 10 * 60_000;
-// Keep small-file materialization aligned with the direct-persistent transaction
-// envelope. Source and cached-fact byte caps remain the primary memory and
-// SQLite-work bounds for dense repositories.
-const FACT_MATERIALIZATION_BATCH_FILES = 512;
+// Keep this logical boundary stable because its batch indexes and fingerprints
+// are persisted as resumable-build receipts. The transaction coalescer below
+// combines up to four logical batches into the 512-file physical envelope.
+const FACT_MATERIALIZATION_BATCH_FILES = 128;
 const FACT_MATERIALIZATION_BATCH_SOURCE_BYTES = 16 * 1_048_576;
 const FACT_MATERIALIZATION_BATCH_CACHED_FACT_BYTES = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
 const PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES = 4;

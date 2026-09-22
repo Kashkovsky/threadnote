@@ -7,6 +7,7 @@ import {
   addMaterializationRows,
   compactCachedFileRelationships,
   codeGraphActiveParserCacheKey,
+  codeGraphInventoryNeedsSynchronousReclamation,
   codeGraphParserCacheLookupGenerations,
   deduplicateMaterializationRelationships,
   emptyMaterializationReplayMetrics,
@@ -48,6 +49,38 @@ const materializationRows = FC.record({
 });
 
 describe('code graph indexer properties', () => {
+  fcProp(
+    it,
+    'requires synchronous reclamation monotonically for retained source bytes but not omitted payload size',
+    {
+      retainedSizes: FC.array(FC.integer({max: 8 * 1_048_576, min: 0}), {maxLength: 64}),
+      extraRetainedSize: FC.integer({max: 8 * 1_048_576, min: 0}),
+      omittedSize: FC.integer({max: 64 * 1_048_576, min: 0}),
+    },
+    ({extraRetainedSize, omittedSize, retainedSizes}) => {
+      const retained = retainedSizes.map(size => ({content: '', size}));
+      const before = codeGraphInventoryNeedsSynchronousReclamation(retained);
+      const after = codeGraphInventoryNeedsSynchronousReclamation([
+        ...retained,
+        {content: '', size: extraRetainedSize},
+      ]);
+
+      expect(before && !after).toBe(false);
+      expect(codeGraphInventoryNeedsSynchronousReclamation([{content: undefined, size: omittedSize}])).toBe(false);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('retains exact synchronous reclamation boundaries for file count and resident source bytes', () => {
+    expect(
+      codeGraphInventoryNeedsSynchronousReclamation(Array.from({length: 511}, () => ({content: '', size: 0}))),
+    ).toBe(false);
+    expect(
+      codeGraphInventoryNeedsSynchronousReclamation(Array.from({length: 512}, () => ({content: '', size: 0}))),
+    ).toBe(true);
+    expect(codeGraphInventoryNeedsSynchronousReclamation([{content: 'x', size: 16 * 1_048_576}])).toBe(true);
+  });
+
   fcProp(
     it,
     'keeps physical replay components bounded, order-independent, and equal to their combined counter',
@@ -389,6 +422,13 @@ describe('code graph indexer properties', () => {
       batches.every(batch => batch.reduce((total, file) => total + factBytes.get(file.path)!, 0) <= 8 * 1_048_576),
     ).toBe(true);
     expect(factMaterializationBatches(files, factBytes)).toEqual(batches);
+  });
+
+  it('keeps 128-file logical receipt boundaries stable across interrupted-build upgrades', () => {
+    const files = Array.from({length: 129}, (_, index) => ({path: `src/file-${index}.ts`, size: 1}));
+    const factBytes = new Map(files.map(file => [file.path, 1]));
+
+    expect(factMaterializationBatches(files, factBytes).map(batch => batch.length)).toEqual([128, 1]);
   });
 
   it('coalesces logical receipts deterministically, contiguously, and exactly once within physical bounds', () => {

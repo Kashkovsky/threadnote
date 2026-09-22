@@ -16,7 +16,10 @@ import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js
 import {cacheContentBatch, type CodeGraphCacheExtractedRow} from '../../src/code_graph/indexer.js';
 import type {CodeGraphIndexResourceGate} from '../../src/code_graph/indexer/types.js';
 import type {CodeGraphContentBatchContext} from '../../src/code_graph/inventory.js';
-import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
+import {
+  BUILTIN_LANGUAGE_PACK_REGISTRY,
+  type CodeGraphLanguagePackRegistryShape,
+} from '../../src/code_graph/languages/registry.js';
 import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
@@ -24,7 +27,11 @@ import {
   persistGraphSharePendingSignedCandidates,
 } from '../../src/code_graph/sharing/signed/candidate.js';
 import type {CodeGraphParserPoolShape, CodeGraphParserResult} from '../../src/code_graph/parser_worker.js';
-import type {CodeGraphDirectPersistentCapacityProtector, CodeGraphStoreShape} from '../../src/code_graph/store.js';
+import type {
+  CodeGraphDirectPersistentCapacityProtector,
+  CodeGraphFactCacheBatch,
+  CodeGraphStoreShape,
+} from '../../src/code_graph/store.js';
 import type {TreeSitterRuntimeShape} from '../../src/code_graph/tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -45,6 +52,30 @@ const unprotectedCacheWrite: CodeGraphDirectPersistentCapacityProtector = (_boun
 const journalTestLayer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 
 describe('code graph parser cache coalescer', () => {
+  effectIt.effect('extracts bounded manifest control files without parser-worker IPC', () =>
+    Effect.gen(function* () {
+      const content = '{"name":"bounded-manifest"}\n';
+      const file = {
+        ...cacheFile(1, 'root'),
+        content,
+        language: 'npm-manifest',
+        path: 'package.json',
+        size: new TextEncoder().encode(content).byteLength,
+      };
+      const harness = coalescerHarness({
+        capacity: 1,
+        facts: () => Effect.die('manifest extraction must not enter the parser worker'),
+        languagePacks: BUILTIN_LANGUAGE_PACK_REGISTRY,
+      });
+
+      yield* harness.run([file], cacheContext(1));
+      yield* harness.flush;
+
+      expect(harness.calls).toHaveLength(1);
+      expect(harness.calls[0]?.facts[0]?.facts.symbols.some(symbol => symbol.name === 'bounded-manifest')).toBe(true);
+    }),
+  );
+
   effectIt.effect(
     'does not commit parser facts when the pending journal quota refuses admission',
     () =>
@@ -176,12 +207,12 @@ describe('code graph parser cache coalescer', () => {
         expect(degradationStates.size).toBe(1);
       }
       assertCacheCallsBounded(first.calls);
-      expect(persistenceProgress.length).toBe(first.calls.length * 2);
+      expect(persistenceProgress.length).toBeGreaterThanOrEqual(first.calls.length * 2);
       expect(persistenceProgress.every(value => value.completed >= 0 && value.completed <= value.total)).toBe(true);
-      for (let index = 0; index < persistenceProgress.length; index += 2) {
-        expect(persistenceProgress[index]?.completed).toBe(0);
-        expect(persistenceProgress[index + 1]?.completed).toBe(persistenceProgress[index + 1]?.total);
-      }
+      expect(persistenceProgress.reduce((total, value) => total + value.completed, 0)).toBe(files.length);
+      expect(
+        persistenceProgress.filter(value => value.completed > 0).every(value => value.completed === value.total),
+      ).toBe(true);
     }),
   );
 
@@ -609,6 +640,7 @@ function coalescerHarness(options: {
   readonly facts?: (
     file: CodeGraphInventoryFile,
   ) => CodeGraphParserResult | Effect.Effect<CodeGraphParserResult, never>;
+  readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
   readonly onCache?: (call: CacheCall) => Effect.Effect<void, unknown>;
   readonly onSource?: Parameters<typeof cacheContentBatch>[0]['onSourceParserBatch'];
   readonly onProgress?: Parameters<typeof cacheContentBatch>[0]['onProgress'];
@@ -626,35 +658,44 @@ function coalescerHarness(options: {
   const parserPool = {
     capacity: options.capacity,
     extract,
-    withParserSlot: (_threadnoteHome, use) => use(extract),
+    withParserSlot: (_threadnoteHome, _files, use) => use(extract),
     warm: () => Effect.void,
     trimIdle: Effect.void,
   } satisfies CodeGraphParserPoolShape;
+  const recordCache = (files: readonly CodeGraphInventoryFile[], facts: CacheCall['facts'], cacheIdentity: string) =>
+    Effect.sync(() => {
+      const call = {cacheIdentity, facts, files};
+      calls.push(call);
+      return call;
+    }).pipe(Effect.flatMap(call => options.onCache?.(call) ?? Effect.void));
   const store = {
+    cacheFactBatches: (_databasePath: string, batches: readonly CodeGraphFactCacheBatch[]) =>
+      Effect.forEach(
+        batches,
+        batch => recordCache(batch.files, batch.facts as CacheCall['facts'], batch.extractorSet),
+        {discard: true},
+      ),
     cacheFacts: (
       _databasePath: string,
       files: readonly CodeGraphInventoryFile[],
       facts: CacheCall['facts'],
       cacheIdentity: string,
-    ) =>
-      Effect.sync(() => {
-        const call = {cacheIdentity, facts, files};
-        calls.push(call);
-        return call;
-      }).pipe(Effect.flatMap(call => options.onCache?.(call) ?? Effect.void)),
+    ) => recordCache(files, facts, cacheIdentity),
   } as unknown as CodeGraphStoreShape;
   const coalescer = cacheContentBatch({
     databasePath: '/bounded/cache.sqlite',
-    languagePacks: {
-      cacheIdentityForPath: path => Option.some(cacheIdentityForPath(path)),
-      match: path =>
-        Option.some({
-          cacheIdentity: cacheIdentityForPath(path),
-          language: path.endsWith('.json') ? 'json' : 'typescript',
-          pack: {id: path.endsWith('.json') ? 'schemas' : 'typescript'},
-          role: 'source',
-        }),
-    } as CodeGraphLanguagePackRegistryShape,
+    languagePacks:
+      options.languagePacks ??
+      ({
+        cacheIdentityForPath: path => Option.some(cacheIdentityForPath(path)),
+        match: path =>
+          Option.some({
+            cacheIdentity: cacheIdentityForPath(path),
+            language: path.endsWith('.json') ? 'json' : 'typescript',
+            pack: {id: path.endsWith('.json') ? 'schemas' : 'typescript'},
+            role: 'source',
+          }),
+      } as CodeGraphLanguagePackRegistryShape),
     onProgress: options.onProgress,
     onSourceParserBatch: options.onSource,
     parserPool,

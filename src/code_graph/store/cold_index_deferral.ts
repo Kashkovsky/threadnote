@@ -193,6 +193,10 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
             for (const definition of missing) {
               yield* sql.unsafe(definition.createSql);
               yield* options.observeTransaction?.() ?? Effect.void;
+              // Bun's SQLite calls are synchronous. Cooperate between index
+              // statements so lease heartbeats and interruption stay live while
+              // retaining one all-or-nothing restoration transaction.
+              yield* Effect.yieldNow;
             }
             const restored = yield* inspectCodeGraphQueryIndexes(sql);
             if (restored.missing.length > 0) {

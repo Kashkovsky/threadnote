@@ -17,6 +17,7 @@ import {encodeStoredCodeGraphFact} from '../fact/storage.js';
 import {compareCodeUnits} from '../ordering.js';
 import {
   type CodeGraphMaterializedShardCacheBatch,
+  type CodeGraphFactCacheBatch,
   type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphReusableBaseReceiptInput,
 } from './models.js';
@@ -59,29 +60,55 @@ function cacheCapacityPlanningError(label: string, cause: unknown): CodeGraphSto
   return CodeGraphStoreError.of(`Code graph cache ${label}${reason} is invalid.`);
 }
 
+function prepareFreshFactCacheRows(
+  files: readonly CodeGraphInventoryFile[],
+  facts: readonly BoundedCodeGraphFact[],
+  extractorSet: string,
+  createdAt: string,
+): readonly PlannedFreshFactCacheRow[] {
+  const inputs = pairCacheInputs(files, facts, 'Fresh parser facts');
+  return inputs.map(({bounded, file}) => {
+    const reuseClass = codeGraphBlobExtractionReuseClass(file);
+    const stored = encodeStoredCodeGraphFact(bounded);
+    const row = {
+      ...(reuseClass === undefined ? {} : {blobId: file.blobId, reuseClass}),
+      contentHash: file.contentHash,
+      createdAt,
+      extractorSet,
+      factsJson: stored.json,
+      key: file.path,
+      path: file.path,
+    };
+    return {...row, payloadBytes: codeGraphFileBlobCapacityBytes(row)};
+  });
+}
+
 function prepareFreshFactCacheChunks(
   files: readonly CodeGraphInventoryFile[],
   facts: readonly BoundedCodeGraphFact[],
   extractorSet: string,
   createdAt: string,
 ): readonly CodeGraphCacheCapacityChunk<PlannedFreshFactCacheRow>[] {
-  const inputs = pairCacheInputs(files, facts, 'Fresh parser facts');
   return planCodeGraphCacheCapacityChunks(
     'cache code graph file facts',
-    inputs.map(({bounded, file}) => {
-      const reuseClass = codeGraphBlobExtractionReuseClass(file);
-      const stored = encodeStoredCodeGraphFact(bounded);
-      const row = {
-        ...(reuseClass === undefined ? {} : {blobId: file.blobId, reuseClass}),
-        contentHash: file.contentHash,
+    prepareFreshFactCacheRows(files, facts, extractorSet, createdAt),
+  );
+}
+
+function prepareFreshFactCacheBatchChunks(
+  batches: readonly CodeGraphFactCacheBatch[],
+  createdAt: string,
+): readonly CodeGraphCacheCapacityChunk<PlannedFreshFactCacheRow>[] {
+  return planCodeGraphCacheCapacityChunks(
+    'cache code graph file facts',
+    batches.flatMap(batch =>
+      prepareFreshFactCacheRows(
+        batch.files,
+        batch.facts.map(ensureBoundedCodeGraphFact),
+        batch.extractorSet,
         createdAt,
-        extractorSet,
-        factsJson: stored.json,
-        key: file.path,
-        path: file.path,
-      };
-      return {...row, payloadBytes: codeGraphFileBlobCapacityBytes(row)};
-    }),
+      ),
+    ),
   );
 }
 
@@ -937,6 +964,7 @@ export {
   applyMaterializedShardRepairPlan,
   repairMaterializedShardCacheRow,
   cacheCapacityPlanningError,
+  prepareFreshFactCacheBatchChunks,
   prepareFreshFactCacheChunks,
   storeFreshFactRows,
   prepareMaterializedShardCacheChunks,

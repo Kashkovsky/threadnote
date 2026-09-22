@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect, Exit, FileSystem, Path} from 'effect';
+import {Effect, Exit, Fiber, FileSystem, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -12,6 +12,7 @@ import {
   codeGraphColdIndexDeferralEligible,
   codeGraphColdIndexDeferralWorthwhile,
   deferCodeGraphQueryIndexesForColdBuild,
+  restoreCodeGraphQueryIndexesAfterColdBuild,
 } from '../../src/code_graph/store/cold_index_deferral.js';
 import type {CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store/models.js';
 import {claimPersistentSnapshotBuild} from '../../src/code_graph/store/persistent_build.js';
@@ -210,6 +211,76 @@ describe('code graph cold query-index deferral', () => {
             const sql = yield* SqlClient.SqlClient;
             expect((yield* inspectCodeGraphQueryIndexes(sql)).missing).toEqual([]);
             expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(true);
+          }),
+          {writerLockPath: fixture.writerLockPath},
+        );
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect('yields between atomic index statements and rolls back a mid-restoration failure', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* coldIndexFixture('atomic-yield');
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.initialize(fixture.databasePath);
+            const ownerToken = yield* claimPersistentBuildForTest(
+              store,
+              fixture.databasePath,
+              fixture.identity,
+              fixture.snapshot,
+            );
+            yield* store.prepareActivation(
+              fixture.databasePath,
+              [fixture.file],
+              fixture.snapshot.id,
+              undefined,
+              ownerToken,
+            );
+            const sql = yield* SqlClient.SqlClient;
+            let cooperativeTicks = 0;
+            const ticker = yield* Effect.forkScoped(
+              Effect.forever(
+                Effect.yieldNow.pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      cooperativeTicks += 1;
+                    }),
+                  ),
+                ),
+              ),
+            );
+            const observations: number[] = [];
+            const failed = yield* restoreCodeGraphQueryIndexesAfterColdBuild({
+              observeTransaction: () =>
+                Effect.sync(() => {
+                  observations.push(cooperativeTicks);
+                  if (observations.length === 3) throw new Error('injected index restoration failure');
+                }),
+              ownerToken,
+              snapshotId: fixture.snapshot.id,
+              sql,
+            }).pipe(Effect.exit);
+            yield* Fiber.interrupt(ticker);
+
+            expect(Exit.isFailure(failed)).toBe(true);
+            expect(new Set(observations).size).toBeGreaterThan(1);
+            expect((yield* inspectCodeGraphQueryIndexes(sql)).missing).toHaveLength(
+              CODE_GRAPH_QUERY_INDEX_DEFINITIONS.length,
+            );
+            expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(false);
+
+            expect(
+              yield* restoreCodeGraphQueryIndexesAfterColdBuild({
+                ownerToken,
+                snapshotId: fixture.snapshot.id,
+                sql,
+              }),
+            ).toBe(true);
+            expect((yield* inspectCodeGraphQueryIndexes(sql)).missing).toEqual([]);
           }),
           {writerLockPath: fixture.writerLockPath},
         );

@@ -82,6 +82,17 @@ describe('code graph CLI project selection', () => {
       const ambiguous = await runCli(['graph', 'index', ...base, '--no-vectors']).catch(asProcessError);
       expect(ambiguous).toMatchObject({code: 1});
       expect(String(ambiguous.stderr)).toContain('Graph scope is ambiguous');
+      expect(String(ambiguous.stderr)).toContain('2 configured scopes match');
+      expect(String(ambiguous.stderr)).toContain('Set project (or CLI --project)');
+      expect(String(ambiguous.stderr)).toContain('- a: apps/a');
+      expect(String(ambiguous.stderr)).toContain('- b: apps/b');
+
+      const ambiguousBrief = await runCli(['context', 'brief', ...base, '--task', 'find a']).catch(asProcessError);
+      expect(ambiguousBrief).toMatchObject({code: 1});
+      expect(String(ambiguousBrief.stderr)).toContain('Graph scope is ambiguous');
+      expect(String(ambiguousBrief.stderr)).toContain('- a: apps/a');
+      expect(String(ambiguousBrief.stderr)).toContain('- b: apps/b');
+      expect(String(ambiguousBrief.stderr)).not.toContain('graph-query-unavailable');
 
       const indexed = await runCli(['graph', 'index', ...base, '--project', 'a', '--no-vectors', '--json']);
       expect(JSON.parse(indexed.stdout)).toMatchObject({
@@ -95,6 +106,30 @@ describe('code graph CLI project selection', () => {
         (await runCli(['graph', 'query', ...base, '--project', 'a', '--query', 'a', '--json'])).stdout,
       );
       expect(query).toMatchObject({projectCoverage: {project: 'a'}});
+
+      const brief = JSON.parse(
+        (await runCli(['context', 'brief', ...base, '--project', 'a', '--task', 'find a', '--json'])).stdout,
+      );
+      expect(brief).toMatchObject({scope: {projectCoverage: {project: 'a'}, readyRepositories: 1}});
+
+      const nestedBrief = JSON.parse(
+        (
+          await runCli([
+            'context',
+            'brief',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            join(root, 'apps', 'a'),
+            '--task',
+            'find a',
+            '--json',
+          ])
+        ).stdout,
+      );
+      expect(nestedBrief).toMatchObject({scope: {projectCoverage: {project: 'a'}, readyRepositories: 1}});
 
       const inventory = JSON.parse((await runCli(['graph', 'inventory', ...base, '--project', 'a', '--json'])).stdout);
       expect(inventory.totals.repository.files).toBeLessThan(5);

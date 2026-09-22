@@ -132,11 +132,15 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
   if (matches.length === 0) return {state: 'full'} as const satisfies CodeGraphScopeRoute;
   const [project] = matches;
   if (matches.length === 1 && project !== undefined) return selectedRoute(project);
+  const scopeChoices = [...matches]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map(project => {
+      const roots = project.graph?.roots.length ? project.graph.roots.join(', ') : '.';
+      return `- ${project.name}: ${roots}`;
+    })
+    .join('\n');
   return yield* CodeGraphScopeRoutingError.make({
-    message: `Graph scope is ambiguous for this cwd. Select one of: ${matches
-      .map(project => project.name)
-      .sort()
-      .join(', ')}.`,
+    message: `Graph scope is ambiguous for this cwd: ${matches.length} configured scopes match. Set project (or CLI --project) to one of:\n${scopeChoices}`,
   });
 });
 

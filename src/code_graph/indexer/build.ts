@@ -188,7 +188,10 @@ export function writerSessionOptions(
     onWriterAcquired: () =>
       (resources?.acquireWriter ?? Effect.void).pipe(Effect.orDie, Effect.andThen(resumeProgress()), Effect.ignore),
     onWriterReleased: () => (resources?.releaseWriter ?? Effect.void).pipe(Effect.orDie),
-    ...(options.sqliteWriterTuning ? {sqliteWriterTuning: options.sqliteWriterTuning} : {}),
+    sqliteWriterTuning: {
+      reconstructibleBuildSynchronous: 'normal' as const,
+      ...options.sqliteWriterTuning,
+    },
     writerLockPath: layout.databaseWriteLockPath,
   } as const;
 }

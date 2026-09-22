@@ -652,7 +652,34 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
-  it.effect('prewarms every idle slot without protocol requests and reuses the workers for extraction', () => {
+  it.effect('does not admit source-budget results behind an occupied parser session', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = new ScriptedParserWorkerProcess(() => {});
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-session-budget-'});
+      const pool = yield* CodeGraphParserPool;
+      const active = inventoryFile('src/active.ts', 'export const active = true;');
+      const oversized = inventoryFile('src/oversized.ts', 'x'.repeat(65));
+
+      const occupied = yield* Effect.forkScoped(pool.withParserSlot(home, [active], extract => extract(active)));
+      yield* waitUntil(() => processes[0]?.writes.length === 1);
+
+      const result = yield* pool.withParserSlot(home, [oversized], extract => extract(oversized));
+
+      expect(result).toMatchObject({degradationReason: 'source-bytes', degraded: true});
+      expect(processes).toHaveLength(1);
+      expect(processes[0].writes).toHaveLength(1);
+      yield* Fiber.interrupt(occupied);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, maxSourceBytes: 64, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('prepares every idle slot without protocol requests and reuses the workers for extraction', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
     const spawn: ParserWorkerSpawner = () => {
       const worker = echoProcess();
@@ -683,6 +710,39 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 2, spawnWorker: spawn})), Effect.scoped);
   });
 
+  it.effect('keeps a warming slot owned until an interrupted spawn settles', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const pendingSpawns: Array<(process: ParserWorkerProcess) => void> = [];
+    const spawn: ParserWorkerSpawner = () =>
+      new Promise(resolve => {
+        pendingSpawns.push(resolve);
+      });
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-warm-interrupt-'});
+      const pool = yield* CodeGraphParserPool;
+
+      const warming = yield* Effect.forkScoped(pool.warm(home));
+      yield* waitUntil(() => pendingSpawns.length === 1);
+      const interrupted = yield* Effect.forkScoped(Fiber.interrupt(warming));
+      yield* Effect.yieldNow;
+
+      const prepared = echoProcess();
+      processes.push(prepared);
+      pendingSpawns[0](prepared);
+      yield* Fiber.join(interrupted);
+
+      const result = yield* pool.extract(
+        inventoryFile('src/reused-after-interrupt.ts', 'export const reused = true;'),
+        home,
+      );
+      expect(result.degraded).toBe(false);
+      expect(processes).toHaveLength(1);
+      expect(prepared.writes).toHaveLength(1);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
   it.effect('reuses one admitted parser slot across a serial extraction window', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
     const spawn: ParserWorkerSpawner = () => {
@@ -701,7 +761,7 @@ describe('code graph parser worker pool', () => {
         inventoryFile('src/session-c.ts', 'export const sessionC = true;'),
       ];
 
-      const results = yield* pool.withParserSlot(home, extract => Effect.forEach(files, extract));
+      const results = yield* pool.withParserSlot(home, files, extract => Effect.forEach(files, extract));
       const afterSession = yield* pool.extract(
         inventoryFile('src/session-after.ts', 'export const sessionAfter = true;'),
         home,
@@ -711,6 +771,7 @@ describe('code graph parser worker pool', () => {
       expect(afterSession.degraded).toBe(false);
       expect(processes).toHaveLength(1);
       expect(processes[0].writes.map(request => request.file.path)).toEqual([
+        '.threadnote/parser-warmup.ts',
         ...files.map(file => file.path),
         'src/session-after.ts',
       ]);
