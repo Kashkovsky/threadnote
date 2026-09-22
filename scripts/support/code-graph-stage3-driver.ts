@@ -16,6 +16,7 @@ import {
   resolveManagedDevelopmentExecutableForSource,
   verifyManagedDevelopmentRuntimeForSourceCheckout,
 } from '../development-runtime.js';
+import {processInstanceIdentityMatches} from '../../src/process/process_identity.js';
 import {assertStage3, stage3Record, type Stage3Options} from './code-graph-stage3-contract.js';
 
 export const stage3SourceRoot = Bun.fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/u, '');
@@ -514,7 +515,7 @@ export class Stage3Driver {
               system.processStartIdentity(status.owner.processId),
           ),
         );
-        if (identity !== status.owner.processStartIdentity || identity === undefined) {
+        if (identity === undefined || !processInstanceIdentityMatches(status.owner.processStartIdentity, identity)) {
           cleanupFailed = true;
           continue;
         }
