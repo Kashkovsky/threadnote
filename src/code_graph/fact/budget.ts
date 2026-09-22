@@ -55,7 +55,7 @@ export function cachedCodeGraphFactByteUpperBound(facts: CodeGraphFileFacts): nu
  * the store itself.
  */
 export function serializeBoundedCodeGraphFact(
-  facts: CodeGraphFileFacts,
+  facts: unknown,
   maximumBytes = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
 ): BoundedCodeGraphFact {
   const measured = measureBoundedCodeGraphFactWithJson(parseCodeGraphFileFacts(facts), maximumBytes);

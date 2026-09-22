@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {unzlibSync, zlibSync} from 'fflate';
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import {
   CODE_GRAPH_STORED_FACT_CODEC,
   decodeStoredCodeGraphFact,
@@ -8,6 +8,7 @@ import {
 } from '../../src/code_graph/fact/storage.js';
 import {budgetCachedCodeGraphFacts, serializeBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js';
 import {parseCodeGraphFileFacts} from '../../src/code_graph/fact/validation.js';
+import * as factValidation from '../../src/code_graph/fact/validation.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import type {CodeGraphFileFacts} from '../../src/code_graph/types.js';
 
@@ -79,12 +80,31 @@ describe('compact code graph fact storage', () => {
         const second = encodeStoredCodeGraphFact(bounded);
 
         expect(second).toEqual(first);
-        expect(decodeStoredCodeGraphFact(first.json, facts.path).facts).toEqual(facts);
-        expect(decodeStoredCodeGraphFact(bounded.json, facts.path).facts).toEqual(facts);
+        expect(bounded.facts).toEqual(facts);
+        expect(decodeStoredCodeGraphFact(first.json, facts.path)).toEqual(bounded);
+        expect(decodeStoredCodeGraphFact(bounded.json, facts.path)).toEqual(bounded);
         expect(JSON.stringify(facts)).toBe(before);
       }),
       {numRuns: 200},
     );
+  });
+
+  it.each([false, true])('validates decoded facts exactly once (compact: %s)', compact => {
+    const facts = {
+      ...richFacts(),
+      diagnostics: compact ? Array.from({length: 400}, () => 'repetitive validation diagnostic') : [],
+    };
+    const bounded = serializeBoundedCodeGraphFact(facts);
+    const encoded = encodeStoredCodeGraphFact(bounded);
+    const json = compact ? encoded.json : bounded.json;
+    if (compact) expect(encoded.codec).toBe(CODE_GRAPH_STORED_FACT_CODEC);
+    const parse = vi.spyOn(factValidation, 'parseCodeGraphFileFacts');
+    try {
+      expect(decodeStoredCodeGraphFact(json, facts.path)).toEqual(bounded);
+      expect(parse).toHaveBeenCalledExactlyOnceWith(JSON.parse(bounded.json));
+    } finally {
+      parse.mockRestore();
+    }
   });
 
   it('uses a path-visible compact envelope only when it materially reduces repetitive facts', () => {
@@ -250,7 +270,7 @@ describe('compact code graph fact storage', () => {
             candidate.derivationInputs = {rationale: [{documentation: '', line: 1, marker: 'why', name: ''}]};
             break;
         }
-        expect(() => serializeBoundedCodeGraphFact(candidate as unknown as CodeGraphFileFacts)).toThrow();
+        expect(() => serializeBoundedCodeGraphFact(candidate)).toThrow();
         expect(() => decodeStoredCodeGraphFact(JSON.stringify(candidate))).toThrow();
       }),
       {numRuns: 50},
