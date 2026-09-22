@@ -240,7 +240,14 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
 
   await driver.change(churn, 'f2');
   const second = await driver.call(hostA, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
-  const f2 = await driver.demand(churn);
+  const f2 = await driver.until(async () => {
+    const demand = await driver.demand(churn);
+    return demand?.active?.targetKey === f1.active.targetKey &&
+      demand.desired &&
+      demand.desired.targetKey !== f1.active.targetKey
+      ? demand
+      : undefined;
+  }, 'f2-not-queued');
   assertStage3(
     f2?.active?.targetKey === f1.active.targetKey && f2.desired && f2.desired.targetKey !== f1.active.targetKey,
     'f2-not-queued',
@@ -254,7 +261,15 @@ export async function runStage3Scenarios(driver: Stage3Driver) {
   });
   await driver.change(churn, 'f3');
   const third = await driver.call(hostB, churn, selectors('query', churnAnchor.entry, churnAnchor.leaf));
-  const f3 = await driver.demand(churn);
+  const f3 = await driver.until(async () => {
+    const demand = await driver.demand(churn);
+    return demand?.active?.targetKey === f1.active.targetKey &&
+      demand.desired &&
+      demand.desired.targetKey !== f2Key &&
+      demand.desired.targetKey !== f1.active.targetKey
+      ? demand
+      : undefined;
+  }, 'f3-not-latest');
   assertStage3(
     f3?.active?.targetKey === f1.active.targetKey &&
       f3.desired &&
