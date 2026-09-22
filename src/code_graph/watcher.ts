@@ -49,6 +49,7 @@ import {
   failCodeGraphBackgroundDemand,
   recoverCodeGraphBackgroundDemand,
   registerCodeGraphBackgroundDemand,
+  resumeCodeGraphBackgroundDemand,
   observeCodeGraphBackgroundDemand,
   CodeGraphRefreshDemandSuperseded,
 } from './refresh/demand.js';
@@ -853,14 +854,13 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
               ),
             ),
           );
-          yield* provideDemandServices(
-            recoverCodeGraphBackgroundDemand(target.demandIdentity, {
-              liveness: build?.observation.liveness === 'active' ? 'active' : 'inactive',
-              ...(build?.owner === undefined ? {} : {owner: build.owner}),
-              ...(build?.request?.key === undefined ? {} : {requestKey: build.request.key}),
-              ...(spawnOwner === undefined ? {} : {spawnOwner}),
-            }),
-          );
+          const observed = {
+            liveness: build?.observation.liveness === 'active' ? ('active' as const) : ('inactive' as const),
+            ...(build?.owner === undefined ? {} : {owner: build.owner}),
+            ...(build?.request?.key === undefined ? {} : {requestKey: build.request.key}),
+            ...(spawnOwner === undefined ? {} : {spawnOwner}),
+          };
+          yield* provideDemandServices(recoverCodeGraphBackgroundDemand(target.demandIdentity, observed));
           return yield* Effect.uninterruptibleMask(() =>
             Effect.gen(function* () {
               const registration = yield* provideDemandServices(
@@ -893,16 +893,63 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             }),
           );
         });
+      const resumeBackgroundDemand = (options: CodeGraphWatchOptions) =>
+        Effect.gen(function* () {
+          const target = yield* observeTarget({...options, admissionClass: 'background'});
+          const build = yield* currentCodeGraphBuildStatus(target.layout, target.identity.worktreeId).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SystemInfo, systemInfo),
+          );
+          const spawnOwner = Option.getOrUndefined(
+            yield* readExclusiveFileLockOwner(
+              fs,
+              codeGraphWorktreeSpawnLockPath(
+                path,
+                options.threadnoteHome,
+                target.identity.checkoutId,
+                target.identity.worktreeId,
+                target.scopeId,
+              ),
+            ),
+          );
+          return yield* Effect.uninterruptibleMask(() =>
+            Effect.gen(function* () {
+              const registration = yield* provideDemandServices(
+                resumeCodeGraphBackgroundDemand(target.demandIdentity, target.requestKey, {
+                  liveness: build?.observation.liveness === 'active' ? 'active' : 'inactive',
+                  ...(build?.owner === undefined ? {} : {owner: build.owner}),
+                  ...(build?.request?.key === undefined ? {} : {requestKey: build.request.key}),
+                  ...(spawnOwner === undefined ? {} : {spawnOwner}),
+                }),
+              );
+              if (registration === undefined) return undefined;
+              const continuity = codeGraphRefreshDemandContinuity(registration.state, yield* Clock.currentTimeMillis);
+              const receipt = codeGraphRefreshRequestReceipt(registration, continuity);
+              if (registration.type !== 'claimed') return receipt.refresh;
+              const prepared = {registration, target} satisfies CodeGraphPreparedRefreshDemand;
+              return (yield* handoffCodeGraphPreparedDemand({
+                defer: provideDemandServices(
+                  deferCodeGraphBackgroundDemand(
+                    target.demandIdentity,
+                    registration.target.targetToken,
+                    target.requestKey,
+                  ),
+                ),
+                receipt,
+                schedule: watcher.refresh({
+                  ...options,
+                  admissionClass: 'background',
+                  refreshDemandPrepared: prepared,
+                }),
+              })).refresh;
+            }),
+          );
+        });
       return CodeGraphWatcher.of({
         ...watcher,
         request: requestBackgroundDemand,
-        resume: options =>
-          Effect.gen(function* () {
-            const target = yield* observeTarget({...options, admissionClass: 'background'});
-            const continuity = yield* provideDemandServices(observeCodeGraphBackgroundDemand(target.demandIdentity));
-            if (continuity.state === 'idle') return undefined;
-            return (yield* requestBackgroundDemand(options)).refresh;
-          }),
+        resume: resumeBackgroundDemand,
         status: (key, target) =>
           watcher.status(target?.project?.graph === undefined ? key : `${key}\0${target.project.uri}`).pipe(
             Effect.filterOrElse(

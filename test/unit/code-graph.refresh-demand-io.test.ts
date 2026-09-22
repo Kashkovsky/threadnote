@@ -17,6 +17,7 @@ import {
   CodeGraphRefreshDemandSuperseded,
   recoverCodeGraphBackgroundDemand,
   registerCodeGraphBackgroundDemand,
+  resumeCodeGraphBackgroundDemand,
 } from '../../src/code_graph/refresh/demand.js';
 import {
   codeGraphRefreshDemandLockPath,
@@ -145,6 +146,24 @@ describe('code graph refresh demand sidecar', () => {
 
         const recovered = yield* recoverCodeGraphBackgroundDemand(identity, {liveness: 'inactive'});
         expect(recovered.active).toBeUndefined();
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
+  effectIt.effect('never admits a target that was absent when resume acquired the sidecar lock', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-resume-'});
+        const identity = {checkoutId, threadnoteHome: home, worktreeId};
+        const claimed = yield* registerCodeGraphBackgroundDemand(identity, firstKey);
+        expect(claimed.type).toBe('claimed');
+
+        const absent = yield* resumeCodeGraphBackgroundDemand(identity, secondKey, {liveness: 'inactive'});
+        expect(absent).toBeUndefined();
+        const retained = yield* recoverCodeGraphBackgroundDemand(identity, {liveness: 'inactive'});
+        expect(retained.active?.targetKey).toBe(firstKey);
+        expect(retained.desired).toBeUndefined();
       }),
     ).pipe(provideTestLayer(TestLayer)),
   );
