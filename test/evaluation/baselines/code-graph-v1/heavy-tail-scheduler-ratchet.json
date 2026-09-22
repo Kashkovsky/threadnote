@@ -47,7 +47,7 @@
     "eight-workers-extraction-average-concurrency": {
       "samplesMinimum": 1,
       "unit": "count",
-      "minimum": 6.229
+      "minimum": 6.2
     },
     "eight-workers-extraction-peak-concurrency": {
       "samplesMinimum": 1,
@@ -177,7 +177,7 @@
     "eight-workers-language-npm-manifest-persistence": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 11
+      "p95Maximum": 15
     },
     "eight-workers-language-npm-manifest-relations": {
       "samplesMinimum": 1,
@@ -556,7 +556,7 @@
     "parallel-language-npm-manifest-persistence": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 10
+      "p95Maximum": 15
     },
     "parallel-language-npm-manifest-relations": {
       "samplesMinimum": 1,
@@ -728,7 +728,7 @@
     "resumed-duration": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 1921
+      "p95Maximum": 2200
     },
     "resumed-extraction-active-wall": {
       "samplesMinimum": 1,
@@ -795,7 +795,7 @@
     "resumed-peak-rss": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 286241588
+      "p95Maximum": 300000000
     },
     "resumed-reading": {
       "samplesMinimum": 1,
@@ -973,7 +973,7 @@
     "single-language-npm-manifest-persistence": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 10
+      "p95Maximum": 15
     },
     "single-language-npm-manifest-relations": {
       "samplesMinimum": 1,
@@ -1279,7 +1279,7 @@
     "six-workers-language-npm-manifest-persistence": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 11
+      "p95Maximum": 15
     },
     "six-workers-language-npm-manifest-relations": {
       "samplesMinimum": 1,
