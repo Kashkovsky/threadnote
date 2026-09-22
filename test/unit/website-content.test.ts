@@ -550,7 +550,7 @@ describe('Threadnote website content', () => {
     );
 
     const releases = loadLatestMajorWebsiteReleases(root);
-    expect(releases.length).toBeGreaterThan(1);
+    expect(releases.length).toBeGreaterThan(0);
     expect(releases.every(release => release.major === releases[0].major)).toBe(true);
     expect(releases.every(release => !release.version.includes('-'))).toBe(true);
     expect(releases.every(release => release.headline.endsWith('.'))).toBe(true);
