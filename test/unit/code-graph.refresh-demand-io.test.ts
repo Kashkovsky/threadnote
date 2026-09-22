@@ -14,6 +14,7 @@ import {worktreeBuildRequestState} from '../../src/code_graph/inventory.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {
   adoptCodeGraphBackgroundDemand,
+  beginCodeGraphBackgroundPublication,
   CodeGraphRefreshDemandSuperseded,
   recoverCodeGraphBackgroundDemand,
   registerCodeGraphBackgroundDemand,
@@ -164,6 +165,27 @@ describe('code graph refresh demand sidecar', () => {
         const retained = yield* recoverCodeGraphBackgroundDemand(identity, {liveness: 'inactive'});
         expect(retained.active?.targetKey).toBe(firstKey);
         expect(retained.desired).toBeUndefined();
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
+  effectIt.effect('does not displace a live publisher when status evidence is stale', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-publishing-'});
+        const identity = {checkoutId, threadnoteHome: home, worktreeId};
+        const claimed = yield* registerCodeGraphBackgroundDemand(identity, firstKey);
+        expect(claimed.type).toBe('claimed');
+        expect(yield* beginCodeGraphBackgroundPublication(identity, claimed.target.targetToken, firstKey)).toBe(
+          'publish',
+        );
+
+        const resumed = yield* resumeCodeGraphBackgroundDemand(identity, firstKey, {liveness: 'inactive'});
+        expect(resumed).toMatchObject({
+          type: 'attached',
+          target: {phase: 'publishing', targetToken: claimed.target.targetToken},
+        });
       }),
     ).pipe(provideTestLayer(TestLayer)),
   );

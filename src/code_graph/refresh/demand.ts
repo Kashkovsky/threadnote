@@ -526,12 +526,14 @@ function activeDemandOwnerLive(
       now - active.claimStartedAt <= PRE_STATUS_OWNER_GRACE_MILLISECONDS;
     const livePreStatusOwner = withinPreStatusGrace && (yield* processOwnerIsLive(system, owner));
     const livePreStatusSpawnOwner = withinPreStatusGrace && sameProcessOwner(observed?.spawnOwner, owner);
+    const livePublishingOwner = active.phase === 'publishing' && (yield* processOwnerIsLive(system, owner));
     return (
       (observed?.liveness === 'active' &&
         observed.requestKey === active.targetKey &&
         sameProcessOwner(observed.owner, owner)) ||
       livePreStatusSpawnOwner ||
-      livePreStatusOwner
+      livePreStatusOwner ||
+      livePublishingOwner
     );
   });
 }
