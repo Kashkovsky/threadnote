@@ -796,9 +796,7 @@ describe('code graph parser worker pool', () => {
       yield* waitUntil(() => pendingSpawns.length === 1);
       const interrupted = yield* Effect.forkScoped(Fiber.interrupt(first));
       yield* Effect.yieldNow;
-      const second = yield* Effect.forkScoped(
-        pool.withParserSlot(home, [secondFile], extract => extract(secondFile)),
-      );
+      const second = yield* Effect.forkScoped(pool.withParserSlot(home, [secondFile], extract => extract(secondFile)));
       yield* Effect.yieldNow;
 
       expect(pendingSpawns).toHaveLength(1);
