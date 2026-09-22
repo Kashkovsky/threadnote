@@ -6,16 +6,15 @@ export function loadTypeScriptExtractionRuntime(): {
   readonly declarationKinds: ReadonlySet<ts.SyntaxKind>;
 } {
   const compiler: typeof ts = require('typescript-compiler');
-  return {
-    compiler,
-    declarationKinds: new Set([
-      compiler.SyntaxKind.ClassDeclaration,
-      compiler.SyntaxKind.EnumDeclaration,
-      compiler.SyntaxKind.FunctionDeclaration,
-      compiler.SyntaxKind.InterfaceDeclaration,
-      compiler.SyntaxKind.TypeAliasDeclaration,
-    ]),
-  };
+  // Separate initialization keeps Bun's minifier from dropping the required compiler binding in the return object.
+  const declarationKinds = new Set([
+    compiler.SyntaxKind.ClassDeclaration,
+    compiler.SyntaxKind.EnumDeclaration,
+    compiler.SyntaxKind.FunctionDeclaration,
+    compiler.SyntaxKind.InterfaceDeclaration,
+    compiler.SyntaxKind.TypeAliasDeclaration,
+  ]);
+  return {compiler, declarationKinds};
 }
 
 export function typeScriptKindForPath(compiler: typeof ts, path: string): ts.ScriptKind {

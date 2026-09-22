@@ -33,12 +33,7 @@ import {
   codeGraphExtractorSetIdentityFromPackProvenance,
 } from '../graph_identity.js';
 import {CodeGraphIndexOperationError} from './shared.js';
-import {
-  codeGraphFileProgressDimensions,
-  emitContentProgress,
-  flushCombinedCodeGraphCacheGroups,
-  type CodeGraphPendingCacheGroup,
-} from './cache_flush.js';
+import {codeGraphFileProgressDimensions, emitContentProgress, type CodeGraphPendingCacheGroup} from './cache_flush.js';
 import type {CodeGraphIndexResourceGate} from './types.js';
 import type {DirectPersistentCapacityProtection, IncrementalOverlayAssessment} from './types.js';
 import {type CodeGraphContentBatchContext, type CodeGraphInventoryOptions} from '../inventory.js';
@@ -634,26 +629,7 @@ export function cacheContentBatch(options: {
     }),
     extractedFactBytes: Effect.sync(() => terminalExtractedFactBytes),
     flush: Effect.gen(function* () {
-      const result = yield* flushCombinedCodeGraphCacheGroups({
-        context: latestContext,
-        databasePath: options.databasePath,
-        extractionMilliseconds,
-        languagePacks: options.languagePacks,
-        metrics: currentScanningMetrics(),
-        onCachedParserBatch: options.onCachedParserBatch,
-        onProgress: options.onProgress,
-        onSourceParserBatch: options.onSourceParserBatch,
-        pendingBytes,
-        pendingGroups,
-        pendingRows,
-        persistenceMilliseconds,
-        persistentCapacityProtector: options.persistentCapacityProtector,
-        serializationMilliseconds,
-        store: options.store,
-      });
-      pendingBytes = result.pendingBytes;
-      pendingRows = result.pendingRows;
-      persistenceMilliseconds = result.persistenceMilliseconds;
+      while (pendingGroups.size > 0) yield* flushOldestPendingGroup();
       reusableExtractions.clear();
       reusableExtractionUses.clear();
     }),

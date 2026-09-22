@@ -557,11 +557,10 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
           const persistedCompleted = current.status.counters.completed ?? -1;
           return (
             current.status.phase !== progress.phase ||
-            (progress.phase === 'scanning' && measured !== undefined && measured.completed > persistedCompleted) ||
+            (progress.phase === 'scanning' && progress.completed > persistedCompleted) ||
             (progress.phase === 'activating' && current.status.subphase !== progressSubphase(progress)) ||
             (progress.phase === 'materializing' &&
-              (current.status.subphase !== progressSubphase(progress) ||
-                (measured !== undefined && measured.completed > persistedCompleted))) ||
+              (current.status.subphase !== progressSubphase(progress) || progress.completed > persistedCompleted)) ||
             (progress.phase === 'reclaiming' &&
               progress.pagesCompleted > (current.status.counters.pagesCompleted ?? -1)) ||
             (progress.phase === 'resolving' &&

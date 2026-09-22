@@ -40,13 +40,13 @@ const packageVersion = (await import('typescript-compiler/package.json')).defaul
 const expectedIdentity = new Bun.CryptoHasher('sha256')
   .update('typescript-compiler-v5-bounded-deduplicated-relationship-surface\\ntypescript:' + compilerVersion)
   .digest('hex');
-console.log(JSON.stringify({
+process.stdout.write(JSON.stringify({
   states, compilerVersion, packageVersion, expectedIdentity, identityBefore,
   identityAfter: codeGraphLanguagePack.extractor.version,
   repeatedFactsEqual: JSON.stringify(first) === JSON.stringify(second),
   declarations: first.symbols.map(symbol => symbol.name),
   nonTypeScriptNames: attributed.flatMap(facts => facts.symbols.map(symbol => symbol.name)),
-}));
+}) + '\\n');
 `,
     ],
     {cwd: Bun.fileURLToPath(new URL('../..', import.meta.url)), stderr: 'pipe', stdout: 'pipe'},
@@ -86,30 +86,21 @@ it('preserves facts and caller inputs across repeated cached-compiler extraction
   );
 });
 
-it('bundles the lazy compiler for extraction outside the dependency checkout', async () => {
+it.each([false, true])('bundles the lazy compiler outside the dependency checkout (compiled: %s)', async compiled => {
   // The program under test is the Bun bundler and its child-process module boundary.
   const directory = mkdtempSync(join(tmpdir(), 'threadnote-lazy-extractor-'));
   try {
+    const executable = join(directory, process.platform === 'win32' ? 'extractor.exe' : 'extractor');
     const result = await Bun.build({
-      entrypoints: [Bun.fileURLToPath(new URL('../../src/code_graph/extractor.ts', import.meta.url))],
-      outdir: directory,
+      ...(compiled ? {bytecode: true, compile: {outfile: executable}} : {outdir: directory}),
+      entrypoints: [Bun.fileURLToPath(new URL('../fixtures/code-graph-lazy-extractor.ts', import.meta.url))],
+      format: 'esm',
+      minify: true,
       target: 'bun',
     });
     expect(result.success, result.logs.map(log => log.message).join('\n')).toBe(true);
     const child = Bun.spawnSync(
-      [
-        process.execPath,
-        '--eval',
-        `
-const {extractFileFacts} = await import('./extractor.js');
-const content = 'export function bundledExample() { return 1; }';
-const facts = extractFileFacts({
-  blobId: 'b'.repeat(40), content, contentHash: 'a'.repeat(64), language: 'typescript',
-  mode: '100644', path: 'src/example.ts', size: Buffer.byteLength(content), source: 'commit',
-});
-console.log(JSON.stringify(facts.symbols.map(symbol => symbol.name)));
-`,
-      ],
+      compiled ? [executable] : [process.execPath, join(directory, 'code-graph-lazy-extractor.js')],
       {cwd: directory, stderr: 'pipe', stdout: 'pipe'},
     );
     expect(child.exitCode, child.stderr.toString()).toBe(0);
