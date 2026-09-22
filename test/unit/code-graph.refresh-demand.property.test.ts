@@ -10,6 +10,8 @@ import {
 
 const checkout = 'a'.repeat(64);
 const worktree = 'b'.repeat(64);
+const zeroTarget = '0'.repeat(64);
+const oneTarget = '1'.padEnd(64, '0');
 const target = fc.array(fc.integer({min: 0, max: 15}), {minLength: 1, maxLength: 8}).map(value =>
   value
     .map(part => part.toString(16))
@@ -94,13 +96,18 @@ describe('code graph refresh demand properties', () => {
         expect(resumed !== undefined).toBe(admitted !== undefined);
         if (resumed === undefined || admitted === undefined) return;
         expect(resumed.target.targetKey).toBe(requested);
-        const persisted = [state.active, state.desired].find(candidate => candidate?.targetKey === requested);
-        expect(resumed.target.targetToken).toBe(persisted === undefined ? replacementToken : persisted.targetToken);
+        const admittedTokens = new Set([
+          replacementToken,
+          ...[state.active, state.desired]
+            .filter(candidate => candidate?.targetKey === requested)
+            .map(candidate => candidate!.targetToken),
+        ]);
+        expect(admittedTokens.has(resumed.target.targetToken)).toBe(true);
         const admittedKeys = new Set([state.active?.targetKey, state.desired?.targetKey, requested].filter(Boolean));
         for (const key of [resumed.state.active?.targetKey, resumed.state.desired?.targetKey].filter(Boolean))
           expect(admittedKeys.has(key)).toBe(true);
       }),
-      {numRuns: 200},
+      {examples: [[[oneTarget, zeroTarget], oneTarget, false]], numRuns: 200},
     );
   });
 

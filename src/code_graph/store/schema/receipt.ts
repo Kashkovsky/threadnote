@@ -11,6 +11,7 @@ import {
   inspectBoundedSchemaMetadataValue,
 } from './metadata.js';
 import {tableExists} from '../session.js';
+import {CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES, CODE_GRAPH_SCOPE_CURSOR_PATTERN} from '../scope/cursor.js';
 import {
   CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION,
   CODE_GRAPH_SCHEMA_INITIALIZATION_CURRENT_CONTRACT_REVISION,
@@ -278,9 +279,14 @@ const currentMutableCleanupMetadata = Effect.fn('codeGraph.currentMutableCleanup
   sql: SqlClient.SqlClient,
 ) {
   const epoch = yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY, 16);
-  const cursor = yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY, 64);
+  const cursor = yield* inspectBoundedSchemaMetadataValue(
+    sql,
+    REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY,
+    CODE_GRAPH_SCOPE_CURSOR_MAXIMUM_BYTES,
+  );
   return {
-    cursorCurrent: cursor.state === 'missing' || (cursor.state === 'recorded' && /^[0-9a-f]{64}$/u.test(cursor.value)),
+    cursorCurrent:
+      cursor.state === 'missing' || (cursor.state === 'recorded' && CODE_GRAPH_SCOPE_CURSOR_PATTERN.test(cursor.value)),
     cursorRecorded: cursor.state === 'recorded',
     epochCurrent:
       epoch.state === 'recorded' &&
