@@ -54,6 +54,10 @@ interface PlannedMaterializedShardCacheRow extends CodeGraphCacheCapacityRow {
   readonly path: string;
 }
 
+function freshFactCacheCapacityKey(contentHash: string, extractorSet: string, path: string): string {
+  return JSON.stringify([contentHash, extractorSet, path]);
+}
+
 function cacheCapacityPlanningError(label: string, cause: unknown): CodeGraphStoreFailure {
   if (isCodeGraphStoreError(cause)) return cause;
   const reason = cause instanceof Error && cause.message.includes('payload ceiling') ? ' payload ceiling' : ' input';
@@ -76,7 +80,7 @@ function prepareFreshFactCacheRows(
       createdAt,
       extractorSet,
       factsJson: stored.json,
-      key: file.path,
+      key: freshFactCacheCapacityKey(file.contentHash, extractorSet, file.path),
       path: file.path,
     };
     return {...row, payloadBytes: codeGraphFileBlobCapacityBytes(row)};
