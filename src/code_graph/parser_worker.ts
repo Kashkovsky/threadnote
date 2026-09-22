@@ -13,7 +13,7 @@ import {
   Schema,
 } from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {fromPromise, fromPromiseInterruptibleAwaiting} from '../effect/errors.js';
+import {fromPromise, fromPromiseInterruptible, fromPromiseInterruptibleAwaiting} from '../effect/errors.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file/lock.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {
@@ -342,7 +342,10 @@ export function codeGraphParserPoolLayer(
                     system,
                     threadnoteHome,
                     capacity,
-                    extractFromSlot(slot, file, threadnoteHome),
+                    fromPromiseInterruptibleAwaiting(
+                      _signal => slot.prepare(threadnoteHome),
+                      cause => (Schema.is(ParserWorkerError)(cause) ? cause : ParserWorkerError.of('protocol')),
+                    ).pipe(Effect.andThen(extractFromSlot(slot, file, threadnoteHome))),
                   ).pipe(Effect.catch(cause => Effect.succeed(degradedResult(file, cause)))),
                 slot => Queue.offer(available, slot),
               );
@@ -360,8 +363,15 @@ export function codeGraphParserPoolLayer(
                         threadnoteHome,
                         capacity,
                         capacity === 1
-                          ? use(file => extractFromSlot(slot, file, threadnoteHome)).pipe(
-                              Effect.mapError(error => new ParserWorkerSessionUseError(error)),
+                          ? fromPromiseInterruptibleAwaiting(
+                              _signal => slot.prepare(threadnoteHome),
+                              cause => (Schema.is(ParserWorkerError)(cause) ? cause : ParserWorkerError.of('protocol')),
+                            ).pipe(
+                              Effect.andThen(
+                                use(file => extractFromSlot(slot, file, threadnoteHome)).pipe(
+                                  Effect.mapError(error => new ParserWorkerSessionUseError(error)),
+                                ),
+                              ),
                             )
                           : fromPromiseInterruptibleAwaiting(
                               signal => slot.warm(threadnoteHome, signal),
@@ -481,7 +491,7 @@ class ParserWorkerSlot {
   ) {}
 
   extract(file: CodeGraphInventoryFile, threadnoteHome: string): Effect.Effect<CodeGraphParserResult, Error> {
-    return fromPromiseInterruptibleAwaiting(
+    return fromPromiseInterruptible(
       async signal => {
         if (this.closed) throw ParserWorkerError.of('exit');
         this.cancelIdleEviction();

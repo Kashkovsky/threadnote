@@ -804,19 +804,13 @@ describe('code graph parser worker pool', () => {
       processes.push(interruptedWorker);
       pendingSpawns[0](interruptedWorker);
       yield* Fiber.join(interrupted);
-      yield* waitUntil(() => pendingSpawns.length === 2);
-      const activeWorker = echoProcess();
-      processes.push(activeWorker);
-      pendingSpawns[1](activeWorker);
       const result = yield* Fiber.join(second);
       yield* pool.trimIdle;
 
       expect(result.degraded).toBe(false);
-      expect(processes).toHaveLength(2);
-      expect(interruptedWorker.writes).toHaveLength(0);
+      expect(processes).toHaveLength(1);
+      expect(interruptedWorker.writes.map(request => request.file.path)).toEqual([secondFile.path]);
       expect(interruptedWorker.inputClosed).toBe(true);
-      expect(activeWorker.writes.map(request => request.file.path)).toEqual([secondFile.path]);
-      expect(activeWorker.inputClosed).toBe(true);
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
