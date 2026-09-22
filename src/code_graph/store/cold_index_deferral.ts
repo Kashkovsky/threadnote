@@ -180,6 +180,28 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
       });
     const restoration = Effect.gen(function* () {
       yield* report();
+      // Separate commits let SQLite checkpoint between indexes; the marker
+      // keeps any partially restored prefix recoverable after interruption.
+      for (const definition of missing) {
+        yield* runWrite(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              yield* assertPersistentBuildOwner(sql, options.snapshotId, options.ownerToken);
+              const marker = yield* sql<{readonly value: string}>`
+                SELECT value FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY} LIMIT 1
+              `;
+              if (marker[0]?.value !== DEFERRED_QUERY_INDEX_STATE_VALUE) {
+                return yield* CodeGraphStoreError.of('Code graph query index restoration changed.');
+              }
+              yield* sql.unsafe(definition.createSql);
+              yield* options.observeTransaction?.() ?? Effect.void;
+            }),
+          ),
+        );
+        completed += 1;
+        yield* report();
+        yield* Effect.yieldNow;
+      }
       yield* runWrite(
         sql.withTransaction(
           Effect.gen(function* () {
@@ -190,14 +212,6 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
             if (marker[0]?.value !== DEFERRED_QUERY_INDEX_STATE_VALUE) {
               return yield* CodeGraphStoreError.of('Code graph query index restoration changed.');
             }
-            for (const definition of missing) {
-              yield* sql.unsafe(definition.createSql);
-              yield* options.observeTransaction?.() ?? Effect.void;
-              // Bun's SQLite calls are synchronous. Cooperate between index
-              // statements so lease heartbeats and interruption stay live while
-              // retaining one all-or-nothing restoration transaction.
-              yield* Effect.yieldNow;
-            }
             const restored = yield* inspectCodeGraphQueryIndexes(sql);
             if (restored.missing.length > 0) {
               return yield* CodeGraphStoreError.of('Code graph query index restoration is incomplete.');
@@ -207,11 +221,6 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
           }),
         ),
       );
-      for (const _definition of missing) {
-        completed += 1;
-        yield* report();
-        yield* Effect.yieldNow;
-      }
     });
     yield* options.persistentCapacityProtector
       ? options.persistentCapacityProtector(boundary, restoration)
