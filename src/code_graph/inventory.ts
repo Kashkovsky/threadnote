@@ -206,7 +206,11 @@ const GENERATED_DIRECTORIES = new Set([
   'out',
 ]);
 const AUTHORED_DOT_DIRECTORIES = new Set(['.aspect']);
-const CAT_FILE_BATCH_ENTRIES = 128;
+// Keep the byte ceiling as the memory guard. A 128-entry cap fragments the
+// heavy-tail fixture into three `git cat-file` children even though its
+// content fits comfortably below that ceiling; on current Bun this startup
+// cost dominates the measured read phase.
+const CAT_FILE_BATCH_ENTRIES = 512;
 const CAT_FILE_BATCH_BYTES = 16 * 1_048_576;
 /**
  * Aggregate path/size metadata through the same admission rules used by the

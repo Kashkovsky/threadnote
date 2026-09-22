@@ -5,9 +5,9 @@
     "dirty": false,
     "fixtureHash": "code-graph-heavy-tail-v1:75fe40a319716ffe0234d6e0d4e1128e7ef1cc001d06f91b8492154fd0055150",
     "memoryBytes": 68719476736,
-    "node": "bun/1.3.14",
+    "node": "bun/1.4.2",
     "operatingSystem": "macOS 27.0",
-    "packageManager": "bun/1.3.14",
+    "packageManager": "bun/1.4.2",
     "runner": "threadnote-code-graph-heavy-tail",
     "runnerVersion": "3"
   },
