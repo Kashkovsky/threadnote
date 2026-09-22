@@ -938,6 +938,22 @@ The body remains ordinary **Markdown**.
     );
   });
 
+  it('documents separate data-home and standalone-installation isolation roots', () => {
+    const configuration = docsSections
+      .flatMap(section => section.articles)
+      .find(article => article.id === 'configuration');
+    const cliReference = docsSections
+      .flatMap(section => section.articles)
+      .find(article => article.id === 'cli-reference');
+    const content = JSON.stringify({cliReference, configuration});
+
+    expect(content).toContain('THREADNOTE_HOME / --home');
+    expect(content).toContain('not standalone installation state');
+    expect(content).toContain('THREADNOTE_INSTALL_ROOT');
+    expect(content).toContain('Relocate shared install state for managed/test installs');
+    expect(content).not.toContain('Relocate all Threadnote-owned state');
+  });
+
   it('explains the first-agent setup and the optional two-agent journey in plain language', () => {
     const articles = docsSections.flatMap(section => section.articles);
     const connectAgent = JSON.stringify(articles.find(article => article.id === 'connect-an-agent'));

@@ -148,6 +148,19 @@ threadnote doctor
 threadnote migrate
 ```
 
+`THREADNOTE_HOME` and `--home` select the data home for memories, indexes, logs, models, and related configuration.
+They do not relocate the standalone installation: the executable, active-release pointer, update policy, process leases,
+and release pruning are installation-scoped because every data home uses the same installed command. Consequently,
+`threadnote install --home <temporary-home>` can still maintain and prune the shared standalone installation.
+
+For a disposable test or chaos run that invokes `install`, isolate both roots. `THREADNOTE_INSTALL_ROOT` is an advanced
+managed-install and test control, not a setting to copy into ordinary agent configuration:
+
+```sh
+THREADNOTE_INSTALL_ROOT=/path/to/temporary/install-root \
+  threadnote install --home /path/to/temporary/threadnote-home --no-start
+```
+
 `migrate` is a dry run unless `--apply` is present. It never deletes the legacy source. An interrupted copy can be
 resumed; a promoted target has a checksummed receipt. If the target is unrelated or free space is insufficient,
 migration stops before promotion.
