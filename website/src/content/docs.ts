@@ -49,7 +49,7 @@ export const cliCommands: CliCommandReference[] = [
   ...activationCliCommands,
   {
     command: 'install',
-    summary: 'Initialize the self-contained home, core embedding model, and indexes.',
+    summary: 'Initialize the data home and maintain the shared standalone installation and user integrations.',
     examples: ['threadnote install', 'threadnote install --with-hooks'],
   },
   {
@@ -1848,7 +1848,7 @@ threadnote report-issue \\
           },
           {
             type: 'note',
-            text: 'Global overrides include --home, --manifest, --log-level, shell completions, and --wizard. Prefer explicit --query and absolute --caller-cwd in scripts.',
+            text: 'Global overrides include --home, --manifest, --log-level, shell completions, and --wizard. --home selects the data home; it does not relocate shared standalone installation state. Prefer explicit --query and absolute --caller-cwd in scripts.',
           },
         ],
       },
@@ -1881,27 +1881,24 @@ threadnote report-issue \\
             type: 'table',
             headers: ['Setting', 'Purpose', 'Default'],
             rows: [
-              ['THREADNOTE_HOME / --home', 'Relocate all Threadnote-owned state', '~/.threadnote'],
+              ['THREADNOTE_HOME / --home', 'Relocate data state, not standalone installation state', '~/.threadnote'],
               [
-                'THREADNOTE_MANIFEST / --manifest',
-                'Choose the per-developer seed manifest',
-                '~/.threadnote/seed-manifest.yaml',
+                'THREADNOTE_INSTALL_ROOT',
+                'Relocate shared install state for managed/test installs',
+                'Platform data root',
               ],
+              ['THREADNOTE_MANIFEST / --manifest', 'Select the seed manifest', '~/.threadnote/seed-manifest.yaml'],
               ['THREADNOTE_RECALL_THRESHOLD', 'Default topical relevanceScore floor', '0.3'],
               ['THREADNOTE_CALLER_CWD', 'Fallback workspace for CLI scope resolution', 'Current process directory'],
               ['THREADNOTE_MCP_TOOLSET', 'Select core or full MCP tools', 'core'],
-              [
-                'THREADNOTE_CANDIDATE_POLICY',
-                'Select suggest, handoff-only, or off for extra session candidates',
-                'suggest',
-              ],
+              ['THREADNOTE_CANDIDATE_POLICY', 'Session candidate mode: suggest, handoff-only, or off', 'suggest'],
               ['THREADNOTE_AUTO_UPDATE', 'Set to 1 to enable hook-driven update checks', 'unset'],
               ['THREADNOTE_NO_SPINNER', 'Disable interactive progress spinners', 'unset'],
             ],
           },
           {
             type: 'warning',
-            text: 'Internal build, worker, release-source, parser-asset, command-limit, and install-root variables are implementation or test controls, not normal user configuration. Do not copy them into agent configs.',
+            text: 'THREADNOTE_INSTALL_ROOT is an advanced managed-install and test-isolation boundary, not a per-agent data-home setting. Other internal build, worker, release-source, parser-asset, and command-limit variables are implementation or test controls. Do not copy them into agent configs.',
           },
         ],
       },

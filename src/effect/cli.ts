@@ -211,7 +211,7 @@ import {
 
 const root = Command.make('threadnote').pipe(
   Command.withSharedFlags({
-    home: optionalString('home', 'Override THREADNOTE_HOME for this invocation'),
+    home: optionalString('home', 'Override the Threadnote data home; not the standalone installation root'),
     manifest: optionalString('manifest', 'Override THREADNOTE_MANIFEST for this invocation'),
   }),
 );
@@ -290,7 +290,11 @@ const install = Command.make(
         yield* maybeNotifyUpdate(config, {dryRun: options.dryRun});
       }),
     ),
-).pipe(Command.withDescription('Initialize the self-contained Threadnote home and user-level integrations'));
+).pipe(
+  Command.withDescription(
+    'Initialize the Threadnote data home and maintain the shared standalone installation and user integrations',
+  ),
+);
 
 const version = Command.make(
   'version',

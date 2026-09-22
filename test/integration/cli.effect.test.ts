@@ -21,6 +21,13 @@ describe('Effect CLI', () => {
     expect(result.stdout).not.toContain('migrate-project-namesMove');
   });
 
+  it('distinguishes the data home from shared standalone installation state', async () => {
+    const [rootHelp, installHelp] = await Promise.all([runCli(['--help']), runCli(['install', '--help'])]);
+
+    expect(rootHelp.stdout).toContain('Override the Threadnote data home; not the standalone installation root');
+    expect(installHelp.stdout).toContain('maintain the shared standalone installation');
+  });
+
   it('retains the historical migrate-project-names command', async () => {
     const result = await runCli(['migrate-project-names', '--help']);
     expect(result.stdout).toContain('threadnote migrate-project-names [flags]');
