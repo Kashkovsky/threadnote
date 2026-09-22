@@ -115,7 +115,10 @@ export function flushCombinedCodeGraphCacheGroups(options: {
           ).pipe(Effect.ignore);
         }
         const elapsed = Math.max(0, performance.now() - startedAt);
-        const totalPayloadBytes = Math.max(1, groups.reduce((total, [, group]) => total + group.payloadBytes, 0));
+        const totalPayloadBytes = Math.max(
+          1,
+          groups.reduce((total, [, group]) => total + group.payloadBytes, 0),
+        );
         let allocatedMilliseconds = 0;
         let pendingBytes = options.pendingBytes;
         let pendingRows = options.pendingRows;

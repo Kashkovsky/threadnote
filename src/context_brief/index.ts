@@ -115,14 +115,12 @@ export function instrumentContextBriefCompilerDependencies<
           ),
         ),
     graphEvidence: graphPlan =>
-      reporter
-        .graph(sources.graphEvidence(graphPlan), contextBriefGraphPhaseOutcome)
-        .pipe(
-          Effect.catchIf(
-            error => !Schema.is(CodeGraphScopeRoutingError)(error),
-            () => Effect.succeed(unavailableContextBriefGraphEvidence('graph-query-unavailable', requestedRepositories)),
-          ),
+      reporter.graph(sources.graphEvidence(graphPlan), contextBriefGraphPhaseOutcome).pipe(
+        Effect.catchIf(
+          error => !Schema.is(CodeGraphScopeRoutingError)(error),
+          () => Effect.succeed(unavailableContextBriefGraphEvidence('graph-query-unavailable', requestedRepositories)),
         ),
+      ),
     ...(sources.codeLinkedMemoryEvidence === undefined
       ? {}
       : {
