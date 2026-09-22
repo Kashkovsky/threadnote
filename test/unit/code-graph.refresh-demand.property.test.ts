@@ -95,9 +95,7 @@ describe('code graph refresh demand properties', () => {
         if (resumed === undefined || admitted === undefined) return;
         expect(resumed.target.targetKey).toBe(requested);
         const persisted = [state.active, state.desired].find(candidate => candidate?.targetKey === requested);
-        expect(resumed.target.targetToken).toBe(
-          persisted === undefined ? replacementToken : persisted.targetToken,
-        );
+        expect(resumed.target.targetToken).toBe(persisted === undefined ? replacementToken : persisted.targetToken);
         const admittedKeys = new Set([state.active?.targetKey, state.desired?.targetKey, requested].filter(Boolean));
         for (const key of [resumed.state.active?.targetKey, resumed.state.desired?.targetKey].filter(Boolean))
           expect(admittedKeys.has(key)).toBe(true);
