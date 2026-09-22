@@ -1454,24 +1454,13 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       total: entries.length,
       unit: 'files',
     }) ?? Effect.void;
-    const prepareParserWork = !parserWorkPrepared && batch.some(entry => entry.parse);
-    if (prepareParserWork) {
-      parserWorkPrepared = true;
-      yield* onParserWorkPlanned?.() ?? Effect.void;
-    }
     const expectedBytes = batch.reduce((total, entry) => total + entry.size, 0) + batch.length * 256;
-    const readBatch = Effect.gen(function* () {
-      const readingStarted = performance.now();
-      const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
-        input: new TextEncoder().encode(`${batch.map(entry => entry.blobId).join('\n')}\n`),
-        maxOutputBytes: expectedBytes,
-        timeoutMs: 0,
-      });
-      return {readingMilliseconds: performance.now() - readingStarted, result};
+    const readingStarted = performance.now();
+    const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
+      input: new TextEncoder().encode(`${batch.map(entry => entry.blobId).join('\n')}\n`),
+      maxOutputBytes: expectedBytes,
+      timeoutMs: 0,
     });
-    const read = yield* readBatch;
-    const decodingStarted = performance.now();
-    const result = read.result;
     const blobs = parseGitCatFileBatch(result.stdout, batch);
     const contentBatch: CodeGraphInventoryFile[] = [];
     for (let index = 0; index < batch.length; index += 1) {
@@ -1497,8 +1486,12 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       const retained = retainResolutionContext(hydrated, languagePacks);
       files.push(retained);
     }
-    const readingMilliseconds = read.readingMilliseconds + performance.now() - decodingStarted;
+    const readingMilliseconds = performance.now() - readingStarted;
     if (contentBatch.length > 0) {
+      if (!parserWorkPrepared) {
+        parserWorkPrepared = true;
+        yield* onParserWorkPlanned?.() ?? Effect.void;
+      }
       yield* onContentBatch?.(contentBatch, {
         ...(blobReuseCounts.size === 0 ? {} : {blobReuseCounts}),
         extractionPlan,

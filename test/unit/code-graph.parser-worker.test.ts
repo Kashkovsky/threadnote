@@ -780,10 +780,15 @@ describe('code graph parser worker pool', () => {
   it.effect('keeps an interrupted session slot owned until its initial spawn settles', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
     const pendingSpawns: Array<(process: ParserWorkerProcess) => void> = [];
-    const spawn: ParserWorkerSpawner = () =>
-      new Promise(resolve => {
-        pendingSpawns.push(resolve);
-      });
+    const spawn: ParserWorkerSpawner = () => {
+      if (pendingSpawns.length === 0)
+        return new Promise(resolve => {
+          pendingSpawns.push(resolve);
+        });
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
 
     return Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -808,9 +813,11 @@ describe('code graph parser worker pool', () => {
       yield* pool.trimIdle;
 
       expect(result.degraded).toBe(false);
-      expect(processes).toHaveLength(1);
-      expect(interruptedWorker.writes.map(request => request.file.path)).toEqual([secondFile.path]);
+      expect(processes).toHaveLength(2);
+      expect(interruptedWorker.writes).toEqual([]);
+      expect(processes[1].writes.map(request => request.file.path)).toEqual([secondFile.path]);
       expect(interruptedWorker.inputClosed).toBe(true);
+      expect(processes[1].inputClosed).toBe(true);
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
@@ -837,6 +844,72 @@ describe('code graph parser worker pool', () => {
         files[0].path,
       ]);
     }).pipe(provideTestLayer(parserLayer({capacity: 2, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect.each([
+    {entry: 'extract', transition: 'retry'},
+    {entry: 'extract', transition: 'recycle'},
+    {entry: 'session', transition: 'retry'},
+    {entry: 'session', transition: 'recycle'},
+  ] as const)('retains $entry ownership while an interrupted $transition spawn settles', ({entry, transition}) => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    let spawnCount = 0;
+    let resolveSpawn: ((process: ParserWorkerProcess) => void) | undefined;
+    const firstWorker = new ScriptedParserWorkerProcess(request => {
+      if (transition === 'retry') firstWorker.stdoutFeed.push('{malformed}\n');
+      else firstWorker.respond(request, factsFor(request.file), {recycle: true});
+    });
+    const delayedWorker = echoProcess();
+    const spawn: ParserWorkerSpawner = () => {
+      spawnCount += 1;
+      if (spawnCount === 2) {
+        return new Promise(resolve => {
+          processes.push(delayedWorker);
+          resolveSpawn = resolve;
+        });
+      }
+      const worker = spawnCount === 1 ? firstWorker : echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-respawn-interrupt-'});
+      const pool = yield* CodeGraphParserPool;
+      const files = [
+        inventoryFile('src/before-respawn.ts', 'export const before = true;'),
+        inventoryFile('src/after-respawn.ts', 'export const after = true;'),
+      ];
+      const run = (selected: readonly CodeGraphInventoryFile[]) =>
+        entry === 'session'
+          ? pool.withParserSlot(home, selected, extract => Effect.forEach(selected, extract))
+          : Effect.forEach(selected, file => pool.extract(file, home));
+      const first = yield* Effect.forkScoped(run(files));
+      yield* waitUntil(() => resolveSpawn !== undefined);
+      const interrupted = yield* Effect.forkScoped(Fiber.interrupt(first));
+      yield* TestClock.withLive(Effect.sleep(20));
+
+      expect(interrupted.pollUnsafe()).toBeUndefined();
+      expect(yield* fs.exists(`${home}/locks/indexes/code-graph/parser-slots/0.lock`)).toBe(true);
+      const second = yield* Effect.forkScoped(run([files[1]]));
+      yield* TestClock.withLive(Effect.sleep(20));
+      expect(spawnCount).toBe(2);
+
+      resolveSpawn?.(delayedWorker);
+      yield* Fiber.join(interrupted);
+      const recovered = yield* Fiber.join(second);
+      yield* pool.trimIdle;
+
+      expect(recovered.every(result => !result.degraded)).toBe(true);
+      expect(spawnCount).toBe(3);
+      expect(delayedWorker.writes).toEqual([]);
+      expect(processes.every(process => process.inputClosed || process.killed)).toBe(true);
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => resolveSpawn?.(delayedWorker))),
+      provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})),
+      Effect.scoped,
+    );
   });
 
   it.effect('does not terminate an active extraction when idle slots are trimmed', () => {
