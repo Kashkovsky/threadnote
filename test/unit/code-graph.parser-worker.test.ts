@@ -777,6 +777,31 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
+  it.effect('warms concurrently admitted parser slots before extraction', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-parallel-session-'});
+      const pool = yield* CodeGraphParserPool;
+      const files = [inventoryFile('src/parallel-a.ts', 'export const parallelA = true;')];
+
+      const results = yield* pool.withParserSlot(home, files, extract => Effect.forEach(files, extract));
+
+      expect(results.map(result => result.facts.path)).toEqual(files.map(file => file.path));
+      expect(processes).toHaveLength(1);
+      expect(processes[0].writes.map(request => request.file.path)).toEqual([
+        '.threadnote/parser-warmup.ts',
+        files[0].path,
+      ]);
+    }).pipe(provideTestLayer(parserLayer({capacity: 2, spawnWorker: spawn})), Effect.scoped);
+  });
+
   it.effect('does not terminate an active extraction when idle slots are trimmed', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
     const spawn: ParserWorkerSpawner = () => {

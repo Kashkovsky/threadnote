@@ -49,6 +49,17 @@ const WORKER_SHUTDOWN_TIMEOUT_MILLISECONDS = 500;
 const SLOT_RETRY_MILLISECONDS = 25;
 const SLOT_STALE_MILLISECONDS = 30_000;
 const PARSER_WORKER_MEMORY_BYTES_PER_SLOT = 8 * 1_024 * 1_024 * 1_024;
+const PARSER_WORKER_WARMUP_SOURCE = 'export const __threadnoteParserWarmup = true;\n';
+const PARSER_WORKER_WARMUP_FILE: CodeGraphInventoryFile = {
+  blobId: '',
+  content: PARSER_WORKER_WARMUP_SOURCE,
+  contentHash: sha256HexSync(PARSER_WORKER_WARMUP_SOURCE),
+  language: 'typescript',
+  mode: '100644',
+  path: '.threadnote/parser-warmup.ts',
+  size: new TextEncoder().encode(PARSER_WORKER_WARMUP_SOURCE).byteLength,
+  source: 'worktree',
+};
 
 type ParserWorkerEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -348,9 +359,20 @@ export function codeGraphParserPoolLayer(
                         system,
                         threadnoteHome,
                         capacity,
-                        use(file => extractFromSlot(slot, file, threadnoteHome)).pipe(
-                          Effect.mapError(error => new ParserWorkerSessionUseError(error)),
-                        ),
+                        capacity === 1
+                          ? use(file => extractFromSlot(slot, file, threadnoteHome)).pipe(
+                              Effect.mapError(error => new ParserWorkerSessionUseError(error)),
+                            )
+                          : fromPromiseInterruptibleAwaiting(
+                              signal => slot.warm(threadnoteHome, signal),
+                              cause => (Schema.is(ParserWorkerError)(cause) ? cause : ParserWorkerError.of('protocol')),
+                            ).pipe(
+                              Effect.andThen(
+                                use(file => extractFromSlot(slot, file, threadnoteHome)).pipe(
+                                  Effect.mapError(error => new ParserWorkerSessionUseError(error)),
+                                ),
+                              ),
+                            ),
                       ).pipe(
                         Effect.catch(error =>
                           error instanceof ParserWorkerSessionUseError
@@ -442,6 +464,7 @@ class ParserWorkerSlot {
   private closed = false;
   private connection = Option.none<ParserWorkerConnection>();
   private connectionHome = Option.none<string>();
+  private warmedConnection = Option.none<ParserWorkerConnection>();
   private evictingConnection: Promise<void> | undefined;
   private idleGeneration = 0;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -521,7 +544,35 @@ class ParserWorkerSlot {
     const connection = this.connection.value;
     this.connection = Option.none();
     this.connectionHome = Option.none();
+    this.warmedConnection = Option.none();
     await connection.close();
+  }
+
+  async warm(threadnoteHome: string, signal: AbortSignal): Promise<void> {
+    if (this.closed) throw ParserWorkerError.of('exit');
+    this.cancelIdleEviction();
+    let connection = Option.none<ParserWorkerConnection>();
+    try {
+      const active = await this.activeConnection(threadnoteHome);
+      connection = Option.some(active);
+      if (Option.contains(this.warmedConnection, active) && !active.closed) return;
+      const response = await active.request(
+        {
+          file: PARSER_WORKER_WARMUP_FILE,
+          id: `${this.system.processId}-${this.index}-${++this.sequence}`,
+          protocol: PROTOCOL_VERSION,
+        },
+        this.timeoutMilliseconds,
+        signal,
+      );
+      if (!response.ok || response.degraded || response.recycle) throw ParserWorkerError.of('operation');
+      this.warmedConnection = Option.some(active);
+    } catch (cause) {
+      if (Option.isSome(connection)) await this.discard(connection.value).catch(() => undefined);
+      throw cause;
+    } finally {
+      this.scheduleIdleEviction();
+    }
   }
 
   async prepare(threadnoteHome: string): Promise<void> {
@@ -574,6 +625,7 @@ class ParserWorkerSlot {
     if (Option.isSome(this.connection) && this.connection.value === connection) {
       this.connection = Option.none();
       this.connectionHome = Option.none();
+      this.warmedConnection = Option.none();
     }
     await connection.close();
   }
@@ -614,6 +666,7 @@ class ParserWorkerSlot {
     if (Option.isSome(this.connection) && this.connection.value === connection) {
       this.connection = Option.none();
       this.connectionHome = Option.none();
+      this.warmedConnection = Option.none();
     }
     const eviction = connection.close();
     this.evictingConnection = eviction;
