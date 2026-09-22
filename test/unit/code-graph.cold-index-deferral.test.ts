@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Effect, Exit, FileSystem, Path} from 'effect';
+import {Deferred, Effect, Exit, Fiber, FileSystem, Path, Schema} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -10,7 +10,9 @@ import {
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   codeGraphColdIndexDeferralEligible,
+  codeGraphColdIndexDeferralWorthwhile,
   deferCodeGraphQueryIndexesForColdBuild,
+  restoreCodeGraphQueryIndexesAfterColdBuild,
 } from '../../src/code_graph/store/cold_index_deferral.js';
 import type {CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store/models.js';
 import {claimPersistentSnapshotBuild} from '../../src/code_graph/store/persistent_build.js';
@@ -49,6 +51,18 @@ describe('code graph cold query-index deferral', () => {
       ),
       {numRuns: 150},
     );
+  });
+
+  it('defers only when file count or source bytes reaches the bulk-build envelope', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({min: 0, max: 256 * 1_024}), {maxLength: 511}), sizes => {
+        const files = sizes.map(size => ({size}));
+        const totalBytes = sizes.reduce((total, size) => total + size, 0);
+        expect(codeGraphColdIndexDeferralWorthwhile(files)).toBe(totalBytes >= 16 * 1_048_576);
+      }),
+      {numRuns: 150},
+    );
+    expect(codeGraphColdIndexDeferralWorthwhile(Array.from({length: 512}, () => ({size: 0})))).toBe(true);
   });
 
   effectIt.effect('restores every exact index through one capacity boundary before reference resolution', () =>
@@ -204,6 +218,147 @@ describe('code graph cold query-index deferral', () => {
     ),
   );
 
+  effectIt.effect('commits each index independently and rolls back only the failed restoration statement', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* coldIndexFixture('partial-yield');
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.initialize(fixture.databasePath);
+            const ownerToken = yield* claimPersistentBuildForTest(
+              store,
+              fixture.databasePath,
+              fixture.identity,
+              fixture.snapshot,
+            );
+            yield* store.prepareActivation(
+              fixture.databasePath,
+              [fixture.file],
+              fixture.snapshot.id,
+              undefined,
+              ownerToken,
+            );
+            const sql = yield* SqlClient.SqlClient;
+            let cooperativeTicks = 0;
+            const ticker = yield* Effect.forkScoped(
+              Effect.forever(
+                Effect.yieldNow.pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      cooperativeTicks += 1;
+                    }),
+                  ),
+                ),
+              ),
+            );
+            const observations: number[] = [];
+            const failed = yield* restoreCodeGraphQueryIndexesAfterColdBuild({
+              observeTransaction: () =>
+                Effect.gen(function* () {
+                  expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(false);
+                  observations.push(cooperativeTicks);
+                  if (observations.length === 3) throw new Error('injected index restoration failure');
+                }).pipe(Effect.orDie),
+              ownerToken,
+              snapshotId: fixture.snapshot.id,
+              sql,
+            }).pipe(Effect.exit);
+            yield* Fiber.interrupt(ticker);
+
+            expect(Exit.isFailure(failed)).toBe(true);
+            expect(new Set(observations).size).toBeGreaterThan(1);
+            expect((yield* inspectCodeGraphQueryIndexes(sql)).missing).toHaveLength(
+              CODE_GRAPH_QUERY_INDEX_DEFINITIONS.length - 2,
+            );
+            expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(false);
+
+            expect(
+              yield* restoreCodeGraphQueryIndexesAfterColdBuild({
+                ownerToken,
+                snapshotId: fixture.snapshot.id,
+                sql,
+              }),
+            ).toBe(true);
+            expect((yield* inspectCodeGraphQueryIndexes(sql)).missing).toEqual([]);
+            expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(true);
+          }),
+          {writerLockPath: fixture.writerLockPath},
+        );
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect.prop(
+    'resumes every interrupted index prefix without prematurely publishing schema completion',
+    {
+      interruptAt: Schema.Int.check(Schema.isBetween({minimum: 1, maximum: CODE_GRAPH_QUERY_INDEX_DEFINITIONS.length})),
+    },
+    ({interruptAt}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* coldIndexFixture('interrupted-prefix');
+          const store = yield* CodeGraphStore;
+          yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              yield* store.initialize(fixture.databasePath);
+              const ownerToken = yield* claimPersistentBuildForTest(
+                store,
+                fixture.databasePath,
+                fixture.identity,
+                fixture.snapshot,
+              );
+              yield* store.prepareActivation(
+                fixture.databasePath,
+                [fixture.file],
+                fixture.snapshot.id,
+                undefined,
+                ownerToken,
+              );
+              const sql = yield* SqlClient.SqlClient;
+              const paused = yield* Deferred.make<void>();
+              let observed = 0;
+              const restoration = yield* restoreCodeGraphQueryIndexesAfterColdBuild({
+                observeTransaction: () =>
+                  Effect.gen(function* () {
+                    expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(false);
+                    observed += 1;
+                    if (observed === interruptAt) {
+                      yield* Deferred.succeed(paused, undefined);
+                      return yield* Effect.never;
+                    }
+                  }).pipe(Effect.orDie),
+                ownerToken,
+                snapshotId: fixture.snapshot.id,
+                sql,
+              }).pipe(Effect.forkScoped);
+              yield* Deferred.await(paused);
+              yield* Fiber.interrupt(restoration);
+              expect(Exit.isFailure(yield* Fiber.await(restoration))).toBe(true);
+              expect((yield* inspectCodeGraphQueryIndexes(sql)).missing).toHaveLength(
+                CODE_GRAPH_QUERY_INDEX_DEFINITIONS.length - interruptAt + 1,
+              );
+              expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(false);
+              const marker = yield* sql<{readonly value: string}>`
+                SELECT value FROM activation_state WHERE key = 'query_indexes_deferred'
+              `;
+              expect(marker).toEqual([{value: '1'}]);
+
+              const options = {ownerToken, snapshotId: fixture.snapshot.id, sql};
+              expect(yield* restoreCodeGraphQueryIndexesAfterColdBuild(options)).toBe(true);
+              expect((yield* inspectCodeGraphQueryIndexes(sql)).missing).toEqual([]);
+              expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(true);
+              expect(yield* restoreCodeGraphQueryIndexesAfterColdBuild(options)).toBe(false);
+            }),
+            {writerLockPath: fixture.writerLockPath},
+          );
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    {arbitrary: {runs: 8, seed: 'cold-index-interrupted-prefix'}},
+  );
+
   effectIt.effect('revalidates indexes atomically when a claim races cold deferral', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -335,7 +490,9 @@ const coldIndexFixture = Effect.fn('test.coldIndexFixture')(function* (suffix: s
     language: 'typescript',
     mode: '100644',
     path: 'src/cold-index.ts',
-    size: 128,
+    // Exercise the deferred bulk-build path rather than the small-graph eager
+    // index path covered by the pure admission property above.
+    size: 16 * 1_048_576,
     source: 'commit',
   };
   const symbol: CodeGraphSymbol = {

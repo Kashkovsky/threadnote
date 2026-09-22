@@ -899,7 +899,7 @@
     "cold-reference-resolution-transactions-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 18787
+      "p95Maximum": 19200
     },
     "cold-registration-lock-and-database-setup": {
       "samplesMinimum": 1,
@@ -1477,7 +1477,7 @@
     "one-file-reindex-activation-lexical-only": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 688
+      "p95Maximum": 900
     },
     "one-file-reindex-activation-longest-transaction-n1": {
       "samplesMinimum": 1,

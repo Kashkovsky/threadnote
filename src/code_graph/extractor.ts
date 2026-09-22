@@ -1,7 +1,8 @@
-import ts from 'typescript-compiler';
+import type ts from 'typescript-compiler';
 import {Option, Predicate} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {compareCodeUnits} from './ordering.js';
+import {loadTypeScriptExtractionRuntime, typeScriptKindForPath} from './typescript_runtime.js';
 import {documentLookupTiers, resolveLegacyDocumentReference, resolveLookupTiers} from './resolution/lookup.js';
 import type {
   CodeGraphEdge,
@@ -80,13 +81,10 @@ export interface ResolutionAliasIndex {
 const TYPESCRIPT_EXTENSIONS = /\.(?:[cm]?[jt]s|[jt]sx)$/i;
 export const TYPESCRIPT_DYNAMIC_RELATIONSHIP_LIMIT = 4_000;
 const TYPESCRIPT_FULL_TRAVERSAL_CHARACTER_LIMIT = 2 * 1_024 * 1_024;
-const DECLARATION_KINDS = new Set([
-  ts.SyntaxKind.ClassDeclaration,
-  ts.SyntaxKind.EnumDeclaration,
-  ts.SyntaxKind.FunctionDeclaration,
-  ts.SyntaxKind.InterfaceDeclaration,
-  ts.SyntaxKind.TypeAliasDeclaration,
-]);
+// Every compiler-dependent helper is private to extractTypeScript. Loading at
+// that boundary keeps attribution and non-TypeScript extraction compiler-free.
+let compiler: typeof ts;
+let declarationKinds: ReadonlySet<ts.SyntaxKind>;
 
 export function extractRepositoryFacts(
   files: readonly CodeGraphInventoryFile[],
@@ -537,12 +535,13 @@ export function extractFileFacts(
 }
 
 function extractTypeScript(content: string, context: ExtractionContext): CodeGraphFileFacts {
-  const sourceFile = ts.createSourceFile(
+  if (compiler === undefined) ({compiler, declarationKinds} = loadTypeScriptExtractionRuntime());
+  const sourceFile = compiler.createSourceFile(
     context.path,
     content,
-    ts.ScriptTarget.Latest,
+    compiler.ScriptTarget.Latest,
     true,
-    scriptKindForPath(context.path),
+    typeScriptKindForPath(compiler, context.path),
   );
   const facts: MutableFacts = {
     diagnostics: [],
@@ -591,7 +590,7 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
     }
 
     const owner = declarationStack.at(-1)!;
-    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+    if (compiler.isImportDeclaration(node) && compiler.isStringLiteralLike(node.moduleSpecifier)) {
       const specifier = node.moduleSpecifier.text;
       addUnresolvedEdge(facts, context, node, owner, specifier, 'imports', 'syntactic');
       const clause = node.importClause;
@@ -606,7 +605,7 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
           'syntactic',
         );
       }
-      if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+      if (clause?.namedBindings && compiler.isNamedImports(clause.namedBindings)) {
         for (const element of clause.namedBindings.elements) {
           addUnresolvedEdge(
             facts,
@@ -618,7 +617,7 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
             'syntactic',
           );
         }
-      } else if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+      } else if (clause?.namedBindings && compiler.isNamespaceImport(clause.namedBindings)) {
         addUnresolvedEdge(
           facts,
           context,
@@ -629,10 +628,14 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
           'syntactic',
         );
       }
-    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+    } else if (
+      compiler.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      compiler.isStringLiteralLike(node.moduleSpecifier)
+    ) {
       const specifier = node.moduleSpecifier.text;
       addUnresolvedEdge(facts, context, node, owner, specifier, 'reexports', 'syntactic');
-      if (node.exportClause && ts.isNamedExports(node.exportClause)) {
+      if (node.exportClause && compiler.isNamedExports(node.exportClause)) {
         for (const element of node.exportClause.elements) {
           addUnresolvedEdge(
             facts,
@@ -645,26 +648,27 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
           );
         }
       }
-    } else if (ts.isCallExpression(node)) {
+    } else if (compiler.isCallExpression(node)) {
       addDynamicRelationship(node, owner, 'calls');
-    } else if (ts.isNewExpression(node)) {
+    } else if (compiler.isNewExpression(node)) {
       addDynamicRelationship(node, owner, 'constructs');
-    } else if (ts.isHeritageClause(node)) {
-      const relation: CodeGraphRelation = node.token === ts.SyntaxKind.ImplementsKeyword ? 'implements' : 'extends';
+    } else if (compiler.isHeritageClause(node)) {
+      const relation: CodeGraphRelation =
+        node.token === compiler.SyntaxKind.ImplementsKeyword ? 'implements' : 'extends';
       for (const type of node.types) {
         const target = relationshipExpressionName(type.expression, localBindings);
         if (target) addUnresolvedEdge(facts, context, type, owner, target, relation, 'syntactic');
       }
-    } else if (ts.isExportAssignment(node)) {
+    } else if (compiler.isExportAssignment(node)) {
       const target = expressionName(node.expression);
       if (target) addUnresolvedEdge(facts, context, node, moduleSymbol, target, 'exports', 'syntactic');
     }
 
     if (surfaceOnly || dynamicRelationshipsBounded) forEachTypeScriptStructuralChild(node, visit);
-    else ts.forEachChild(node, visit);
+    else compiler.forEachChild(node, visit);
     if (pushed) declarationStack.pop();
   };
-  ts.forEachChild(sourceFile, visit);
+  compiler.forEachChild(sourceFile, visit);
 
   const parseDiagnostics = (
     sourceFile as ts.SourceFile & {readonly parseDiagnostics?: readonly ts.DiagnosticWithLocation[]}
@@ -673,7 +677,7 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
     const position =
       diagnostic.start === undefined ? undefined : sourceFile.getLineAndCharacterOfPosition(diagnostic.start).line + 1;
     facts.diagnostics.push(
-      `${context.path}${position ? `:${position}` : ''}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')}`,
+      `${context.path}${position ? `:${position}` : ''}: ${compiler.flattenDiagnosticMessageText(diagnostic.messageText, ' ')}`,
     );
   }
   if (dynamicRelationshipsBounded) {
@@ -695,12 +699,12 @@ function extractTypeScript(content: string, context: ExtractionContext): CodeGra
 }
 
 function forEachTypeScriptStructuralChild(node: ts.Node, visit: (node: ts.Node) => void): void {
-  ts.forEachChild(node, child => {
+  compiler.forEachChild(node, child => {
     if (
-      ts.isExpression(child) &&
-      !ts.isArrowFunction(child) &&
-      !ts.isClassExpression(child) &&
-      !ts.isFunctionExpression(child)
+      compiler.isExpression(child) &&
+      !compiler.isArrowFunction(child) &&
+      !compiler.isClassExpression(child) &&
+      !compiler.isFunctionExpression(child)
     ) {
       return;
     }
@@ -715,7 +719,7 @@ function declarationForNode(
   stack: readonly CodeGraphSymbol[],
   identities: SymbolIdentityAllocator,
 ): CodeGraphSymbol | undefined {
-  if (DECLARATION_KINDS.has(node.kind)) {
+  if (declarationKinds.has(node.kind)) {
     const nameNode = namedDeclarationName(node);
     if (!nameNode) return undefined;
     return makeSymbol(
@@ -729,7 +733,7 @@ function declarationForNode(
       identities,
     );
   }
-  if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+  if (compiler.isVariableDeclaration(node) && compiler.isIdentifier(node.name)) {
     return makeSymbol(
       context,
       sourceFile,
@@ -742,17 +746,17 @@ function declarationForNode(
     );
   }
   if (
-    (ts.isMethodDeclaration(node) ||
-      ts.isMethodSignature(node) ||
-      ts.isGetAccessorDeclaration(node) ||
-      ts.isSetAccessorDeclaration(node)) &&
+    (compiler.isMethodDeclaration(node) ||
+      compiler.isMethodSignature(node) ||
+      compiler.isGetAccessorDeclaration(node) ||
+      compiler.isSetAccessorDeclaration(node)) &&
     node.name
   ) {
     const name = propertyName(node.name);
     if (!name) return undefined;
     return makeSymbol(context, sourceFile, 'method', name, qualify(stack, name), false, node, identities);
   }
-  if (ts.isConstructorDeclaration(node)) {
+  if (compiler.isConstructorDeclaration(node)) {
     return makeSymbol(
       context,
       sourceFile,
@@ -769,14 +773,14 @@ function declarationForNode(
 
 function namedDeclarationName(node: ts.Node): ts.Identifier | undefined {
   const declaration =
-    ts.isClassDeclaration(node) ||
-    ts.isEnumDeclaration(node) ||
-    ts.isFunctionDeclaration(node) ||
-    ts.isInterfaceDeclaration(node) ||
-    ts.isTypeAliasDeclaration(node)
+    compiler.isClassDeclaration(node) ||
+    compiler.isEnumDeclaration(node) ||
+    compiler.isFunctionDeclaration(node) ||
+    compiler.isInterfaceDeclaration(node) ||
+    compiler.isTypeAliasDeclaration(node)
       ? node
       : undefined;
-  return declaration?.name && ts.isIdentifier(declaration.name) ? declaration.name : undefined;
+  return declaration?.name && compiler.isIdentifier(declaration.name) ? declaration.name : undefined;
 }
 
 function extractPackageManifest(content: string, context: ExtractionContext): CodeGraphFileFacts {
@@ -1499,19 +1503,19 @@ function makeSymbol(
 
 function typeScriptDeclarationArity(node: ts.Node): number | undefined {
   if (
-    ts.isFunctionDeclaration(node) ||
-    ts.isMethodDeclaration(node) ||
-    ts.isMethodSignature(node) ||
-    ts.isGetAccessorDeclaration(node) ||
-    ts.isSetAccessorDeclaration(node) ||
-    ts.isConstructorDeclaration(node)
+    compiler.isFunctionDeclaration(node) ||
+    compiler.isMethodDeclaration(node) ||
+    compiler.isMethodSignature(node) ||
+    compiler.isGetAccessorDeclaration(node) ||
+    compiler.isSetAccessorDeclaration(node) ||
+    compiler.isConstructorDeclaration(node)
   ) {
     return node.parameters.length;
   }
   if (
-    ts.isVariableDeclaration(node) &&
+    compiler.isVariableDeclaration(node) &&
     node.initializer !== undefined &&
-    (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+    (compiler.isArrowFunction(node.initializer) || compiler.isFunctionExpression(node.initializer))
   ) {
     return node.initializer.parameters.length;
   }
@@ -1520,18 +1524,18 @@ function typeScriptDeclarationArity(node: ts.Node): number | undefined {
 
 function isTypeScriptCallableImplementation(node: ts.Node): boolean {
   if (
-    ts.isFunctionDeclaration(node) ||
-    ts.isMethodDeclaration(node) ||
-    ts.isGetAccessorDeclaration(node) ||
-    ts.isSetAccessorDeclaration(node) ||
-    ts.isConstructorDeclaration(node)
+    compiler.isFunctionDeclaration(node) ||
+    compiler.isMethodDeclaration(node) ||
+    compiler.isGetAccessorDeclaration(node) ||
+    compiler.isSetAccessorDeclaration(node) ||
+    compiler.isConstructorDeclaration(node)
   ) {
     return node.body !== undefined;
   }
   return (
-    ts.isVariableDeclaration(node) &&
+    compiler.isVariableDeclaration(node) &&
     node.initializer !== undefined &&
-    (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+    (compiler.isArrowFunction(node.initializer) || compiler.isFunctionExpression(node.initializer))
   );
 }
 
@@ -1767,17 +1771,17 @@ function edgeId(
 }
 
 function declarationKind(node: ts.Node): string {
-  if (ts.isClassDeclaration(node)) return 'class';
-  if (ts.isInterfaceDeclaration(node)) return 'interface';
-  if (ts.isTypeAliasDeclaration(node)) return 'type';
-  if (ts.isEnumDeclaration(node)) return 'enum';
+  if (compiler.isClassDeclaration(node)) return 'class';
+  if (compiler.isInterfaceDeclaration(node)) return 'interface';
+  if (compiler.isTypeAliasDeclaration(node)) return 'type';
+  if (compiler.isEnumDeclaration(node)) return 'enum';
   return 'function';
 }
 
 function hasExportModifier(node: ts.Node): boolean {
   return (
-    ts.canHaveModifiers(node) &&
-    (ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false)
+    compiler.canHaveModifiers(node) &&
+    (compiler.getModifiers(node)?.some(modifier => modifier.kind === compiler.SyntaxKind.ExportKeyword) ?? false)
   );
 }
 
@@ -1787,7 +1791,9 @@ function qualify(stack: readonly CodeGraphSymbol[], name: string): string {
 }
 
 function propertyName(name: ts.PropertyName): string | undefined {
-  return ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name) ? name.text : undefined;
+  return compiler.isIdentifier(name) || compiler.isStringLiteralLike(name) || compiler.isNumericLiteral(name)
+    ? name.text
+    : undefined;
 }
 
 function relationshipExpressionName(
@@ -1795,10 +1801,10 @@ function relationshipExpressionName(
   localBindings: ReadonlyMap<ts.Node, ReadonlySet<string>>,
 ): string | undefined {
   const name = expressionName(expression);
-  if (!name || !ts.isIdentifier(expression)) return name;
+  if (!name || !compiler.isIdentifier(expression)) return name;
   for (let scope: ts.Node | undefined = expression.parent; scope; scope = scope.parent) {
     if (localBindings.get(scope)?.has(expression.text)) return locallyBoundTarget(expression.text);
-    if (ts.isSourceFile(scope)) break;
+    if (compiler.isSourceFile(scope)) break;
   }
   return name;
 }
@@ -1812,49 +1818,50 @@ function collectLocalBindings(sourceFile: ts.SourceFile): ReadonlyMap<ts.Node, R
     bindings.set(scope, values);
   };
   const visit = (node: ts.Node): void => {
-    if (ts.isParameter(node)) {
+    if (compiler.isParameter(node)) {
       add(nearestFunctionScope(node.parent), node.name);
-    } else if (ts.isVariableDeclaration(node) && !ts.isCatchClause(node.parent)) {
-      const list = ts.isVariableDeclarationList(node.parent) ? node.parent : undefined;
-      const blockScoped = (list?.flags ?? 0) & ts.NodeFlags.BlockScoped;
+    } else if (compiler.isVariableDeclaration(node) && !compiler.isCatchClause(node.parent)) {
+      const list = compiler.isVariableDeclarationList(node.parent) ? node.parent : undefined;
+      const blockScoped = (list?.flags ?? 0) & compiler.NodeFlags.BlockScoped;
       add(blockScoped ? nearestBlockScope(node.parent) : nearestFunctionScope(node.parent), node.name);
     } else if (
-      (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) || ts.isEnumDeclaration(node)) &&
+      (compiler.isFunctionDeclaration(node) || compiler.isClassDeclaration(node) || compiler.isEnumDeclaration(node)) &&
       node.name &&
-      !ts.isSourceFile(node.parent)
+      !compiler.isSourceFile(node.parent)
     ) {
       add(nearestBlockScope(node.parent) ?? nearestFunctionScope(node.parent), node.name);
-    } else if ((ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name) {
+    } else if ((compiler.isFunctionExpression(node) || compiler.isClassExpression(node)) && node.name) {
       add(node, node.name);
-    } else if (ts.isCatchClause(node)) {
+    } else if (compiler.isCatchClause(node)) {
       add(node, node.variableDeclaration?.name);
     }
-    ts.forEachChild(node, visit);
+    compiler.forEachChild(node, visit);
   };
-  ts.forEachChild(sourceFile, visit);
+  compiler.forEachChild(sourceFile, visit);
   return bindings;
 }
 
 function collectBindingNames(name: ts.BindingName, output: Set<string>): void {
-  if (ts.isIdentifier(name)) {
+  if (compiler.isIdentifier(name)) {
     output.add(name.text);
     return;
   }
   for (const element of name.elements) {
-    if (!ts.isOmittedExpression(element)) collectBindingNames(element.name, output);
+    if (!compiler.isOmittedExpression(element)) collectBindingNames(element.name, output);
   }
 }
 
 function nearestFunctionScope(node: ts.Node | undefined): ts.Node | undefined {
-  for (let current = node; current && !ts.isSourceFile(current); current = current.parent) {
-    if (ts.isFunctionLike(current)) return current;
+  for (let current = node; current && !compiler.isSourceFile(current); current = current.parent) {
+    if (compiler.isFunctionLike(current)) return current;
   }
   return undefined;
 }
 
 function nearestBlockScope(node: ts.Node | undefined): ts.Node | undefined {
-  for (let current = node; current && !ts.isSourceFile(current); current = current.parent) {
-    if (ts.isBlock(current) || ts.isCatchClause(current) || ts.isFunctionLike(current)) return current;
+  for (let current = node; current && !compiler.isSourceFile(current); current = current.parent) {
+    if (compiler.isBlock(current) || compiler.isCatchClause(current) || compiler.isFunctionLike(current))
+      return current;
   }
   return undefined;
 }
@@ -1874,13 +1881,13 @@ function parseLocallyBoundTarget(value: string): string | undefined {
 }
 
 function expressionName(expression: ts.Expression): string | undefined {
-  if (ts.isIdentifier(expression)) return expression.text;
-  if (ts.isPropertyAccessExpression(expression)) {
-    if (expression.expression.kind === ts.SyntaxKind.ThisKeyword) return `this.${expression.name.text}`;
-    if (ts.isIdentifier(expression.expression)) return `${expression.expression.text}.${expression.name.text}`;
+  if (compiler.isIdentifier(expression)) return expression.text;
+  if (compiler.isPropertyAccessExpression(expression)) {
+    if (expression.expression.kind === compiler.SyntaxKind.ThisKeyword) return `this.${expression.name.text}`;
+    if (compiler.isIdentifier(expression.expression)) return `${expression.expression.text}.${expression.name.text}`;
     return `property.${expression.name.text}`;
   }
-  if (ts.isElementAccessExpression(expression) && expression.argumentExpression) {
+  if (compiler.isElementAccessExpression(expression) && expression.argumentExpression) {
     return expressionName(expression.argumentExpression);
   }
   return undefined;
@@ -1955,7 +1962,7 @@ function textSpan(content: string, start: number, end: number): CodeGraphSpan {
 }
 
 function leadingDocumentation(sourceFile: ts.SourceFile, node: ts.Node): string | undefined {
-  const ranges = ts.getLeadingCommentRanges(sourceFile.text, node.getFullStart()) ?? [];
+  const ranges = compiler.getLeadingCommentRanges(sourceFile.text, node.getFullStart()) ?? [];
   const comments = ranges
     .map(range => sourceFile.text.slice(range.pos, range.end))
     .filter(value => value.startsWith('/**'))
@@ -1973,13 +1980,6 @@ function boundedMarkdownSection(content: string, start: number): string {
   const rest = content.slice(start);
   const nextHeading = rest.slice(1).search(/^#{1,6}\s+/m);
   return rest.slice(0, nextHeading < 0 ? 1_024 : Math.min(1_024, nextHeading + 1)).trim();
-}
-
-function scriptKindForPath(path: string): ts.ScriptKind {
-  if (/\.tsx$/i.test(path)) return ts.ScriptKind.TSX;
-  if (/\.jsx$/i.test(path)) return ts.ScriptKind.JSX;
-  if (/\.(?:js|mjs|cjs)$/i.test(path)) return ts.ScriptKind.JS;
-  return ts.ScriptKind.TS;
 }
 
 function slug(value: string): string {

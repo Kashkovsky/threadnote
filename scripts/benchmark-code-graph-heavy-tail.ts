@@ -1118,32 +1118,7 @@ class HeavyTailProgressTelemetry {
   }
 
   extraction(): HeavyTailExtractionUtilization {
-    const intervals = [...this.#extractionIntervals].sort(
-      (left, right) => left.start - right.start || left.end - right.end,
-    );
-    let activeWallMilliseconds = 0;
-    let currentStart: number | undefined;
-    let currentEnd: number | undefined;
-    for (const interval of intervals) {
-      if (currentStart === undefined || currentEnd === undefined) {
-        currentStart = interval.start;
-        currentEnd = interval.end;
-      } else if (interval.start <= currentEnd) {
-        currentEnd = Math.max(currentEnd, interval.end);
-      } else {
-        activeWallMilliseconds += currentEnd - currentStart;
-        currentStart = interval.start;
-        currentEnd = interval.end;
-      }
-    }
-    if (currentStart !== undefined && currentEnd !== undefined) activeWallMilliseconds += currentEnd - currentStart;
-    const requestMilliseconds = intervals.reduce((total, interval) => total + interval.end - interval.start, 0);
-    return {
-      activeWallMilliseconds,
-      averageConcurrency: activeWallMilliseconds === 0 ? 0 : requestMilliseconds / activeWallMilliseconds,
-      peakConcurrency: this.#peakExtractionConcurrency,
-      requestMilliseconds,
-    };
+    return heavyTailExtractionUtilization(this.#extractionIntervals, this.#peakExtractionConcurrency);
   }
 
   slowFiles(): readonly HeavyTailSlowFile[] {
@@ -1151,6 +1126,36 @@ class HeavyTailProgressTelemetry {
       .sort((left, right) => right.parseMilliseconds - left.parseMilliseconds || left.path.localeCompare(right.path))
       .slice(0, 10);
   }
+}
+
+export function heavyTailExtractionUtilization(
+  observations: readonly {readonly end: number; readonly start: number}[],
+  peakConcurrency: number,
+): HeavyTailExtractionUtilization {
+  const intervals = [...observations].sort((left, right) => left.start - right.start || left.end - right.end);
+  let activeWallMilliseconds = 0;
+  let currentStart: number | undefined;
+  let currentEnd: number | undefined;
+  for (const interval of intervals) {
+    if (currentStart === undefined || currentEnd === undefined) {
+      currentStart = interval.start;
+      currentEnd = interval.end;
+    } else if (interval.start <= currentEnd) {
+      currentEnd = Math.max(currentEnd, interval.end);
+    } else {
+      activeWallMilliseconds += currentEnd - currentStart;
+      currentStart = interval.start;
+      currentEnd = interval.end;
+    }
+  }
+  if (currentStart !== undefined && currentEnd !== undefined) activeWallMilliseconds += currentEnd - currentStart;
+  const requestMilliseconds = intervals.reduce((total, interval) => total + (interval.end - interval.start), 0);
+  return {
+    activeWallMilliseconds,
+    averageConcurrency: activeWallMilliseconds === 0 ? 0 : requestMilliseconds / activeWallMilliseconds,
+    peakConcurrency,
+    requestMilliseconds,
+  };
 }
 
 interface MutableLanguageTelemetry {
@@ -1418,12 +1423,16 @@ export function parseCodeGraphHeavyTailReleaseEvidence(value: unknown): CodeGrap
   }
   const standard = parseBenchmarkArtifactV1(artifact.ratchetArtifact);
   const {ratchetArtifact: _ratchetArtifact, ...outer} = artifact;
-  const replayed = codeGraphHeavyTailRatchetArtifact({...outer, assertions}, provenance.target.split('-')[0], {
-    availableBytes: environment.availableBytes,
-    minimumFreeBytes: environment.minimumFreeBytes,
-    runtimeProvenance: provenance,
-    storage,
-  });
+  const replayed = codeGraphHeavyTailRatchetArtifact(
+    {...outer, assertions},
+    managedRuntimePlatform(provenance.target)!,
+    {
+      availableBytes: environment.availableBytes,
+      minimumFreeBytes: environment.minimumFreeBytes,
+      runtimeProvenance: provenance,
+      storage,
+    },
+  );
   if (canonicalJson(standard) !== canonicalJson(replayed)) {
     throw ScriptError.make({message: 'Heavy-tail release evidence outer and embedded contracts are inconsistent.'});
   }
@@ -1477,14 +1486,27 @@ function validManagedRuntimeProvenance(
     value.dependencyInstallation === 'bun install --frozen-lockfile' &&
     value.processLeaseInspection === 'complete' &&
     value.sourceCommit === environment.commit &&
-    value.runtime === environment.runtime &&
+    environment.runtime.startsWith('bun/') &&
+    value.runtime === environment.runtime.replace(/^bun\//u, 'bun-') &&
     hashes.every(hash => /^[0-9a-f]{64}$/u.test(hash)) &&
     positiveInteger(value.payloadBytes) &&
     positiveInteger(value.payloadFileCount) &&
     nonEmptyString(value.target) &&
-    value.target.endsWith(`-${environment.architecture}`) &&
+    managedRuntimePlatform(value.target) !== undefined &&
+    value.target.split('-')[2] === environment.architecture &&
     nonEmptyString(value.version)
   );
+}
+
+function managedRuntimePlatform(target: string): string | undefined {
+  const match = /^bun-(darwin|linux|windows)-(arm64|x64)(-musl)?(-baseline)?$/u.exec(target);
+  if (
+    match === null ||
+    (match[3] !== undefined && match[1] !== 'linux') ||
+    (match[4] !== undefined) !== (match[2] === 'x64' && match[1] !== 'darwin')
+  )
+    return undefined;
+  return match[1] === 'windows' ? 'win32' : match[1];
 }
 
 export function parseCodeGraphHeavyTailBenchmarkArguments(

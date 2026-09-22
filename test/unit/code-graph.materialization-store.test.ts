@@ -517,6 +517,58 @@ describe('code graph full-build materialization store', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('persists same-path cache batches with distinct physical identities', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const replacement = {...fixture.file, contentHash: 'j'.repeat(64)};
+      const facts: CodeGraphFileFacts = {
+        diagnostics: [],
+        edges: [],
+        path: fixture.file.path,
+        symbols: [],
+      };
+      const store = yield* CodeGraphStore;
+
+      yield* store.cacheFactBatches(
+        fixture.databasePath,
+        [
+          {extractorSet: 'durable-cache', facts: [facts], files: [fixture.file]},
+          {extractorSet: 'degraded-cache', facts: [facts], files: [replacement]},
+        ],
+        unprotectedCacheWrite,
+      );
+
+      const rows = yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          return database
+            .query(
+              `SELECT content_hash, extractor_set, path_hint
+               FROM file_blobs
+               WHERE path_hint = ?
+               ORDER BY extractor_set`,
+            )
+            .all(fixture.file.path);
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expect(rows).toEqual([
+        {
+          content_hash: replacement.contentHash,
+          extractor_set: 'degraded-cache',
+          path_hint: fixture.file.path,
+        },
+        {
+          content_hash: fixture.file.contentHash,
+          extractor_set: 'durable-cache',
+          path_hint: fixture.file.path,
+        },
+      ]);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect(
     'rejects mismatched and oversized cache plans before a receipt or writer starts',
     () =>

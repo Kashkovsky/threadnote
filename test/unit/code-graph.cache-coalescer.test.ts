@@ -2,6 +2,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Cause, Deferred, Effect, Fiber, FileSystem, Layer, Option, Path, Schema} from 'effect';
 import {describe, expect} from 'vitest';
+import * as FC from 'fast-check';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
   CODE_GRAPH_CACHE_TRANSACTION_LIMITS,
@@ -16,7 +17,10 @@ import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js
 import {cacheContentBatch, type CodeGraphCacheExtractedRow} from '../../src/code_graph/indexer.js';
 import type {CodeGraphIndexResourceGate} from '../../src/code_graph/indexer/types.js';
 import type {CodeGraphContentBatchContext} from '../../src/code_graph/inventory.js';
-import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
+import {
+  BUILTIN_LANGUAGE_PACK_REGISTRY,
+  type CodeGraphLanguagePackRegistryShape,
+} from '../../src/code_graph/languages/registry.js';
 import {extractStructuredSchemaFacts} from '../../src/code_graph/languages/schemas/extractor.js';
 import {sha256Digest} from '../../src/code_graph/sharing/digest.js';
 import {
@@ -24,11 +28,16 @@ import {
   persistGraphSharePendingSignedCandidates,
 } from '../../src/code_graph/sharing/signed/candidate.js';
 import type {CodeGraphParserPoolShape, CodeGraphParserResult} from '../../src/code_graph/parser_worker.js';
-import type {CodeGraphDirectPersistentCapacityProtector, CodeGraphStoreShape} from '../../src/code_graph/store.js';
+import type {
+  CodeGraphDirectPersistentCapacityProtector,
+  CodeGraphFactCacheBatch,
+  CodeGraphStoreShape,
+} from '../../src/code_graph/store.js';
 import type {TreeSitterRuntimeShape} from '../../src/code_graph/tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 
 class InjectedProgressError extends Schema.TaggedError<InjectedProgressError>()('InjectedProgressError', {
   cause: Schema.optionalKey(Schema.Defect()),
@@ -45,6 +54,30 @@ const unprotectedCacheWrite: CodeGraphDirectPersistentCapacityProtector = (_boun
 const journalTestLayer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
 
 describe('code graph parser cache coalescer', () => {
+  effectIt.effect('extracts bounded manifest control files without parser-worker IPC', () =>
+    Effect.gen(function* () {
+      const content = '{"name":"bounded-manifest"}\n';
+      const file = {
+        ...cacheFile(1, 'root'),
+        content,
+        language: 'npm-manifest',
+        path: 'package.json',
+        size: new TextEncoder().encode(content).byteLength,
+      };
+      const harness = coalescerHarness({
+        capacity: 1,
+        facts: () => Effect.die('manifest extraction must not enter the parser worker'),
+        languagePacks: BUILTIN_LANGUAGE_PACK_REGISTRY,
+      });
+
+      yield* harness.run([file], cacheContext(1));
+      yield* harness.flush;
+
+      expect(harness.calls).toHaveLength(1);
+      expect(harness.calls[0]?.facts[0]?.facts.symbols.some(symbol => symbol.name === 'bounded-manifest')).toBe(true);
+    }),
+  );
+
   effectIt.effect(
     'does not commit parser facts when the pending journal quota refuses admission',
     () =>
@@ -176,13 +209,38 @@ describe('code graph parser cache coalescer', () => {
         expect(degradationStates.size).toBe(1);
       }
       assertCacheCallsBounded(first.calls);
-      expect(persistenceProgress.length).toBe(first.calls.length * 2);
+      expect(persistenceProgress).toEqual(
+        first.calls.flatMap(call => [
+          {completed: 0, total: call.files.length},
+          {completed: call.files.length, total: call.files.length},
+        ]),
+      );
       expect(persistenceProgress.every(value => value.completed >= 0 && value.completed <= value.total)).toBe(true);
-      for (let index = 0; index < persistenceProgress.length; index += 2) {
-        expect(persistenceProgress[index]?.completed).toBe(0);
-        expect(persistenceProgress[index + 1]?.completed).toBe(persistenceProgress[index + 1]?.total);
-      }
+      expect(persistenceProgress.reduce((total, value) => total + value.completed, 0)).toBe(files.length);
+      expect(
+        persistenceProgress.filter(value => value.completed > 0).every(value => value.completed === value.total),
+      ).toBe(true);
     }),
+  );
+
+  effectIt.effect('stops before the next cache group when the first durable receipt fails', () =>
+    checkCacheGroupCheckpoint(2, 1, 'failure'),
+  );
+
+  effectIt.effect('interrupts at a durable cache-group receipt without committing the next group', () =>
+    checkCacheGroupCheckpoint(2, 1, 'interruption'),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'reports exactly the durable group prefix across cancellation and retry',
+    {
+      firstRows: FC.integer({min: 1, max: 20}),
+      secondRows: FC.integer({min: 1, max: 20}),
+      stop: FC.constantFrom('failure' as const, 'interruption' as const),
+    },
+    ({firstRows, secondRows, stop}) => checkCacheGroupCheckpoint(firstRows, secondRows, stop),
+    {fastCheck: {numRuns: 20}},
   );
 
   effectIt.effect('releases preparation before a threshold-triggered cache writer acquisition', () =>
@@ -604,54 +662,132 @@ describe('code graph parser cache coalescer', () => {
   );
 });
 
+function checkCacheGroupCheckpoint(firstRows: number, secondRows: number, stop: 'failure' | 'interruption') {
+  return Effect.gen(function* () {
+    const first = Array.from({length: firstRows}, (_, index) => cacheFile(index, 'src/alpha'));
+    const second = Array.from({length: secondRows}, (_, index) => cacheFile(index, 'src/beta'));
+    const files = [...first, ...second];
+    const committed = new Map<string, string>();
+    const sources: string[] = [];
+    const receipts: Array<{readonly completed: number; readonly total: number}> = [];
+    const receiptReached = yield* Deferred.make<void>();
+    const persist = (call: CacheCall) =>
+      Effect.sync(() => {
+        for (let index = 0; index < call.files.length; index += 1) {
+          committed.set(call.files[index].path, call.facts[index].json);
+        }
+      });
+    const harness = coalescerHarness({
+      capacity: 2,
+      onCache: persist,
+      onSource: group => Effect.sync(() => sources.push(group.cacheIdentity)).pipe(Effect.asVoid),
+      onProgress: progress =>
+        Effect.gen(function* () {
+          if (progress.phase !== 'scanning' || progress.activity?.stage !== 'persisting') return;
+          const activity = progress.activity;
+          receipts.push({completed: activity.batchCompleted, total: activity.batchTotal});
+          if (activity.batchCompleted === 0) return;
+          if (stop === 'failure') return yield* InjectedProgressError.make({message: 'stop after durable receipt'});
+          yield* Deferred.succeed(receiptReached, undefined);
+          return yield* Effect.never;
+        }),
+    });
+    yield* harness.acceptExtracted(files.map(extractedRow), cacheContext(files.length));
+    expect(harness.calls).toEqual([]);
+    const flushing = harness.flush.pipe(Effect.ensuring(harness.discard));
+    if (stop === 'failure') {
+      const failure = yield* flushing.pipe(Effect.flip);
+      expect(failure).toBeInstanceOf(InjectedProgressError);
+    } else {
+      const fiber = yield* flushing.pipe(Effect.forkChild);
+      yield* Deferred.await(receiptReached);
+      yield* Fiber.interrupt(fiber);
+    }
+
+    expect(harness.calls).toHaveLength(1);
+    expect(sources).toEqual([cacheIdentityForPath(first[0].path)]);
+    expect([...committed.keys()]).toEqual(first.map(file => file.path));
+    expect(receipts).toEqual([
+      {completed: 0, total: firstRows},
+      {completed: firstRows, total: firstRows},
+    ]);
+    yield* harness.flush;
+    expect(harness.calls).toHaveLength(1);
+
+    const retry = coalescerHarness({capacity: 2, onCache: persist});
+    yield* retry.acceptExtracted(
+      files.filter(file => !committed.has(file.path)).map(extractedRow),
+      cacheContext(secondRows),
+    );
+    yield* retry.flush;
+    expect(retry.calls).toHaveLength(1);
+    expect([...committed.keys()]).toEqual(files.map(file => file.path));
+    for (const file of files)
+      expect(committed.get(file.path)).toBe(serializeBoundedCodeGraphFact(emptyFacts(file.path)).json);
+  });
+}
+
 function coalescerHarness(options: {
   readonly capacity: number;
   readonly facts?: (
     file: CodeGraphInventoryFile,
   ) => CodeGraphParserResult | Effect.Effect<CodeGraphParserResult, never>;
+  readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
   readonly onCache?: (call: CacheCall) => Effect.Effect<void, unknown>;
   readonly onSource?: Parameters<typeof cacheContentBatch>[0]['onSourceParserBatch'];
   readonly onProgress?: Parameters<typeof cacheContentBatch>[0]['onProgress'];
   readonly preparationGate?: CodeGraphIndexResourceGate;
 }) {
   const calls: CacheCall[] = [];
+  const extract = (file: CodeGraphInventoryFile) => {
+    const result = options.facts?.(file) ?? {
+      degraded: false,
+      facts: emptyFacts(file.path),
+      parseMilliseconds: 0,
+    };
+    return Effect.isEffect(result) ? result : Effect.succeed(result);
+  };
   const parserPool = {
     capacity: options.capacity,
-    extract: (file: CodeGraphInventoryFile) => {
-      const result = options.facts?.(file) ?? {
-        degraded: false,
-        facts: emptyFacts(file.path),
-        parseMilliseconds: 0,
-      };
-      return Effect.isEffect(result) ? result : Effect.succeed(result);
-    },
+    extract,
+    withParserSlot: (_threadnoteHome, _files, use) => use(extract),
+    warm: () => Effect.void,
     trimIdle: Effect.void,
   } satisfies CodeGraphParserPoolShape;
+  const recordCache = (files: readonly CodeGraphInventoryFile[], facts: CacheCall['facts'], cacheIdentity: string) =>
+    Effect.sync(() => {
+      const call = {cacheIdentity, facts, files};
+      calls.push(call);
+      return call;
+    }).pipe(Effect.flatMap(call => options.onCache?.(call) ?? Effect.void));
   const store = {
+    cacheFactBatches: (_databasePath: string, batches: readonly CodeGraphFactCacheBatch[]) =>
+      Effect.forEach(
+        batches,
+        batch => recordCache(batch.files, batch.facts as CacheCall['facts'], batch.extractorSet),
+        {discard: true},
+      ),
     cacheFacts: (
       _databasePath: string,
       files: readonly CodeGraphInventoryFile[],
       facts: CacheCall['facts'],
       cacheIdentity: string,
-    ) =>
-      Effect.sync(() => {
-        const call = {cacheIdentity, facts, files};
-        calls.push(call);
-        return call;
-      }).pipe(Effect.flatMap(call => options.onCache?.(call) ?? Effect.void)),
+    ) => recordCache(files, facts, cacheIdentity),
   } as unknown as CodeGraphStoreShape;
   const coalescer = cacheContentBatch({
     databasePath: '/bounded/cache.sqlite',
-    languagePacks: {
-      cacheIdentityForPath: path => Option.some(cacheIdentityForPath(path)),
-      match: path =>
-        Option.some({
-          cacheIdentity: cacheIdentityForPath(path),
-          language: path.endsWith('.json') ? 'json' : 'typescript',
-          pack: {id: path.endsWith('.json') ? 'schemas' : 'typescript'},
-          role: 'source',
-        }),
-    } as CodeGraphLanguagePackRegistryShape,
+    languagePacks:
+      options.languagePacks ??
+      ({
+        cacheIdentityForPath: path => Option.some(cacheIdentityForPath(path)),
+        match: path =>
+          Option.some({
+            cacheIdentity: cacheIdentityForPath(path),
+            language: path.endsWith('.json') ? 'json' : 'typescript',
+            pack: {id: path.endsWith('.json') ? 'schemas' : 'typescript'},
+            role: 'source',
+          }),
+      } as CodeGraphLanguagePackRegistryShape),
     onProgress: options.onProgress,
     onSourceParserBatch: options.onSource,
     parserPool,

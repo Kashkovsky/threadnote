@@ -9,7 +9,7 @@ export {
   finalCodeGraphFactBatches,
 } from './fact/budget.js';
 
-export {CodeGraphIndexer} from './indexer/service.js';
+export {CodeGraphIndexer, codeGraphInventoryNeedsSynchronousReclamation} from './indexer/service.js';
 export {
   codeGraphIndexEnsuresVectors,
   type CodeGraphCommitLease,

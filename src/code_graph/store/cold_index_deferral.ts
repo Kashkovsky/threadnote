@@ -8,10 +8,12 @@ import {
 } from './models.js';
 import {CODE_GRAPH_QUERY_INDEX_DEFINITIONS, inspectCodeGraphQueryIndexes} from './query/indexes.js';
 import {recordCodeGraphSchemaInitializationReceipt} from './schema/receipt.js';
-import {CodeGraphStoreError} from '../types.js';
+import {CodeGraphStoreError, type CodeGraphInventoryFile} from '../types.js';
 
 const DEFERRED_QUERY_INDEX_STATE_KEY = 'query_indexes_deferred';
 const DEFERRED_QUERY_INDEX_STATE_VALUE = '1';
+const COLD_INDEX_DEFERRAL_MINIMUM_FILES = 512;
+const COLD_INDEX_DEFERRAL_MINIMUM_SOURCE_BYTES = 16 * 1_048_576;
 
 export interface CodeGraphColdIndexDeferralObservation {
   readonly activeSnapshotPresent: boolean;
@@ -30,6 +32,21 @@ export function codeGraphColdIndexDeferralEligible(observation: CodeGraphColdInd
     !observation.readySnapshotPresent &&
     !observation.symbolPresent
   );
+}
+
+/**
+ * Rebuilding every query index has a fixed SQLite cost that exceeds incremental
+ * index maintenance for small cold graphs. Defer only when either admitted
+ * source dimension reaches the production-sized materialization envelope.
+ */
+export function codeGraphColdIndexDeferralWorthwhile(files: readonly Pick<CodeGraphInventoryFile, 'size'>[]): boolean {
+  if (files.length >= COLD_INDEX_DEFERRAL_MINIMUM_FILES) return true;
+  let sourceBytes = 0;
+  for (const file of files) {
+    sourceBytes += file.size;
+    if (sourceBytes >= COLD_INDEX_DEFERRAL_MINIMUM_SOURCE_BYTES) return true;
+  }
+  return false;
 }
 
 export const deferCodeGraphQueryIndexesForColdBuild = Effect.fn('codeGraph.deferQueryIndexesForColdBuild')(function* (
@@ -163,6 +180,8 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
       });
     const restoration = Effect.gen(function* () {
       yield* report();
+      // Separate commits let SQLite checkpoint between indexes; the marker
+      // keeps any partially restored prefix recoverable after interruption.
       for (const definition of missing) {
         yield* runWrite(
           sql.withTransaction(
@@ -184,14 +203,23 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
         yield* Effect.yieldNow;
       }
       yield* runWrite(
-        Effect.gen(function* () {
-          const restored = yield* inspectCodeGraphQueryIndexes(sql);
-          if (restored.missing.length > 0) {
-            return yield* CodeGraphStoreError.of('Code graph query index restoration is incomplete.');
-          }
-          yield* recordCodeGraphSchemaInitializationReceipt(sql);
-          yield* sql`DELETE FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY}`;
-        }),
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* assertPersistentBuildOwner(sql, options.snapshotId, options.ownerToken);
+            const marker = yield* sql<{readonly value: string}>`
+              SELECT value FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY} LIMIT 1
+            `;
+            if (marker[0]?.value !== DEFERRED_QUERY_INDEX_STATE_VALUE) {
+              return yield* CodeGraphStoreError.of('Code graph query index restoration changed.');
+            }
+            const restored = yield* inspectCodeGraphQueryIndexes(sql);
+            if (restored.missing.length > 0) {
+              return yield* CodeGraphStoreError.of('Code graph query index restoration is incomplete.');
+            }
+            yield* recordCodeGraphSchemaInitializationReceipt(sql);
+            yield* sql`DELETE FROM activation_state WHERE key = ${DEFERRED_QUERY_INDEX_STATE_KEY}`;
+          }),
+        ),
       );
     });
     yield* options.persistentCapacityProtector

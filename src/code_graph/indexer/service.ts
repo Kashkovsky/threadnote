@@ -784,6 +784,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           overlayObservation: inventoryOverlayObservation,
                           onContentBatch: cacheCoalescer.onContentBatch,
                           onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
+                          onParserWorkPlanned: () => parserPool.warm(options.threadnoteHome),
                         });
                       }).pipe(
                         Effect.tap(() => cacheCoalescer.flush),
@@ -824,11 +825,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       } satisfies CodeGraphInventory;
                       yield* anonymousTelemetry.observeInventory(inventory);
                       yield* anonymousTelemetry.observeExtractedFactBytes(yield* cacheCoalescer.extractedFactBytes);
-                      // Inventory and extraction build large, short-lived maps and Git payloads. Reclaim them before
-                      // the SQLite activation phase so their heap high-water does not overlap the writer page cache.
+                      // Bulk inventory and extraction build large, short-lived maps and Git payloads. Reclaim them
+                      // synchronously before SQLite activation so their heap high-water does not overlap the writer
+                      // page cache. Small graphs avoid a stop-the-world collection whose pause exceeds their live heap.
                       yield* Effect.sync(() => {
-                        Bun.gc(true);
-                        Bun.shrink();
+                        if (codeGraphInventoryNeedsSynchronousReclamation(inventory.files)) {
+                          Bun.gc(true);
+                          Bun.shrink();
+                        }
                       });
                       yield* Effect.yieldNow;
                       const extractorSet = extractorSetIdentity(inventory.files, languagePacks);
@@ -1787,6 +1791,23 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       });
     }),
   );
+}
+
+const CODE_GRAPH_SYNCHRONOUS_RECLAMATION_MINIMUM_FILES = 512;
+const CODE_GRAPH_SYNCHRONOUS_RECLAMATION_MINIMUM_RETAINED_SOURCE_BYTES = 16 * 1_048_576;
+
+/** @internal Keeps the synchronous GC barrier tied to source bytes that inventory actually retained. */
+export function codeGraphInventoryNeedsSynchronousReclamation(
+  files: readonly Pick<CodeGraphInventoryFile, 'bytes' | 'content' | 'size'>[],
+): boolean {
+  if (files.length >= CODE_GRAPH_SYNCHRONOUS_RECLAMATION_MINIMUM_FILES) return true;
+  let retainedSourceBytes = 0;
+  for (const file of files) {
+    if (file.content === undefined && file.bytes === undefined) continue;
+    retainedSourceBytes += file.size;
+    if (retainedSourceBytes >= CODE_GRAPH_SYNCHRONOUS_RECLAMATION_MINIMUM_RETAINED_SOURCE_BYTES) return true;
+  }
+  return false;
 }
 
 function codeGraphBuilderAdmissionClass(

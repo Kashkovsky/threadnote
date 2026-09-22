@@ -1,5 +1,5 @@
 import {Effect, Option} from 'effect';
-import ts from 'typescript-compiler';
+import typescriptPackage from 'typescript-compiler/package.json' with {type: 'json'};
 import {sha256HexSync} from '../../../crypto/sha256.js';
 import {extractFileFacts} from '../../extractor.js';
 import {CodeGraphLanguagePackError, type CodeGraphLanguagePack} from '../types.js';
@@ -16,7 +16,7 @@ export const codeGraphLanguagePack: CodeGraphLanguagePack = {
         catch: cause =>
           CodeGraphLanguagePackError.make({message: `Could not extract TypeScript facts from ${file.path}.`, cause}),
       }),
-    version: sha256HexSync(`${EXTRACTOR_POLICY_VERSION}\ntypescript:${ts.version}`),
+    version: sha256HexSync(`${EXTRACTOR_POLICY_VERSION}\ntypescript:${typescriptPackage.version}`),
   },
   files: [
     {kind: 'extension', language: 'typescript', role: 'source', value: '.ts'},

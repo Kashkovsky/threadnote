@@ -185,6 +185,12 @@ export interface CodeGraphMaterializedShardAssociationBatch {
   readonly selectedShardIds: ReadonlyMap<string, string>;
 }
 
+export interface CodeGraphFactCacheBatch {
+  readonly extractorSet: string;
+  readonly facts: readonly CodeGraphCacheFactInput[];
+  readonly files: readonly CodeGraphInventoryFile[];
+}
+
 export interface CodeGraphMaterializedShardCacheBatch {
   readonly derivationIdentity: string;
   readonly extractorSet: string;

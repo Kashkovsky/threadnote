@@ -9,7 +9,7 @@ import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../../src/code_graph/index_s
 import {inventoryRepository} from '../../src/code_graph/inventory.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
-import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {CodeGraphStore, type CodeGraphSqliteWriterSettings} from '../../src/code_graph/store.js';
 import {prewarmLikelyCleanSnapshots, codeGraphWatcherRefreshIndexRequest} from '../../src/code_graph/watcher.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -99,9 +99,9 @@ describe('scoped reuse under bounded monorepo churn', () => {
           threadnoteHome: home,
           project: project('a'),
           ensureVectors: false,
-          onSqliteWriterConfigured: () =>
+          onSqliteWriterConfigured: (settings: CodeGraphSqliteWriterSettings) =>
             Effect.sync(() => {
-              writers += 1;
+              if (settings.phase === 'connection') writers += 1;
             }),
         };
         const results = yield* Effect.all(

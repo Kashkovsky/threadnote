@@ -1,9 +1,12 @@
 import {TestError} from '../helpers/test-error.js';
+import {fcEffectProp} from '../helpers/fast-check-property.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {existsSync} from '../helpers/node-fs.js';
+import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Clock, DateTime, Effect, FileSystem, Path} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
+import * as FC from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS,
@@ -26,8 +29,10 @@ import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query/status_h
 import {captureConsole} from '../../src/effect/console.js';
 import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
+  type CodeGraphProgress,
   type CodeGraphResolutionActivity,
   type CodeGraphSnapshot,
   type RepositoryIdentity,
@@ -482,6 +487,23 @@ describe('code graph cross-process build status', () => {
       phase: 'embedding',
     });
   });
+
+  effectIt.effect.each(['scanning', 'materializing'] as const)(
+    'throttles %s ETA metric updates without delaying completed file batches',
+    phase => checkProgressWriteThrottle(phase, 1_000_000, 3),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'keeps status write throttling independent of ETA unit scale and update count',
+    {
+      phase: FC.constantFrom('scanning' as const, 'materializing' as const),
+      unitScale: FC.integer({min: 100, max: 1_000_000}),
+      updates: FC.integer({min: 1, max: 8}),
+    },
+    ({phase, unitScale, updates}) => checkProgressWriteThrottle(phase, unitScale, updates),
+    {fastCheck: {numRuns: 20}},
+  );
 
   it('persists completed scan batches immediately without leaking the in-flight path', async () => {
     const home = await mkdtemp('threadnote-graph-build-scan-progress-');
@@ -1659,6 +1681,83 @@ function resolutionActivity(
     },
     ...overrides,
   };
+}
+
+function checkProgressWriteThrottle(phase: 'scanning' | 'materializing', unitScale: number, updates: number) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-build-throttle-units-'});
+    const identity = fixtureIdentity(home);
+    const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+    let writes = 0;
+    const observedFs = FileSystem.FileSystem.of({
+      ...fs,
+      rename: (from, to) =>
+        fs.rename(from, to).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if (to.endsWith('.json')) writes += 1;
+            }),
+          ),
+        ),
+    });
+    const reporter = yield* makeCodeGraphBuildReporter(identity, layout).pipe(
+      Effect.provideService(FileSystem.FileSystem, observedFs),
+    );
+    const totalUnits = (updates + 3) * unitScale;
+    const progress = (completed: number, completedUnits: number): CodeGraphProgress =>
+      phase === 'scanning'
+        ? {
+            accepted: 10,
+            completed,
+            excluded: 0,
+            metrics: {
+              factsBytesCompleted: completedUnits,
+              sourceBytesCompleted: completedUnits,
+              sourceBytesTotal: totalUnits,
+              workUnitsCompleted: completedUnits,
+              workUnitsTotal: totalUnits,
+            },
+            phase,
+            skipped: 0,
+            total: 10,
+            unit: 'files',
+          }
+        : {
+            completed,
+            metrics: {
+              batchesCompleted: completed,
+              batchesTotal: 10,
+              factsBytesCompleted: completedUnits,
+              factsBytesTotal: totalUnits,
+              sourceBytesCompleted: completedUnits,
+              sourceBytesTotal: totalUnits,
+            },
+            phase,
+            reused: 0,
+            total: 10,
+            unit: 'files',
+          };
+
+    expect(writes).toBe(1);
+    yield* reporter.progress(progress(0, 0));
+    expect(writes).toBe(2);
+    for (let index = 1; index <= updates; index += 1) {
+      yield* reporter.progress(progress(0, index * unitScale));
+    }
+    expect(writes).toBe(2);
+
+    yield* reporter.progress(progress(1, updates * unitScale));
+    expect(writes).toBe(3);
+    yield* TestClock.adjust(CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS);
+    yield* reporter.progress(progress(1, (updates + 1) * unitScale));
+    expect(writes).toBe(4);
+    yield* reporter.progress(progress(1, totalUnits));
+    expect(writes).toBe(5);
+    yield* reporter.progress({phase: 'waiting', reason: 'repository-lock'});
+    expect(writes).toBe(6);
+  }).pipe(provideTestLayer(Layer.mergeAll(BunServices.layer, SystemInfo.layer)));
 }
 
 function fixtureIdentity(home: string): RepositoryIdentity {

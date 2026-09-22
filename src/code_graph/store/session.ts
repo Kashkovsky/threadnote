@@ -16,6 +16,7 @@ export interface CodeGraphDatabaseSessionShape extends CodeGraphDatabaseSessionO
     completedSnapshotId: string | undefined;
     routinePhysical: boolean;
   };
+  reconstructibleDurabilityConfigured: boolean;
   schemaInitialized: boolean;
   readonly sql: SqlClient.SqlClient;
 }
@@ -167,13 +168,15 @@ export const configureReconstructibleBuildDurability = Effect.fn('codeGraph.conf
     if (
       Option.isNone(session) ||
       session.value.sql !== sql ||
-      session.value.sqliteWriterTuning?.reconstructibleBuildSynchronous !== 'normal'
+      session.value.sqliteWriterTuning?.reconstructibleBuildSynchronous !== 'normal' ||
+      session.value.reconstructibleDurabilityConfigured
     ) {
       return;
     }
     // Only unpublished full-build rows use NORMAL. They are ignored by readers,
     // fingerprinted by batch, and can be resumed or reconstructed after a crash.
     yield* sql.unsafe('PRAGMA synchronous = NORMAL');
+    session.value.reconstructibleDurabilityConfigured = true;
     yield* reportSqliteWriterSettings(sql, 'building', session.value.onSqliteWriterConfigured);
   },
 );
@@ -193,6 +196,7 @@ export const configurePublicationDurability = Effect.fn('codeGraph.configurePubl
   // sync the WAL containing every earlier NORMAL full-build transaction before
   // readers can observe the snapshot as ready.
   yield* sql.unsafe('PRAGMA synchronous = FULL');
+  session.value.reconstructibleDurabilityConfigured = false;
   yield* reportSqliteWriterSettings(sql, 'publication', session.value.onSqliteWriterConfigured);
 });
 

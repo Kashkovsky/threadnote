@@ -23,7 +23,6 @@ import {
 } from '../src/installations.js';
 import {
   explicitlyPreservedStandaloneProcessIds,
-  preservedStandaloneProcessIds,
   readStandaloneProcessLeaseVerification,
   terminateSupersededStandaloneProcesses,
 } from '../src/process/standalone_lease.js';
@@ -681,9 +680,11 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       const superseded = [...live.value.verified, ...live.value.unverified].filter(
         lease => lease.version !== input.version,
       );
-      const preservedProcessIds = input.terminateSuperseded
-        ? explicitlyPreservedStandaloneProcessIds(superseded)
-        : preservedStandaloneProcessIds(superseded);
+      // The benchmark/runtime preflight permits only the stable transport that
+      // explicitly opted into session preservation. Its versioned MCP runtime
+      // and workers remain terminate-policy leases, so report them as pending
+      // retirement even before an explicit cleanup is requested.
+      const preservedProcessIds = explicitlyPreservedStandaloneProcessIds(superseded);
       for (const lease of superseded) {
         if (preservedMcpSessionProcessIds.has(lease.processId)) continue;
         if (preservedProcessIds.has(lease.processId)) {

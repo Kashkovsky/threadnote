@@ -1,6 +1,9 @@
 import {unzlibSync} from 'fflate';
-import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, ensureBoundedCodeGraphFact, type BoundedCodeGraphFact} from './budget.js';
-import {parseCodeGraphFileFacts} from './validation.js';
+import {
+  CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+  serializeBoundedCodeGraphFact,
+  type BoundedCodeGraphFact,
+} from './budget.js';
 import {Predicate} from 'effect';
 
 export const CODE_GRAPH_STORED_FACT_CODEC = 'zlib-base64-v1' as const;
@@ -67,7 +70,7 @@ export function decodeStoredCodeGraphFact(json: string, expectedPath?: string): 
     if (Predicate.isObject(parsed) && parsed.codec === CODE_GRAPH_STORED_FACT_CODEC) {
       throw new Error('Stored code graph fact envelope is malformed.');
     }
-    const bounded = ensureBoundedCodeGraphFact(parseCodeGraphFileFacts(parsed));
+    const bounded = serializeBoundedCodeGraphFact(parsed);
     if (expectedPath !== undefined && bounded.facts.path !== expectedPath) {
       throw new Error('Stored code graph fact path does not match its cache key.');
     }
@@ -83,7 +86,7 @@ export function decodeStoredCodeGraphFact(json: string, expectedPath?: string): 
   if (raw.byteLength !== parsed.rawBytes || storedFactSha256Hex(raw) !== parsed.sha256) {
     throw new Error('Stored code graph fact envelope failed integrity validation.');
   }
-  const bounded = ensureBoundedCodeGraphFact(parseCodeGraphFileFacts(JSON.parse(storedFactDecoder.decode(raw))));
+  const bounded = serializeBoundedCodeGraphFact(JSON.parse(storedFactDecoder.decode(raw)));
   if (bounded.bytes !== parsed.rawBytes || bounded.facts.path !== parsed.path) {
     throw new Error('Stored code graph fact envelope metadata does not match its payload.');
   }

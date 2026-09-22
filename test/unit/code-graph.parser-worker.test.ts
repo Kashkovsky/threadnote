@@ -5,7 +5,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'fast-check';
 import {TestClock} from 'effect/testing';
-import {Effect, FileSystem, Fiber, Layer} from 'effect';
+import {Deferred, Effect, FileSystem, Fiber, Layer} from 'effect';
 import {cachedCodeGraphFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact/budget.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
@@ -28,6 +28,7 @@ import {
 import {TreeSitterRuntime} from '../../src/code_graph/tree_sitter/runtime.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 import {SystemInfo, type SystemInfoShape} from '../../src/effect/system.js';
+import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
 
 const encoder = new TextEncoder();
 
@@ -431,6 +432,100 @@ describe('code graph parser worker pool', () => {
     {fastCheck: {numRuns: 30}},
   );
 
+  it.effect.each([1, 2, 3, 4, 5, 6, 7, 8])('admits %i idle workers without colliding on another local slot', capacity =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-local-admission-'});
+      const attempts: string[] = [];
+      const trackedFs = FileSystem.FileSystem.of({
+        ...fs,
+        writeFileString: (path, content, options) => {
+          if (options?.flag === 'wx' && /\/parser-slots\/\d+\.lock$/.test(path)) attempts.push(path);
+          return fs.writeFileString(path, content, options);
+        },
+      });
+      const processes: ScriptedParserWorkerProcess[] = [];
+      const spawn: ParserWorkerSpawner = () => {
+        const worker = new ScriptedParserWorkerProcess(() => {});
+        processes.push(worker);
+        return worker;
+      };
+      yield* Effect.gen(function* () {
+        const pool = yield* CodeGraphParserPool;
+        const requests = yield* Effect.forkScoped(
+          Effect.forEach(
+            Array.from({length: capacity}, (_, index) =>
+              inventoryFile(`src/${index}.ts`, `export const a${index} = 1;`),
+            ),
+            file => pool.extract(file, home),
+            {concurrency: 'unbounded'},
+          ),
+        );
+        yield* waitUntil(() => processes.filter(worker => worker.writes.length === 1).length === capacity);
+
+        expect(attempts).toHaveLength(capacity);
+        expect(new Set(attempts).size).toBe(capacity);
+        for (const worker of processes) {
+          const request = worker.writes[0];
+          worker.respond(request, factsFor(request.file));
+        }
+        expect((yield* Fiber.join(requests)).every(result => !result.degraded)).toBe(true);
+      }).pipe(
+        provideTestLayer(parserLayer({capacity, spawnWorker: spawn}, SystemInfo.layer, trackedFs)),
+        Effect.scoped,
+      );
+    }).pipe(provideTestLayer(baseLayer)),
+  );
+
+  it.effect.each([0, 1])('falls back from preferred global slot %i held by another pool', preferredSlot =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-preferred-busy-'});
+      const held = yield* Deferred.make<void>();
+      const owner = yield* Effect.forkScoped(
+        withExclusiveFileLock(
+          fs,
+          `${home}/locks/indexes/code-graph/parser-slots/${preferredSlot}.lock`,
+          {
+            onAcquired: () => Deferred.succeed(held, undefined).pipe(Effect.asVoid),
+            retryIntervalMilliseconds: 1,
+            staleAfterMilliseconds: 30_000,
+            waitTimeoutMilliseconds: 0,
+          },
+          Effect.never,
+        ),
+      );
+      yield* Deferred.await(held);
+      const attempts: string[] = [];
+      const trackedFs = FileSystem.FileSystem.of({
+        ...fs,
+        writeFileString: (path, content, options) => {
+          if (options?.flag === 'wx' && /\/parser-slots\/\d+\.lock$/.test(path)) attempts.push(path);
+          return fs.writeFileString(path, content, options);
+        },
+      });
+      const result = yield* Effect.gen(function* () {
+        const pool = yield* CodeGraphParserPool;
+        if (preferredSlot === 1) {
+          yield* pool.extract(inventoryFile('src/first-slot.ts', 'export const first = true;'), home);
+          attempts.length = 0;
+        }
+        return yield* pool.extract(inventoryFile('src/fallback.ts', 'export const fallback = true;'), home);
+      }).pipe(
+        provideTestLayer(parserLayer({capacity: 2, spawnWorker: () => echoProcess()}, SystemInfo.layer, trackedFs)),
+        Effect.scoped,
+      );
+
+      expect(result.degraded).toBe(false);
+      expect(attempts.map(path => path.split('/').at(-1))).toEqual([
+        `${preferredSlot}.lock`,
+        `${1 - preferredSlot}.lock`,
+      ]);
+      expect(yield* fs.exists(`${home}/locks/indexes/code-graph/parser-slots/${preferredSlot}.lock`)).toBe(true);
+      yield* Fiber.interrupt(owner);
+    }).pipe(provideTestLayer(baseLayer)),
+  );
+
   for (const capacity of [2, 4, 6, 8]) {
     it.effect(`bounds simultaneous-worktree parsing to ${capacity} shared global slots`, () => {
       const tracker = {active: 0, maximum: 0};
@@ -652,6 +747,266 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
+  it.effect('does not admit source-budget results behind an occupied parser session', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = new ScriptedParserWorkerProcess(() => {});
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-session-budget-'});
+      const pool = yield* CodeGraphParserPool;
+      const active = inventoryFile('src/active.ts', 'export const active = true;');
+      const oversized = inventoryFile('src/oversized.ts', 'x'.repeat(65));
+
+      const occupied = yield* Effect.forkScoped(pool.withParserSlot(home, [active], extract => extract(active)));
+      yield* waitUntil(() => processes[0]?.writes.length === 1);
+
+      const result = yield* pool.withParserSlot(home, [oversized], extract => extract(oversized));
+
+      expect(result).toMatchObject({degradationReason: 'source-bytes', degraded: true});
+      expect(processes).toHaveLength(1);
+      expect(processes[0].writes).toHaveLength(1);
+      yield* Fiber.interrupt(occupied);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, maxSourceBytes: 64, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('prepares every idle slot without protocol requests and reuses the workers for extraction', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-warm-'});
+      const pool = yield* CodeGraphParserPool;
+
+      yield* pool.warm(home);
+      expect(processes).toHaveLength(2);
+      expect(processes.every(process => process.writes.length === 0)).toBe(true);
+
+      const results = yield* Effect.all(
+        [
+          pool.extract(inventoryFile('src/warm-a.ts', 'export const warmA = true;'), home),
+          pool.extract(inventoryFile('src/warm-b.ts', 'export const warmB = true;'), home),
+        ],
+        {concurrency: 'unbounded'},
+      );
+
+      expect(results.every(result => !result.degraded)).toBe(true);
+      expect(processes).toHaveLength(2);
+      expect(processes.reduce((total, process) => total + process.writes.length, 0)).toBe(2);
+    }).pipe(provideTestLayer(parserLayer({capacity: 2, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('keeps a warming slot owned until an interrupted spawn settles', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const pendingSpawns: Array<(process: ParserWorkerProcess) => void> = [];
+    const spawn: ParserWorkerSpawner = () =>
+      new Promise(resolve => {
+        pendingSpawns.push(resolve);
+      });
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-warm-interrupt-'});
+      const pool = yield* CodeGraphParserPool;
+
+      const warming = yield* Effect.forkScoped(pool.warm(home));
+      yield* waitUntil(() => pendingSpawns.length === 1);
+      const interrupted = yield* Effect.forkScoped(Fiber.interrupt(warming));
+      yield* Effect.yieldNow;
+
+      const prepared = echoProcess();
+      processes.push(prepared);
+      pendingSpawns[0](prepared);
+      yield* Fiber.join(interrupted);
+
+      const result = yield* pool.extract(
+        inventoryFile('src/reused-after-interrupt.ts', 'export const reused = true;'),
+        home,
+      );
+      expect(result.degraded).toBe(false);
+      expect(processes).toHaveLength(1);
+      expect(prepared.writes).toHaveLength(1);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('reuses one admitted parser slot across a serial extraction window', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-session-'});
+      const pool = yield* CodeGraphParserPool;
+      const files = [
+        inventoryFile('src/session-a.ts', 'export const sessionA = true;'),
+        inventoryFile('src/session-b.ts', 'export const sessionB = true;'),
+        inventoryFile('src/session-c.ts', 'export const sessionC = true;'),
+      ];
+
+      const results = yield* pool.withParserSlot(home, files, extract => Effect.forEach(files, extract));
+      const afterSession = yield* pool.extract(
+        inventoryFile('src/session-after.ts', 'export const sessionAfter = true;'),
+        home,
+      );
+
+      expect(results.map(result => result.facts.path)).toEqual(files.map(file => file.path));
+      expect(afterSession.degraded).toBe(false);
+      expect(processes).toHaveLength(1);
+      expect(processes[0].writes.map(request => request.file.path)).toEqual([
+        ...files.map(file => file.path),
+        'src/session-after.ts',
+      ]);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('keeps an interrupted session slot owned until its initial spawn settles', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const pendingSpawns: Array<(process: ParserWorkerProcess) => void> = [];
+    const spawn: ParserWorkerSpawner = () => {
+      if (pendingSpawns.length === 0)
+        return new Promise(resolve => {
+          pendingSpawns.push(resolve);
+        });
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-session-interrupt-'});
+      const pool = yield* CodeGraphParserPool;
+      const firstFile = inventoryFile('src/interrupted-session.ts', 'export const interrupted = true;');
+      const secondFile = inventoryFile('src/next-session.ts', 'export const next = true;');
+
+      const first = yield* Effect.forkScoped(pool.withParserSlot(home, [firstFile], extract => extract(firstFile)));
+      yield* waitUntil(() => pendingSpawns.length === 1);
+      const interrupted = yield* Effect.forkScoped(Fiber.interrupt(first));
+      yield* Effect.yieldNow;
+      const second = yield* Effect.forkScoped(pool.withParserSlot(home, [secondFile], extract => extract(secondFile)));
+      yield* Effect.yieldNow;
+
+      expect(pendingSpawns).toHaveLength(1);
+      const interruptedWorker = echoProcess();
+      processes.push(interruptedWorker);
+      pendingSpawns[0](interruptedWorker);
+      yield* Fiber.join(interrupted);
+      const result = yield* Fiber.join(second);
+      yield* pool.trimIdle;
+
+      expect(result.degraded).toBe(false);
+      expect(processes).toHaveLength(2);
+      expect(interruptedWorker.writes).toEqual([]);
+      expect(processes[1].writes.map(request => request.file.path)).toEqual([secondFile.path]);
+      expect(interruptedWorker.inputClosed).toBe(true);
+      expect(processes[1].inputClosed).toBe(true);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('warms concurrently admitted parser slots before extraction', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-parallel-session-'});
+      const pool = yield* CodeGraphParserPool;
+      const files = [inventoryFile('src/parallel-a.ts', 'export const parallelA = true;')];
+
+      const results = yield* pool.withParserSlot(home, files, extract => Effect.forEach(files, extract));
+
+      expect(results.map(result => result.facts.path)).toEqual(files.map(file => file.path));
+      expect(processes).toHaveLength(1);
+      expect(processes[0].writes.map(request => request.file.path)).toEqual([
+        '.threadnote/parser-warmup.ts',
+        files[0].path,
+      ]);
+    }).pipe(provideTestLayer(parserLayer({capacity: 2, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect.each([
+    {entry: 'extract', transition: 'retry'},
+    {entry: 'extract', transition: 'recycle'},
+    {entry: 'session', transition: 'retry'},
+    {entry: 'session', transition: 'recycle'},
+  ] as const)('retains $entry ownership while an interrupted $transition spawn settles', ({entry, transition}) => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    let spawnCount = 0;
+    let resolveSpawn: ((process: ParserWorkerProcess) => void) | undefined;
+    const firstWorker = new ScriptedParserWorkerProcess(request => {
+      if (transition === 'retry') firstWorker.stdoutFeed.push('{malformed}\n');
+      else firstWorker.respond(request, factsFor(request.file), {recycle: true});
+    });
+    const delayedWorker = echoProcess();
+    const spawn: ParserWorkerSpawner = () => {
+      spawnCount += 1;
+      if (spawnCount === 2) {
+        return new Promise(resolve => {
+          processes.push(delayedWorker);
+          resolveSpawn = resolve;
+        });
+      }
+      const worker = spawnCount === 1 ? firstWorker : echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-respawn-interrupt-'});
+      const pool = yield* CodeGraphParserPool;
+      const files = [
+        inventoryFile('src/before-respawn.ts', 'export const before = true;'),
+        inventoryFile('src/after-respawn.ts', 'export const after = true;'),
+      ];
+      const run = (selected: readonly CodeGraphInventoryFile[]) =>
+        entry === 'session'
+          ? pool.withParserSlot(home, selected, extract => Effect.forEach(selected, extract))
+          : Effect.forEach(selected, file => pool.extract(file, home));
+      const first = yield* Effect.forkScoped(run(files));
+      yield* waitUntil(() => resolveSpawn !== undefined);
+      const interrupted = yield* Effect.forkScoped(Fiber.interrupt(first));
+      yield* TestClock.withLive(Effect.sleep(20));
+
+      expect(interrupted.pollUnsafe()).toBeUndefined();
+      expect(yield* fs.exists(`${home}/locks/indexes/code-graph/parser-slots/0.lock`)).toBe(true);
+      const second = yield* Effect.forkScoped(run([files[1]]));
+      yield* TestClock.withLive(Effect.sleep(20));
+      expect(spawnCount).toBe(2);
+
+      resolveSpawn?.(delayedWorker);
+      yield* Fiber.join(interrupted);
+      const recovered = yield* Fiber.join(second);
+      yield* pool.trimIdle;
+
+      expect(recovered.every(result => !result.degraded)).toBe(true);
+      expect(spawnCount).toBe(3);
+      expect(delayedWorker.writes).toEqual([]);
+      expect(processes.every(process => process.inputClosed || process.killed)).toBe(true);
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => resolveSpawn?.(delayedWorker))),
+      provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})),
+      Effect.scoped,
+    );
+  });
+
   it.effect('does not terminate an active extraction when idle slots are trimmed', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
     const spawn: ParserWorkerSpawner = () => {
@@ -732,9 +1087,16 @@ const baseLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
 function parserLayer(
   options: Parameters<typeof codeGraphParserPoolLayer>[0],
   systemLayer: Layer.Layer<SystemInfo> = SystemInfo.layer,
+  fileSystem?: FileSystem.FileSystem,
 ) {
   const dependencies = Layer.mergeAll(BunServices.layer, systemLayer);
-  return codeGraphParserPoolLayer(options).pipe(Layer.provideMerge(dependencies));
+  return codeGraphParserPoolLayer(options).pipe(
+    Layer.provideMerge(
+      fileSystem === undefined
+        ? dependencies
+        : Layer.merge(dependencies, Layer.succeed(FileSystem.FileSystem, fileSystem)),
+    ),
+  );
 }
 
 function inventoryFile(path: string, content: string, language = 'typescript'): CodeGraphInventoryFile {

@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {
   acceptsRepositoryPath,
+  codeGraphCatFileBatches,
   codeGraphInventoryExclusionReason,
   parseGitTree,
   parseNameStatus,
@@ -14,6 +15,13 @@ import {
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from '../../src/code_graph/languages/corpus/policy.js';
 
 describe('native code graph inventory policy', () => {
+  it('packs up to 512 small blobs into one Git cat-file process without weakening the byte ceiling', () => {
+    const entries = Array.from({length: 513}, (_, index) => ({index, size: 1}));
+    expect(codeGraphCatFileBatches(entries.slice(0, 512)).map(batch => batch.length)).toEqual([512]);
+    expect(codeGraphCatFileBatches(entries).map(batch => batch.length)).toEqual([512, 1]);
+    expect(codeGraphCatFileBatches([{size: 16 * 1_048_576}, {size: 1}]).map(batch => batch.length)).toEqual([1, 1]);
+  });
+
   it('excludes SVG and low-meaning JSON at the reviewed pre-hydration boundaries', () => {
     for (const path of ['icons/logo.svg', 'icons/LOGO.SVG', './icons/logo.SvG']) {
       expect(codeGraphInventoryExclusionReason(path, 0), path).toBe('svg');

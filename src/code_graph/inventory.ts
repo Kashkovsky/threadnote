@@ -4,6 +4,11 @@ import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {codeGraphBlobReuseCacheKey} from './blob_reuse.js';
 import {codeGraphCommittedContentHash} from './content_identity.js';
 import {
+  codeGraphCatFileBatches,
+  CODE_GRAPH_CAT_FILE_BATCH_BYTES,
+  CODE_GRAPH_CAT_FILE_BATCH_ENTRIES,
+} from './inventory/batching.js';
+import {
   inspectContainedStableRegularFile,
   materializeContainedStableRegularFile,
   type StableContainedRegularFileMetadata,
@@ -79,6 +84,7 @@ export type {
 } from './inventory/models.js';
 
 export {codeGraphInventoryExclusionReason} from './inventory/policy.js';
+export {codeGraphCatFileBatches} from './inventory/batching.js';
 export {parseNameStatus} from './inventory/porcelain.js';
 export {readContainedStableRegularFile, type ContainedReadInterlock} from './inventory/contained_file.js';
 export {shouldOmitRepositoryContent} from './inventory/content.js';
@@ -206,8 +212,10 @@ const GENERATED_DIRECTORIES = new Set([
   'out',
 ]);
 const AUTHORED_DOT_DIRECTORIES = new Set(['.aspect']);
-const CAT_FILE_BATCH_ENTRIES = 128;
-const CAT_FILE_BATCH_BYTES = 16 * 1_048_576;
+// Keep the byte ceiling as the memory guard. A 128-entry cap fragments the
+// heavy-tail fixture into three `git cat-file` children even though its
+// content fits comfortably below that ceiling; on current Bun this startup
+// cost dominates the measured read phase.
 /**
  * Aggregate path/size metadata through the same admission rules used by the
  * inventory reader. The result is deliberately path-free and content-free.
@@ -389,6 +397,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
     languagePacks,
     declaredWorkspace.files,
     options.onContentBatch,
+    options.onParserWorkPlanned,
     options.onProgress,
   );
   const committedPolicyExclusionSummary = summarizePolicyExclusions(committedPolicyExclusions);
@@ -1102,7 +1111,7 @@ export const discoverDeclaredSourceRoots = Effect.fn('codeGraph.discoverDeclared
   }
 
   const files: CodeGraphInventoryFile[] = [];
-  for (const batch of chunkTreeEntries(contexts)) {
+  for (const batch of codeGraphCatFileBatches(contexts)) {
     const expectedBytes = batch.reduce((total, entry) => total + entry.size, 0) + batch.length * 256;
     const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
       input: new TextEncoder().encode(`${batch.map(entry => entry.blobId).join('\n')}\n`),
@@ -1335,6 +1344,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   languagePacks: CodeGraphLanguagePackRegistryShape,
   preloadedResolutionContexts: ReadonlyMap<string, CodeGraphInventoryFile>,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
+  onParserWorkPlanned?: CodeGraphInventoryOptions['onParserWorkPlanned'],
   onProgress?: CodeGraphInventoryOptions['onProgress'],
 ) {
   const files: CodeGraphInventoryFile[] = [];
@@ -1390,8 +1400,9 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       .filter(entry => entry.parse)
       .map(entry => committedInventoryFile(identity, entry, languagePacks)),
   ]);
-  for (let offset = 0; offset < metadataOnlyContent.length; offset += CAT_FILE_BATCH_ENTRIES) {
-    const batch = metadataOnlyContent.slice(offset, offset + CAT_FILE_BATCH_ENTRIES);
+  let parserWorkPrepared = false;
+  for (let offset = 0; offset < metadataOnlyContent.length; offset += CODE_GRAPH_CAT_FILE_BATCH_ENTRIES) {
+    const batch = metadataOnlyContent.slice(offset, offset + CODE_GRAPH_CAT_FILE_BATCH_ENTRIES);
     yield* onContentBatch?.(batch, {
       extractionPlan,
       progress: {
@@ -1416,7 +1427,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     total: entries.length,
     unit: 'files',
   }) ?? Effect.void;
-  for (const batch of chunkTreeEntries(orderedNeedsContent)) {
+  for (const batch of codeGraphCatFileBatches(orderedNeedsContent)) {
     const first = batch[0];
     const matches = batch.map(entry => Option.getOrUndefined(languagePacks.match(entry.path)));
     const batchLanguages = new Set(matches.map(value => value?.language ?? 'text'));
@@ -1443,8 +1454,8 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       total: entries.length,
       unit: 'files',
     }) ?? Effect.void;
-    const readingStarted = performance.now();
     const expectedBytes = batch.reduce((total, entry) => total + entry.size, 0) + batch.length * 256;
+    const readingStarted = performance.now();
     const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
       input: new TextEncoder().encode(`${batch.map(entry => entry.blobId).join('\n')}\n`),
       maxOutputBytes: expectedBytes,
@@ -1467,13 +1478,20 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       }
       const hydrated = {
         ...committedInventoryFile(identity, entry, languagePacks),
-        ...(content === undefined ? {bytes} : {content}),
+        // Text is decoded before the batch buffer can escape. Binary inputs must
+        // retain an isolated copy instead of pinning the entire cat-file response.
+        ...(content === undefined ? {bytes: bytes.slice()} : {content}),
       } satisfies CodeGraphInventoryFile;
       if (entry.parse) contentBatch.push(hydrated);
       const retained = retainResolutionContext(hydrated, languagePacks);
       files.push(retained);
     }
+    const readingMilliseconds = performance.now() - readingStarted;
     if (contentBatch.length > 0) {
+      if (!parserWorkPrepared) {
+        parserWorkPrepared = true;
+        yield* onParserWorkPlanned?.() ?? Effect.void;
+      }
       yield* onContentBatch?.(contentBatch, {
         ...(blobReuseCounts.size === 0 ? {} : {blobReuseCounts}),
         extractionPlan,
@@ -1486,7 +1504,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
           total: entries.length,
           unit: 'files',
         },
-        readingMilliseconds: performance.now() - readingStarted,
+        readingMilliseconds,
         sourceBytes: contentBatch.reduce((total, file) => total + file.size, 0),
       }) ?? Effect.void;
     }
@@ -1562,11 +1580,12 @@ export function parseGitCatFileBatch(
   entries: readonly Pick<GitTreeEntry, 'blobId' | 'size'>[],
 ): readonly Uint8Array[] {
   const output: Uint8Array[] = [];
+  const headerDecoder = new TextDecoder();
   let offset = 0;
   for (const expected of entries) {
     const newline = bytes.indexOf(10, offset);
     if (newline < 0) throw CodeGraphInventoryError.of('Git cat-file batch ended before its header.');
-    const header = new TextDecoder().decode(bytes.subarray(offset, newline));
+    const header = headerDecoder.decode(bytes.subarray(offset, newline));
     const match = /^([0-9a-f]+) blob (\d+)$/.exec(header);
     if (!match || match[1] !== expected.blobId) {
       throw CodeGraphInventoryError.of(`Git cat-file returned an unexpected object for ${expected.blobId}.`);
@@ -1577,7 +1596,9 @@ export function parseGitCatFileBatch(
     if (!Number.isSafeInteger(size) || size < 0 || end >= bytes.byteLength || bytes[end] !== 10) {
       throw CodeGraphInventoryError.of(`Git cat-file returned a truncated object for ${expected.blobId}.`);
     }
-    output.push(bytes.slice(start, end));
+    // Return a view for immediate classification/UTF-8 decoding. The inventory
+    // path copies only binary payloads that must outlive this batch buffer.
+    output.push(bytes.subarray(start, end));
     offset = end + 1;
   }
   if (offset !== bytes.byteLength) throw CodeGraphInventoryError.of('Git cat-file batch returned trailing bytes.');
@@ -1865,7 +1886,7 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
         source: 'worktree',
       } satisfies CodeGraphInventoryFile;
       if (!cachedFileKeys.has(cacheKey(relative, codeGraphContentHash, languagePacks))) {
-        if (contentBatch.length >= CAT_FILE_BATCH_ENTRIES) yield* flushContentBatch();
+        if (contentBatch.length >= CODE_GRAPH_CAT_FILE_BATCH_ENTRIES) yield* flushContentBatch();
         contentBatch.push(metadata);
         contentBatchBytes += materialized.size;
         contentBatchReadingMilliseconds += readingMilliseconds;
@@ -1886,7 +1907,8 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
     }
     if (
       contentBatch.length > 0 &&
-      (contentBatch.length >= CAT_FILE_BATCH_ENTRIES || contentBatchBytes + bytes.byteLength > CAT_FILE_BATCH_BYTES)
+      (contentBatch.length >= CODE_GRAPH_CAT_FILE_BATCH_ENTRIES ||
+        contentBatchBytes + bytes.byteLength > CODE_GRAPH_CAT_FILE_BATCH_BYTES)
     ) {
       yield* flushContentBatch();
     }
@@ -1933,26 +1955,6 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
     skipped,
   };
 });
-
-function chunkTreeEntries<T extends GitTreeEntry>(entries: readonly T[]): readonly (readonly T[])[] {
-  const batches: T[][] = [];
-  let current: T[] = [];
-  let currentBytes = 0;
-  for (const entry of entries) {
-    if (
-      current.length > 0 &&
-      (current.length >= CAT_FILE_BATCH_ENTRIES || currentBytes + entry.size > CAT_FILE_BATCH_BYTES)
-    ) {
-      batches.push(current);
-      current = [];
-      currentBytes = 0;
-    }
-    current.push(entry);
-    currentBytes += entry.size;
-  }
-  if (current.length > 0) batches.push(current);
-  return batches;
-}
 
 function normalizeRepositoryPath(value: string): string {
   return value.replace(/^\.\/+/, '');

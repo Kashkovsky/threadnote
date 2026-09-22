@@ -5,6 +5,7 @@ import {
   codeGraphHeavyTailRatchetArtifact,
   assertHeavyTailReleaseRatchet,
   createCodeGraphHeavyTailRatchet,
+  heavyTailExtractionUtilization,
   parseCodeGraphHeavyTailBenchmarkArguments,
   parseCodeGraphHeavyTailBenchmarkArtifact,
   parseCodeGraphHeavyTailReleaseEvidence,
@@ -37,6 +38,48 @@ const RELEASE_RUNNER_CLASS = 'apple-m1-max-64g-internal';
 const HEAVY_TAIL_GRAPH_DIGEST = '862c4f7e69cda68d59679d6b052cccfca01c35a2e13086333c631f2286b02c93';
 
 describe('code graph large-monorepo heavy-tail benchmark', () => {
+  it('reports exactly one active request for non-overlapping fractional intervals without mutating them', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({min: 1, max: 99_999}), {minLength: 2, maxLength: 64}), durations => {
+        const intervals = durations
+          .map((duration, index) => ({
+            end: index * 1_000 + 0.123456 + duration / 1_000,
+            start: index * 1_000 + 0.123456,
+          }))
+          .reverse();
+        const before = structuredClone(intervals);
+        const utilization = heavyTailExtractionUtilization(intervals, 1);
+        expect(utilization.averageConcurrency).toBe(1);
+        expect(utilization.requestMilliseconds).toBe(utilization.activeWallMilliseconds);
+        expect(intervals).toEqual(before);
+      }),
+      {numRuns: 64},
+    );
+  });
+
+  it('measures overlapping requests over their union and preserves the empty observation', () => {
+    expect(
+      heavyTailExtractionUtilization(
+        [
+          {start: 0, end: 4},
+          {start: 2, end: 6},
+        ],
+        2,
+      ),
+    ).toEqual({
+      activeWallMilliseconds: 6,
+      averageConcurrency: 8 / 6,
+      peakConcurrency: 2,
+      requestMilliseconds: 8,
+    });
+    expect(heavyTailExtractionUtilization([], 0)).toEqual({
+      activeWallMilliseconds: 0,
+      averageConcurrency: 0,
+      peakConcurrency: 0,
+      requestMilliseconds: 0,
+    });
+  });
+
   it('uses the centralized process maxRSS byte normalizer', async () => {
     const source = await readFile('scripts/benchmark-code-graph-heavy-tail.ts', 'utf8');
 
@@ -486,6 +529,56 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
     ]) {
       expect(() => parseCodeGraphHeavyTailReleaseEvidence(mutate(artifact))).toThrow(/release evidence|inconsistent/iu);
     }
+  });
+
+  it.each([
+    'bun-darwin-arm64',
+    'bun-darwin-x64',
+    'bun-linux-arm64',
+    'bun-linux-arm64-musl',
+    'bun-linux-x64-baseline',
+    'bun-linux-x64-musl-baseline',
+    'bun-windows-arm64',
+    'bun-windows-x64-baseline',
+  ])('round-trips canonical managed runtime identity %s and rejects mismatches', target => {
+    const architecture = target.includes('-arm64') ? 'arm64' : 'x64';
+    const platform = target.startsWith('bun-windows-')
+      ? 'windows'
+      : target.startsWith('bun-darwin-')
+        ? 'darwin'
+        : 'linux';
+    fc.assert(
+      fc.property(fc.tuple(fc.integer({min: 1, max: 9}), fc.nat(99), fc.nat(99)), ([major, minor, patch]) => {
+        const version = `${major}.${minor}.${patch}`;
+        const artifact = structuredClone(heavyTailArtifact(0)) as Mutable<CodeGraphHeavyTailBenchmarkArtifact>;
+        artifact.environment.runtime = `bun/${version}`;
+        artifact.environment.architecture = architecture;
+        const provenance = artifact.environment.provenance!;
+        if (provenance.mode !== 'managed-exact-head') throw new Error('Expected managed fixture');
+        provenance.runtime = `bun-${version}`;
+        provenance.target = target;
+        const {ratchetArtifact: _previous, ...outer} = artifact;
+        const complete = {
+          ...artifact,
+          ratchetArtifact: codeGraphHeavyTailRatchetArtifact(outer, platform === 'windows' ? 'win32' : platform, {
+            availableBytes: artifact.environment.availableBytes!,
+            minimumFreeBytes: artifact.environment.minimumFreeBytes!,
+            runtimeProvenance: provenance,
+            storage: artifact.environment.storage!,
+          }),
+        };
+        expect(parseCodeGraphHeavyTailReleaseEvidence(complete)).toEqual(complete);
+
+        provenance.runtime = `bun-${major}.${minor}.${patch + 1}`;
+        expect(() => parseCodeGraphHeavyTailReleaseEvidence(complete)).toThrow(/provenance/iu);
+        provenance.runtime = `bun-${version}`;
+        provenance.target = `${platform}-${architecture}`;
+        expect(() => parseCodeGraphHeavyTailReleaseEvidence(complete)).toThrow(/provenance/iu);
+        provenance.target = `bun-${platform}-${architecture === 'arm64' ? 'x64' : 'arm64'}`;
+        expect(() => parseCodeGraphHeavyTailReleaseEvidence(complete)).toThrow(/provenance/iu);
+      }),
+      {numRuns: 8},
+    );
   });
 
   it('rejects resumed language telemetry mutations without a regenerated embedded contract', () => {
@@ -1084,11 +1177,11 @@ function heavyTailArtifact(offset: number): CodeGraphHeavyTailBenchmarkArtifact 
       payloadManifestSha256: 'e'.repeat(64),
       processLeaseInspection: 'complete',
       releaseMetadataSha256: 'f'.repeat(64),
-      runtime: 'bun/1.3.14',
+      runtime: 'bun-1.4.2',
       sourceCommit: 'a'.repeat(40),
       sourceLockfileSha256: 'b'.repeat(64),
       sourcePackageManifestSha256: 'c'.repeat(64),
-      target: 'darwin-arm64',
+      target: 'bun-darwin-arm64',
       version: 'threadnote-test',
     },
     storage: {filesystem: 'apfs', location: 'internal', medium: 'solid-state'},
@@ -1128,7 +1221,7 @@ function heavyTailArtifact(offset: number): CodeGraphHeavyTailBenchmarkArtifact 
       minimumFreeBytes: governance.minimumFreeBytes,
       operatingSystem: 'macOS 27.0',
       provenance: governance.runtimeProvenance,
-      runtime: 'bun/1.3.14',
+      runtime: 'bun/1.4.2',
       runnerClass: RELEASE_RUNNER_CLASS,
       runnerIdentity: 'local-apple-m1-max',
       storage: governance.storage,

@@ -69,6 +69,8 @@ export interface CodeGraphInventoryOptions {
   ) => Effect.Effect<void, unknown>;
   /** Starts the worktree-only extraction counter before any effective overlay batch. */
   readonly onOverlayStart?: () => Effect.Effect<void>;
+  /** Start idle parser processes only after uncached parser-bound inputs are known. */
+  readonly onParserWorkPlanned?: () => Effect.Effect<void>;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
 }
 

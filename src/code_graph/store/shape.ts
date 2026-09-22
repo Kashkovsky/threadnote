@@ -34,6 +34,7 @@ import type {
   CodeGraphDatabaseHealth,
   CodeGraphDatabaseRepair,
   CodeGraphDirectPersistentCapacityProtector,
+  CodeGraphFactCacheBatch,
   CodeGraphEdgeCursor,
   CodeGraphPersistentBuildClaim,
   CodeGraphPreparationGate,
@@ -184,6 +185,11 @@ export interface CodeGraphStoreShape {
     files: readonly CodeGraphInventoryFile[],
     facts: readonly CodeGraphCacheFactInput[],
     extractorSet: string,
+    persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
+  ) => Effect.Effect<void, CodeGraphStoreFailure>;
+  readonly cacheFactBatches: (
+    databasePath: string,
+    batches: readonly CodeGraphFactCacheBatch[],
     persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreFailure>;
   readonly cacheMaterializedFileShards: (
