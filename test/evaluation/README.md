@@ -188,6 +188,24 @@ bun run eval:code-memory-link-agent-ab -- \
   --trials artifacts/code-memory-link-agent-ab-trials.jsonl
 ```
 
+A post-release retrieval-primary study can analyze the same complete, independently replayed governed ledgers without
+weakening the action-primary release gate. Its separate scorer counts a missing, failed, or repeated Context Brief call
+as zero assigned-trial gold retrieval; a gold call with no later qualifying action still counts as retrieval, but not
+as useful-memory use or task pass. It reports matched hidden-block wins/losses, client and structural-family contrasts,
+valid-call retrieval, task pass, harmful acceptance, and negative-control regressions. The manifest must already be in
+the reviewed manifest allowlist; the outcome-sensitive release evidence allowlist is not a prerequisite for analysis.
+The experiment-specific rule and missingness policy are in [code-memory-link-agent-study-v1.md](code-memory-link-agent-study-v1.md).
+
+```sh
+bun run eval:code-memory-link-agent-study -- \
+  --assignment artifacts/code-memory-link-agent-ab-assignment.json \
+  --attempts artifacts/code-memory-link-agent-ab-trials.jsonl.attempts.jsonl \
+  --candidate-commit <exact-40-character-sha> \
+  --evidence artifacts/code-memory-link-agent-ab-trials.jsonl.evidence.jsonl \
+  --manifest artifacts/code-memory-link-agent-ab-manifest.json \
+  --trials artifacts/code-memory-link-agent-ab-trials.jsonl
+```
+
 The 4.6 real-agent gate has a checked-in 12-hidden/16-control sealed corpus. Five hidden tasks are intentionally
 recoverable by task-only v2; seven use citation-anchored mappings that are lexically disjoint and crowded by inert
 project-local decoys. Two of the 16 controls are privacy-safe instruction-injection canaries: one current memory is

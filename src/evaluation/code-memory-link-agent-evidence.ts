@@ -191,7 +191,10 @@ export function assertCodeMemoryLinkAgentEvidenceLedgerV1(input: {
         : binding.arm === 'task-only'
           ? task.expectedResponseHashes.taskOnly
           : task.expectedResponseHashes.noMemory;
-    if (contextCalls.length !== 1 || contextCalls[0].proxyReceipt?.responseHash !== expectedResponseHash) {
+    // Missing, failed, or repeated calls are agent outcomes, not missing evidence. Preserve them so an
+    // assigned-trial analysis can count protocol noncompliance without retrying it away. Every response
+    // the model actually received must still be the sealed projection for its assigned arm.
+    if (contextCalls.some(call => call.succeeded && call.proxyReceipt?.responseHash !== expectedResponseHash)) {
       invalid(`evidence receipt ${index} model-visible response differs from the preregistered arm projection`);
     }
 

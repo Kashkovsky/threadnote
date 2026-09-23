@@ -743,6 +743,29 @@ describe('Code Memory Link real-agent protocol', () => {
     expect(projection.firstUsefulMemoryUse).toBeNull();
   });
 
+  it('records gold retrieval before any qualifying action even when the agent never takes one', () => {
+    const events = traceEvents([100, 200, 300, 400]).filter(event => !hasItemId(event, ACTION_ITEM_ID));
+    const projection = projectCodeMemoryLinkCodexAppServerTraceV1({
+      approvalReceipts: [],
+      events,
+      expectedClient: CLIENT,
+      proxyTool: PROXY,
+      qualifyingActionItemId: null,
+      rubric: hiddenRubric(),
+      runBindingHash: RUN_BINDING_HASH,
+      staticArtifacts: staticArtifacts('harmful=true\naction=unqualified\n', '{"memoryExclusive":false}'),
+      threadStartResponse: threadStart(),
+    });
+
+    expect(projection.contextBriefCalls[0]).toMatchObject({
+      beforeQualifyingAction: true,
+      goldCitationMatched: true,
+      succeeded: true,
+    });
+    expect(projection.firstUsefulMemoryUse).toBeNull();
+    expect(projection.taskPassed).toBe(false);
+  });
+
   it('hashes canonical field order deterministically and never mutates hash inputs', () => {
     const promptText = fc
       .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'), {
