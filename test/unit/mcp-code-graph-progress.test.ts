@@ -655,6 +655,32 @@ describe('MCP code graph indexing progress', () => {
     expect(new TextEncoder().encode(response.text).byteLength).toBeLessThan(20 * 1_024);
   });
 
+  it('truncates adversarial graph fields before encoding their discarded tails', () => {
+    const verbose = verboseCodeGraphResult();
+    const result = {
+      ...verbose,
+      edges: [],
+      nodes: [{...verbose.nodes[0], signature: 'x'.repeat(2_000_000)}],
+      operation: 'node' as const,
+      warnings: [],
+    };
+    const encode = TextEncoder.prototype.encode;
+    let largestEncodedInput = 0;
+    TextEncoder.prototype.encode = function (input = '') {
+      largestEncodedInput = Math.max(largestEncodedInput, input.length);
+      if (input.length > 100_000) throw new Error('discarded source tail reached the UTF-8 encoder');
+      return encode.call(this, input);
+    };
+    try {
+      const response = codeGraphMcpResponse(result);
+      expect(response.structuredContent.nodes).toHaveLength(1);
+      expect(response.structuredContent.nodes[0]?.signature).toMatch(/…$/u);
+      expect(largestEncodedInput).toBeLessThan(100_000);
+    } finally {
+      TextEncoder.prototype.encode = encode;
+    }
+  });
+
   it('returns the exact graph projection through one opt-in text channel', () => {
     const response = codeGraphMcpResponse(verboseCodeGraphResult());
     const dual = formatCodeGraphMcpResponse(response);

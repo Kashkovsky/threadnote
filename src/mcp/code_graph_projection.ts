@@ -15,22 +15,31 @@ const MCP_CODE_GRAPH_MAXIMUM_ESTIMATED_TOKENS = 1_500;
 
 export type CodeGraphMcpResponseFormat = 'dual' | 'text' | 'agent';
 
-const textEncoder = new TextEncoder();
-
 function compactMcpText(value: string, maximumBytes: number): string {
-  if (textEncoder.encode(value).byteLength <= maximumBytes) return value;
+  const prefixEnd = utf8PrefixEnd(value, maximumBytes);
+  if (prefixEnd === value.length) return value;
   const suffix = '…';
-  const prefixBytes = maximumBytes - textEncoder.encode(suffix).byteLength;
-  if (prefixBytes <= 0) return suffix;
+  const suffixBytes = 3;
+  if (maximumBytes < suffixBytes) return '';
+  return `${value.slice(0, utf8PrefixEnd(value, maximumBytes - suffixBytes))}${suffix}`;
+}
+
+/** Return a code-point boundary whose UTF-8 prefix fits the byte limit.
+ * The scan stops at the limit, so adversarial multi-megabyte fields cost O(limit)
+ * instead of encoding or traversing the entire source string. */
+function utf8PrefixEnd(value: string, maximumBytes: number): number {
   let bytes = 0;
-  let end = 0;
-  for (const character of value) {
-    const characterBytes = textEncoder.encode(character).byteLength;
-    if (bytes + characterBytes > prefixBytes) break;
-    bytes += characterBytes;
-    end += character.length;
+  let index = 0;
+  while (index < value.length) {
+    const codePoint = value.codePointAt(index);
+    if (codePoint === undefined) break;
+    const codeUnits = codePoint > 0xffff ? 2 : 1;
+    const encodedBytes = codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    if (bytes + encodedBytes > maximumBytes) break;
+    bytes += encodedBytes;
+    index += codeUnits;
   }
-  return `${value.slice(0, end)}${suffix}`;
+  return index;
 }
 
 type MandatoryMetadataProfile = 'minimum' | 'normal';
