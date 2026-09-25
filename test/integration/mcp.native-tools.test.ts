@@ -342,7 +342,7 @@ describe('Threadnote MCP toolsets', () => {
         }
         const serializedToolsBytes = Buffer.byteLength(JSON.stringify(tools.tools));
         // Bound metadata growth without penalizing future concise descriptions.
-        expect(serializedToolsBytes).toBeLessThanOrEqual(30_500);
+        expect(serializedToolsBytes).toBeLessThanOrEqual(31_500);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );
@@ -363,6 +363,12 @@ describe('Threadnote MCP toolsets', () => {
         expect(readContext?.inputSchema.properties).toHaveProperty('responseFormat');
         expect(readContext?.inputSchema.properties).not.toHaveProperty('budgetTokens');
         expect(readContext?.inputSchema.properties).not.toHaveProperty('cursor');
+        for (const name of ['inspect_code_graph', 'context_brief']) {
+          const tool = tools.tools.find(candidate => candidate.name === name);
+          expect(JSON.stringify(tool?.inputSchema)).toContain('responseFormat');
+          expect(JSON.stringify(tool?.inputSchema)).toContain('agent');
+          expect(tool?.description).toContain('semantic truncation');
+        }
       },
       {toolset: null},
     );
@@ -2221,6 +2227,7 @@ describe('Threadnote MCP toolsets', () => {
               anyOf: expect.arrayContaining([{type: 'string'}, {items: {type: 'string'}, maxItems: 8, type: 'array'}]),
             },
             mode: {enum: ['brief', 'locate', 'explain', 'trace', 'impact']},
+            responseFormat: {enum: ['dual', 'agent']},
             surface: {type: 'string'},
             task: {type: 'string'},
             workset: {type: 'string'},
@@ -2252,6 +2259,27 @@ describe('Threadnote MCP toolsets', () => {
         expect(parseContextBriefAgentViewText(worksetOnlyText ?? '')).toEqual(
           projectContextBriefAgentView(parseContextBriefV1(worksetOnly.structuredContent)),
         );
+
+        const agentWorksetOnly = await client.callTool(
+          {
+            arguments: {
+              budgetTokens: 800,
+              responseFormat: 'agent',
+              task: 'Summarize the prepared engineering Workset without a local caller workspace.',
+              workset: 'engineering',
+            },
+            name: 'context_brief',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(agentWorksetOnly.isError, JSON.stringify(agentWorksetOnly)).not.toBe(true);
+        expect(agentWorksetOnly.structuredContent).toBeUndefined();
+        const agentText = (
+          (Array.isArray(agentWorksetOnly.content) ? agentWorksetOnly.content[0] : undefined) as TextContent | undefined
+        )?.text;
+        expect(parseContextBriefAgentViewText(agentText ?? '')).toBeDefined();
+        expect(Buffer.byteLength(agentText ?? '')).toBeLessThanOrEqual(800 * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN);
 
         const tooSmall = await client.callTool(
           {

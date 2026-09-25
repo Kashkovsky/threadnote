@@ -64,6 +64,7 @@ export function planContextBrief(input: ContextBriefRequestV1 | unknown): Contex
     },
     mode: request.mode,
     outputBudgetTokens: request.budgetTokens,
+    responseFormat: request.responseFormat ?? 'dual',
     scope: request.scope,
     ...(request.surface === undefined ? {} : {surface: request.surface}),
     task: request.task,

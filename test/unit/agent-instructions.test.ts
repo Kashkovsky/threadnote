@@ -89,7 +89,7 @@ describe('agent instructions', () => {
     const normalizedContext = context.replace(/\s+/g, ' ');
     const normalizedGraph = graph.replace(/\s+/g, ' ');
     expect(context.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(400);
-    expect(graph.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(300);
+    expect(graph.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(350);
     expect(memory.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(500);
     for (const requiredText of [
       '`context_brief`',
@@ -165,10 +165,12 @@ describe('agent instructions', () => {
     expect(normalizedGraph).toContain('`explain` expands symbols or queries');
     expect(normalizedGraph).toContain('`path` connects local');
     expect(normalizedGraph).toContain('qualified Workset endpoints');
-    expect(normalizedGraph).toContain('`responseFormat: "text"`');
-    expect(normalizedGraph).toContain('Successful graph-result responses');
-    expect(normalizedGraph).toContain('status/error envelopes may retain');
-    expect(normalizedGraph).toContain('the default dual response');
+    expect(normalizedGraph).toContain('local-repository `inspect_code_graph`');
+    expect(normalizedGraph).toContain('`responseFormat: "agent"`');
+    expect(normalizedGraph).toContain('final formatting and semantic truncation');
+    expect(normalizedGraph).toContain('`responseFormat: "text"` for lossless JSON');
+    expect(normalizedGraph).toContain('dual structured compatibility');
+    expect(normalizedGraph).toContain('Named Worksets do not yet support agent projection');
     for (const analysisOperation of [
       '`stats`',
       '`communities`',

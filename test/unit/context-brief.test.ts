@@ -839,6 +839,10 @@ describe('Context Brief compiler', () => {
     const symbol = `cgs_${'8'.repeat(32)}`;
     expect(parseContextBriefRequestV1(request(800)).budgetTokens).toBe(800);
     expect(parseContextBriefRequestV1(request(1_500)).budgetTokens).toBe(1_500);
+    expect(parseContextBriefRequestV1({...request(1_250), responseFormat: 'agent'}).responseFormat).toBe('agent');
+    expect(() => parseContextBriefRequestV1({...request(1_250), responseFormat: 'text'})).toThrow(
+      'responseFormat must be dual or agent',
+    );
     expect(
       parseContextBriefRequestV1({
         ...request(1_250),
@@ -876,6 +880,39 @@ describe('Context Brief compiler', () => {
       'cgr_ handle, which Context Brief does not support',
     );
   });
+
+  effectIt.effect('measures the Context Brief agent view as one final text channel', () =>
+    Effect.gen(function* () {
+      const budgetTokens = 1_250;
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graphEvidence()),
+          memoryEvidence: () => Effect.succeed(memoryEvidence()),
+        },
+        {...request(budgetTokens), responseFormat: 'agent'},
+      );
+      expect(result.text).toBe(JSON.stringify(projectContextBriefAgentView(result.structuredContent)));
+      expect(result.measurement.structuredBytes).toBe(0);
+      expect(result.measurement.totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
+    }),
+  );
+
+  effectIt.effect(
+    'admits more complete code-linked ambiguity cohorts in agent format at the same pressure budget',
+    () =>
+      Effect.gen(function* () {
+        const options = {
+          codeAnchorOrdinalsByMemory: [[0], [0], [1], [1]],
+          mode: 'trace' as const,
+        };
+        const dual = yield* compileCodeLinkedRecoveryFixture(1, 4, 800, options);
+        const agent = yield* compileCodeLinkedRecoveryFixture(1, 4, 800, {...options, responseFormat: 'agent'});
+        expect(agent.measurement.structuredBytes).toBe(0);
+        expect(agent.structuredContent.durableDecisions.length).toBeGreaterThan(
+          dual.structuredContent.durableDecisions.length,
+        );
+      }),
+  );
 
   it('discloses every public UTF-8 input bound in validation errors', () => {
     expect(parseContextBriefRequestV1({...request(1_250), task: '\\'.repeat(4_096)}).task).toHaveLength(4_096);
@@ -2576,6 +2613,7 @@ function compileCodeLinkedRecoveryFixture(
     readonly mode?: 'impact' | 'locate' | 'trace';
     readonly omitMemoryId?: boolean;
     readonly projectCoverage?: NonNullable<ContextBriefGraphEvidenceV1['projectCoverage']>;
+    readonly responseFormat?: 'agent';
     readonly scope?: ContextBriefScopeV1;
     readonly sharedCodeAnchor?: boolean;
     readonly shortMemoryEvidence?: readonly string[];
@@ -2763,6 +2801,7 @@ function compileCodeLinkedRecoveryFixture(
       ...request(budget),
       codeRefs,
       mode: options.mode ?? 'locate',
+      ...(options.responseFormat === undefined ? {} : {responseFormat: options.responseFormat}),
       ...(options.scope === undefined ? {} : {scope: options.scope}),
       task: options.task ?? 'Find the implementation contract attached to the bounded Context Brief recovery graph.',
     },

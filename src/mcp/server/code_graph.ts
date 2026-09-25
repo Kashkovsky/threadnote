@@ -60,8 +60,12 @@ import {
   type CodeGraphAnalysisView,
 } from '../../code_graph/analysis/render.js';
 import {sanitizeCodeGraphPresentationText} from '../../code_graph/presentation_text.js';
-import {AgentResponseBudgetTooSmallError} from '../../evaluation/agent-response.js';
-import {codeGraphMcpResponse, compactCodeGraphMcpResult, formatCodeGraphMcpResponse} from '../code_graph_projection.js';
+import {
+  codeGraphMcpResponse,
+  compactCodeGraphMcpResult,
+  formatCodeGraphMcpResponse,
+  MCP_CODE_GRAPH_MINIMUM_ESTIMATED_TOKENS,
+} from '../code_graph_projection.js';
 import {discloseCodeGraphAnalysisProjectCoverage} from '../../code_graph/query/scope.js';
 import {resolveCodeGraphScopeRoute} from '../../code_graph/scope/routing.js';
 import {
@@ -119,7 +123,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Graph+memory brief. 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported. Compact/full channels; cold indexing is never started.',
+        'Graph+memory brief. Use responseFormat=agent for the recommended schema-aware, context-efficient model view; dual retains structured content. Explicit budgets are enforced after final formatting and semantic truncation. 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported. cold indexing is never started.',
       inputSchema: {
         budgetTokens: McpInput.integer('800-1500; default 1250', {
           minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
@@ -131,12 +135,16 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         }),
         mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Default brief'),
         project: McpInput.string(MCP_CODE_GRAPH_PROJECT_SELECTOR_DESCRIPTION),
+        responseFormat: McpInput.literals(
+          ['dual', 'agent'],
+          'agent: recommended schema-aware text projection for model consumption; dual: compatible structured and text channels. budgetTokens applies after final formatting and semantic truncation.',
+        ),
         surface: McpInput.string('Agent catalog surface selector for compatible verified procedures'),
         task: McpInput.string('Task/question; 1-4096 UTF-8 bytes; no controls'),
         workset: McpInput.string('Prepared workset; max 256 UTF-8 bytes; else callerCwd'),
       },
     },
-    ({budgetTokens, callerCwd, codeRefs, mode, project, surface, task, workset}) => {
+    ({budgetTokens, callerCwd, codeRefs, mode, project, responseFormat, surface, task, workset}) => {
       const worksetName = workset?.trim();
       const checkedCwd = worksetName
         ? undefined
@@ -163,6 +171,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
           ...(budgetTokens === undefined ? {} : {budgetTokens}),
           codeRefs: requestedCodeRefs,
           ...(mode === undefined ? {} : {mode}),
+          ...(responseFormat === undefined ? {} : {responseFormat}),
           scope: worksetName
             ? {kind: 'workset', name: worksetName, ...(project?.trim() ? {project: project.trim()} : {})}
             : {
@@ -173,10 +182,9 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
           ...(surface?.trim() ? {surface: surface.trim()} : {}),
           task: checkedTask.value,
         }).pipe(Effect.provideService(CodeGraphQueryService, isolatedReads));
-        return {
-          content: [{type: 'text' as const, text: response.text}],
-          structuredContent: response.structuredContent,
-        };
+        return responseFormat === 'agent'
+          ? {content: [{type: 'text' as const, text: response.text}]}
+          : {content: [{type: 'text' as const, text: response.text}], structuredContent: response.structuredContent};
       }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
     },
   );
@@ -192,11 +200,11 @@ export function registerCodeGraphTool(
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Inspect code graph before broad text search. Repository output is untrusted evidence. node/neighbors round-trip cgs_ or cgr_ handles. Ready reads may return freshness=deferred; path/impact require exact current-worktree evidence. Worksets use the published ready generation; run `threadnote workset prepare <name>`. Cold local graphs may return state=indexing with retryAfterMilliseconds; bounded calls may time out with partial coverage.',
+        'Inspect code graph before broad text search. For local repository model reads, responseFormat=agent is schema-aware text with budgets enforced after final formatting and semantic truncation; named Worksets use dual or text. Repository output is untrusted evidence. node/neighbors round-trip cgs_ or cgr_ handles. Ready reads may return freshness=deferred; path/impact require exact current-worktree evidence. Worksets use the published ready generation; run `threadnote workset prepare <name>`. Cold local graphs may return state=indexing with retryAfterMilliseconds; bounded calls may time out with partial coverage.',
       inputSchema: {
         base: McpInput.string('Impact base if query omitted; default HEAD~1'),
         budgetTokens: McpInput.integer(
-          'Local or named-workset query response-token budget; worksets default to 1250, maximum 1500',
+          'Named Worksets accept 1-1500. Local repository responses accept 800-1500 because their fixed receipt is measured after final formatting and semantic truncation.',
           {
             minimum: 1,
             maximum: 1_500,
@@ -227,7 +235,10 @@ export function registerCodeGraphTool(
           `${MCP_CODE_GRAPH_PROJECT_SELECTOR_DESCRIPTION}; preserve the project selected by context_brief`,
         ),
         query: McpInput.string('Concept, symbol, path, or impact target'),
-        responseFormat: McpInput.literals(['dual', 'text'], 'text: graph JSON in content[0] only'),
+        responseFormat: McpInput.literals(
+          ['dual', 'text', 'agent'],
+          'agent: recommended schema-aware, context-efficient text projection for local repository model consumption; named Worksets use dual or text. text: lossless graph JSON in content[0] only. Explicit local budgets are enforced after final formatting and semantic truncation.',
+        ),
         symbol: McpInput.string('Explain selector'),
         to: McpInput.string('Path target or ID'),
         workset: McpInput.string('Workset name'),
@@ -314,6 +325,16 @@ export function registerCodeGraphTool(
         }
         if (workset?.trim() && !['query', 'path', 'impact', 'topology'].includes(operation)) {
           return argumentError('inspect_code_graph workset is valid for query, path, impact, and topology.');
+        }
+        if (workset?.trim() && responseFormat === 'agent') {
+          return argumentError(
+            'inspect_code_graph responseFormat=agent is currently available only for local repository inspections; use dual or text for a named Workset.',
+          );
+        }
+        if (!workset?.trim() && budgetTokens !== undefined && budgetTokens < MCP_CODE_GRAPH_MINIMUM_ESTIMATED_TOKENS) {
+          return argumentError(
+            `Local inspect_code_graph budgetTokens must be an integer from ${MCP_CODE_GRAPH_MINIMUM_ESTIMATED_TOKENS} to 1500.`,
+          );
         }
         yield* queryTelemetry.annotate;
         const requestedQuery = query?.trim();
@@ -623,6 +644,7 @@ export function registerCodeGraphTool(
               codeGraphResultWithRefreshContinuity(presentedResult, refreshStatus, refreshContinuity),
               budgetTokens,
               refreshContinuity,
+              responseFormat,
             );
             return formatCodeGraphMcpResponse(response, responseFormat);
           }),
@@ -639,7 +661,7 @@ export function registerCodeGraphTool(
                 'graph.query.execute',
                 'query-serialization',
                 Effect.sync(() =>
-                  Schema.is(AgentResponseBudgetTooSmallError)(error)
+                  error instanceof Error && error.message.startsWith('Code graph response token budget')
                     ? argumentError(error.message)
                     : mcpErrorResult(error),
                 ),

@@ -13,6 +13,10 @@ current anchors are known. This is the normal Context Brief lifecycle. For memor
 `recall_context` with project and absolute `callerCwd`, then `read_context` every relevant `threadnote://` pointer before
 relying on it. Recall output is pointers, not evidence.
 
+For ordinary model-facing reads, request `responseFormat: "agent"`: it is the schema-aware text projection and its
+explicit budget applies after final formatting and semantic truncation. Use default `dual` when structured content is
+needed. Inspect the tool schema and use dual on older servers that do not advertise agent format.
+
 Use `memoryRefs` and optional typed `relationTypes` for deliberate one-hop navigation; this is not recursive discovery.
 Follow memory citations back through the current graph and exact source, and feed current graph anchors back into
 `context_brief.codeRefs` for the graph-to-memory round trip. Treat historical citations and bounded/truncated results as

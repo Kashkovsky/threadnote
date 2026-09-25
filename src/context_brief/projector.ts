@@ -26,6 +26,7 @@ import {
   type ContextBriefGraphContractV1,
   type ContextBriefLogicalMemoryEvidenceV1,
   type ContextBriefMemoryEvidenceV1,
+  type ContextBriefResponseFormat,
   type ContextBriefV1,
   type ProjectedContextBriefV1,
 } from './types.js';
@@ -200,17 +201,18 @@ export const CONTEXT_BRIEF_AGENT_VIEW_CITATION_RECEIPT_FIELD_POLICY = {
 export function projectContextBrief(
   logical: ContextBriefLogicalResultV1,
   maximumEstimatedTokens: number = CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
+  responseFormat: ContextBriefResponseFormat = 'dual',
 ): ProjectedContextBriefV1 {
   if (![...logical.activeHandoffs, ...logical.durableDecisions].some(memory => memory.actionCard !== undefined)) {
-    return projectContextBriefCore(logical, maximumEstimatedTokens);
+    return projectContextBriefCore(logical, maximumEstimatedTokens, responseFormat);
   }
   const withoutCards = {
     ...logical,
     activeHandoffs: logical.activeHandoffs.map(({actionCard: _actionCard, ...memory}) => memory),
     durableDecisions: logical.durableDecisions.map(({actionCard: _actionCard, ...memory}) => memory),
   };
-  const baseline = projectContextBriefCore(withoutCards, maximumEstimatedTokens);
-  const withCards = projectContextBriefCore(logical, maximumEstimatedTokens);
+  const baseline = projectContextBriefCore(withoutCards, maximumEstimatedTokens, responseFormat);
+  const withCards = projectContextBriefCore(logical, maximumEstimatedTokens, responseFormat);
   return preservesBaselineEvidence(withCards.structuredContent, baseline.structuredContent) ? withCards : baseline;
 }
 
@@ -252,6 +254,7 @@ function preservesBaselineEvidence(candidate: ContextBriefV1, baseline: ContextB
 function projectContextBriefCore(
   logical: ContextBriefLogicalResultV1,
   maximumEstimatedTokens: number,
+  responseFormat: ContextBriefResponseFormat,
 ): ProjectedContextBriefV1 {
   logical = withStableMemoryIdentityGap(logical);
   const maximumBytes = projectionMaximumBytes(maximumEstimatedTokens);
@@ -259,17 +262,14 @@ function projectContextBriefCore(
   const baseRequiredItems = [requiredCoverageGapItem(logical, items), requiredGraphRecoveryItem(logical, items)].filter(
     (item): item is ProjectionItem => item !== undefined,
   );
-  const fixedCore = requiredCodeLinkedEvidenceCore(logical, items, baseRequiredItems);
+  const fixedCore = requiredCodeLinkedEvidenceCore(logical, items, baseRequiredItems, responseFormat);
   const fixedProjection = renderProjection(
     logical,
     fixedCore.requiredItems,
     fixedCore.protectedMemoryUri,
     fixedCore.compactMemoryUris,
   );
-  const fixedMeasurement = measureAgentToolResponse({
-    structuredContent: fixedProjection,
-    text: renderContextBriefText(fixedProjection),
-  });
+  const fixedMeasurement = measureContextBriefResponse(fixedProjection, responseFormat);
   const baseKeys = new Set(baseRequiredItems.map(projectionItemKey));
   const fixedCoreHasExtras = fixedCore.requiredItems.some(item => !baseKeys.has(projectionItemKey(item)));
   const admitFixedCore = fixedMeasurement.totalBytes <= maximumBytes;
@@ -294,18 +294,15 @@ function projectContextBriefCore(
     ...optionalItems.slice(0, count),
   ];
   let selectedCount: number | undefined;
-  let minimumBytes = Number.POSITIVE_INFINITY;
   for (let count = 0; count <= optionalItems.length; count += 1) {
     const structuredContent = renderProjection(logical, selectItems(count), protectedMemoryUri, compactMemoryUris);
-    const text = renderContextBriefText(structuredContent);
-    const measurement = measureAgentToolResponse({structuredContent, text});
-    minimumBytes = Math.min(minimumBytes, measurement.totalBytes);
+    const measurement = measureContextBriefResponse(structuredContent, responseFormat);
     if (measurement.totalBytes <= maximumBytes) selectedCount = count;
   }
   if (selectedCount === undefined) {
     const structuredContent = parseContextBriefV1(renderMinimumProjection(logical, baseRequiredItems));
-    const text = renderContextBriefText(structuredContent);
-    const measurement = measureAgentToolResponse({structuredContent, text});
+    const text = renderContextBriefForFormat(structuredContent, responseFormat);
+    const measurement = measureContextBriefResponse(structuredContent, responseFormat);
     if (measurement.totalBytes > maximumBytes)
       throw AgentResponseBudgetTooSmallError.of(maximumBytes, measurement.totalBytes);
     return {maximumBytes, measurement, structuredContent, text};
@@ -313,9 +310,20 @@ function projectContextBriefCore(
   const structuredContent = parseContextBriefV1(
     renderProjection(logical, selectItems(selectedCount), protectedMemoryUri, compactMemoryUris),
   );
-  const text = renderContextBriefText(structuredContent);
-  const measurement = measureAgentToolResponse({structuredContent, text});
+  const text = renderContextBriefForFormat(structuredContent, responseFormat);
+  const measurement = measureContextBriefResponse(structuredContent, responseFormat);
   return {maximumBytes, measurement, structuredContent, text};
+}
+
+function renderContextBriefForFormat(brief: ContextBriefV1, responseFormat: ContextBriefResponseFormat): string {
+  return responseFormat === 'agent'
+    ? JSON.stringify(projectContextBriefAgentView(brief))
+    : renderContextBriefText(brief);
+}
+
+function measureContextBriefResponse(brief: ContextBriefV1, responseFormat: ContextBriefResponseFormat) {
+  const text = renderContextBriefForFormat(brief, responseFormat);
+  return measureAgentToolResponse(responseFormat === 'agent' ? {text} : {structuredContent: brief, text});
 }
 
 export function renderContextBriefText(brief: ContextBriefV1): string {
@@ -1236,6 +1244,7 @@ function requiredCodeLinkedEvidenceCore(
   logical: ContextBriefLogicalResultV1,
   items: readonly ProjectionItem[],
   baseRequiredItems: readonly ProjectionItem[],
+  responseFormat: ContextBriefResponseFormat,
 ): CodeLinkedEvidenceCoreProjection {
   const memories = new Map(
     [...logical.activeHandoffs, ...logical.durableDecisions].map(memory => [memory.uri, memory] as const),
@@ -1311,10 +1320,7 @@ function requiredCodeLinkedEvidenceCore(
       const excludedKeys = requiredLanePredecessorExclusions(items, requiredItems, ambiguityExclusions);
       const compactMemoryUris = new Set(admittedItems.map(item => item.id));
       const projection = renderProjection(logical, requiredItems, protectedMemoryUri, compactMemoryUris);
-      const measurement = measureAgentToolResponse({
-        structuredContent: projection,
-        text: renderContextBriefText(projection),
-      });
+      const measurement = measureContextBriefResponse(projection, responseFormat);
       if (measurement.totalBytes > maximumPublicBytes) continue;
       const candidate: EvidenceCoreCandidate = {
         admittedMemoryCount: admittedItems.length,
