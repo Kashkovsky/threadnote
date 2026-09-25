@@ -98,13 +98,13 @@ const challenge = {
 const contextCheckReport = {
   evidenceReason: 'graph-impact-evidence-unavailable',
   evidenceStatus: 'unavailable',
-  exitClassification: 'invalid-or-required-evidence-unavailable',
-  exitCode: 2,
+  exitClassification: 'clean-with-evidence-warning',
+  exitCode: 0,
   findings: [],
   limit: 100,
   omittedFindings: 0,
   project: 'threadnote',
-  version: 1,
+  version: 2,
 } as const;
 const guidanceReceipt = {
   expectedManagedBlockHash: 'c'.repeat(64),

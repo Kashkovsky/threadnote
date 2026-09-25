@@ -221,7 +221,7 @@ export function makeContextCheckCommand<E, R>(
         'Git commit/ref to compare with the working tree, including untracked files (default HEAD)',
       ),
       format: optionalChoice('format', ['text', 'json', 'sarif'], 'Output format (default text)'),
-      json: boolean('json', 'Emit privacy-safe ContextCheckReportV1 JSON'),
+      json: boolean('json', 'Emit privacy-safe ContextCheckReportV2 JSON'),
       project: requiredString('project', 'Project/repo namespace to inspect'),
       sarif: boolean('sarif', 'Emit SARIF 2.1.0 instead of JSON; excludes paths and memory bodies'),
     },
