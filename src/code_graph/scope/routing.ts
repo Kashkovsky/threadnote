@@ -57,7 +57,12 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
         });
       }
       return yield* CodeGraphScopeRoutingError.make({
-        message: `No configured project named "${explicitProject}" exists. --project accepts a configured project name or an unambiguous graph root.`,
+        message:
+          `No configured graph project named "${explicitProject}" exists. ` +
+          'Run `threadnote project list` to see configured names, ' +
+          'run `threadnote project create <name> --path <repository>` to add one, ' +
+          'or omit project/--project to infer scope from callerCwd/--cwd. ' +
+          'The selector also accepts an unambiguous configured graph root.',
       });
     }
     const root = yield* expandPath(project.path);
