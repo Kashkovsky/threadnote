@@ -47,8 +47,9 @@ it read-only and explicitly fails when the selected project loads zero canonical
 from passing vacuously. It uploads SARIF to GitHub code scanning but grants Threadnote no repository write credential
 and never pushes. Copy it into `.github/workflows/` in a consuming repository and replace the example project name.
 
-Context Check makes a transitive claim only for the exact-current bounded graph result included in that invocation. It
-never treats an incomplete graph as proof that no callers, dependants, or uncited architectural changes exist.
+Context Check makes a transitive claim only for the exact-current bounded graph result included in that invocation. A
+`clean-with-evidence-warning` result is successful for automation but explicitly does not prove that callers,
+dependants, or uncited architectural changes are absent.
 
 ## Local proposal materialization
 
@@ -60,7 +61,8 @@ hosted work.
 
 ## Hosted read-only Context CI (O4a)
 
-The hosted operator builds on the same `ContextCheckReportV1` parser and SARIF projection. It is disabled by default.
+The hosted operator builds on the same versioned Context Check parser and SARIF projection. It accepts legacy v1 and
+current v2 reports and is disabled by default.
 It adds no stdio tool, automatic repair, branch mutation, or Context PR automation. Context PR automation remains a
 separately gated follow-up requiring its own provider write identity, review policy, and rollout approval.
 

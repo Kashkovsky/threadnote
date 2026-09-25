@@ -80,18 +80,45 @@ describe('buildContextCheckReport', () => {
       fc.property(
         fc.array(fc.constantFrom('citation-changed' as const, 'citation-unknown' as const), {maxLength: 30}),
         fc.integer({min: 0, max: 30}),
-        (categories, limit) => {
+        fc.option(
+          fc.constantFrom('graph-impact-evidence-incomplete' as const, 'graph-impact-evidence-unavailable' as const),
+          {nil: undefined},
+        ),
+        (categories, limit, evidenceReason) => {
           const uris = categories.map((_, index) => `threadnote://memory/${index}`);
           const report = buildContextCheckReport({
             healthReport: healthReport(categories.map((category, index) => finding(category, [uris[index]]))),
             limit,
-            selection: {affectedMemoryUris: uris, changedPaths: ['source.ts'], status: 'available'},
+            selection: {
+              affectedMemoryUris: uris,
+              changedPaths: ['source.ts'],
+              ...(evidenceReason === undefined ? {} : {evidenceReason}),
+              status: 'available',
+            },
           });
-          expect(report.exitCode).toBe(categories.includes('citation-unknown') ? 2 : categories.length ? 1 : 0);
+          const expectedExitCode =
+            categories.includes('citation-unknown') || (evidenceReason !== undefined && categories.length > 0)
+              ? 2
+              : categories.length
+                ? 1
+                : 0;
+          expect(report.exitCode).toBe(expectedExitCode);
           expect(report.findings.length + report.omittedFindings).toBe(categories.length);
           if (report.exitCode === 2 && limit === 0) {
             expect(projectContextCheckReportSarif(report).runs[0].results).toEqual([
               expect.objectContaining({ruleId: 'threadnote/context-check/evidence-unavailable'}),
+            ]);
+          }
+          if (evidenceReason !== undefined && categories.length === 0) {
+            expect(report).toMatchObject({
+              evidenceReason,
+              evidenceStatus: 'unavailable',
+              exitClassification: 'clean-with-evidence-warning',
+              exitCode: 0,
+              version: 2,
+            });
+            expect(projectContextCheckReportSarif(report).runs[0].results).toEqual([
+              expect.objectContaining({level: 'warning', ruleId: 'threadnote/context-check/evidence-unavailable'}),
             ]);
           }
         },
@@ -105,7 +132,12 @@ describe('buildContextCheckReport', () => {
       buildContextCheckReport({
         healthReport: healthReport([], 1),
         limit: 0,
-        selection: {affectedMemoryUris: [], changedPaths: [], status: 'available'},
+        selection: {
+          affectedMemoryUris: [],
+          changedPaths: [],
+          evidenceReason: 'graph-impact-evidence-unavailable',
+          status: 'available',
+        },
       }),
     ).toMatchObject({evidenceReason: 'health-report-truncated', exitCode: 2});
   });
@@ -125,12 +157,17 @@ describe('buildContextCheckReport', () => {
           },
           status: 'unknown',
         },
-        selection: {affectedMemoryUris: [], changedPaths: ['src/changed.ts'], status: 'available'},
+        selection: {
+          affectedMemoryUris: ['threadnote://memory/affected'],
+          changedPaths: ['src/changed.ts'],
+          evidenceReason: 'graph-impact-evidence-incomplete',
+          status: 'available',
+        },
       }),
     ).toMatchObject({evidenceReason: 'health-report-incomplete', evidenceStatus: 'unavailable', exitCode: 2});
   });
 
-  it('does not let an empty filtered health report claim clean when semantic evidence is complete', () => {
+  it('does not require semantic analysis when no memory is selected', () => {
     const filtered = buildContextHealthReport({
       includeFindingUris: ['threadnote://memory/not-present'],
       now: new Date('2026-09-17T00:00:00.000Z'),
@@ -144,7 +181,7 @@ describe('buildContextCheckReport', () => {
         healthReport: filtered,
         selection: {affectedMemoryUris: [], changedPaths: ['src/changed.ts'], status: 'available'},
       }),
-    ).toMatchObject({evidenceReason: 'health-report-incomplete', evidenceStatus: 'unavailable', exitCode: 2});
+    ).toMatchObject({evidenceStatus: 'complete', exitClassification: 'clean', exitCode: 0});
   });
 
   it('keeps actionable findings when semantic evidence is incomplete instead of claiming clean', () => {
@@ -268,6 +305,27 @@ describe('buildContextCheckReport', () => {
     expect(report.findings).toEqual([expect.objectContaining({category: 'candidate-contradiction'})]);
   });
 
+  it('treats unavailable graph impact as a non-fatal warning when no findings are known', () => {
+    const report = buildContextCheckReport({
+      healthReport: healthReport([]),
+      selection: {
+        affectedMemoryUris: [],
+        changedPaths: ['src/source.ts'],
+        evidenceReason: 'graph-impact-evidence-unavailable',
+        status: 'available',
+      },
+    });
+
+    expect(report).toMatchObject({
+      evidenceReason: 'graph-impact-evidence-unavailable',
+      evidenceStatus: 'unavailable',
+      exitClassification: 'clean-with-evidence-warning',
+      exitCode: 0,
+      findings: [],
+      version: 2,
+    });
+  });
+
   it('reports unavailable affected-memory evidence separately from unknown health findings', () => {
     const report = buildContextCheckReport({
       healthReport: healthReport([finding('citation-changed', ['threadnote://memory/changed'])]),
@@ -308,6 +366,31 @@ describe('buildContextCheckReport', () => {
     expect(sarif.runs[0]?.results).toHaveLength(1);
   });
 
+  it('parses legacy v1 graph-gap reports without accepting invalid v2 reports as warnings', () => {
+    const current = buildContextCheckReport({
+      healthReport: healthReport([]),
+      selection: {
+        affectedMemoryUris: [],
+        changedPaths: ['src/source.ts'],
+        evidenceReason: 'graph-impact-evidence-unavailable',
+        status: 'available',
+      },
+    });
+    const legacy = {
+      ...current,
+      exitClassification: 'invalid-or-required-evidence-unavailable',
+      exitCode: 2,
+      version: 1,
+    };
+
+    expect(parseContextCheckReportJson(JSON.stringify(legacy))).toEqual(legacy);
+    expect(() =>
+      parseContextCheckReportJson(
+        JSON.stringify({...current, evidenceStatus: 'invalid', evidenceReason: 'graph-impact-evidence-unavailable'}),
+      ),
+    ).toThrow('Invalid ContextCheckReport JSON');
+  });
+
   it('rejects excess, out-of-range, and internally inconsistent report JSON', () => {
     const report = buildContextCheckReport({
       healthReport: healthReport([finding('citation-changed', ['threadnote://memory/changed'])]),
@@ -323,7 +406,7 @@ describe('buildContextCheckReport', () => {
       {...report, exitClassification: 'clean', exitCode: 0},
       {...report, findings: [{...report.findings[0], severity: 'severe'}]},
     ]) {
-      expect(() => parseContextCheckReportJson(JSON.stringify(invalid))).toThrow('Invalid ContextCheckReportV1');
+      expect(() => parseContextCheckReportJson(JSON.stringify(invalid))).toThrow('Invalid ContextCheckReport');
     }
   });
 

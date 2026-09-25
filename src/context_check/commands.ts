@@ -12,7 +12,7 @@ import {collectContextHealth} from '../memory/context/health_commands.js';
 import type {MemoryRecord} from '../memory/document.js';
 import type {RuntimeConfig} from '../types.js';
 import {citedDocumentCitationUris, selectContextCheckGraphImpact} from './graph_impact.js';
-import {buildContextCheckReport, projectContextCheckReportSarif, type ContextCheckReportV1} from './index.js';
+import {buildContextCheckReport, projectContextCheckReportSarif, type ContextCheckReportV2} from './index.js';
 
 export interface ContextCheckOptions {
   readonly base?: string;
@@ -102,8 +102,11 @@ const checkRepository = Effect.fn('contextCheck.repository')(function* (
               Effect.option,
               Effect.map(option => (option._tag === 'Some' ? option.value : undefined)),
             );
-    const finalSelection =
+    const graphSelection =
       paths.length === 0 ? selection : yield* changedRepositoryPaths(cwd, base).pipe(Effect.option);
+    if (graphSelection._tag === 'None' || !sameChangedPathSelection(selection.value, graphSelection.value)) {
+      return unavailableReport(project, 'changed-path-evidence-unavailable');
+    }
     const finalGraphStatus =
       impactResult === undefined
         ? undefined
@@ -120,7 +123,7 @@ const checkRepository = Effect.fn('contextCheck.repository')(function* (
           ? ({reason: 'graph-impact-evidence-unavailable', status: 'unknown'} as const)
           : !contextCheckReadFenceIntact(
                 selection.value,
-                finalSelection._tag === 'Some' ? finalSelection.value : undefined,
+                graphSelection.value,
                 impactResult.snapshot.id,
                 finalGraphStatus,
               )
@@ -132,6 +135,10 @@ const checkRepository = Effect.fn('contextCheck.repository')(function* (
       includeFindingCategories: ['candidate-contradiction', 'relation-target-conflicted'],
       includeFindingUris: affectedMemoryUris,
     });
+    const finalSelection = yield* changedRepositoryPaths(cwd, base).pipe(Effect.option);
+    if (finalSelection._tag === 'None' || !sameChangedPathSelection(selection.value, finalSelection.value)) {
+      return unavailableReport(project, 'changed-path-evidence-unavailable');
+    }
     return buildContextCheckReport({
       healthReport,
       selection: {
@@ -239,7 +246,7 @@ export function contextCheckReadFenceIntact(
   );
 }
 
-function renderContextCheck(report: ContextCheckReportV1): string {
+function renderContextCheck(report: ContextCheckReportV2): string {
   const lines = [
     `Context check: ${report.exitClassification}; ${report.findings.length} finding(s), ${report.omittedFindings} omitted.`,
     ...report.findings.map(
@@ -256,7 +263,7 @@ function renderContextCheck(report: ContextCheckReportV1): string {
 function unavailableReport(
   project: string,
   reason: 'invalid' | 'affected-memory-evidence-unavailable' | 'changed-path-evidence-unavailable',
-): ContextCheckReportV1 {
+): ContextCheckReportV2 {
   const healthReport = buildContextHealthReport({now: new Date(0), project, records: []});
   const report = buildContextCheckReport({
     healthReport,

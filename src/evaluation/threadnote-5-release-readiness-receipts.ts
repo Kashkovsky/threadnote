@@ -1185,13 +1185,17 @@ function deriveContextCheck(
   const repository = captureBoundary(capture.repositoryEvidence, candidate, 'repository evidence', ['dirty']);
   const graph = captureBoundary(capture.graphEvidence, candidate, 'graph evidence', ['state']);
   const fence = captureBoundary(capture.readFence, candidate, 'Context Check read fence', ['state']);
+  const reportProvesUnknownOutcome =
+    (report.version === 1 &&
+      report.exitClassification === 'invalid-or-required-evidence-unavailable' &&
+      report.exitCode === 2) ||
+    (report.version === 2 && report.exitClassification === 'clean-with-evidence-warning' && report.exitCode === 0);
   if (
     repository.dirty !== true ||
     graph.state !== 'incomplete' ||
     fence.state !== 'unknown' ||
     report.evidenceStatus !== 'unavailable' ||
-    report.exitClassification !== 'invalid-or-required-evidence-unavailable' ||
-    report.exitCode !== 2
+    !reportProvesUnknownOutcome
   ) {
     throw new Error('Context Check capture does not prove dirty evidence is non-current and the outcome is unknown.');
   }

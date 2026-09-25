@@ -1028,24 +1028,25 @@ describe('Threadnote 5 source-native receipt verification', () => {
     ).toThrow();
   });
 
-  it('keeps dirty Context Check evidence unknown without its bound authority and rejects mislabeled coverage', () => {
+  it('keeps current and legacy dirty Context Check evidence unknown and requires its bound authority', () => {
     const boundary = (extra: Record<string, unknown>) => ({candidate: CANDIDATE, digest: 'c'.repeat(64), ...extra});
-    const record = makeRecord('dirty-worktree', 'context-check', {
+    const capture = {
       graphEvidence: boundary({state: 'incomplete'}),
       readFence: boundary({state: 'unknown'}),
       repositoryEvidence: boundary({dirty: true}),
       reportJson: JSON.stringify({
         evidenceReason: 'graph-impact-evidence-unavailable',
         evidenceStatus: 'unavailable',
-        exitClassification: 'invalid-or-required-evidence-unavailable',
-        exitCode: 2,
+        exitClassification: 'clean-with-evidence-warning',
+        exitCode: 0,
         findings: [],
         limit: 100,
         omittedFindings: 0,
         project: 'threadnote',
-        version: 1,
+        version: 2,
       }),
-    });
+    };
+    const record = makeRecord('dirty-worktree', 'context-check', capture);
     const observation = observed(record, ['dirty-evidence-not-current', 'outcome-unknown']);
     expect(
       verifyThreadnote5LocalSubsystemReceipts({
@@ -1066,6 +1067,26 @@ describe('Threadnote 5 source-native receipt verification', () => {
       version: 1 as const,
     };
     expect(verify([observation], [record], authority)).toMatchObject({state: 'verified'});
+    const legacyRecord = makeRecord('dirty-worktree', 'context-check', {
+      ...capture,
+      reportJson: JSON.stringify({
+        evidenceReason: 'graph-impact-evidence-unavailable',
+        evidenceStatus: 'unavailable',
+        exitClassification: 'invalid-or-required-evidence-unavailable',
+        exitCode: 2,
+        findings: [],
+        limit: 100,
+        omittedFindings: 0,
+        project: 'threadnote',
+        version: 1,
+      }),
+    });
+    expect(
+      verify([observed(legacyRecord, ['dirty-evidence-not-current', 'outcome-unknown'])], [legacyRecord], {
+        ...authority,
+        entries: [{...authority.entries[0], recordDigest: legacyRecord.digest}],
+      }),
+    ).toMatchObject({state: 'verified'});
     expect(
       verify([observation], [record], {
         ...authority,

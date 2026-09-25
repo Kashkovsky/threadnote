@@ -7,11 +7,12 @@ import type {
   ContextHealthSeverityV1,
 } from '../memory/context/health.js';
 
-export const CONTEXT_CHECK_REPORT_VERSION = 1 as const;
+export const CONTEXT_CHECK_REPORT_VERSION = 2 as const;
 export const DEFAULT_CONTEXT_CHECK_FINDING_LIMIT = 100 as const;
 export const MAXIMUM_CONTEXT_CHECK_FINDING_LIMIT = 500 as const;
 
 export type ContextCheckExitClassificationV1 = 'actionable' | 'clean' | 'invalid-or-required-evidence-unavailable';
+export type ContextCheckExitClassificationV2 = ContextCheckExitClassificationV1 | 'clean-with-evidence-warning';
 export type ContextCheckEvidenceStatusV1 = 'complete' | 'invalid' | 'unavailable';
 export type ContextCheckEvidenceReasonV1 =
   | 'affected-memory-evidence-unavailable'
@@ -63,17 +64,27 @@ export interface ContextCheckFindingV1 {
   readonly severity: ContextHealthSeverityV1;
 }
 
-export interface ContextCheckReportV1 {
+interface ContextCheckReportBase {
   readonly evidenceReason?: ContextCheckEvidenceReasonV1;
   readonly evidenceStatus: ContextCheckEvidenceStatusV1;
-  readonly exitClassification: ContextCheckExitClassificationV1;
   readonly exitCode: 0 | 1 | 2;
   readonly findings: readonly ContextCheckFindingV1[];
   readonly limit: number;
   readonly omittedFindings: number;
   readonly project: string;
+}
+
+export interface ContextCheckReportV1 extends ContextCheckReportBase {
+  readonly exitClassification: ContextCheckExitClassificationV1;
+  readonly version: 1;
+}
+
+export interface ContextCheckReportV2 extends ContextCheckReportBase {
+  readonly exitClassification: ContextCheckExitClassificationV2;
   readonly version: typeof CONTEXT_CHECK_REPORT_VERSION;
 }
+
+export type ContextCheckReport = ContextCheckReportV1 | ContextCheckReportV2;
 
 export interface ContextCheckSarifV1 {
   readonly $schema: 'https://json.schemastore.org/sarif-2.1.0.json';
@@ -103,7 +114,7 @@ export interface ContextCheckSarifToolV1 {
 }
 
 /** Filters a supplied health report; it intentionally does not inspect git, storage, or memory bodies. */
-export function buildContextCheckReport(input: ContextCheckReportInputV1): ContextCheckReportV1 {
+export function buildContextCheckReport(input: ContextCheckReportInputV1): ContextCheckReportV2 {
   const limit = findingLimit(input.limit);
   const invalid = inputProblems(input);
   if (invalid) return report(input.healthReport.project, limit, 'invalid', undefined, [], 0);
@@ -127,38 +138,41 @@ export function buildContextCheckReport(input: ContextCheckReportInputV1): Conte
   const healthEvidenceReason =
     input.healthReport.omittedFindings > 0
       ? ('health-report-truncated' as const)
-      : incompleteHealthEvidence && input.selection.changedPaths.length > 0 && findings.length === 0
+      : incompleteHealthEvidence &&
+          input.selection.changedPaths.length > 0 &&
+          input.selection.affectedMemoryUris.length > 0 &&
+          findings.length === 0
         ? ('health-report-incomplete' as const)
         : undefined;
+  const evidenceReason = healthEvidenceReason ?? input.selection.evidenceReason;
   const evidenceStatus: ContextCheckEvidenceStatusV1 =
     input.selection.evidenceReason !== undefined || healthEvidenceReason !== undefined ? 'unavailable' : 'complete';
   return report(
     input.healthReport.project,
     limit,
     evidenceStatus,
-    input.selection.evidenceReason ?? healthEvidenceReason,
+    evidenceReason,
     findings.slice(0, limit),
     Math.max(0, findings.length - limit),
     findings,
   );
 }
 
-export function serializeContextCheckReportJson(report: ContextCheckReportV1): string {
+export function serializeContextCheckReportJson(report: ContextCheckReport): string {
   return JSON.stringify(report);
 }
 
-export function parseContextCheckReportJson(value: string): ContextCheckReportV1 {
+export function parseContextCheckReportJson(value: string): ContextCheckReport {
   const parsed: unknown = JSON.parse(value);
-  if (!isContextCheckReport(parsed)) throw new Error('Invalid ContextCheckReportV1 JSON.');
+  if (!isContextCheckReport(parsed)) throw new Error('Invalid ContextCheckReport JSON.');
   return parsed;
 }
 
-export function projectContextCheckReportSarif(report: ContextCheckReportV1): ContextCheckSarifV1 {
+export function projectContextCheckReportSarif(report: ContextCheckReport): ContextCheckSarifV1 {
   const results = [
     ...report.findings.map(sarifFinding),
-    ...(report.exitCode === 2 &&
-    (report.evidenceStatus !== 'complete' ||
-      !report.findings.some(finding => finding.repairability === 'requires-evidence'))
+    ...(report.evidenceStatus !== 'complete' ||
+    (report.exitCode === 2 && !report.findings.some(finding => finding.repairability === 'requires-evidence'))
       ? [sarifEvidence(report)]
       : []),
   ];
@@ -224,14 +238,18 @@ function report(
   project: string,
   limit: number,
   evidenceStatus: ContextCheckEvidenceStatusV1,
-  evidenceReason: ContextCheckReportV1['evidenceReason'],
+  evidenceReason: ContextCheckEvidenceReasonV1 | undefined,
   findings: readonly ContextCheckFindingV1[],
   omittedFindings: number,
   classificationFindings: readonly ContextCheckFindingV1[] = findings,
-): ContextCheckReportV1 {
+): ContextCheckReportV2 {
   const requiresEvidence = classificationFindings.some(finding => finding.repairability === 'requires-evidence');
-  const exitClassification: ContextCheckExitClassificationV1 =
-    evidenceStatus !== 'complete' || requiresEvidence
+  const nonFatalGraphEvidenceGap =
+    classificationFindings.length === 0 &&
+    (evidenceReason === 'graph-impact-evidence-incomplete' || evidenceReason === 'graph-impact-evidence-unavailable');
+  const exitClassification: ContextCheckExitClassificationV2 = nonFatalGraphEvidenceGap
+    ? 'clean-with-evidence-warning'
+    : evidenceStatus !== 'complete' || requiresEvidence
       ? 'invalid-or-required-evidence-unavailable'
       : classificationFindings.length === 0
         ? 'clean'
@@ -240,7 +258,12 @@ function report(
     ...(evidenceReason === undefined ? {} : {evidenceReason}),
     evidenceStatus,
     exitClassification,
-    exitCode: exitClassification === 'clean' ? 0 : exitClassification === 'actionable' ? 1 : 2,
+    exitCode:
+      exitClassification === 'clean' || exitClassification === 'clean-with-evidence-warning'
+        ? 0
+        : exitClassification === 'actionable'
+          ? 1
+          : 2,
     findings,
     limit,
     omittedFindings,
@@ -339,10 +362,10 @@ function sarifFinding(finding: ContextCheckFindingV1): ContextCheckSarifResultV1
   };
 }
 
-function sarifEvidence(report: ContextCheckReportV1): ContextCheckSarifResultV1 {
+function sarifEvidence(report: ContextCheckReport): ContextCheckSarifResultV1 {
   const name = report.evidenceStatus === 'invalid' ? 'invalid-input' : 'evidence-unavailable';
   return {
-    level: 'error',
+    level: report.exitCode === 0 ? 'warning' : 'error',
     message: {
       text: name === 'invalid-input' ? 'Context check input is invalid.' : 'Context check evidence is unavailable.',
     },
@@ -363,7 +386,7 @@ function sarifRule(id: string): {
   };
 }
 
-function isContextCheckReport(value: unknown): value is ContextCheckReportV1 {
+function isContextCheckReport(value: unknown): value is ContextCheckReport {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
@@ -377,7 +400,7 @@ function isContextCheckReport(value: unknown): value is ContextCheckReportV1 {
       'project',
       'version',
     ]) ||
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== CONTEXT_CHECK_REPORT_VERSION) ||
     typeof value.project !== 'string' ||
     value.project.length === 0 ||
     value.project.length > 256
@@ -391,6 +414,7 @@ function isContextCheckReport(value: unknown): value is ContextCheckReportV1 {
     return false;
   if (
     value.exitClassification !== 'clean' &&
+    value.exitClassification !== 'clean-with-evidence-warning' &&
     value.exitClassification !== 'actionable' &&
     value.exitClassification !== 'invalid-or-required-evidence-unavailable'
   )
@@ -406,16 +430,38 @@ function isContextCheckReport(value: unknown): value is ContextCheckReportV1 {
     return false;
   if (!value.findings.every(isFinding)) return false;
   const requiresEvidence = value.findings.some(finding => finding.repairability === 'requires-evidence');
-  const expectedExit =
-    value.evidenceStatus !== 'complete' || requiresEvidence
+  const nonFatalGraphEvidenceGap =
+    value.version === CONTEXT_CHECK_REPORT_VERSION &&
+    value.evidenceStatus === 'unavailable' &&
+    value.findings.length === 0 &&
+    value.omittedFindings === 0 &&
+    (value.evidenceReason === 'graph-impact-evidence-incomplete' ||
+      value.evidenceReason === 'graph-impact-evidence-unavailable');
+  const expectedExit: ContextCheckExitClassificationV2 = nonFatalGraphEvidenceGap
+    ? 'clean-with-evidence-warning'
+    : value.evidenceStatus !== 'complete' || requiresEvidence
       ? 'invalid-or-required-evidence-unavailable'
       : value.findings.length === 0 && value.omittedFindings === 0
         ? 'clean'
         : 'actionable';
   if (value.exitClassification !== expectedExit) return false;
-  if (value.exitCode !== (expectedExit === 'clean' ? 0 : expectedExit === 'actionable' ? 1 : 2)) return false;
+  if (
+    value.exitCode !==
+    (expectedExit === 'clean' || expectedExit === 'clean-with-evidence-warning'
+      ? 0
+      : expectedExit === 'actionable'
+        ? 1
+        : 2)
+  )
+    return false;
   if (value.evidenceStatus === 'complete' && value.evidenceReason !== undefined) return false;
   if (value.evidenceStatus === 'unavailable' && value.evidenceReason === undefined) return false;
+  if (
+    value.version === CONTEXT_CHECK_REPORT_VERSION &&
+    value.evidenceStatus === 'invalid' &&
+    value.evidenceReason !== undefined
+  )
+    return false;
   return true;
 }
 
