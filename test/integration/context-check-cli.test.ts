@@ -1,5 +1,5 @@
 import {execFile} from '../helpers/node-child-process.js';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {promisify} from 'node:util';
@@ -16,18 +16,21 @@ afterEach(async () => {
 });
 
 describe('context check CLI', () => {
-  it('returns clean JSON for an empty diff and unknown for uncited changes without current graph evidence', async () => {
+  it('returns clean JSON and a non-fatal warning for uncited changes without current graph evidence', async () => {
     const {home, repository} = await fixture();
     const clean = await runCli(['context', 'check', '--project', 'cli-test', '--json'], home, repository);
     expect(clean.code).toBe(0);
     expect(JSON.parse(clean.stdout)).toMatchObject({exitCode: 0, evidenceStatus: 'complete', findings: []});
     await writeFile(join(repository, 'new-file.ts'), 'export const added = true;');
     const changed = await runCli(['context', 'check', '--project', 'cli-test', '--json'], home, repository);
-    expect(changed.code).toBe(2);
+    expect(changed.code).toBe(0);
     expect(JSON.parse(changed.stdout)).toMatchObject({
       evidenceReason: expect.stringMatching(/^graph-impact-evidence-/u),
-      exitCode: 2,
+      evidenceStatus: 'unavailable',
+      exitClassification: 'clean-with-evidence-warning',
+      exitCode: 0,
       findings: [],
+      version: 2,
     });
     await expect(readFile(join(home, 'data'), 'utf8')).rejects.toThrow();
   });
@@ -62,6 +65,40 @@ describe('context check CLI', () => {
     const result = await runCli(['context', 'check', '--project', 'cli-test', '--format', 'json'], home, repository);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({evidenceStatus: 'complete', exitCode: 0, findings: []});
+  });
+
+  it('fails closed when an initially clean worktree changes before the final read fence', async () => {
+    const {home, repository} = await fixture();
+    const wrapperDirectory = join(home, 'git-wrapper');
+    const statePath = join(wrapperDirectory, 'diff-count');
+    const racedPath = join(repository, 'source.ts');
+    const actualGit = (await execute('which', ['git'])).stdout.trim();
+    await mkdir(wrapperDirectory);
+    await writeFile(
+      join(wrapperDirectory, 'git'),
+      `#!/bin/sh
+if [ "$1" = "diff" ]; then
+  count=0
+  if [ -f '${statePath}' ]; then count=$(cat '${statePath}'); fi
+  count=$((count + 1))
+  printf '%s' "$count" > '${statePath}'
+  if [ "$count" -eq 2 ]; then printf '%s\n' 'export const raced = true;' > '${racedPath}'; fi
+fi
+exec '${actualGit}' "$@"
+`,
+    );
+    await chmod(join(wrapperDirectory, 'git'), 0o755);
+
+    const result = await runCli(['context', 'check', '--project', 'cli-test', '--json'], home, repository, {
+      PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+    });
+
+    expect(result.code).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      evidenceReason: 'changed-path-evidence-unavailable',
+      evidenceStatus: 'unavailable',
+      exitCode: 2,
+    });
   });
 
   it('supports the provider-neutral --format selector and rejects conflicting selectors', async () => {
@@ -263,11 +300,16 @@ async function fixture() {
   return {home, repository};
 }
 
-async function runCli(args: readonly string[], home: string, cwd: string) {
+async function runCli(
+  args: readonly string[],
+  home: string,
+  cwd: string,
+  env: Readonly<Record<string, string | undefined>> = {},
+) {
   try {
     const output = await execute(process.execPath, [standalone, ...args], {
       cwd,
-      env: {...process.env, NO_COLOR: '1', THREADNOTE_HOME: home, THREADNOTE_USER: 'local'},
+      env: {...process.env, ...env, NO_COLOR: '1', THREADNOTE_HOME: home, THREADNOTE_USER: 'local'},
       maxBuffer: 2_097_152,
     });
     return {...output, code: 0};

@@ -260,21 +260,27 @@ threadnote context check --project <name> --base <ref> --format json
 threadnote context check --project <name> --base <ref> --format sarif
 ```
 
-The versioned `ContextCheckReportV1` projection combines direct citations of changed tracked or untracked paths with
+The versioned `ContextCheckReportV2` projection combines direct citations of changed tracked or untracked paths with
 exact-current reverse graph impact, active conflicts, cited-document gaps, and at most eight content-free capture
-advisories. Deletions and renames include their source paths. The check never prepares a graph, and it makes no clean
-transitive claim when graph evidence is missing, stale, partial, timed out, or truncated. It has stable finding
-fingerprints and JSON/SARIF projections. Its exit classes are:
+advisories. Deletions and renames include their source paths. The check never prepares a graph. Missing, stale, partial,
+timed-out, or truncated graph evidence is retained as an explicit warning. When the directly observable checks find no
+problem, that graph-only warning is non-fatal and does not claim transitive coverage. Reports with findings or other
+required evidence gaps still fail closed. It has stable finding fingerprints and JSON/SARIF projections. Its exit
+classes are:
 
-| Exit | Meaning                                                   |
-| ---: | --------------------------------------------------------- |
-|  `0` | No actionable finding and complete evidence               |
-|  `1` | An affected, actionable finding exists                    |
-|  `2` | Invocation is invalid or required evidence is unavailable |
+| Exit | Meaning                                                                   |
+| ---: | ------------------------------------------------------------------------- |
+|  `0` | No actionable finding; any graph-only coverage gap is an explicit warning |
+|  `1` | An affected, actionable finding exists                                    |
+|  `2` | Invocation is invalid or required evidence is unavailable                 |
 
 JSON contains categories, severities, repairability, and stable fingerprints; SARIF carries stable rule IDs, levels, and
 fingerprints. Neither format contains memory bodies, source fragments, paths, queries, or repository identities. Do not
 treat a partial or unavailable evidence result as a clean check.
+
+`clean-with-evidence-warning` identifies the non-fatal graph-only case in JSON and text output. SARIF emits a warning
+for it. Consumers may continue to parse legacy `ContextCheckReportV1` payloads, whose unavailable graph evidence retains
+the former exit-2 classification.
 
 See [Context CI](context-ci.md) for the provider-neutral job pattern and a minimal GitHub Actions example.
 
