@@ -4817,72 +4817,77 @@ describe('native code graph lifecycle', () => {
             .get(baseline.identity.worktreeId),
         ).toEqual({snapshot_id: baseline.snapshot.id});
         expect(
-          pausedDatabase.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners').get()
-            ?.count,
+          pausedDatabase
+            .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners')
+            .get()?.count,
         ).toBe(0);
         expect(pausedDatabase.query('PRAGMA foreign_key_check').all()).toEqual([]);
       } finally {
         pausedDatabase.close();
       }
       expect(
-        readdirSync(join(home, 'indexes', 'code-graph', 'repositories', baseline.identity.checkoutId)).filter(candidate =>
-          candidate.startsWith('materialization-spool-v1-'),
+        readdirSync(join(home, 'indexes', 'code-graph', 'repositories', baseline.identity.checkoutId)).filter(
+          candidate => candidate.startsWith('materialization-spool-v1-'),
         ),
       ).toEqual([]);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('fails a direct persistent build at planning time when the heuristic estimate already cannot fit', () =>
-    Effect.gen(function* () {
-      const root = createManySourceRepository(130);
-      const home = join(root, '.threadnote-test-home');
-      const system = yield* SystemInfo;
-      const progress: CodeGraphProgress[] = [];
-      const indexerLayer = Layer.fresh(CodeGraphIndexer.layer).pipe(
-        Layer.provide(
-          Layer.succeed(SystemInfo, SystemInfo.of({...system, availableDiskBytes: () => Effect.succeed(0)})),
-        ),
-      );
+  effectIt.effect(
+    'fails a direct persistent build at planning time when the heuristic estimate already cannot fit',
+    () =>
+      Effect.gen(function* () {
+        const root = createManySourceRepository(130);
+        const home = join(root, '.threadnote-test-home');
+        const system = yield* SystemInfo;
+        const progress: CodeGraphProgress[] = [];
+        const indexerLayer = Layer.fresh(CodeGraphIndexer.layer).pipe(
+          Layer.provide(
+            Layer.succeed(SystemInfo, SystemInfo.of({...system, availableDiskBytes: () => Effect.succeed(0)})),
+          ),
+        );
 
-      const failure = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const context = yield* Layer.build(indexerLayer);
-          const indexer = Context.get(context, CodeGraphIndexer);
-          return yield* indexer
-            .index({
-              cwd: root,
-              diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
-              incrementalOverlay: false,
-              onProgress: update =>
-                Effect.sync(() => {
-                  progress.push(update);
-                }),
-              threadnoteHome: home,
-            })
-            .pipe(Effect.flip);
-        }),
-      );
+        const failure = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const context = yield* Layer.build(indexerLayer);
+            const indexer = Context.get(context, CodeGraphIndexer);
+            return yield* indexer
+              .index({
+                cwd: root,
+                diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
+                incrementalOverlay: false,
+                onProgress: update =>
+                  Effect.sync(() => {
+                    progress.push(update);
+                  }),
+                threadnoteHome: home,
+              })
+              .pipe(Effect.flip);
+          }),
+        );
 
-      expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
-      expect(progress.some(update => update.phase === 'materializing')).toBe(false);
+        expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
+        expect(progress.some(update => update.phase === 'materializing')).toBe(false);
 
-      const identity = yield* resolveRepositoryIdentity(root);
-      const database = new Database(codeGraphDatabasePath(home, {identity}), {readonly: true});
-      try {
-        expect(
-          database
-            .query<{readonly count: number}, [string]>(
-              "SELECT COUNT(*) AS count FROM snapshots WHERE worktree_id = ? AND state IN ('building', 'failed', 'retired')",
-            )
-            .get(identity.worktreeId)?.count,
-        ).toBe(0);
-        expect(database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners').get()?.count)
-          .toBe(0);
-        expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
-      } finally {
-        database.close();
-      }
-    }).pipe(provideTestLayer(ApplicationLayer)),
+        const identity = yield* resolveRepositoryIdentity(root);
+        const database = new Database(codeGraphDatabasePath(home, {identity}), {readonly: true});
+        try {
+          expect(
+            database
+              .query<{readonly count: number}, [string]>(
+                "SELECT COUNT(*) AS count FROM snapshots WHERE worktree_id = ? AND state IN ('building', 'failed', 'retired')",
+              )
+              .get(identity.worktreeId)?.count,
+          ).toBe(0);
+          expect(
+            database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners').get()
+              ?.count,
+          ).toBe(0);
+          expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+        } finally {
+          database.close();
+        }
+      }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('reprotects the exact ready snapshot when a paused promotion resumes', () =>
@@ -6440,7 +6445,6 @@ function snapshotLeaseCount(databasePath: string): number {
     database.close();
   }
 }
-
 
 function activeSnapshotId(databasePath: string, worktreeId: string): string | undefined {
   const database = new Database(databasePath, {readonly: true});
