@@ -73,7 +73,7 @@ const RECALL_PROGRESS_PHASES = [
 ] as const;
 
 const COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS = 10_000;
-const COLD_BUILD_RESPONSE_BUDGET_TOKENS = 400;
+const COLD_BUILD_RESPONSE_BUDGET_TOKENS = 800;
 
 const CORE_TOOL_NAMES = [
   'complete_activation_retrieval_proof',
@@ -302,6 +302,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain(
           'For non-trivial local repo work, call MCP `context_brief` with task + absolute `callerCwd`',
         );
+        expect(instructions).toContain('Prefer `responseFormat: "agent"`');
         expect(instructions).toContain('`recall_context` + `read_context`: memory alternative');
         expect(instructions.indexOf('context_brief')).toBeLessThan(instructions.indexOf('recall_context'));
         expect(instructions).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
@@ -2471,7 +2472,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(graphTool?.description).toContain('workset prepare');
         expect(graphTool?.description).toContain('published ready generation');
         expect(JSON.stringify(graphTool?.inputSchema)).toContain(
-          'Local or named-workset query response-token budget; worksets default to 1250, maximum 1500',
+          'Named Worksets accept 1-1500. Local repository responses accept 800-1500',
         );
         expect(JSON.stringify(graphTool?.inputSchema)).toContain(
           'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
@@ -2492,6 +2493,7 @@ describe('Threadnote MCP toolsets', () => {
             operation: {
               enum: ['query', 'node', 'neighbors', 'explain', 'path', 'impact', 'topology'],
             },
+            responseFormat: {enum: ['dual', 'text', 'agent']},
           },
           type: 'object',
         });
