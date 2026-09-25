@@ -50,6 +50,7 @@ import {
   type MemoryMetadata,
 } from './document.js';
 import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from './code/citation_capture.js';
+import {logKeywordReplaceReceipt, resolveReplaceKeywordPlan, shouldEnrichForKeywordPlan} from './keywords.js';
 import {deferredCodeAnchorStoredMessage} from './code/citation_messages.js';
 import {
   discardDeferredCodeAnchorIntent,
@@ -227,6 +228,7 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
   if (replaced) yield* attemptSync(() => assertMemoryDocumentSchemaWritable(replaced.content));
   const callerCwd = yield* getInvocationCwd();
   const sharedTarget = replaceUri !== undefined && isInSharedNamespace(config, replaceUri);
+  const keywordPlan = yield* attemptSync(() => resolveReplaceKeywordPlan(options, replaced, sharedTarget));
   const citationCapture = yield* captureMemoryCodeCitationsForWrite(config, {
     callerCwd,
     project: options.project,
@@ -263,6 +265,7 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
     createdAt: replaced?.metadata.createdAt ?? replaced?.metadata.timestamp ?? timestamp,
     ...(codeCitations.length === 0 ? {} : {codeCitations}),
     kind: options.kind ?? 'durable',
+    ...('keywords' in keywordPlan ? {keywords: keywordPlan.keywords} : {}),
     memoryId,
     project: normalizeOptionalMetadata(options.project),
     relations: authoredRelations.relations,
@@ -280,7 +283,7 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
     workspaceScope: replaced ? replaced.metadata.workspaceScope : workspaceComponent?.scope,
   };
   const metadata =
-    options.dryRun === true || (replaceUri !== undefined && isInSharedNamespace(config, replaceUri))
+    options.dryRun === true || sharedTarget || !shouldEnrichForKeywordPlan(keywordPlan)
       ? baseMetadata
       : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, baseMetadata, text.trim()).pipe(
           Effect.catch(error =>
@@ -317,6 +320,7 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
       `Cleared ${replaced.metadata.relations.length} prior memory relation(s); pass --relation to author the replacement edges.`,
     );
   }
+  yield* logKeywordReplaceReceipt(keywordPlan, replaced?.metadata.keywords, {dryRun: options.dryRun});
 });
 
 function commonMemoryCodeCitationCommit(citations: readonly {readonly sourceCommit: string}[]): string | undefined {
@@ -1092,6 +1096,9 @@ export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConf
   if (replaced) yield* attemptSync(() => assertMemoryDocumentSchemaWritable(replaced.content));
   const {bodyText, metadata: baseMetadata} = yield* buildHandoff(options, replacement?.memoryId);
   const sharedTarget = replaceUri !== undefined && isInSharedNamespace(config, replaceUri);
+  const keywordPlan = yield* attemptSync(() =>
+    resolveReplaceKeywordPlan({...options, kind: 'handoff' as const}, replaced, sharedTarget),
+  );
   const citationCapture = yield* captureMemoryCodeCitationsForWrite(config, {
     callerCwd: yield* getInvocationCwd(),
     project: options.project,
@@ -1107,9 +1114,10 @@ export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConf
   const citationMetadata: MemoryMetadata = {
     ...baseMetadata,
     ...(codeCitations.length === 0 ? {} : {codeCitations}),
+    ...('keywords' in keywordPlan ? {keywords: keywordPlan.keywords} : {}),
   };
   const metadata =
-    options.dryRun === true || (replaceUri !== undefined && isInSharedNamespace(config, replaceUri))
+    options.dryRun === true || sharedTarget || !shouldEnrichForKeywordPlan(keywordPlan)
       ? citationMetadata
       : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, citationMetadata, bodyText).pipe(
           Effect.catch(error =>
@@ -1136,6 +1144,7 @@ export const runHandoff = Effect.fn('runHandoff')(function* (config: RuntimeConf
       `Cleared ${replaced.metadata.codeCitations.length} prior code citation(s); pass --code-ref to recapture them.`,
     );
   }
+  yield* logKeywordReplaceReceipt(keywordPlan, replaced?.metadata.keywords, {dryRun: options.dryRun});
 });
 
 export const runArchive = Effect.fn('runArchive')(function* (

@@ -1278,6 +1278,12 @@ const remember = Command.make(
       'Explicitly use the default private store-now/anchor-later citation policy',
     ),
     dryRun: boolean('dry-run', 'Print memory and native operation without storing'),
+    clearKeywords: boolean('clear-keywords', 'Drop keywords preserved from the replaced memory'),
+    keyword: repeatedString(
+      'keyword',
+      'Explicit search keyword; repeat for multiple. Preserved keywords are kept by default on --replace.',
+      32,
+    ),
     kind: defaultChoice(
       'kind',
       ['durable', 'handoff', 'incident', 'preference', 'smoke'],
@@ -1285,6 +1291,10 @@ const remember = Command.make(
       'durable',
     ),
     project: optionalString('project', 'Project/repo/topic namespace for lifecycle-aware storage'),
+    regenerateKeywords: boolean(
+      'regenerate-keywords',
+      'Discard preserved keywords and regenerate them; personal memories only',
+    ),
     requireCurrentCodeRefs: boolean(
       'require-current-code-refs',
       'Fail before writing unless every code reference has exact-current graph evidence',
@@ -1306,7 +1316,10 @@ const remember = Command.make(
     text: optionalString('text', 'Memory text to store'),
     topic: optionalString('topic', 'Stable topic name for an active project/topic memory'),
   },
-  options => withRuntimeEffect(config => runRemember(config, options)),
+  ({keyword, ...rest}) =>
+    withRuntimeEffect(config =>
+      runRemember(config, {...rest, ...(keyword.length > 0 ? {keywords: [...keyword]} : {})}),
+    ),
 ).pipe(Command.withDescription('Store a durable engineering memory in the native Threadnote store'));
 
 const migrateMemories = Command.make(
@@ -1488,6 +1501,7 @@ const handoff = Command.make(
   {
     blockers: optionalString('blockers', 'Known blockers'),
     ci: optionalString('ci', 'Captured CI status snapshot'),
+    clearKeywords: boolean('clear-keywords', 'Drop keywords preserved from the replaced memory'),
     codeRefs: repeatedString(
       'code-ref',
       'Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',

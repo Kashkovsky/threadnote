@@ -17,6 +17,7 @@ import {SystemInfo} from '../system.js';
 const MAX_MEMORY_KEYWORDS = 8;
 const MAX_MEMORY_KEYWORD_LENGTH = 80;
 const MAX_MEMORY_KEYWORD_WORDS = 8;
+export const MAX_MANUAL_MEMORY_KEYWORDS = 32;
 const MAX_MEMORY_PROMPT_BODY_LENGTH = 6_000;
 const MEMORY_ENRICHMENT_TIMEOUT_MILLISECONDS = 30_000;
 
@@ -251,6 +252,39 @@ export function normalizeMemoryKeywords(input: MemoryEnrichmentInput, keywords: 
     seen.add(key);
     normalized.push(value);
     if (normalized.length === MAX_MEMORY_KEYWORDS) break;
+  }
+  return normalized;
+}
+
+/**
+ * Explicit authoring keeps hand-curated aliases intact. Unlike generated
+ * phrases, manual keywords may repeat body vocabulary, so the novelty filter
+ * does not apply here; length, shape, and scrubber checks still do.
+ */
+export function normalizeManualMemoryKeywords(keywords: readonly string[]): readonly string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const keyword of keywords) {
+    const value = keyword
+      .replace(/\s+/g, ' ')
+      .replace(/^[-*•\s]+/, '')
+      .trim();
+    if (
+      value.length < 2 ||
+      value.length > MAX_MEMORY_KEYWORD_LENGTH ||
+      value.split(/\s+/).length > MAX_MEMORY_KEYWORD_WORDS ||
+      !/[a-z0-9]/i.test(value) ||
+      scrubberBlocker(value)
+    ) {
+      continue;
+    }
+    const key = normalizeKeywordKey(value);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push(value);
+    if (normalized.length === MAX_MANUAL_MEMORY_KEYWORDS) break;
   }
   return normalized;
 }

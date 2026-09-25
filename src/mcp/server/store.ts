@@ -10,6 +10,11 @@ import {
   memoryCodeCitationSharingBlockerMessage,
 } from '../../memory/code/citation_policy.js';
 import {MAX_MEMORY_RELATIONS, MEMORY_RELATION_TYPES, type MemoryMetadata} from '../../memory/document.js';
+import {
+  tryResolveMemoryKeywordPlan,
+  shouldEnrichForKeywordPlan,
+  type MemoryKeywordPlan,
+} from '../../memory/keywords.js';
 import {resolveLocalMemoryReplacementTarget} from '../../memory/replacement_target.js';
 import {resolveAuthoredMemoryRelations} from '../../memory/relations.js';
 import {
@@ -62,7 +67,11 @@ export function registerStoreTool(
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
         citationPolicy: McpInput.literals(['require-current', 'defer'], 'codeRefs policy'),
+        clearKeywords: McpInput.boolean('Drop preserved keywords'),
         kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke']),
+        keywords: McpInput.stringOrStrings('Search keywords; repeatable', {
+          maximumItems: 32,
+        }),
         project: McpInput.string(),
         references: McpInput.stringOrStrings('Memory URI(s)'),
         relations: Schema.optionalKey(
@@ -78,6 +87,7 @@ export function registerStoreTool(
             }),
         ),
         replaceUri: McpInput.string('Replaced memory URI'),
+        regenerateKeywords: McpInput.boolean('Regenerate keywords; personal only'),
         text: McpInput.string(),
         sourceAgentClient: McpInput.string(),
         status: McpInput.literals(['active', 'archived', 'expired', 'superseded']),
@@ -88,10 +98,13 @@ export function registerStoreTool(
     ({
       callerCwd,
       citationPolicy,
+      clearKeywords,
       codeRefs,
+      keywords,
       kind,
       project,
       references,
+      regenerateKeywords,
       relations,
       replaceUri,
       sourceAgentClient,
@@ -241,9 +254,26 @@ export function registerStoreTool(
           sourceMemoryId: replaceTarget?.metadata.memoryId,
           sourceUri: replaceUri,
         });
+        const requestedKeywords = stringList(keywords);
+        const keywordPlanOutcome = tryResolveMemoryKeywordPlan({
+          keywords: requestedKeywords.length > 0 ? requestedKeywords : undefined,
+          clearKeywords,
+          regenerateKeywords,
+          replacedKeywords: replaceTarget?.metadata.keywords,
+          shared: sharedTarget,
+          kind: memoryKind,
+          surface: 'mcp',
+        });
+        if ('message' in keywordPlanOutcome) {
+          return argumentError(keywordPlanOutcome.message);
+        }
+        const keywordPlan: MemoryKeywordPlan = keywordPlanOutcome.plan;
         const scopedMetadata = {
           ...metadata,
           ...(codeCitations.length === 0 ? {} : {codeCitations}),
+          ...(keywordPlan.mode === 'explicit' || keywordPlan.mode === 'preserved'
+            ? {keywords: keywordPlan.keywords}
+            : {}),
           ...(authoredRelations.relations === undefined ? {} : {relations: authoredRelations.relations}),
           ...(commonCitationSourceCommit(codeCitations) === undefined
             ? {}
@@ -264,14 +294,24 @@ export function registerStoreTool(
             metadata: scopedMetadata,
             replaceUri,
           });
-          return withClearedMemoryRelationReceipt(
-            withClearedCodeCitationReceipt(result, replaceTarget?.metadata.codeCitations?.length, codeCitations.length),
-            replaceTarget?.metadata.relations?.length,
-            authoredRelations.relations?.length ?? 0,
+          return withClearedKeywordReceipt(
+            withClearedMemoryRelationReceipt(
+              withClearedCodeCitationReceipt(
+                result,
+                replaceTarget?.metadata.codeCitations?.length,
+                codeCitations.length,
+              ),
+              replaceTarget?.metadata.relations?.length,
+              authoredRelations.relations?.length ?? 0,
+            ),
+            replaceTarget?.metadata.keywords?.length,
+            scopedMetadata.keywords?.length ?? 0,
           );
         }
         const enrichedMetadata =
-          memoryScope || (replaceUri && isInSharedNamespace(config, replaceUri))
+          memoryScope ||
+          (replaceUri && isInSharedNamespace(config, replaceUri)) ||
+          !shouldEnrichForKeywordPlan(keywordPlan)
             ? scopedMetadata
             : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, scopedMetadata, checkedText.value).pipe(
                 Effect.catch(error =>
@@ -309,10 +349,18 @@ export function registerStoreTool(
           replaceTarget?.metadata.relations?.length,
           authoredRelations.relations?.length ?? 0,
         );
+        const keywordReceiptResult =
+          keywordPlan.mode === 'cleared'
+            ? withClearedKeywordReceipt(
+                relationReceiptResult,
+                replaceTarget?.metadata.keywords?.length,
+                enrichedMetadata.keywords?.length ?? 0,
+              )
+            : relationReceiptResult;
         return deferredCodeAnchor
-          ? withDeferredCodeAnchorWriteReceipt(relationReceiptResult, deferredCodeAnchor)
+          ? withDeferredCodeAnchorWriteReceipt(keywordReceiptResult, deferredCodeAnchor)
           : withClearedCodeCitationReceipt(
-              relationReceiptResult,
+              keywordReceiptResult,
               replaceTarget?.metadata.codeCitations?.length,
               codeCitations.length,
             );
@@ -378,7 +426,7 @@ function withClearedCodeCitationReceipt(
   previousCount: number | undefined,
   currentCount: number,
 ): CallToolResult {
-  if (!previousCount || currentCount > 0) return result;
+  if (result.isError === true || !previousCount || currentCount > 0) return result;
   const note = `Cleared ${previousCount} prior code citation(s); provide codeRefs to recapture them.`;
   return {
     ...result,
@@ -403,6 +451,23 @@ function withClearedMemoryRelationReceipt(
     structuredContent: {
       ...(result.structuredContent ?? {}),
       clearedMemoryRelations: previousCount,
+    },
+  };
+}
+
+function withClearedKeywordReceipt(
+  result: CallToolResult,
+  previousCount: number | undefined,
+  currentCount: number,
+): CallToolResult {
+  if (result.isError === true || !previousCount || currentCount > 0) return result;
+  const note = `Cleared ${previousCount} prior keyword(s); provide keywords to set them explicitly.`;
+  return {
+    ...result,
+    content: [...result.content, {type: 'text', text: note}],
+    structuredContent: {
+      ...(result.structuredContent ?? {}),
+      clearedKeywords: previousCount,
     },
   };
 }
