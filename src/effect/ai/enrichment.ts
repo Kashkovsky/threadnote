@@ -267,7 +267,7 @@ export function normalizeManualMemoryKeywords(keywords: readonly string[]): read
   for (const keyword of keywords) {
     const value = keyword
       .replace(/\s+/g, ' ')
-      .replace(/^[-*•]\s*/, '')
+      .replace(/^[-*•\s]+/, '')
       .trim();
     if (
       value.length < 2 ||

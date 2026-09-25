@@ -67,9 +67,9 @@ export function registerStoreTool(
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
         citationPolicy: McpInput.literals(['require-current', 'defer'], 'codeRefs policy'),
-        clearKeywords: McpInput.boolean('Drop keywords preserved from the replaced memory'),
+        clearKeywords: McpInput.boolean('Drop preserved keywords'),
         kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke']),
-        keywords: McpInput.stringOrStrings('Explicit search keywords; repeat for multiple', {
+        keywords: McpInput.stringOrStrings('Search keywords; repeatable', {
           maximumItems: 32,
         }),
         project: McpInput.string(),
@@ -87,7 +87,7 @@ export function registerStoreTool(
             }),
         ),
         replaceUri: McpInput.string('Replaced memory URI'),
-        regenerateKeywords: McpInput.boolean('Discard preserved keywords and regenerate them; personal memories only'),
+        regenerateKeywords: McpInput.boolean('Regenerate keywords; personal only'),
         text: McpInput.string(),
         sourceAgentClient: McpInput.string(),
         status: McpInput.literals(['active', 'archived', 'expired', 'superseded']),

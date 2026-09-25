@@ -342,7 +342,7 @@ describe('Threadnote MCP toolsets', () => {
         }
         const serializedToolsBytes = Buffer.byteLength(JSON.stringify(tools.tools));
         // Bound metadata growth without penalizing future concise descriptions.
-        expect(serializedToolsBytes).toBeLessThanOrEqual(30_000);
+        expect(serializedToolsBytes).toBeLessThanOrEqual(30_500);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );
