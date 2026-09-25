@@ -1,13 +1,14 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
-import {Clock, Deferred, Effect, Fiber, Logger, Ref, Stream, Schema} from 'effect';
+import {Clock, Deferred, Effect, Fiber, FileSystem, Logger, Path, Ref, Stream, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   codeGraphCachedOverlayAssessmentAllowsBackgroundRefresh,
   CodeGraphRefreshRetryDeferred,
+  currentBackgroundRefreshSummary,
   codeGraphWatcherSnapshotStale,
   driveCodeGraphBackgroundDemand,
   handoffCodeGraphPreparedDemand,
@@ -16,6 +17,12 @@ import {
   type CodeGraphWatchOptions,
   watchRepository,
 } from '../../src/code_graph/watcher.js';
+import {recordCodeGraphSnapshotAdmission} from '../../src/code_graph/admission_freshness.js';
+import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {extractorSetIdentity} from '../../src/code_graph/indexer/materialization.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
+import {codeGraphScopeAdmissionEvidence} from '../../src/code_graph/scope/applicability.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   completeCodeGraphRefreshDemand,
   deferCodeGraphRefreshDemand,
@@ -30,6 +37,7 @@ import {
   CodeGraphStoreNoSpaceError,
   CodeGraphStorePermissionError,
   CodeGraphStoreTransientIoError,
+  type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {orderCodeGraphBuilderAdmissionTickets} from '../../src/code_graph/builder/admission.js';
 
@@ -1210,6 +1218,84 @@ describe('CodeGraphWatcher', () => {
         ),
       ).toBe(true);
     }),
+  );
+
+  effectIt.effect('reuses a current scoped ready snapshot before spawning a background refresh worker', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-watcher-refresh-reuse-'});
+        const identity: RepositoryIdentity = {
+          caseMode: 'sensitive',
+          checkoutId: 'a'.repeat(64),
+          displayName: 'fixture/repository',
+          gitCommonDirectory: '/fixture/repository/.git',
+          headCommit: 'b'.repeat(40),
+          objectFormat: 'sha1',
+          repoRoot: '/fixture/repository',
+          repositoryId: 'c'.repeat(64),
+          worktreeId: 'd'.repeat(64),
+        };
+        const scopeEvidence = {
+          catalogFingerprint: 'g'.repeat(64),
+          closureDigest: 'e'.repeat(64),
+          definitionDigest: 'f'.repeat(64),
+          extractorSet: extractorSetIdentity([], BUILTIN_LANGUAGE_PACK_REGISTRY),
+          inventoryFingerprint: '1'.repeat(64),
+          observedCommit: identity.headCommit,
+          policyFingerprint: '2'.repeat(64),
+          repositoryId: identity.repositoryId,
+          scopeKey: `code-graph-scope:${'3'.repeat(64)}`,
+          worktreeId: identity.worktreeId,
+        } as const;
+        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId, scopeEvidence.scopeKey);
+        const ready = {
+          commit: identity.headCommit,
+          dirty: false,
+          edgeCount: 13,
+          extractorSet: scopeEvidence.extractorSet,
+          fileCount: 5,
+          id: `cgsn_${'4'.repeat(40)}`,
+          repositoryId: identity.repositoryId,
+          scopeId: scopeEvidence.scopeKey,
+          state: 'ready' as const,
+          symbolCount: 8,
+          worktreeId: identity.worktreeId,
+        };
+        yield* recordCodeGraphSnapshotAdmission(
+          layout,
+          ready,
+          scopeEvidence.policyFingerprint,
+          BUILTIN_LANGUAGE_PACK_REGISTRY,
+          false,
+          {scope: codeGraphScopeAdmissionEvidence(scopeEvidence)},
+        );
+        const summary = yield* currentBackgroundRefreshSummary(
+          {
+            admissionFingerprint: scopeEvidence.policyFingerprint,
+            demandIdentity: {
+              checkoutId: identity.checkoutId,
+              scopeId: scopeEvidence.scopeKey,
+              threadnoteHome: home,
+              worktreeId: identity.worktreeId,
+            },
+            identity,
+            layout,
+            overlay: {dirty: false},
+            requestKey: 'request-b',
+            scopeEvidence,
+            scopeId: scopeEvidence.scopeKey,
+          },
+          {
+            readySnapshot: () => Effect.succeed(ready),
+            snapshotPackProvenance: () => Effect.succeed([]),
+          } as never,
+          BUILTIN_LANGUAGE_PACK_REGISTRY,
+        );
+        expect(summary).toEqual({edges: ready.edgeCount, symbols: ready.symbolCount});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('serializes explicit and watch-triggered refreshes while coalescing a trailing run', () =>
