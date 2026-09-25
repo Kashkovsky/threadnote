@@ -7,15 +7,20 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   decodeImpactQueryRequest,
-  impactQueryWorkerStatusObservation,
-  impactQueryTransportSelector,
-  impactQueryWorkerInspectOptions,
-  impactQueryWorkerEnvironment,
-  impactQueryWorkerInvocation,
   inspectCodeGraphIsolated,
   inspectCodeGraphImpactIsolated,
+  inspectCodeGraphReadIsolated,
+  impactQueryTransportSelector,
+  impactQueryWorkerEnvironment,
+  impactQueryWorkerInspectOptions,
+  impactQueryWorkerInvocation,
+  impactQueryWorkerStatusObservation,
   IsolatedCodeGraphImpactQueryTimedOut,
+  serveCodeGraphDiscoveryRead,
 } from '../../src/code_graph/isolated/impact_query.js';
+import {attachCodeGraphStatusObservation} from '../../src/code_graph/query/contract.js';
+import {CodeGraphQueryService} from '../../src/code_graph/query.js';
+import type {CodeGraphStatus} from '../../src/code_graph/types.js';
 import type {CodeGraphQueryTelemetryObservation} from '../../src/code_graph/query/contract.js';
 import {codeGraphQueryScopeReceipt, type CodeGraphQueryScope} from '../../src/code_graph/query/scope.js';
 import type {CodeGraphQueryResult, RepositoryIdentity} from '../../src/code_graph/types.js';
@@ -623,6 +628,27 @@ describe('isolated code graph impact query', () => {
     ).toBeUndefined();
   });
 
+  it('rejects discovery requests that also carry parent-selected snapshots', () => {
+    const base = {
+      cwd: '/workspace/repository',
+      discover: true,
+      edgeLimit: 40,
+      nodeLimit: 20,
+      operation: 'query',
+      protocol: 1,
+      query: 'selector',
+      threadnoteHome: '/threadnote-home',
+    };
+    expect(decodeImpactQueryRequest(JSON.stringify({...base, readySnapshotId: result.snapshot.id}))).toBeUndefined();
+    expect(decodeImpactQueryRequest(JSON.stringify({...base, borrowedSnapshotId: result.snapshot.id}))).toBeUndefined();
+    expect(
+      decodeImpactQueryRequest(
+        JSON.stringify({...base, projectScopeReceipt: codeGraphQueryScopeReceipt(projectScope)}),
+      ),
+    ).toBeUndefined();
+    expect(decodeImpactQueryRequest(JSON.stringify({...base, discover: 'yes'}))).toBeUndefined();
+    expect(decodeImpactQueryRequest(JSON.stringify({...base, discover: true, strictFreshness: false}))).toBeUndefined();
+  });
   it('preserves non-strict reads and the parent worktree observation in the worker', () => {
     const request = decodeImpactQueryRequest(
       JSON.stringify({
@@ -654,6 +680,374 @@ describe('isolated code graph impact query', () => {
       strictFreshness: false,
     });
   });
+});
+
+const discoverySnapshot = {
+  commit: 'b'.repeat(40),
+  dirty: false,
+  edgeCount: 7,
+  extractorSet: 'extractors',
+  fileCount: 11,
+  id: `cgsn_${'c'.repeat(40)}`,
+  repositoryId: 'a'.repeat(64),
+  state: 'ready' as const,
+  symbolCount: 13,
+  worktreeId: 'd'.repeat(64),
+};
+
+function discoveryStatus(overrides: Partial<CodeGraphStatus> = {}): CodeGraphStatus {
+  return attachCodeGraphStatusObservation(
+    {
+      databasePath: '/workspace/graph.sqlite',
+      freshness: 'current',
+      identity,
+      languagePacks: [],
+      readySnapshot: discoverySnapshot,
+      stale: false,
+      ...overrides,
+    },
+    {
+      identity,
+      projectScope,
+    },
+  );
+}
+
+function discoveryService(
+  seen: {status: number; attach: number; inspectOptions?: unknown},
+  inspectResult: CodeGraphQueryResult,
+  status: CodeGraphStatus,
+) {
+  return CodeGraphQueryService.of({
+    attachSharedReadySnapshot: () => {
+      seen.attach += 1;
+      return Effect.succeed(status);
+    },
+    inspect: options => {
+      seen.inspectOptions = options;
+      return Effect.succeed(inspectResult);
+    },
+    purge: () => Effect.die('Unexpected graph purge.'),
+    status: () => {
+      seen.status += 1;
+      return Effect.succeed(status);
+    },
+    statusForIdentity: () => Effect.die('Unexpected identity status.'),
+    statusForPublishedIdentity: () => Effect.die('Unexpected published identity status.'),
+  });
+}
+
+describe('isolated code graph discovery reads', () => {
+  const request = {
+    cwd: '/workspace/repository',
+    discover: true as const,
+    edgeLimit: 40,
+    nodeLimit: 20,
+    operation: 'neighbors' as const,
+    nodeId: `cgs_${'a'.repeat(32)}`,
+    protocol: 1 as const,
+    query: '',
+    threadnoteHome: '/threadnote-home',
+  };
+
+  effectIt.effect('runs status, selection, and read off-thread with a status summary', () =>
+    Effect.gen(function* () {
+      const seen = {status: 0, attach: 0, inspectOptions: undefined as unknown};
+      const neighbors = {...result, operation: 'neighbors' as const};
+      const service = discoveryService(seen, neighbors, discoveryStatus());
+
+      const actual = yield* serveCodeGraphDiscoveryRead(request).pipe(
+        Effect.provideService(CodeGraphQueryService, service),
+      );
+
+      expect(seen.status).toBe(1);
+      expect(seen.attach).toBe(0);
+      expect(actual.status).toEqual({
+        stale: false,
+        readySnapshotId: discoverySnapshot.id,
+        surface: {
+          freshness: 'current',
+          selection: 'active',
+          snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
+        },
+      });
+      expect(actual.result).toEqual(neighbors);
+      expect(seen.inspectOptions).toMatchObject({
+        operation: 'neighbors',
+        refresh: false,
+        requestMaintenance: false,
+      });
+    }),
+  );
+
+  effectIt.effect('re-attaches stale snapshots before reading', () =>
+    Effect.gen(function* () {
+      const seen = {status: 0, attach: 0, inspectOptions: undefined as unknown};
+      const stale = discoveryStatus({stale: true, freshness: 'stale'});
+      const neighbors = {...result, operation: 'neighbors' as const, freshness: 'stale' as const};
+      const service = discoveryService(seen, neighbors, stale);
+
+      const actual = yield* serveCodeGraphDiscoveryRead(request).pipe(
+        Effect.provideService(CodeGraphQueryService, service),
+      );
+
+      expect(seen.attach).toBe(1);
+      expect(actual.status).toEqual({
+        stale: true,
+        readySnapshotId: discoverySnapshot.id,
+        surface: {
+          freshness: 'stale',
+          selection: 'active',
+          snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
+        },
+      });
+      expect(actual.result).toEqual(neighbors);
+    }),
+  );
+
+  effectIt.effect('reports a missing snapshot without reading', () =>
+    Effect.gen(function* () {
+      const seen = {status: 0, attach: 0, inspectOptions: undefined as unknown};
+      const missing = discoveryStatus({readySnapshot: undefined, stale: true, freshness: 'stale'});
+      const service = discoveryService(seen, {...result, operation: 'neighbors' as const}, missing);
+
+      const actual = yield* serveCodeGraphDiscoveryRead(request).pipe(
+        Effect.provideService(CodeGraphQueryService, service),
+      );
+
+      expect(seen.inspectOptions).toBeUndefined();
+      expect(actual).toEqual({unavailable: 'no-ready-snapshot'});
+    }),
+  );
+
+  effectIt.effect('filters seeds to the discovered project scope before reading', () =>
+    Effect.gen(function* () {
+      const seen = {status: 0, attach: 0, inspectOptions: undefined as unknown};
+      const impact = {...result, operation: 'impact' as const};
+      const service = discoveryService(seen, impact, discoveryStatus());
+      const seeds = ['apps/web/a.ts', 'other/a.ts'];
+
+      const actual = yield* serveCodeGraphDiscoveryRead({
+        cwd: '/workspace/repository',
+        discover: true,
+        edgeLimit: 40,
+        nodeLimit: 20,
+        operation: 'impact',
+        protocol: 1,
+        query: 'apps/web/a.ts',
+        seedQueries: seeds,
+        seedQueryCount: seeds.length,
+        threadnoteHome: '/threadnote-home',
+      }).pipe(Effect.provideService(CodeGraphQueryService, service));
+
+      expect(seen.inspectOptions).toMatchObject({seedQueries: ['apps/web/a.ts'], seedQueryCount: 1});
+      expect(actual).toEqual({
+        result: impact,
+        status: {
+          stale: false,
+          readySnapshotId: discoverySnapshot.id,
+          surface: {
+            freshness: 'current',
+            selection: 'active',
+            snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
+          },
+        },
+      });
+    }),
+  );
+
+  effectIt.effect('returns the worker status summary alongside the result', () =>
+    Effect.gen(function* () {
+      let encodedRequest: Uint8Array | undefined;
+      const neighbors = {...result, operation: 'neighbors' as const};
+      const command = CommandExecutor.of({
+        execute: (_executable, _arguments, options) =>
+          Effect.sync(() => {
+            encodedRequest = options?.input;
+            return commandResult(
+              JSON.stringify({
+                ok: true,
+                protocol: 1,
+                result: neighbors,
+                status: {
+                  stale: false,
+                  readySnapshotId: discoverySnapshot.id,
+                  surface: {
+                    freshness: 'current',
+                    selection: 'active',
+                    snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
+                  },
+                },
+                telemetry: [],
+              }),
+            );
+          }),
+        executeStreaming: () => Effect.die('unused'),
+      });
+
+      const actual = yield* inspectCodeGraphReadIsolated({
+        cwd: input.cwd,
+        discover: true,
+        edgeLimit: input.edgeLimit,
+        nodeId: `cgs_${'a'.repeat(32)}`,
+        nodeLimit: input.nodeLimit,
+        operation: 'neighbors',
+        threadnoteHome: input.threadnoteHome,
+      }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
+
+      expect(actual.result).toEqual(neighbors);
+      expect(actual.status).toEqual({
+        stale: false,
+        readySnapshotId: discoverySnapshot.id,
+        surface: {
+          freshness: 'current',
+          selection: 'active',
+          snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
+        },
+      });
+      const decoded = decodeImpactQueryRequest(new TextDecoder().decode(encodedRequest));
+      expect(decoded).toMatchObject({discover: true, operation: 'neighbors'});
+      expect(decoded?.readySnapshotId).toBeUndefined();
+    }),
+  );
+
+  effectIt.effect('fails closed when a discovery response omits its status summary', () =>
+    Effect.gen(function* () {
+      const neighbors = {...result, operation: 'neighbors' as const};
+      const command = CommandExecutor.of({
+        execute: () =>
+          Effect.succeed(commandResult(JSON.stringify({ok: true, protocol: 1, result: neighbors, telemetry: []}))),
+        executeStreaming: () => Effect.die('unused'),
+      });
+
+      const failure = yield* inspectCodeGraphReadIsolated({
+        cwd: input.cwd,
+        discover: true,
+        edgeLimit: input.edgeLimit,
+        nodeId: `cgs_${'a'.repeat(32)}`,
+        nodeLimit: input.nodeLimit,
+        operation: 'neighbors',
+        threadnoteHome: input.threadnoteHome,
+      }).pipe(
+        Effect.provideService(CommandExecutor, command),
+        Effect.provideService(SystemInfo, systemInfoStub({})),
+        Effect.flip,
+      );
+
+      expect(failure._tag).toBe('IsolatedCodeGraphImpactQueryError');
+    }),
+  );
+
+  effectIt.effect('maps the worker no-snapshot verdict to the store unavailable error', () =>
+    Effect.gen(function* () {
+      const command = CommandExecutor.of({
+        execute: () =>
+          Effect.succeed(
+            commandResult(JSON.stringify({ok: false, protocol: 1, telemetry: [], unavailable: 'no-ready-snapshot'})),
+          ),
+        executeStreaming: () => Effect.die('unused'),
+      });
+
+      const failure = yield* inspectCodeGraphReadIsolated({
+        cwd: input.cwd,
+        discover: true,
+        edgeLimit: input.edgeLimit,
+        nodeId: `cgs_${'a'.repeat(32)}`,
+        nodeLimit: input.nodeLimit,
+        operation: 'neighbors',
+        threadnoteHome: input.threadnoteHome,
+      }).pipe(
+        Effect.provideService(CommandExecutor, command),
+        Effect.provideService(SystemInfo, systemInfoStub({})),
+        Effect.flip,
+      );
+
+      expect(failure._tag).toBe('CodeGraphSnapshotUnavailable');
+    }),
+  );
+
+  effectIt.effect('rejects malformed status summaries and unknown unavailability markers', () =>
+    Effect.gen(function* () {
+      const neighbors = {...result, operation: 'neighbors' as const};
+      const broker = (stdout: string) =>
+        CommandExecutor.of({
+          execute: () => Effect.succeed(commandResult(stdout)),
+          executeStreaming: () => Effect.die('unused'),
+        });
+      const read = (command: ReturnType<typeof broker>) =>
+        inspectCodeGraphReadIsolated({
+          cwd: input.cwd,
+          discover: true,
+          edgeLimit: input.edgeLimit,
+          nodeId: `cgs_${'a'.repeat(32)}`,
+          nodeLimit: input.nodeLimit,
+          operation: 'neighbors',
+          threadnoteHome: input.threadnoteHome,
+        }).pipe(
+          Effect.provideService(CommandExecutor, command),
+          Effect.provideService(SystemInfo, systemInfoStub({})),
+          Effect.flip,
+        );
+      const badStatus = yield* read(
+        broker(
+          JSON.stringify({
+            ok: true,
+            protocol: 1,
+            result: neighbors,
+            status: {stale: 'yes', readySnapshotId: discoverySnapshot.id},
+            telemetry: [],
+          }),
+        ),
+      );
+      expect(badStatus._tag).toBe('IsolatedCodeGraphImpactQueryError');
+      const badMarker = yield* read(
+        broker(JSON.stringify({ok: false, protocol: 1, telemetry: [], unavailable: 'bogus'})),
+      );
+      expect(badMarker._tag).toBe('IsolatedCodeGraphImpactQueryError');
+    }),
+  );
+
+  fcProp(
+    effectIt,
+    'round-trips discovery requests without changing selectors or flags (property)',
+    {
+      operation: fc.constantFrom('query', 'node', 'neighbors', 'explain', 'path', 'impact'),
+      query: fc.string({maxLength: 80}).filter(value => !value.includes('\0')),
+      seeds: fc.array(
+        fc.string({maxLength: 80, minLength: 1}).filter(value => !value.includes('\0')),
+        {
+          maxLength: 10,
+        },
+      ),
+    },
+    ({operation, query, seeds}) => {
+      if (operation === 'query') fc.pre(query !== '');
+      if (operation === 'impact') fc.pre(query !== '' || seeds.length > 0);
+      const operationFields =
+        operation === 'query' || operation === 'impact'
+          ? {
+              query,
+              ...(operation === 'impact' && seeds.length > 0 ? {seedQueries: seeds, seedQueryCount: seeds.length} : {}),
+            }
+          : operation === 'node' || operation === 'neighbors'
+            ? {nodeId: `cgs_${'a'.repeat(32)}`, query: ''}
+            : operation === 'path'
+              ? {from: query === '' ? 'a' : query, query: '', to: `${query === '' ? 'a' : query}-target`}
+              : {query: '', symbol: query === '' ? 's' : query};
+      const request = {
+        cwd: '/workspace/repository',
+        discover: true,
+        edgeLimit: 40,
+        nodeLimit: 20,
+        operation,
+        protocol: 1,
+        threadnoteHome: '/threadnote-home',
+        ...operationFields,
+      };
+      expect(decodeImpactQueryRequest(JSON.stringify(request))).toEqual(JSON.parse(JSON.stringify(request)));
+    },
+    {fastCheck: {numRuns: 80}},
+  );
 });
 
 function commandResult(stdout: string): CommandResult {
