@@ -18,8 +18,9 @@ import {
   Schema,
 } from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from './indexer.js';
-import {observeCodeGraphAdmissionEnvironment} from './admission_freshness.js';
+import {codeGraphSnapshotAdmissionCurrent, observeCodeGraphAdmissionEnvironment} from './admission_freshness.js';
 import {inventoryRepository, worktreeBuildRequestState} from './inventory.js';
+import {codeGraphInventoryScopeEvidence} from './inventory/scope.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance/coordinator.js';
 import {CodeGraphStore, type CodeGraphRoutineMaintenanceResult, type CodeGraphStoreShape} from './store.js';
 import {CommandExecutor, runCommandEffect, type CommandOptions} from '../effect/command.js';
@@ -72,7 +73,13 @@ import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} fr
 import {anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure} from '../telemetry/diagnostic.js';
 import type {CodeGraphBuilderAdmissionClass} from './builder/admission.js';
 import {codeGraphBuildRequestKey} from './indexer/build.js';
-import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
+import {extractorSetIdentity} from './indexer/materialization.js';
+import {CodeGraphLanguagePackRegistry, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
+import {codeGraphSnapshotMatchesCurrentLanguagePacks} from './query/snapshot_runtime.js';
+import {
+  codeGraphScopeAdmissionEvidence,
+  type CodeGraphScopeApplicabilityEvidence,
+} from './scope/applicability.js';
 import {
   compileThreadnoteIgnore,
   isIgnoredByThreadnote,
@@ -97,6 +104,7 @@ export interface CodeGraphWatchOptions {
 }
 
 interface CodeGraphBackgroundTarget {
+  readonly admissionFingerprint: string;
   readonly demandIdentity: {
     readonly checkoutId: string;
     readonly scopeId?: string;
@@ -107,6 +115,7 @@ interface CodeGraphBackgroundTarget {
   readonly layout: ReturnType<typeof codeGraphLayout>;
   readonly overlay: {readonly dirty: boolean; readonly fingerprint?: string};
   readonly requestKey: string;
+  readonly scopeEvidence?: CodeGraphScopeApplicabilityEvidence;
   readonly scopeId?: string;
 }
 
@@ -394,6 +403,7 @@ export function driveCodeGraphBackgroundDemand<Target extends CodeGraphBackgroun
                 type: 'deferred' as const,
               });
             }
+
             if (demand.type !== 'claimed') return Effect.succeed({type: 'idle' as const});
             const token = demand.target.targetToken;
             const releaseInterruptedClaim = input.defer(target, token).pipe(Effect.asVoid);
@@ -447,6 +457,33 @@ export function driveCodeGraphBackgroundDemand<Target extends CodeGraphBackgroun
       }
       return yield* Effect.fail(outcome.cause);
     }
+  });
+}
+
+/** @internal exported for watcher refresh reuse tests. */
+export function currentBackgroundRefreshSummary(
+  target: CodeGraphBackgroundTarget,
+  store: CodeGraphStoreShape,
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+) {
+  return Effect.gen(function* () {
+    const ready = yield* store.readySnapshot(target.layout.databasePath, target.identity.worktreeId, target.scopeId);
+    if (ready === undefined || codeGraphWatcherSnapshotStale(ready, target.identity, target.overlay)) return undefined;
+    const provenance = yield* store.snapshotPackProvenance(target.layout.databasePath, ready.id);
+    if (!codeGraphSnapshotMatchesCurrentLanguagePacks(ready, provenance, languagePacks)) return undefined;
+    if (
+      !(yield* codeGraphSnapshotAdmissionCurrent(
+        target.layout,
+        ready,
+        target.admissionFingerprint,
+        languagePacks,
+        false,
+        target.scopeEvidence === undefined ? undefined : codeGraphScopeAdmissionEvidence(target.scopeEvidence),
+      ))
+    ) {
+      return undefined;
+    }
+    return {edges: ready.edgeCount, symbols: ready.symbolCount};
   });
 }
 
@@ -562,7 +599,17 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             Effect.provideService(Path.Path, path),
             Effect.provideService(SystemInfo, systemInfo),
           );
+          const scopeEvidence =
+            scopedObservation === undefined
+              ? undefined
+              : codeGraphInventoryScopeEvidence(
+                  scopedObservation,
+                  identity,
+                  extractorSetIdentity(scopedObservation.files, languagePacks),
+                  admission,
+                );
           return {
+            admissionFingerprint: admission,
             demandIdentity: {
               checkoutId: identity.checkoutId,
               ...(scope === undefined ? {} : {scopeId: scope.scopeKey}),
@@ -579,6 +626,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             ),
             overlay,
             requestKey: codeGraphBuildRequestKey(identity, overlay, languagePacks, undefined, false, admission, scope),
+            ...(scopeEvidence === undefined ? {} : {scopeEvidence}),
             ...(scope === undefined ? {} : {scopeId: scope.scopeKey}),
           };
         });
@@ -606,39 +654,47 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
                 Effect.as(options),
               );
       const runBackgroundBuild = (options: CodeGraphWatchOptions, target: CodeGraphBackgroundTarget, token: string) =>
-        isolateBuilder
-          ? runIsolatedCodeGraphIndex({
-              admissionClass: 'background',
-              assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
-              cwd: options.cwd,
-              onProgress: options.onProgress,
-              ...(options.project === undefined ? {} : {project: options.project}),
-              refreshDemandToken: token,
-              requestKey: target.requestKey,
-              ...(target.scopeId === undefined ? {} : {scopeId: target.scopeId}),
-              threadnoteHome: options.threadnoteHome,
-            }).pipe(
-              Effect.provideService(CommandExecutor, commandExecutor),
-              Effect.provideService(Crypto.Crypto, crypto),
-              Effect.provideService(FileSystem.FileSystem, fs),
-              Effect.provideService(Path.Path, path),
-              Effect.provideService(SystemInfo, systemInfo),
-              Effect.map(summary => ({edges: summary.edges, symbols: summary.symbols})),
-            )
-          : indexer
-              .index(
-                codeGraphWatcherRefreshIndexRequest({
-                  ...options,
-                  admissionClass: 'background',
-                  refreshDemandToken: token,
-                }),
-              )
-              .pipe(
-                Effect.map(summary => ({
-                  edges: summary.snapshot.edgeCount,
-                  symbols: summary.snapshot.symbolCount,
-                })),
-              );
+        currentBackgroundRefreshSummary(target, store, languagePacks).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.flatMap(current =>
+            current !== undefined
+              ? Effect.succeed(current)
+              : isolateBuilder
+                ? runIsolatedCodeGraphIndex({
+                    admissionClass: 'background',
+                    assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
+                    cwd: options.cwd,
+                    onProgress: options.onProgress,
+                    ...(options.project === undefined ? {} : {project: options.project}),
+                    refreshDemandToken: token,
+                    requestKey: target.requestKey,
+                    ...(target.scopeId === undefined ? {} : {scopeId: target.scopeId}),
+                    threadnoteHome: options.threadnoteHome,
+                  }).pipe(
+                    Effect.provideService(CommandExecutor, commandExecutor),
+                    Effect.provideService(Crypto.Crypto, crypto),
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                    Effect.provideService(Path.Path, path),
+                    Effect.provideService(SystemInfo, systemInfo),
+                    Effect.map(summary => ({edges: summary.edges, symbols: summary.symbols})),
+                  )
+                : indexer
+                    .index(
+                      codeGraphWatcherRefreshIndexRequest({
+                        ...options,
+                        admissionClass: 'background',
+                        refreshDemandToken: token,
+                      }),
+                    )
+                    .pipe(
+                      Effect.map(summary => ({
+                        edges: summary.snapshot.edgeCount,
+                        symbols: summary.snapshot.symbolCount,
+                      })),
+                    ),
+          ),
+        );
       const driveBackgroundDemand = (options: CodeGraphWatchOptions): Effect.Effect<void, unknown> =>
         driveCodeGraphBackgroundDemand({
           complete: (target, token) =>
