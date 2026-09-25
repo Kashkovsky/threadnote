@@ -12,13 +12,18 @@ import type {
   CodeGraphSnapshot,
   RepositoryIdentity,
 } from '../../../code_graph/types.js';
+import {
+  codeGraphInspectionAllowsStaleReady,
+  codeGraphInspectionObservation,
+  codeGraphInspectionObservesWorktree,
+  codeGraphInspectionStartsRefresh,
+} from '../../../code_graph/query/contract.js';
 import type {
   CodeGraphRefreshStatus,
   CodeGraphRefreshContinuity,
   CodeGraphWatcherShape,
   CodeGraphWatchOptions,
 } from '../../../code_graph/watcher.js';
-import type {CodeGraphStatusObservation} from '../../../code_graph/query/contract.js';
 
 type CodeGraphInspectionOperation = CodeGraphQueryResult['operation'];
 
@@ -32,33 +37,12 @@ export function codeGraphRefreshBlocksReadyInspection(
   return refreshBlocks && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
 }
 
-export function codeGraphInspectionAllowsStaleReady(operation: CodeGraphInspectionOperation): boolean {
-  return operation !== 'impact' && operation !== 'path';
-}
-
-export function codeGraphInspectionObservesWorktree(operation: CodeGraphInspectionOperation): boolean {
-  return !codeGraphInspectionAllowsStaleReady(operation);
-}
-
-export function codeGraphInspectionObservation(
-  observation: CodeGraphStatusObservation | undefined,
-  operation: CodeGraphInspectionOperation,
-): CodeGraphStatusObservation | undefined {
-  if (observation === undefined || codeGraphInspectionObservesWorktree(operation)) return observation;
-  return {
-    identity: observation.identity,
-    ...(observation.borrowedSnapshotId === undefined ? {} : {borrowedSnapshotId: observation.borrowedSnapshotId}),
-    ...(observation.manifestPath === undefined ? {} : {manifestPath: observation.manifestPath}),
-    ...(observation.projectScope === undefined ? {} : {projectScope: observation.projectScope}),
-  };
-}
-
-export function codeGraphInspectionStartsRefresh(
-  status: {readonly readySnapshot?: unknown; readonly stale: boolean},
-  operation: CodeGraphInspectionOperation,
-): boolean {
-  return !status.readySnapshot || (status.stale && !codeGraphInspectionAllowsStaleReady(operation));
-}
+export {
+  codeGraphInspectionAllowsStaleReady,
+  codeGraphInspectionObservation,
+  codeGraphInspectionObservesWorktree,
+  codeGraphInspectionStartsRefresh,
+};
 
 export function codeGraphInspectionRequestsBackgroundRefresh(
   status: {readonly readySnapshot?: unknown; readonly stale: boolean},

@@ -2,7 +2,13 @@ import {Cause, Clock, Effect, Exit, Predicate, Schema, Stdio, Stream} from 'effe
 import {CommandExecutor, CommandTimedOut, type CommandExecutionError} from '../../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../../effect/system.js';
 import {CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT} from '../../worker_protocol.js';
-import {CodeGraphQueryService, type CodeGraphInspectOptions} from '../query.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus, type CodeGraphInspectOptions} from '../query.js';
+import {
+  codeGraphInspectionAllowsStaleReady,
+  codeGraphInspectionObservation,
+  codeGraphInspectionObservesWorktree,
+  codeGraphInspectionStartsRefresh,
+} from '../query/contract.js';
 import type {
   CodeGraphQueryTelemetryObservation,
   CodeGraphQueryTelemetryObserver,
@@ -12,8 +18,14 @@ import type {
   CodeGraphStatusObservation,
 } from '../query/contract.js';
 import {codeGraphQueryScopeReceipt, type CodeGraphQueryScope, type CodeGraphQueryScopeReceipt} from '../query/scope.js';
+import {
+  codeGraphQueryAnonymousTelemetrySnapshotSelection,
+  codeGraphQueryAnonymousTelemetrySnapshotSurface,
+  type CodeGraphQueryAnonymousTelemetrySnapshotSurface,
+} from '../query/anonymous_telemetry.js';
+import {codeGraphScopeAdmitsPath} from '../scope/applicability.js';
 import {resolveRepositoryIdentity} from '../repository.js';
-import type {CodeGraphQueryResult, RepositoryIdentity} from '../types.js';
+import {CodeGraphSnapshotUnavailable, type CodeGraphQueryResult, type RepositoryIdentity} from '../types.js';
 
 const CODE_GRAPH_IMPACT_QUERY_PROTOCOL = 1 as const;
 const CODE_GRAPH_IMPACT_QUERY_INPUT_BYTES_MAXIMUM = 256 * 1_024;
@@ -36,6 +48,8 @@ interface CodeGraphImpactQueryRequest {
   readonly cwd: string;
   readonly depth?: number;
   readonly direction?: 'both' | 'incoming' | 'outgoing';
+  /** Full-pipeline discovery: the worker runs status, selection, and read. Never combined with parent-selected snapshots. */
+  readonly discover?: boolean;
   readonly edgeLimit: number;
   readonly from?: string;
   readonly includeHeuristic?: boolean;
@@ -52,9 +66,13 @@ interface CodeGraphImpactQueryRequest {
   /** Original count retained when the transport bounds changed-path content. */
   readonly seedQueryCount?: number;
   readonly seedQueries?: readonly string[];
+  /** Parent-observed read strictness; absent keeps the operation default. */
+  readonly strictFreshness?: boolean;
   readonly symbol?: string;
   readonly threadnoteHome: string;
   readonly to?: string;
+  /** Parent-observed worktree state reused instead of re-observing in the worker. */
+  readonly overlay?: CodeGraphStatusObservation['overlay'];
 }
 
 type CodeGraphImpactQueryResponse =
@@ -62,13 +80,33 @@ type CodeGraphImpactQueryResponse =
       readonly ok: true;
       readonly protocol: typeof CODE_GRAPH_IMPACT_QUERY_PROTOCOL;
       readonly result: CodeGraphQueryResult;
+      /** Present only for discovery reads; reuse reads keep selection parent-side. */
+      readonly status?: CodeGraphImpactQueryReadStatus;
       readonly telemetry: readonly CodeGraphQueryTelemetryObservation[];
     }
   | {
       readonly ok: false;
       readonly protocol: typeof CODE_GRAPH_IMPACT_QUERY_PROTOCOL;
       readonly telemetry: readonly CodeGraphQueryTelemetryObservation[];
+    }
+  | {
+      readonly ok: false;
+      readonly protocol: typeof CODE_GRAPH_IMPACT_QUERY_PROTOCOL;
+      readonly telemetry: readonly CodeGraphQueryTelemetryObservation[];
+      readonly unavailable: 'no-ready-snapshot';
+      readonly identity: {
+        readonly repoRoot: string;
+        readonly worktreeId: string;
+      };
     };
+
+export interface CodeGraphImpactQueryReadStatus {
+  readonly stale: boolean;
+  readonly readySnapshotId?: string;
+  readonly surface: CodeGraphQueryAnonymousTelemetrySnapshotSurface;
+  readonly worktreeId: string;
+  readonly repoRoot: string;
+}
 
 export interface IsolatedCodeGraphImpactQueryInput {
   readonly project?: string;
@@ -93,6 +131,8 @@ export interface IsolatedCodeGraphQueryInput {
   readonly cwd: string;
   readonly depth?: number;
   readonly direction?: 'both' | 'incoming' | 'outgoing';
+  /** Full-pipeline discovery: the worker runs status, selection, and read. Never combined with parent-selected snapshots. */
+  readonly discover?: boolean;
   readonly edgeLimit: number;
   readonly from?: string;
   readonly includeHeuristic?: boolean;
@@ -109,9 +149,33 @@ export interface IsolatedCodeGraphQueryInput {
   /** Original count retained when the caller removes outside-scope changed paths. */
   readonly seedQueryCount?: number;
   readonly seedQueries?: readonly string[];
+  /** Parent-observed read strictness; absent keeps the operation default. */
+  readonly strictFreshness?: boolean;
   readonly symbol?: string;
   readonly threadnoteHome: string;
   readonly to?: string;
+  /** Parent-observed worktree state reused instead of re-observing in the worker. */
+  readonly overlay?: CodeGraphStatusObservation['overlay'];
+}
+
+/**
+ * Discovery read input. No parent-selected snapshots, scope, overlay, or
+ * strictness: the worker discovers everything in-child so the calling
+ * thread never touches SQLite.
+ */
+export interface IsolatedCodeGraphReadInput extends Omit<
+  IsolatedCodeGraphQueryInput,
+  'borrowedSnapshotId' | 'overlay' | 'projectScope' | 'readySnapshotId' | 'strictFreshness'
+> {
+  readonly discover: true;
+}
+
+export interface IsolatedCodeGraphReadUnavailable {
+  readonly unavailable: 'no-ready-snapshot';
+  readonly identity: {
+    readonly repoRoot: string;
+    readonly worktreeId: string;
+  };
 }
 
 export class IsolatedCodeGraphImpactQueryError extends Schema.TaggedError<IsolatedCodeGraphImpactQueryError>()(
@@ -130,14 +194,9 @@ export class IsolatedCodeGraphImpactQueryTimedOut extends Schema.TaggedError<Iso
   },
 ) {}
 
-/**
- * Execute graph reads outside the MCP event loop. Bun SQLite calls are
- * synchronous, so an in-process busy or cold query can stall the MCP control plane.
- */
-export const inspectCodeGraphIsolated = Effect.fn('codeGraph.queryIsolated')(function* (
+const executeIsolatedQueryWorker = Effect.fn('codeGraph.executeIsolatedQuery')(function* (
   input: IsolatedCodeGraphQueryInput,
   options: {
-    readonly onTelemetryObservation?: (observation: CodeGraphQueryTelemetryObservation) => Effect.Effect<void>;
     readonly timeoutMilliseconds?: number;
   } = {},
 ) {
@@ -156,7 +215,7 @@ export const inspectCodeGraphIsolated = Effect.fn('codeGraph.queryIsolated')(fun
   });
   const invocation = impactQueryWorkerInvocation(system);
   const timeout = IsolatedCodeGraphImpactQueryTimedOut.make({message: 'Isolated code graph query timed out.'});
-  const execute = command
+  return yield* command
     .execute(invocation.executable, invocation.arguments, {
       env: impactQueryWorkerEnvironment(system.environment(), input.threadnoteHome),
       input: request,
@@ -171,7 +230,20 @@ export const inspectCodeGraphIsolated = Effect.fn('codeGraph.queryIsolated')(fun
       ),
       Effect.timeoutOrElse({duration: timeoutMilliseconds, orElse: () => Effect.fail(timeout)}),
     );
-  const result = yield* execute;
+});
+
+/**
+ * Execute graph reads outside the MCP event loop. Bun SQLite calls are
+ * synchronous, so an in-process busy or cold query can stall the MCP control plane.
+ */
+export const inspectCodeGraphIsolated = Effect.fn('codeGraph.queryIsolated')(function* (
+  input: IsolatedCodeGraphQueryInput,
+  options: {
+    readonly onTelemetryObservation?: (observation: CodeGraphQueryTelemetryObservation) => Effect.Effect<void>;
+    readonly timeoutMilliseconds?: number;
+  } = {},
+) {
+  const result = yield* executeIsolatedQueryWorker(input, options);
   const response = decodeImpactQueryResponse(result.stdout);
   if (response === undefined) {
     return yield* IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph query failed.'});
@@ -196,6 +268,141 @@ export const inspectCodeGraphImpactIsolated = Effect.fn('codeGraph.impactQueryIs
     ),
 );
 
+export const inspectCodeGraphReadIsolated = Effect.fn('codeGraph.readIsolated')(function* (
+  input: IsolatedCodeGraphReadInput,
+  options: {
+    readonly onTelemetryObservation?: (observation: CodeGraphQueryTelemetryObservation) => Effect.Effect<void>;
+    readonly timeoutMilliseconds?: number;
+  } = {},
+) {
+  if ((input as {readonly discover?: unknown}).discover !== true) {
+    return yield* IsolatedCodeGraphImpactQueryError.make({message: 'Discovery reads require discover:true.'});
+  }
+  const result = yield* executeIsolatedQueryWorker(input, options);
+  const response = decodeImpactQueryResponse(result.stdout);
+  if (response === undefined) {
+    return yield* IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph query failed.'});
+  }
+  yield* replayCodeGraphIsolatedQueryTelemetry(response.telemetry, options.onTelemetryObservation);
+  if (!response.ok) {
+    if ('unavailable' in response) {
+      const verdict: IsolatedCodeGraphReadUnavailable = {
+        unavailable: response.unavailable,
+        identity: response.identity,
+      };
+      return verdict;
+    }
+    return yield* IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph query failed.'});
+  }
+  if (response.result.operation !== input.operation) {
+    return yield* IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph query failed.'});
+  }
+  if (response.status === undefined) {
+    return yield* IsolatedCodeGraphImpactQueryError.make({
+      message: 'Isolated code graph discovery read omitted its status summary.',
+    });
+  }
+  return {result: response.result, status: response.status};
+});
+
+export const serveCodeGraphDiscoveryRead = Effect.fn('codeGraph.serveDiscoveryRead')(function* (
+  request: CodeGraphImpactQueryRequest,
+  options: {
+    readonly telemetry?: CodeGraphQueryTelemetryObserver;
+  } = {},
+) {
+  const query = yield* CodeGraphQueryService;
+  const status = yield* query.status(request.threadnoteHome, request.cwd, {
+    manifestPath: request.manifestPath,
+    observeWorktree: codeGraphInspectionObservesWorktree(request.operation),
+    project: request.project,
+    requestMaintenance: false,
+    telemetry: options.telemetry,
+  });
+  const attached =
+    status.stale || codeGraphInspectionStartsRefresh(status, request.operation)
+      ? yield* query.attachSharedReadySnapshot(request.threadnoteHome, status.identity, status, {
+          allowBorrowedStale: codeGraphInspectionAllowsStaleReady(request.operation),
+          requestMaintenance: false,
+          telemetry: options.telemetry,
+        })
+      : status;
+  if (attached.readySnapshot === undefined) {
+    return {
+      unavailable: 'no-ready-snapshot' as const,
+      identity: {repoRoot: attached.identity.repoRoot, worktreeId: attached.identity.worktreeId},
+    };
+  }
+  const observation = codeGraphInspectionObservation(observationFromCodeGraphStatus(attached), request.operation);
+  const scopedSeedQueries = request.seedQueries?.filter(candidate =>
+    codeGraphScopeAdmitsPath(observation?.projectScope?.scope, candidate),
+  );
+  const result = yield* query
+    .inspect({
+      project: request.project,
+      manifestPath: request.manifestPath,
+      ...(request.baseCommit === undefined ? {} : {baseCommit: request.baseCommit}),
+      ...(request.operation === 'impact' ? {baseCommitPolicy: 'ready-only' as const} : {}),
+      cwd: request.cwd,
+      depth: request.depth,
+      direction: request.direction,
+      edgeLimit: request.edgeLimit,
+      from: request.from,
+      includeHeuristic: request.includeHeuristic,
+      includeModelAssociations: request.includeModelAssociations,
+      nodeId: request.nodeId,
+      nodeLimit: request.nodeLimit,
+      operation: request.operation,
+      packageName: request.packageName,
+      query:
+        request.operation === 'impact'
+          ? impactQueryTransportSelector(request.query, request.seedQueries)
+          : request.query,
+      refresh: false,
+      requestMaintenance: false,
+      seedQueryCount: scopedSeedQueries?.length,
+      seedQueries: scopedSeedQueries,
+      ...(observation === undefined ? {} : {statusObservation: observation}),
+      symbol: request.symbol,
+      threadnoteHome: request.threadnoteHome,
+      to: request.to,
+    })
+    .pipe(
+      Effect.catchIf(
+        (error: unknown) => Schema.is(CodeGraphSnapshotUnavailable)(error),
+        () =>
+          Effect.succeed({
+            unavailable: 'no-ready-snapshot' as const,
+            identity: {repoRoot: attached.identity.repoRoot, worktreeId: attached.identity.worktreeId},
+          }),
+      ),
+    );
+  if (typeof result === 'object' && result !== null && 'unavailable' in result) return result;
+  const selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(status, attached);
+  const surface = codeGraphQueryAnonymousTelemetrySnapshotSurface(attached, selection);
+  return {
+    result,
+    status: {
+      stale: attached.stale,
+      ...(attached.readySnapshot === undefined ? {} : {readySnapshotId: attached.readySnapshot.id}),
+      surface:
+        surface.selection === 'none'
+          ? surface
+          : {
+              freshness: surface.freshness,
+              selection: surface.selection,
+              snapshot: {
+                edgeCount: surface.snapshot.edgeCount,
+                fileCount: surface.snapshot.fileCount,
+                symbolCount: surface.snapshot.symbolCount,
+              },
+            },
+      worktreeId: attached.identity.worktreeId,
+      repoRoot: attached.identity.repoRoot,
+    },
+  };
+});
+
 /** Internal standalone worker. Input and output are bounded one-document JSON over stdio. */
 export const codeGraphImpactQueryWorkerProgram = (threadnoteHome: string) =>
   Effect.gen(function* () {
@@ -205,29 +412,53 @@ export const codeGraphImpactQueryWorkerProgram = (threadnoteHome: string) =>
     const response =
       request === undefined || request.threadnoteHome !== threadnoteHome
         ? ({ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL, telemetry} as const)
-        : yield* Effect.gen(function* () {
-            const options = impactQueryWorkerInspectOptions(request, threadnoteHome);
-            const statusObservation = impactQueryWorkerStatusObservation(
-              request,
-              yield* resolveRepositoryIdentity(request.cwd),
-            );
-            return yield* query.inspect({
-              ...options,
-              ...(statusObservation === undefined ? {} : {statusObservation}),
+        : request.discover === true
+          ? yield* serveCodeGraphDiscoveryRead(request, {
               telemetry: codeGraphIsolatedQueryTelemetryRecorder(telemetry),
-            });
-          }).pipe(
-            Effect.match({
-              onFailure: () => ({ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL, telemetry}) as const,
-              onSuccess: result =>
-                ({
-                  ok: true,
-                  protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
-                  result,
-                  telemetry,
-                }) as const satisfies CodeGraphImpactQueryResponse,
-            }),
-          );
+            }).pipe(
+              Effect.match({
+                onFailure: () => ({ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL, telemetry}) as const,
+                onSuccess: (served): CodeGraphImpactQueryResponse =>
+                  'unavailable' in served
+                    ? {
+                        ok: false,
+                        protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
+                        telemetry,
+                        unavailable: served.unavailable,
+                        identity: served.identity,
+                      }
+                    : {
+                        ok: true,
+                        protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
+                        result: served.result,
+                        status: served.status,
+                        telemetry,
+                      },
+              }),
+            )
+          : yield* Effect.gen(function* () {
+              const options = impactQueryWorkerInspectOptions(request, threadnoteHome);
+              const statusObservation = impactQueryWorkerStatusObservation(
+                request,
+                yield* resolveRepositoryIdentity(request.cwd),
+              );
+              return yield* query.inspect({
+                ...options,
+                ...(statusObservation === undefined ? {} : {statusObservation}),
+                telemetry: codeGraphIsolatedQueryTelemetryRecorder(telemetry),
+              });
+            }).pipe(
+              Effect.match({
+                onFailure: () => ({ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL, telemetry}) as const,
+                onSuccess: result =>
+                  ({
+                    ok: true,
+                    protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
+                    result,
+                    telemetry,
+                  }) as const satisfies CodeGraphImpactQueryResponse,
+              }),
+            );
     yield* writeImpactQueryWorkerResponse(response);
   }).pipe(Effect.ignore);
 
@@ -259,7 +490,7 @@ export function impactQueryWorkerInspectOptions(
     requestMaintenance: false,
     seedQueryCount: request.seedQueryCount,
     seedQueries: request.seedQueries,
-    strictFreshness: request.operation === 'impact' || request.operation === 'path',
+    strictFreshness: request.strictFreshness ?? (request.operation === 'impact' || request.operation === 'path'),
     symbol: request.symbol,
     threadnoteHome,
     to: request.to,
@@ -277,6 +508,7 @@ function encodeImpactQueryRequest(input: IsolatedCodeGraphQueryInput): Uint8Arra
     cwd: input.cwd,
     ...(input.depth === undefined ? {} : {depth: input.depth}),
     ...(input.direction === undefined ? {} : {direction: input.direction}),
+    ...(input.discover === undefined ? {} : {discover: input.discover}),
     edgeLimit: input.edgeLimit,
     ...(input.from === undefined ? {} : {from: input.from}),
     ...(input.includeHeuristic === undefined ? {} : {includeHeuristic: input.includeHeuristic}),
@@ -293,9 +525,11 @@ function encodeImpactQueryRequest(input: IsolatedCodeGraphQueryInput): Uint8Arra
     ...(input.seedQueries === undefined
       ? {}
       : {seedQueries, seedQueryCount: input.seedQueryCount ?? input.seedQueries.length}),
+    ...(input.strictFreshness === undefined ? {} : {strictFreshness: input.strictFreshness}),
     ...(input.symbol === undefined ? {} : {symbol: input.symbol}),
     threadnoteHome: input.threadnoteHome,
     ...(input.to === undefined ? {} : {to: input.to}),
+    ...(input.overlay === undefined ? {} : {overlay: input.overlay}),
   } satisfies CodeGraphImpactQueryRequest;
   if (!validImpactQueryRequest(request)) {
     throw IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph query request is invalid.'});
@@ -377,6 +611,9 @@ function validImpactQueryRequest(value: unknown): value is CodeGraphImpactQueryR
     (record.seedQueryCount !== undefined && !boundedInteger(record.seedQueryCount, 0, Number.MAX_SAFE_INTEGER)) ||
     (record.symbol !== undefined && !validProtocolText(record.symbol)) ||
     (record.to !== undefined && !validProtocolText(record.to)) ||
+    (record.strictFreshness !== undefined && typeof record.strictFreshness !== 'boolean') ||
+    (record.overlay !== undefined && !validWorktreeOverlay(record.overlay)) ||
+    (record.discover !== undefined && typeof record.discover !== 'boolean') ||
     (record.baseCommit !== undefined &&
       (typeof record.baseCommit !== 'string' || !GIT_OBJECT_ID_PATTERN.test(record.baseCommit)))
   ) {
@@ -386,6 +623,16 @@ function validImpactQueryRequest(value: unknown): value is CodeGraphImpactQueryR
     record.borrowedSnapshotId !== undefined &&
     record.readySnapshotId !== undefined &&
     record.borrowedSnapshotId !== record.readySnapshotId
+  ) {
+    return false;
+  }
+  if (
+    record.discover === true &&
+    (record.borrowedSnapshotId !== undefined ||
+      record.readySnapshotId !== undefined ||
+      record.projectScopeReceipt !== undefined ||
+      record.overlay !== undefined ||
+      record.strictFreshness !== undefined)
   ) {
     return false;
   }
@@ -425,6 +672,7 @@ export function impactQueryWorkerStatusObservation(
   return {
     ...(selectedSnapshotId === undefined ? {} : {borrowedSnapshotId: selectedSnapshotId}),
     identity,
+    ...(request.overlay === undefined ? {} : {overlay: request.overlay}),
   };
 }
 
@@ -540,6 +788,14 @@ export function impactQueryTransportSelector(
   return seedQueries?.length ? CODE_GRAPH_IMPACT_QUERY_CHANGED_PATHS_SELECTOR : (query ?? '');
 }
 
+function validWorktreeOverlay(value: unknown): value is NonNullable<CodeGraphImpactQueryRequest['overlay']> {
+  return (
+    Predicate.isObject(value) &&
+    typeof value.dirty === 'boolean' &&
+    (value.fingerprint === undefined || validProtocolText(value.fingerprint))
+  );
+}
+
 function validProtocolText(value: unknown, allowEmpty = false): value is string {
   return (
     typeof value === 'string' &&
@@ -566,12 +822,84 @@ function decodeImpactQueryResponse(content: string): CodeGraphImpactQueryRespons
     if (record.protocol !== CODE_GRAPH_IMPACT_QUERY_PROTOCOL || typeof record.ok !== 'boolean') return undefined;
     const telemetry = decodeCodeGraphIsolatedQueryTelemetry(record.telemetry);
     if (telemetry === undefined) return undefined;
-    if (!record.ok) return {ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL, telemetry};
+    if (!record.ok) {
+      if (record.unavailable === undefined) {
+        return {ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL, telemetry};
+      }
+      if (record.unavailable !== 'no-ready-snapshot' || !Predicate.isObject(record.identity)) return undefined;
+      const identity = record.identity;
+      if (!validProtocolText(identity.repoRoot) || !validProtocolText(identity.worktreeId)) return undefined;
+      return {
+        ok: false,
+        protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
+        telemetry,
+        unavailable: 'no-ready-snapshot' as const,
+        identity: {repoRoot: identity.repoRoot, worktreeId: identity.worktreeId},
+      };
+    }
     if (!validImpactQueryResult(record.result)) return undefined;
-    return {ok: true, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL, result: record.result, telemetry};
+    const status = decodeImpactQueryReadStatus(record.status);
+    if (status === undefined && record.status !== undefined) return undefined;
+    return {
+      ok: true,
+      protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
+      result: record.result,
+      ...(status === undefined ? {} : {status}),
+      telemetry,
+    };
   } catch {
     return undefined;
   }
+}
+
+function decodeImpactQueryReadStatus(value: unknown): CodeGraphImpactQueryReadStatus | undefined {
+  if (value === undefined) return undefined;
+  if (!Predicate.isObject(value) || typeof value.stale !== 'boolean') return undefined;
+  // Snapshot ids share the worker receipt format; a format change fails discovery reads closed here.
+  if (value.readySnapshotId !== undefined && !validSnapshotId(value.readySnapshotId)) return undefined;
+  if (!validProtocolText(value.worktreeId) || !validProtocolText(value.repoRoot)) return undefined;
+  if (!Predicate.isObject(value.surface)) return undefined;
+  const surface = value.surface;
+  if (
+    surface.selection !== 'none' &&
+    surface.selection !== 'active' &&
+    surface.selection !== 'borrowed' &&
+    surface.selection !== 'promoted'
+  ) {
+    return undefined;
+  }
+  if (surface.selection === 'none') {
+    if (surface.freshness !== undefined || surface.snapshot !== undefined) return undefined;
+    return {
+      stale: value.stale,
+      surface: {selection: 'none'},
+      worktreeId: value.worktreeId,
+      repoRoot: value.repoRoot,
+    };
+  }
+  if (surface.freshness !== 'current' && surface.freshness !== 'stale' && surface.freshness !== 'deferred') {
+    return undefined;
+  }
+  if (!Predicate.isObject(surface.snapshot)) return undefined;
+  const snapshot = surface.snapshot;
+  if (
+    !boundedInteger(snapshot.edgeCount, 0, Number.MAX_SAFE_INTEGER) ||
+    !boundedInteger(snapshot.fileCount, 0, Number.MAX_SAFE_INTEGER) ||
+    !boundedInteger(snapshot.symbolCount, 0, Number.MAX_SAFE_INTEGER)
+  ) {
+    return undefined;
+  }
+  return {
+    stale: value.stale,
+    ...(value.readySnapshotId === undefined ? {} : {readySnapshotId: value.readySnapshotId}),
+    surface: {
+      freshness: surface.freshness,
+      selection: surface.selection,
+      snapshot: {edgeCount: snapshot.edgeCount, fileCount: snapshot.fileCount, symbolCount: snapshot.symbolCount},
+    },
+    worktreeId: value.worktreeId,
+    repoRoot: value.repoRoot,
+  };
 }
 
 function decodeCodeGraphIsolatedQueryTelemetry(

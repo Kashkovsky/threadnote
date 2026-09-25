@@ -1,6 +1,6 @@
 import {Effect} from 'effect';
 import type {CodeGraphDirectPersistentCapacityBoundary} from '../disk/capacity.js';
-import type {CodeGraphStatus, RepositoryIdentity} from '../types.js';
+import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentity} from '../types.js';
 import {worktreeOverlayState} from '../inventory.js';
 import type {CodeGraphQueryScope} from './scope.js';
 
@@ -26,6 +26,36 @@ export function codeGraphSnapshotMatchesWorktree(
     snapshot.dirty === overlay.dirty &&
     (!overlay.dirty || snapshot.overlayFingerprint === overlay.fingerprint)
   );
+}
+
+export type CodeGraphStaleInspectionOperation = CodeGraphQueryResult['operation'];
+
+export function codeGraphInspectionAllowsStaleReady(operation: CodeGraphStaleInspectionOperation): boolean {
+  return operation !== 'impact' && operation !== 'path';
+}
+
+export function codeGraphInspectionObservesWorktree(operation: CodeGraphStaleInspectionOperation): boolean {
+  return !codeGraphInspectionAllowsStaleReady(operation);
+}
+
+export function codeGraphInspectionStartsRefresh(
+  status: {readonly readySnapshot?: unknown; readonly stale: boolean},
+  operation: CodeGraphStaleInspectionOperation,
+): boolean {
+  return !status.readySnapshot || (status.stale && !codeGraphInspectionAllowsStaleReady(operation));
+}
+
+export function codeGraphInspectionObservation(
+  observation: CodeGraphStatusObservation | undefined,
+  operation: CodeGraphStaleInspectionOperation,
+): CodeGraphStatusObservation | undefined {
+  if (observation === undefined || codeGraphInspectionObservesWorktree(operation)) return observation;
+  return {
+    identity: observation.identity,
+    ...(observation.borrowedSnapshotId === undefined ? {} : {borrowedSnapshotId: observation.borrowedSnapshotId}),
+    ...(observation.manifestPath === undefined ? {} : {manifestPath: observation.manifestPath}),
+    ...(observation.projectScope === undefined ? {} : {projectScope: observation.projectScope}),
+  };
 }
 
 export interface CodeGraphStatusOptions {

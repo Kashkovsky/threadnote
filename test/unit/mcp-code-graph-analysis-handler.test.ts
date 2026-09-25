@@ -15,7 +15,6 @@ import {
   type CodeGraphStatusOptions,
 } from '../../src/code_graph/query.js';
 import type {CodeGraphQueryScope} from '../../src/code_graph/query/scope.js';
-import {codeGraphQueryScopeReceipt} from '../../src/code_graph/query/scope.js';
 import {attachCodeGraphStatusObservation} from '../../src/code_graph/query/contract.js';
 import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {
@@ -59,7 +58,12 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       });
 
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
-      expect(harness.observation.statusOptions[0]).toMatchObject({project: 'web'});
+      expect(harness.observation.isolatedRequests).toEqual([
+        expect.objectContaining({operation: 'query', project: 'web', discover: true}),
+      ]);
+      const [inferred] = harness.observation.isolatedRequests;
+      expect(inferred).not.toHaveProperty('readySnapshotId');
+      expect(inferred).not.toHaveProperty('projectScopeReceipt');
     }).pipe(
       Effect.ensuring(FileSystem.FileSystem.pipe(Effect.flatMap(fs => fs.remove(manifestPath).pipe(Effect.ignore)))),
       provideTestLayer(harness.layer),
@@ -205,9 +209,13 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       }
       expect(harness.observation.isolatedInspectCalls).toBe(2);
       expect(harness.observation.isolatedRequests).toEqual([
-        expect.objectContaining({operation: 'query', readySnapshotId: ready.readySnapshot?.id}),
-        expect.objectContaining({operation: 'node', readySnapshotId: ready.readySnapshot?.id}),
+        expect.objectContaining({operation: 'query', discover: true}),
+        expect.objectContaining({operation: 'node', discover: true}),
       ]);
+      for (const request of harness.observation.isolatedRequests) {
+        expect(request).not.toHaveProperty('readySnapshotId');
+        expect(request).not.toHaveProperty('projectScopeReceipt');
+      }
       expect(harness.observation.lifecycleEvents).toEqual([
         'isolated-read-start',
         'isolated-read-complete',
@@ -219,7 +227,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     }).pipe(provideTestLayer(harness.layer));
   });
 
-  effectIt.effect('forwards the resolved project scope instead of making the isolated worker rediscover it', () => {
+  effectIt.effect('rediscovers the resolved project scope in the isolated worker', () => {
     const projectScope = scopedProjectObservation();
     const base = codeGraphStatus({ready: true, stale: false});
     const ready = attachCodeGraphStatusObservation(
@@ -267,11 +275,14 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       });
       expect(harness.observation.isolatedRequests).toEqual([
         expect.objectContaining({
+          discover: true,
           operation: 'query',
-          projectScopeReceipt: codeGraphQueryScopeReceipt(projectScope),
-          readySnapshotId: ready.readySnapshot?.id,
+          project: 'web',
         }),
       ]);
+      const [discovery] = harness.observation.isolatedRequests;
+      expect(discovery).not.toHaveProperty('readySnapshotId');
+      expect(discovery).not.toHaveProperty('projectScopeReceipt');
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -296,12 +307,12 @@ describe('registered analyze_code_graph snapshot resolution', () => {
 
       expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
         operation: 'query',
-        readySnapshotAvailable: true,
         state: 'timed-out',
         type: 'code-graph-query-state',
       });
+      expect(JSON.stringify(result.structuredContent)).not.toContain('readySnapshotAvailable');
       expect(harness.observation.isolatedInspectCalls).toBe(1);
-      expect(harness.observation.lifecycleEvents).toEqual(['isolated-read-start', 'watcher-ensure']);
+      expect(harness.observation.lifecycleEvents).toEqual(['isolated-read-start']);
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -505,7 +516,26 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
             if (input.inspectDelayMilliseconds !== undefined) yield* Effect.sleep(input.inspectDelayMilliseconds);
             lifecycleEvents.push('isolated-read-complete');
             return commandResult(
-              JSON.stringify({ok: true, protocol: 1, result: codeGraphInspectionResult(status, request.operation)}),
+              JSON.stringify({
+                ok: true,
+                protocol: 1,
+                result: {
+                  ...codeGraphInspectionResult(status, request.operation),
+                  ...(status.projectCoverage === undefined ? {} : {projectCoverage: status.projectCoverage}),
+                },
+                status: {
+                  stale: status.stale,
+                  ...(status.readySnapshot === undefined ? {} : {readySnapshotId: status.readySnapshot.id}),
+                  surface: {
+                    freshness: status.freshness,
+                    selection: 'active',
+                    snapshot: {edgeCount: 0, fileCount: 0, symbolCount: 0},
+                  },
+                  worktreeId: status.identity.worktreeId,
+                  repoRoot: status.identity.repoRoot,
+                },
+                telemetry: [],
+              }),
             );
           }),
     executeBytes: (executable, arguments_, options) =>
