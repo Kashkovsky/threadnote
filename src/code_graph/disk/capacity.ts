@@ -553,6 +553,9 @@ export function isCodeGraphCapacityPause(cause: unknown): boolean {
   );
 }
 
+export const isNonResumableCodeGraphBuildFailure = (cause: unknown): boolean =>
+  !Schema.is(CodeGraphDiskCapacityObservationError)(cause);
+
 export function saturatingCapacityAdd(...values: readonly number[]): number {
   let total = 0;
   for (const value of values) {
