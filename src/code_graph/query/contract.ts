@@ -45,6 +45,19 @@ export function codeGraphInspectionStartsRefresh(
   return !status.readySnapshot || (status.stale && !codeGraphInspectionAllowsStaleReady(operation));
 }
 
+export function codeGraphInspectionObservation(
+  observation: CodeGraphStatusObservation | undefined,
+  operation: CodeGraphStaleInspectionOperation,
+): CodeGraphStatusObservation | undefined {
+  if (observation === undefined || codeGraphInspectionObservesWorktree(operation)) return observation;
+  return {
+    identity: observation.identity,
+    ...(observation.borrowedSnapshotId === undefined ? {} : {borrowedSnapshotId: observation.borrowedSnapshotId}),
+    ...(observation.manifestPath === undefined ? {} : {manifestPath: observation.manifestPath}),
+    ...(observation.projectScope === undefined ? {} : {projectScope: observation.projectScope}),
+  };
+}
+
 export interface CodeGraphStatusOptions {
   readonly project?: string;
   readonly manifestPath?: string;

@@ -13,12 +13,12 @@ import {
   codeGraphQueryAnonymousTelemetrySnapshotSurface,
   makeCodeGraphQueryAnonymousTelemetryReporter,
 } from '../../code_graph/query/anonymous_telemetry.js';
-import {repositoryChangesSince, resolveRepositoryIdentity} from '../../code_graph/repository.js';
+import {repositoryChangesSince} from '../../code_graph/repository.js';
 import {
   inspectCodeGraphReadIsolated,
   IsolatedCodeGraphImpactQueryTimedOut,
 } from '../../code_graph/isolated/impact_query.js';
-import {CodeGraphSnapshotUnavailable} from '../../code_graph/types.js';
+import type {CodeGraphQueryTelemetryObservation} from '../../code_graph/query/contract.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../code_graph/types.js';
 import type {CodeGraphWorksetQueryResult} from '../../code_graph/workset/query.js';
 import {
@@ -465,20 +465,7 @@ export function registerCodeGraphTool(
           cwd: string;
           threadnoteHome: string;
           project?: import('../../code_graph/watcher.js').CodeGraphWatchOptions['project'];
-        } = {
-          cwd: inspectionCwd,
-          threadnoteHome: config.agentContextHome,
         };
-        const resolveReadIdentity = Effect.fn('mcpServer.codeGraphReadIdentity')(function* () {
-          const identity = yield* resolveRepositoryIdentity(inspectionCwd);
-          refreshTarget = {
-            cwd: identity.repoRoot,
-            threadnoteHome: config.agentContextHome,
-            ...(scopeRoute?.state === 'selected' ? {project: scopeRoute.project} : {}),
-          };
-          timeoutContext = Option.some({key: identity.worktreeId, target: refreshTarget, watcher});
-          return identity;
-        });
         const readInput = {
           project: inspectionProject,
           manifestPath: config.manifestPath,
@@ -505,17 +492,15 @@ export function registerCodeGraphTool(
           onTelemetryObservation: queryTelemetry.observedStage,
           timeoutMilliseconds: MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS - 5_000,
         };
-        const runRead = () =>
-          queryTelemetry
-            .execute(inspectCodeGraphReadIsolated(readInput, readTimeout), read => read.status.surface)
-            .pipe(
-              Effect.catchIf(
-                (error: unknown) => Schema.is(CodeGraphSnapshotUnavailable)(error),
-                () => Effect.succeed('cold' as const),
-              ),
-            );
+        const runRead = (readTimeout: {
+          readonly onTelemetryObservation: (observation: CodeGraphQueryTelemetryObservation) => Effect.Effect<void>;
+          readonly timeoutMilliseconds: number;
+        }) =>
+          queryTelemetry.execute(inspectCodeGraphReadIsolated(readInput, readTimeout), read =>
+            'unavailable' in read ? {selection: 'none' as const} : read.status.surface,
+          );
         const readStartedAt = yield* Clock.currentTimeMillis;
-        const [identity, firstRead] = yield* Effect.all([resolveReadIdentity(), runRead()], {concurrency: 2});
+        let read = yield* runRead(readTimeout);
         const remainingReadTimeout = Effect.fn('mcpServer.codeGraphRemainingReadTimeout')(function* () {
           const elapsed = (yield* Clock.currentTimeMillis) - readStartedAt;
           return {
@@ -529,26 +514,24 @@ export function registerCodeGraphTool(
             ),
           };
         });
-        let read = firstRead;
-        if (read === 'cold') {
-          yield* watcher.ensure({...refreshTarget, key: identity.worktreeId});
-          const refreshStarted = yield* watcher.refresh({...refreshTarget, key: identity.worktreeId});
+        if ('unavailable' in read) {
+          refreshTarget = {
+            cwd: read.identity.repoRoot,
+            threadnoteHome: config.agentContextHome,
+            ...(scopeRoute?.state === 'selected' ? {project: scopeRoute.project} : {}),
+          };
+          timeoutContext = Option.some({key: read.identity.worktreeId, target: refreshTarget, watcher});
+          yield* watcher.ensure({...refreshTarget, key: read.identity.worktreeId});
+          const refreshStarted = yield* watcher.refresh({...refreshTarget, key: read.identity.worktreeId});
           if (refreshStarted) {
-            yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, refreshTarget);
+            yield* waitForCodeGraphRefresh(watcher, read.identity.worktreeId, refreshTarget);
           }
-          read = yield* queryTelemetry
-            .execute(
-              inspectCodeGraphReadIsolated(readInput, yield* remainingReadTimeout()),
-              read => read.status.surface,
-            )
-            .pipe(
-              Effect.catchIf(
-                (error: unknown) => Schema.is(CodeGraphSnapshotUnavailable)(error),
-                () => Effect.succeed('cold' as const),
-              ),
-            );
-          if (read === 'cold') {
-            const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
+          read = yield* queryTelemetry.execute(
+            inspectCodeGraphReadIsolated(readInput, yield* remainingReadTimeout()),
+            read => ('unavailable' in read ? {selection: 'none' as const} : read.status.surface),
+          );
+          if ('unavailable' in read) {
+            const refreshStatus = Option.getOrUndefined(yield* watcher.status(read.identity.worktreeId, refreshTarget));
             return yield* queryTelemetry.stage(
               'graph.query.execute',
               'query-serialization',
@@ -557,11 +540,18 @@ export function registerCodeGraphTool(
           }
         }
         readyReadStarted = true;
+        const worktreeKey = read.status.worktreeId;
+        refreshTarget = {
+          cwd: read.status.repoRoot,
+          threadnoteHome: config.agentContextHome,
+          ...(scopeRoute?.state === 'selected' ? {project: scopeRoute.project} : {}),
+        };
+        timeoutContext = Option.some({key: worktreeKey, target: refreshTarget, watcher});
         const firstSummary = {
           readySnapshot: read.status.readySnapshotId === undefined ? undefined : {id: read.status.readySnapshotId},
           stale: read.status.stale,
         };
-        const refreshStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
+        const refreshStatus = Option.getOrUndefined(yield* watcher.status(worktreeKey, refreshTarget));
         if (codeGraphRefreshBlocksReadyInspection(firstSummary, refreshStatus, allowStaleReadySnapshot)) {
           return yield* queryTelemetry.stage(
             'graph.query.execute',
@@ -573,23 +563,16 @@ export function registerCodeGraphTool(
         const backgroundRefreshRequested = codeGraphInspectionRequestsBackgroundRefresh(firstSummary, operation);
         let presentedResult = read.result;
         if (!backgroundRefreshRequested && codeGraphInspectionStartsRefresh(firstSummary, operation)) {
-          const refreshStarted = yield* watcher.refresh({...refreshTarget, key: identity.worktreeId});
+          const refreshStarted = yield* watcher.refresh({...refreshTarget, key: worktreeKey});
           if (refreshStarted) {
-            yield* waitForCodeGraphRefresh(watcher, identity.worktreeId, refreshTarget);
+            yield* waitForCodeGraphRefresh(watcher, worktreeKey, refreshTarget);
           }
-          const secondRead = yield* queryTelemetry
-            .execute(
-              inspectCodeGraphReadIsolated(readInput, yield* remainingReadTimeout()),
-              read => read.status.surface,
-            )
-            .pipe(
-              Effect.catchIf(
-                (error: unknown) => Schema.is(CodeGraphSnapshotUnavailable)(error),
-                () => Effect.succeed('cold' as const),
-              ),
-            );
+          const secondRead = yield* queryTelemetry.execute(
+            inspectCodeGraphReadIsolated(readInput, yield* remainingReadTimeout()),
+            read => ('unavailable' in read ? {selection: 'none' as const} : read.status.surface),
+          );
           const secondSummary =
-            secondRead === 'cold'
+            'unavailable' in secondRead
               ? {readySnapshot: undefined, stale: true}
               : {
                   readySnapshot:
@@ -598,8 +581,8 @@ export function registerCodeGraphTool(
                       : {id: secondRead.status.readySnapshotId},
                   stale: secondRead.status.stale,
                 };
-          if (secondRead === 'cold' || (secondSummary.stale && !allowStaleReadySnapshot)) {
-            const retryStatus = Option.getOrUndefined(yield* watcher.status(identity.worktreeId, refreshTarget));
+          if ('unavailable' in secondRead || (secondSummary.stale && !allowStaleReadySnapshot)) {
+            const retryStatus = Option.getOrUndefined(yield* watcher.status(worktreeKey, refreshTarget));
             return yield* queryTelemetry.stage(
               'graph.query.execute',
               'query-serialization',
@@ -609,12 +592,12 @@ export function registerCodeGraphTool(
           presentedResult = secondRead.result;
         }
         if (!allowStaleReadySnapshot) {
-          yield* watcher.ensure({...refreshTarget, key: identity.worktreeId});
+          yield* watcher.ensure({...refreshTarget, key: worktreeKey});
         }
         const completeReadyReadRefresh = completeCodeGraphReadyReadRefresh({
           backgroundRefreshRequested,
           ensureWatcher: allowStaleReadySnapshot,
-          key: identity.worktreeId,
+          key: worktreeKey,
           refresh: refreshContinuity,
           target: refreshTarget,
           watcher,

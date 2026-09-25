@@ -45,39 +45,33 @@ describe('code graph terminal telemetry wiring', () => {
       const spans = capture.spans
         .map(span => Object.fromEntries(span.attributes))
         .filter(attributes => attributes['threadnote.operation'] === 'inspect_code_graph');
-      expect(spans).toHaveLength(9);
-      expect(spans.slice(0, 8).map(attributes => attributes['threadnote.phase'])).toEqual([
+
+      expect(spans).toHaveLength(5);
+      expect(spans.map(attributes => attributes['threadnote.phase'])).toEqual([
         'graph.query.status',
-        'graph.query.status',
-        'graph.query.status',
-        'graph.query.status',
-        'graph.query.snapshot',
+        'graph.query.execute',
         'graph.query.execute',
         'graph.query.execute',
         'graph.query.execute',
       ]);
-      expect(spans.slice(0, 8).map(attributes => attributes['threadnote.stage'])).toEqual([
+      expect(spans.map(attributes => attributes['threadnote.stage'])).toEqual([
         'query-repository-identity',
-        'query-repository-identity',
-        'query-worktree-observation',
-        undefined,
-        undefined,
         'query-strict-reobservation',
         undefined,
         'query-serialization',
+        undefined,
       ]);
-      expect(spans[2]).toMatchObject({'threadnote.subphase': 'skipped'});
-      expect(spans[5]).toMatchObject({'threadnote.subphase': 'skipped'});
+      expect(spans[1]).toMatchObject({'threadnote.subphase': 'skipped'});
       for (const attributes of spans) {
         expect(attributes).toMatchObject({
           'threadnote.graph.request_kind': 'inspect.query',
           'threadnote.graph.request_scope': 'local',
         });
       }
-      for (const attributes of [spans[0], spans[1], spans[2], spans[3], spans[5], spans[7]]) {
+      for (const attributes of [spans[0], spans[1], spans[3]]) {
         expect(attributes).not.toHaveProperty('threadnote.graph.snapshot_selection');
       }
-      for (const attributes of [spans[4], spans[6], spans[8]]) {
+      for (const attributes of [spans[2], spans[4]]) {
         expect(attributes).toMatchObject({
           'threadnote.graph.snapshot_edges_bucket': expect.stringMatching(/^(?:0|2\^\d+)$/u),
           'threadnote.graph.snapshot_files_bucket': expect.stringMatching(/^(?:0|2\^\d+)$/u),
@@ -86,7 +80,7 @@ describe('code graph terminal telemetry wiring', () => {
           'threadnote.graph.snapshot_symbols_bucket': expect.stringMatching(/^(?:0|2\^\d+)$/u),
         });
       }
-      expect(spans[8]).toMatchObject({
+      expect(spans[4]).toMatchObject({
         'threadnote.event': 'completion',
         'threadnote.outcome': 'success',
       });
@@ -441,6 +435,17 @@ function registeredTelemetryHarness(tracer: Tracer.Tracer, onWatcherEnsure: () =
             ok: true,
             protocol: 1,
             result: {...telemetryQueryResult(status(false)), operation: request.operation},
+            status: {
+              stale: false,
+              readySnapshotId: snapshot.id,
+              surface: {
+                freshness: 'deferred',
+                selection: 'active',
+                snapshot: {edgeCount: 0, fileCount: 0, symbolCount: 0},
+              },
+              worktreeId: identity.worktreeId,
+              repoRoot: identity.repoRoot,
+            },
             telemetry: [
               {
                 disposition: 'skipped',

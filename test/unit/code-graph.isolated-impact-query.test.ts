@@ -770,6 +770,8 @@ describe('isolated code graph discovery reads', () => {
           selection: 'active',
           snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
         },
+        worktreeId: 'd'.repeat(64),
+        repoRoot: '/workspace/repository',
       });
       expect(actual.result).toEqual(neighbors);
       expect(seen.inspectOptions).toMatchObject({
@@ -800,6 +802,8 @@ describe('isolated code graph discovery reads', () => {
           selection: 'active',
           snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
         },
+        worktreeId: 'd'.repeat(64),
+        repoRoot: '/workspace/repository',
       });
       expect(actual.result).toEqual(neighbors);
     }),
@@ -816,7 +820,10 @@ describe('isolated code graph discovery reads', () => {
       );
 
       expect(seen.inspectOptions).toBeUndefined();
-      expect(actual).toEqual({unavailable: 'no-ready-snapshot'});
+      expect(actual).toEqual({
+        unavailable: 'no-ready-snapshot',
+        identity: {repoRoot: '/workspace/repository', worktreeId: 'd'.repeat(64)},
+      });
     }),
   );
 
@@ -851,6 +858,8 @@ describe('isolated code graph discovery reads', () => {
             selection: 'active',
             snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
           },
+          worktreeId: 'd'.repeat(64),
+          repoRoot: '/workspace/repository',
         },
       });
     }),
@@ -877,6 +886,8 @@ describe('isolated code graph discovery reads', () => {
                     selection: 'active',
                     snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
                   },
+                  worktreeId: 'd'.repeat(64),
+                  repoRoot: '/workspace/repository',
                 },
                 telemetry: [],
               }),
@@ -895,6 +906,9 @@ describe('isolated code graph discovery reads', () => {
         threadnoteHome: input.threadnoteHome,
       }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
 
+      if ('unavailable' in actual) {
+        return yield* Effect.die(`expected a successful discovery read, got ${actual.unavailable}`);
+      }
       expect(actual.result).toEqual(neighbors);
       expect(actual.status).toEqual({
         stale: false,
@@ -904,6 +918,8 @@ describe('isolated code graph discovery reads', () => {
           selection: 'active',
           snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
         },
+        worktreeId: 'd'.repeat(64),
+        repoRoot: '/workspace/repository',
       });
       const decoded = decodeImpactQueryRequest(new TextDecoder().decode(encodedRequest));
       expect(decoded).toMatchObject({discover: true, operation: 'neighbors'});
@@ -938,17 +954,20 @@ describe('isolated code graph discovery reads', () => {
     }),
   );
 
-  effectIt.effect('maps the worker no-snapshot verdict to the store unavailable error', () =>
+  effectIt.effect('returns the worker no-snapshot verdict with its identity', () =>
     Effect.gen(function* () {
+      const identity = {repoRoot: '/workspace/repository', worktreeId: 'd'.repeat(64)};
       const command = CommandExecutor.of({
         execute: () =>
           Effect.succeed(
-            commandResult(JSON.stringify({ok: false, protocol: 1, telemetry: [], unavailable: 'no-ready-snapshot'})),
+            commandResult(
+              JSON.stringify({ok: false, protocol: 1, telemetry: [], unavailable: 'no-ready-snapshot', identity}),
+            ),
           ),
         executeStreaming: () => Effect.die('unused'),
       });
 
-      const failure = yield* inspectCodeGraphReadIsolated({
+      const actual = yield* inspectCodeGraphReadIsolated({
         cwd: input.cwd,
         discover: true,
         edgeLimit: input.edgeLimit,
@@ -956,13 +975,9 @@ describe('isolated code graph discovery reads', () => {
         nodeLimit: input.nodeLimit,
         operation: 'neighbors',
         threadnoteHome: input.threadnoteHome,
-      }).pipe(
-        Effect.provideService(CommandExecutor, command),
-        Effect.provideService(SystemInfo, systemInfoStub({})),
-        Effect.flip,
-      );
+      }).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, systemInfoStub({})));
 
-      expect(failure._tag).toBe('CodeGraphSnapshotUnavailable');
+      expect(actual).toEqual({unavailable: 'no-ready-snapshot', identity});
     }),
   );
 
@@ -1004,6 +1019,10 @@ describe('isolated code graph discovery reads', () => {
         broker(JSON.stringify({ok: false, protocol: 1, telemetry: [], unavailable: 'bogus'})),
       );
       expect(badMarker._tag).toBe('IsolatedCodeGraphImpactQueryError');
+      const missingIdentity = yield* read(
+        broker(JSON.stringify({ok: false, protocol: 1, telemetry: [], unavailable: 'no-ready-snapshot'})),
+      );
+      expect(missingIdentity._tag).toBe('IsolatedCodeGraphImpactQueryError');
     }),
   );
 
