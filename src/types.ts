@@ -208,11 +208,17 @@ export interface McpInstallOptions {
 export interface RememberOptions {
   /** Graph-indexed repository-relative paths or stable code-graph refs captured as immutable code citations. */
   readonly codeRefs?: readonly string[];
+  /** Drop keywords preserved from the replaced memory. Mutually exclusive with keywords and regenerateKeywords. */
+  readonly clearKeywords?: boolean;
   /** Explicit compatibility alias for the default private store-now/anchor-later policy. */
   readonly deferCodeRefs?: boolean;
   readonly dryRun?: boolean;
   readonly kind?: MemoryKind;
+  /** Explicit search keywords. Skips automatic enrichment. Mutually exclusive with clearKeywords and regenerateKeywords. */
+  readonly keywords?: readonly string[];
   readonly project?: string;
+  /** Discard preserved keywords and regenerate them. Personal memories only. Mutually exclusive with keywords and clearKeywords. */
+  readonly regenerateKeywords?: boolean;
   /** Fail before writing unless every code reference resolves against an exact-current graph. */
   readonly requireCurrentCodeRefs?: boolean;
   /** Repeatable `<type>=<threadnote://memory>` relation declarations. */
@@ -290,6 +296,8 @@ export interface ListOptions {
 export interface HandoffOptions {
   readonly blockers?: string;
   readonly ci?: string;
+  /** Drop keywords preserved from the replaced memory. Handoffs preserve prior keywords by default; explicit authoring and regeneration are not supported for handoffs. */
+  readonly clearKeywords?: boolean;
   /** Graph-indexed repository-relative paths or stable code-graph refs captured as immutable code citations. */
   readonly codeRefs?: readonly string[];
   /** Explicit compatibility alias for the default private store-now/anchor-later policy. */
