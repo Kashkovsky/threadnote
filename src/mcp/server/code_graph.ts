@@ -40,6 +40,7 @@ import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
 } from '../../context_brief/index.js';
+import {withIsolatedContextBriefGraphReads} from '../../context_brief/graph/isolated_inspect.js';
 import {
   CodeGraphWatcher,
   type CodeGraphProgressTiming,
@@ -159,6 +160,8 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
           return argumentError('context_brief callerCwd must be an absolute workspace path.');
         }
         const requestedCodeRefs = codeRefs === undefined ? [] : typeof codeRefs === 'string' ? [codeRefs] : codeRefs;
+        const query = yield* CodeGraphQueryService;
+        const isolatedReads = yield* withIsolatedContextBriefGraphReads(query);
         const response = yield* compileContextBrief(config, {
           ...(budgetTokens === undefined ? {} : {budgetTokens}),
           codeRefs: requestedCodeRefs,
@@ -172,7 +175,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
               },
           ...(surface?.trim() ? {surface: surface.trim()} : {}),
           task: checkedTask.value,
-        });
+        }).pipe(Effect.provideService(CodeGraphQueryService, isolatedReads));
         return {
           content: [{type: 'text' as const, text: response.text}],
           structuredContent: response.structuredContent,

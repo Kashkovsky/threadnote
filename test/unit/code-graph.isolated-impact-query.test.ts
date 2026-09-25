@@ -494,14 +494,22 @@ describe('isolated code graph impact query', () => {
     'round-trips every local inspection operation without changing its selector contract (property)',
     {
       operation: fc.constantFrom('query', 'node', 'neighbors', 'explain', 'path', 'impact'),
+      overlay: fc.record({
+        dirty: fc.boolean(),
+        fingerprint: fc.option(
+          fc.string({maxLength: 64, minLength: 1}).filter(value => !value.includes('\0')),
+          {nil: undefined},
+        ),
+      }),
       prefixes: fc.array(
         fc.string({maxLength: 120, minLength: 1}).filter(value => !value.includes('\0')),
         {maxLength: 200},
       ),
       snapshotHash: gitObjectId(40),
       selector: fc.string({maxLength: 80, minLength: 1}).filter(value => !value.includes('\0')),
+      strictFreshness: fc.option(fc.boolean(), {nil: undefined}),
     },
-    ({operation, prefixes, selector, snapshotHash}) => {
+    ({operation, overlay, prefixes, selector, snapshotHash, strictFreshness}) => {
       const operationFields =
         operation === 'query' || operation === 'impact'
           ? {query: selector}
@@ -519,19 +527,24 @@ describe('isolated code graph impact query', () => {
         edgeLimit: 40,
         nodeLimit: 20,
         operation,
+        overlay,
         projectScopeReceipt: codeGraphQueryScopeReceipt(parentScope),
         protocol: 1,
         readySnapshotId: `cgsn_${snapshotHash}`,
+        ...(strictFreshness === undefined ? {} : {strictFreshness}),
         threadnoteHome: '/threadnote-home',
         ...operationFields,
       };
       expect(request.projectScopeReceipt).toEqual(codeGraphQueryScopeReceipt(projectScope));
       const decoded = decodeImpactQueryRequest(JSON.stringify(request));
-      expect(decoded).toEqual(request);
+      expect(decoded).toEqual(JSON.parse(JSON.stringify(request)));
       expect(impactQueryWorkerInspectOptions(decoded!, '/threadnote-home')).toMatchObject({
         operation,
         readyScopeReceipt: codeGraphQueryScopeReceipt(parentScope),
-        strictFreshness: operation === 'path' || operation === 'impact',
+        strictFreshness: strictFreshness ?? (operation === 'path' || operation === 'impact'),
+      });
+      expect(impactQueryWorkerStatusObservation(decoded!, identity)).toMatchObject({
+        overlay: JSON.parse(JSON.stringify(overlay)),
       });
     },
     {fastCheck: {numRuns: 80}},
@@ -603,6 +616,43 @@ describe('isolated code graph impact query', () => {
       decodeImpactQueryRequest(JSON.stringify({...request, seedQueries: Array.from({length: 201}, () => 'src/a.ts')})),
     ).toBeUndefined();
     expect(decodeImpactQueryRequest(JSON.stringify({...request, baseCommit: 'main'}))).toBeUndefined();
+    expect(decodeImpactQueryRequest(JSON.stringify({...request, strictFreshness: 'yes'}))).toBeUndefined();
+    expect(decodeImpactQueryRequest(JSON.stringify({...request, overlay: {dirty: 'no'}}))).toBeUndefined();
+    expect(
+      decodeImpactQueryRequest(JSON.stringify({...request, overlay: {dirty: true, fingerprint: 'a\0b'}})),
+    ).toBeUndefined();
+  });
+
+  it('preserves non-strict reads and the parent worktree observation in the worker', () => {
+    const request = decodeImpactQueryRequest(
+      JSON.stringify({
+        borrowedSnapshotId: result.snapshot.id,
+        cwd: input.cwd,
+        edgeLimit: input.edgeLimit,
+        nodeLimit: input.nodeLimit,
+        operation: 'impact',
+        overlay: {dirty: false},
+        protocol: 1,
+        query: 'src/a.ts',
+        seedQueries: ['src/a.ts'],
+        seedQueryCount: 1,
+        strictFreshness: false,
+        threadnoteHome: input.threadnoteHome,
+      }),
+    );
+    expect(request).toBeDefined();
+    expect(request).toMatchObject({overlay: {dirty: false}, strictFreshness: false});
+    expect(impactQueryWorkerStatusObservation(request!, identity)).toEqual({
+      borrowedSnapshotId: result.snapshot.id,
+      identity,
+      overlay: {dirty: false},
+    });
+    expect(impactQueryWorkerInspectOptions(request!, input.threadnoteHome)).toMatchObject({
+      operation: 'impact',
+      refresh: false,
+      requestMaintenance: false,
+      strictFreshness: false,
+    });
   });
 });
 

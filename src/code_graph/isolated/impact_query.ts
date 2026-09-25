@@ -52,9 +52,13 @@ interface CodeGraphImpactQueryRequest {
   /** Original count retained when the transport bounds changed-path content. */
   readonly seedQueryCount?: number;
   readonly seedQueries?: readonly string[];
+  /** Parent-observed read strictness; absent keeps the operation default. */
+  readonly strictFreshness?: boolean;
   readonly symbol?: string;
   readonly threadnoteHome: string;
   readonly to?: string;
+  /** Parent-observed worktree state reused instead of re-observing in the worker. */
+  readonly overlay?: CodeGraphStatusObservation['overlay'];
 }
 
 type CodeGraphImpactQueryResponse =
@@ -109,9 +113,13 @@ export interface IsolatedCodeGraphQueryInput {
   /** Original count retained when the caller removes outside-scope changed paths. */
   readonly seedQueryCount?: number;
   readonly seedQueries?: readonly string[];
+  /** Parent-observed read strictness; absent keeps the operation default. */
+  readonly strictFreshness?: boolean;
   readonly symbol?: string;
   readonly threadnoteHome: string;
   readonly to?: string;
+  /** Parent-observed worktree state reused instead of re-observing in the worker. */
+  readonly overlay?: CodeGraphStatusObservation['overlay'];
 }
 
 export class IsolatedCodeGraphImpactQueryError extends Schema.TaggedError<IsolatedCodeGraphImpactQueryError>()(
@@ -259,7 +267,7 @@ export function impactQueryWorkerInspectOptions(
     requestMaintenance: false,
     seedQueryCount: request.seedQueryCount,
     seedQueries: request.seedQueries,
-    strictFreshness: request.operation === 'impact' || request.operation === 'path',
+    strictFreshness: request.strictFreshness ?? (request.operation === 'impact' || request.operation === 'path'),
     symbol: request.symbol,
     threadnoteHome,
     to: request.to,
@@ -293,9 +301,11 @@ function encodeImpactQueryRequest(input: IsolatedCodeGraphQueryInput): Uint8Arra
     ...(input.seedQueries === undefined
       ? {}
       : {seedQueries, seedQueryCount: input.seedQueryCount ?? input.seedQueries.length}),
+    ...(input.strictFreshness === undefined ? {} : {strictFreshness: input.strictFreshness}),
     ...(input.symbol === undefined ? {} : {symbol: input.symbol}),
     threadnoteHome: input.threadnoteHome,
     ...(input.to === undefined ? {} : {to: input.to}),
+    ...(input.overlay === undefined ? {} : {overlay: input.overlay}),
   } satisfies CodeGraphImpactQueryRequest;
   if (!validImpactQueryRequest(request)) {
     throw IsolatedCodeGraphImpactQueryError.make({message: 'Isolated code graph query request is invalid.'});
@@ -377,6 +387,8 @@ function validImpactQueryRequest(value: unknown): value is CodeGraphImpactQueryR
     (record.seedQueryCount !== undefined && !boundedInteger(record.seedQueryCount, 0, Number.MAX_SAFE_INTEGER)) ||
     (record.symbol !== undefined && !validProtocolText(record.symbol)) ||
     (record.to !== undefined && !validProtocolText(record.to)) ||
+    (record.strictFreshness !== undefined && typeof record.strictFreshness !== 'boolean') ||
+    (record.overlay !== undefined && !validWorktreeOverlay(record.overlay)) ||
     (record.baseCommit !== undefined &&
       (typeof record.baseCommit !== 'string' || !GIT_OBJECT_ID_PATTERN.test(record.baseCommit)))
   ) {
@@ -425,6 +437,7 @@ export function impactQueryWorkerStatusObservation(
   return {
     ...(selectedSnapshotId === undefined ? {} : {borrowedSnapshotId: selectedSnapshotId}),
     identity,
+    ...(request.overlay === undefined ? {} : {overlay: request.overlay}),
   };
 }
 
@@ -538,6 +551,14 @@ export function impactQueryTransportSelector(
   seedQueries: readonly string[] | undefined,
 ): string {
   return seedQueries?.length ? CODE_GRAPH_IMPACT_QUERY_CHANGED_PATHS_SELECTOR : (query ?? '');
+}
+
+function validWorktreeOverlay(value: unknown): value is NonNullable<CodeGraphImpactQueryRequest['overlay']> {
+  return (
+    Predicate.isObject(value) &&
+    typeof value.dirty === 'boolean' &&
+    (value.fingerprint === undefined || validProtocolText(value.fingerprint))
+  );
 }
 
 function validProtocolText(value: unknown, allowEmpty = false): value is string {
