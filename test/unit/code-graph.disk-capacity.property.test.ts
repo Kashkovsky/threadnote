@@ -13,6 +13,7 @@ import {
   codeGraphUtf8ByteLength,
   evaluateCodeGraphDiskCapacity,
   isCodeGraphCapacityPause,
+  isNonResumableCodeGraphBuildFailure,
   saturatingCapacityAdd,
   saturatingCapacityMultiply,
   sqliteWalCapacityBytes,
@@ -366,6 +367,7 @@ describe('code graph disk capacity properties', () => {
     expect(failure.message).not.toMatch(/[\\/]/u);
     expect(failure.operation).not.toContain('/Users/private');
     expect(Object.keys(failure)).not.toContain('decision');
+    expect(isNonResumableCodeGraphBuildFailure(failure)).toBe(true);
     expect(isCodeGraphCapacityPause(failure)).toBe(true);
 
     for (const operation of [
@@ -408,6 +410,7 @@ describe('code graph disk capacity properties', () => {
       retryable: true,
     });
     expect(failure.message).not.toMatch(/[\\/]/u);
+    expect(isNonResumableCodeGraphBuildFailure(failure)).toBe(false);
     expect(isCodeGraphCapacityPause(failure)).toBe(true);
     expect(
       isCodeGraphCapacityPause(

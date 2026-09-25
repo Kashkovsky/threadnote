@@ -4755,7 +4755,7 @@ describe('native code graph lifecycle', () => {
     90_000,
   );
 
-  effectIt.effect('pauses before an under-capacity persistent transaction and resumes its exact receipt prefix', () =>
+  effectIt.effect('drains an under-capacity persistent transaction instead of leaving a resumable build behind', () =>
     Effect.gen(function* () {
       const root = createManySourceRepository(130);
       const home = join(root, '.threadnote-test-home');
@@ -4801,89 +4801,93 @@ describe('native code graph lifecycle', () => {
 
       const databasePath = codeGraphDatabasePath(home, baseline);
       const pausedDatabase = new Database(databasePath, {readonly: true});
-      const paused = pausedDatabase
-        .query<{readonly failure_summary: string | null; readonly id: string}, [string]>(
-          "SELECT id, failure_summary FROM snapshots WHERE worktree_id = ? AND state = 'building' LIMIT 1",
-        )
-        .get(baseline.identity.worktreeId);
-      expect(paused).toBeDefined();
-      const pausedId = paused!.id;
-      expect(paused!.failure_summary).toBeNull();
-      expect(
-        pausedDatabase
-          .query<{readonly snapshot_id: string}, [string]>(
-            'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?',
-          )
-          .get(baseline.identity.worktreeId),
-      ).toEqual({snapshot_id: baseline.snapshot.id});
-      expect(
-        pausedDatabase
-          .query<{readonly batch_index: number}, [string]>(
-            'SELECT batch_index FROM building_materialization_batches WHERE snapshot_id = ? ORDER BY batch_index',
-          )
-          .all(pausedId),
-      ).toEqual([]);
-      const pausedSpoolDatabase = new Database(codeGraphMaterializationSpoolPath(home, baseline, pausedId), {
-        readonly: true,
-      });
       try {
         expect(
-          pausedSpoolDatabase
-            .query<{readonly batch_index: number}, []>(
-              'SELECT batch_index FROM materialization_spool_batches ORDER BY batch_index',
+          pausedDatabase
+            .query<{readonly count: number}, [string]>(
+              "SELECT COUNT(*) AS count FROM snapshots WHERE worktree_id = ? AND state IN ('building', 'failed', 'retired')",
             )
-            .all(),
-        ).toEqual([{batch_index: 0}]);
-      } finally {
-        pausedSpoolDatabase.close();
-      }
-      expect(
-        pausedDatabase
-          .query<{readonly count: number}, [string]>(
-            'SELECT COUNT(*) AS count FROM snapshot_build_owners WHERE snapshot_id = ?',
-          )
-          .get(pausedId)?.count,
-      ).toBe(1);
-      pausedDatabase.close();
-
-      const resumed = yield* indexer.index({
-        cwd: root,
-        diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
-        incrementalOverlay: false,
-        persistentMaterializationTransactionBatchLimit: 1,
-        threadnoteHome: home,
-      });
-      expect(resumed.snapshot).toMatchObject({id: pausedId, state: 'ready'});
-      yield* Effect.promise(() => awaitCompletedBuildCleanup(databasePath, pausedId));
-
-      const resumedDatabase = new Database(databasePath, {readonly: true});
-      try {
+            .get(baseline.identity.worktreeId)?.count,
+        ).toBe(0);
         expect(
-          resumedDatabase
+          pausedDatabase
             .query<{readonly snapshot_id: string}, [string]>(
               'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?',
             )
             .get(baseline.identity.worktreeId),
-        ).toEqual({snapshot_id: pausedId});
+        ).toEqual({snapshot_id: baseline.snapshot.id});
         expect(
-          resumedDatabase
-            .query<{readonly count: number}, [string]>(
-              'SELECT COUNT(*) AS count FROM snapshot_build_owners WHERE snapshot_id = ?',
-            )
-            .get(pausedId)?.count,
+          pausedDatabase
+            .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners')
+            .get()?.count,
         ).toBe(0);
-        expect(
-          resumedDatabase
-            .query<{readonly count: number}, [string]>(
-              'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
-            )
-            .get(pausedId)?.count,
-        ).toBe(0);
-        expect(resumedDatabase.query('PRAGMA foreign_key_check').all()).toEqual([]);
+        expect(pausedDatabase.query('PRAGMA foreign_key_check').all()).toEqual([]);
       } finally {
-        resumedDatabase.close();
+        pausedDatabase.close();
       }
+      expect(
+        readdirSync(join(home, 'indexes', 'code-graph', 'repositories', baseline.identity.checkoutId)).filter(
+          candidate => candidate.startsWith('materialization-spool-v1-'),
+        ),
+      ).toEqual([]);
     }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect(
+    'fails a direct persistent build at planning time when the heuristic estimate already cannot fit',
+    () =>
+      Effect.gen(function* () {
+        const root = createManySourceRepository(130);
+        const home = join(root, '.threadnote-test-home');
+        const system = yield* SystemInfo;
+        const progress: CodeGraphProgress[] = [];
+        const indexerLayer = Layer.fresh(CodeGraphIndexer.layer).pipe(
+          Layer.provide(
+            Layer.succeed(SystemInfo, SystemInfo.of({...system, availableDiskBytes: () => Effect.succeed(0)})),
+          ),
+        );
+
+        const failure = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const context = yield* Layer.build(indexerLayer);
+            const indexer = Context.get(context, CodeGraphIndexer);
+            return yield* indexer
+              .index({
+                cwd: root,
+                diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
+                incrementalOverlay: false,
+                onProgress: update =>
+                  Effect.sync(() => {
+                    progress.push(update);
+                  }),
+                threadnoteHome: home,
+              })
+              .pipe(Effect.flip);
+          }),
+        );
+
+        expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
+        expect(progress.some(update => update.phase === 'materializing')).toBe(false);
+
+        const identity = yield* resolveRepositoryIdentity(root);
+        const database = new Database(codeGraphDatabasePath(home, {identity}), {readonly: true});
+        try {
+          expect(
+            database
+              .query<{readonly count: number}, [string]>(
+                "SELECT COUNT(*) AS count FROM snapshots WHERE worktree_id = ? AND state IN ('building', 'failed', 'retired')",
+              )
+              .get(identity.worktreeId)?.count,
+          ).toBe(0);
+          expect(
+            database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners').get()
+              ?.count,
+          ).toBe(0);
+          expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+        } finally {
+          database.close();
+        }
+      }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('reprotects the exact ready snapshot when a paused promotion resumes', () =>
@@ -6439,29 +6443,6 @@ function snapshotLeaseCount(databasePath: string): number {
     return Number(row?.count ?? 0);
   } finally {
     database.close();
-  }
-}
-
-async function awaitCompletedBuildCleanup(databasePath: string, snapshotId: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  for (;;) {
-    const database = new Database(databasePath, {readonly: true});
-    try {
-      const rows = database
-        .query<{readonly batches: number; readonly owners: number}, [string, string]>(
-          `SELECT
-             (SELECT COUNT(*) FROM snapshot_build_owners WHERE snapshot_id = ?) AS owners,
-             (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ?) AS batches`,
-        )
-        .get(snapshotId, snapshotId);
-      if ((rows?.owners ?? 0) === 0 && (rows?.batches ?? 0) === 0) return;
-      if (Date.now() >= deadline) {
-        throw TestError.make({message: `Timed out waiting for completed build cleanup: ${JSON.stringify(rows)}.`});
-      }
-    } finally {
-      database.close();
-    }
-    await new Promise(resolve => setTimeout(resolve, 10));
   }
 }
 

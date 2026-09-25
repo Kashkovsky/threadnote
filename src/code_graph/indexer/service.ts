@@ -16,7 +16,7 @@ import {makeCodeGraphBuildReporter, type CodeGraphBuildReporter} from '../build_
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, withCodeGraphBuilderAdmission} from '../builder/admission.js';
 import type {CodeGraphBuilderAdmissionQueue} from '../builder/admission_scheduler.js';
 import {makeCodeGraphBuildResourceCoordinator} from '../build/resources.js';
-import {isCodeGraphCapacityPause} from '../disk/capacity.js';
+import {isNonResumableCodeGraphBuildFailure} from '../disk/capacity.js';
 import {CodeGraphEmbeddingIndex} from '../embedding.js';
 import {
   attemptReusableDirtyBase,
@@ -1342,12 +1342,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             persistentOwnerToken,
                           ),
                         ),
-                        Effect.catchIf(
-                          cause => !(persistentOwnerToken !== undefined && isCodeGraphCapacityPause(cause)),
-                          cause =>
-                            store
-                              .markFailed(layout.databasePath, building.id, messageOf(cause), persistentOwnerToken)
-                              .pipe(Effect.andThen(Effect.fail(cause))),
+                        Effect.catchIf(isNonResumableCodeGraphBuildFailure, cause =>
+                          store
+                            .markFailed(layout.databasePath, building.id, messageOf(cause), persistentOwnerToken)
+                            .pipe(Effect.andThen(Effect.fail(cause))),
                         ),
                       );
                     }),
