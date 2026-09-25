@@ -2208,7 +2208,9 @@ describe('Threadnote MCP toolsets', () => {
         expect(contextTool?.description).toContain('cgr_ is unsupported');
         expect(JSON.stringify(contextTool?.inputSchema)).toContain('no ./');
         expect(JSON.stringify(contextTool?.inputSchema)).toContain('1-4096 UTF-8 bytes');
-        expect(JSON.stringify(contextTool?.inputSchema)).toContain('Project; max 256 UTF-8 bytes');
+        expect(JSON.stringify(contextTool?.inputSchema)).toContain(
+          'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
+        );
         expect(JSON.stringify(contextTool?.inputSchema)).toContain('workset; max 256 UTF-8 bytes');
         expect(contextTool?.inputSchema).toMatchObject({
           additionalProperties: false,
@@ -2443,6 +2445,9 @@ describe('Threadnote MCP toolsets', () => {
         expect(JSON.stringify(graphTool?.inputSchema)).toContain(
           'Local or named-workset query response-token budget; worksets default to 1250, maximum 1500',
         );
+        expect(JSON.stringify(graphTool?.inputSchema)).toContain(
+          'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
+        );
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           required: ['operation'],
@@ -2467,6 +2472,9 @@ describe('Threadnote MCP toolsets', () => {
           idempotentHint: true,
           readOnlyHint: false,
         });
+        expect(JSON.stringify(analysisTool?.inputSchema)).toContain(
+          'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
+        );
         expect(analysisTool?.description).toContain('separate from inspect_code_graph');
         expect(analysisTool?.inputSchema).toMatchObject({
           additionalProperties: false,

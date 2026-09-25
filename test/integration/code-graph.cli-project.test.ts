@@ -141,7 +141,10 @@ describe('code graph CLI project selection', () => {
 
       const unknown = await runCli(['graph', 'status', ...base, '--project', 'missing']).catch(asProcessError);
       expect(unknown).toMatchObject({code: 1});
-      expect(String(unknown.stderr)).toContain('No configured project named "missing" exists.');
+      expect(String(unknown.stderr)).toContain('No configured graph project named "missing" exists.');
+      expect(String(unknown.stderr)).toContain('threadnote project list');
+      expect(String(unknown.stderr)).toContain('threadnote project create <name> --path <repository>');
+      expect(String(unknown.stderr)).toContain('omit project/--project to infer scope from callerCwd/--cwd');
     } finally {
       await rm(root, {force: true, recursive: true});
     }

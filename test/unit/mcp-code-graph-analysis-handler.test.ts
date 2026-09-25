@@ -170,7 +170,8 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         project: 'unknown',
       });
       expect(unknown.isError).toBe(true);
-      expect(JSON.stringify(unknown.content)).toContain('No configured project named');
+      expect(JSON.stringify(unknown.content)).toContain('No configured graph project named');
+      expect(JSON.stringify(unknown.content)).toContain('threadnote project create <name> --path <repository>');
       expect(JSON.stringify(unknown.content)).not.toContain('configured project \\"unknown\\"');
       expect(harness.observation.statusOptions).toHaveLength(0);
     }).pipe(
