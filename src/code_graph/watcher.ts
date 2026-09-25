@@ -76,10 +76,7 @@ import {codeGraphBuildRequestKey} from './indexer/build.js';
 import {extractorSetIdentity} from './indexer/materialization.js';
 import {CodeGraphLanguagePackRegistry, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {codeGraphSnapshotMatchesCurrentLanguagePacks} from './query/snapshot_runtime.js';
-import {
-  codeGraphScopeAdmissionEvidence,
-  type CodeGraphScopeApplicabilityEvidence,
-} from './scope/applicability.js';
+import {codeGraphScopeAdmissionEvidence, type CodeGraphScopeApplicabilityEvidence} from './scope/applicability.js';
 import {
   compileThreadnoteIgnore,
   isIgnoredByThreadnote,

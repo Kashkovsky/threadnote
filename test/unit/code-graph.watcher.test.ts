@@ -1249,13 +1249,7 @@ describe('CodeGraphWatcher', () => {
           scopeKey: `code-graph-scope:${'3'.repeat(64)}`,
           worktreeId: identity.worktreeId,
         } as const;
-        const layout = codeGraphLayout(
-          path,
-          home,
-          identity.checkoutId,
-          identity.worktreeId,
-          scopeEvidence.scopeKey,
-        );
+        const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId, scopeEvidence.scopeKey);
         const ready = {
           commit: identity.headCommit,
           dirty: false,
