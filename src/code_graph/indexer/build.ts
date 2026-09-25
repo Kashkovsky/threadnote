@@ -5,7 +5,6 @@ import {withThreadnoteProcessActivity} from '../../process/diagnostics.js';
 import type {CodeGraphBuildOwnerIdentity} from '../build/owner.js';
 import type {CodeGraphBuildResourceCoordinator} from '../build/resources.js';
 import {canonicalCodeGraphMonikers} from '../cross_repository/monikers.js';
-import {isCodeGraphCapacityPause} from '../disk/capacity.js';
 import {coordinateCodeGraphBuild, measureCodeGraphAttribution} from './build_coordination.js';
 import type {CodeGraphEmbeddingIndexShape, CodeGraphEmbeddingStatus} from '../embedding.js';
 import {finalCodeGraphFactBatches, serializeBoundedCodeGraphFact} from '../fact/budget.js';
@@ -122,6 +121,7 @@ import {
 } from '../store.js';
 import {
   type CodeGraphIndexSummary,
+  CodeGraphDiskCapacityPressureError,
   type CodeGraphMaterializationActivity,
   type CodeGraphMaterializationMetrics,
   type CodeGraphMaterializationRows,
@@ -352,12 +352,10 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
         Effect.onInterrupt(() =>
           settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
         ),
-        Effect.catchIf(
-          cause => !isCodeGraphCapacityPause(cause),
-          cause =>
-            input.store
-              .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
-              .pipe(Effect.andThen(Effect.fail(cause))),
+        Effect.catch(cause =>
+          input.store
+            .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
+            .pipe(Effect.andThen(Effect.fail(cause))),
         ),
       );
     }),
@@ -1002,12 +1000,10 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
         Effect.onInterrupt(() =>
           settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
         ),
-        Effect.catchIf(
-          cause => !isCodeGraphCapacityPause(cause),
-          cause =>
-            input.store
-              .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
-              .pipe(Effect.andThen(Effect.fail(cause))),
+        Effect.catch(cause =>
+          input.store
+            .markFailed(input.layout.databasePath, building.id, messageOf(cause), ownerToken)
+            .pipe(Effect.andThen(Effect.fail(cause))),
         ),
       );
     }),
@@ -1273,6 +1269,9 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
       });
     const storageShortfalls = materializationStorageShortfalls(storagePlan);
     if (storageShortfalls.length > 0) {
+      if (directPersistentMaterialization) {
+        return yield* CodeGraphDiskCapacityPressureError.of('protect code graph storage');
+      }
       extractionDiagnostics.push(
         `Available ${storageShortfalls.join(' and ')} disk space is below the heuristic materialization estimate; ` +
           'indexing will continue while reporting actual TEMP database usage.',
