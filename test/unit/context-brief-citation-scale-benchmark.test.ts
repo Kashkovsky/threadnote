@@ -6,7 +6,7 @@ import {Effect, Option, Schema} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {benchmarkMeasurement} from '../../src/evaluation/benchmark.js';
 import {
-  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
   CONTEXT_BRIEF_CITATION_SCALE_ARTIFACT_SUITE,
   CONTEXT_BRIEF_CITATION_SCALE_EXECUTION_V2,
@@ -69,18 +69,20 @@ const sampleGapCalibration = Option.getOrThrow(
         runs: Schema.Array(
           Schema.Struct({
             artifactId: PositiveInteger,
+            artifactZipSha256: Schema.optional(Sha256),
             candidateCommit: GitCommit,
             createdAt: IsoInstant,
             maximumSampleGapsMilliseconds: Schema.Array(NonNegativeInteger),
+            observationCount: PositiveInteger,
             rawArtifactSha256: Sha256,
             workflowAttempt: PositiveInteger,
             workflowRun: PositiveInteger,
           }),
         ),
-        version: Schema.Literal(1),
+        version: Schema.Literal(2),
       }),
     ),
-  )(await Bun.file('test/evaluation/baselines/context-brief-citations-v1/sample-gap-calibration-v2.json').text()),
+  )(await Bun.file('test/evaluation/baselines/context-brief-citations-v1/sample-gap-calibration-v3.json').text()),
 );
 const validationQuantileCalibration = Option.getOrThrow(
   Schema.decodeOption(
@@ -437,11 +439,20 @@ describe('Context Brief citation scale benchmark', () => {
     );
   });
 
-  it('rederives the v2 sample-gap ceiling from retained hosted-runner calibration evidence', () => {
-    expect(sampleGapCalibration.runs).toHaveLength(4);
-    expect(new Set(sampleGapCalibration.runs.map(run => run.artifactId)).size).toBe(4);
+  it('rederives the v3 sample-gap ceiling from retained hosted-runner calibration evidence', () => {
+    expect(sampleGapCalibration.runs).toHaveLength(5);
+    expect(new Set(sampleGapCalibration.runs.map(run => run.rawArtifactSha256)).size).toBe(5);
+    expect(new Set(sampleGapCalibration.runs.map(run => run.artifactId)).size).toBe(5);
+    expect(sampleGapCalibration.runs.find(run => run.workflowRun === 36_251_218_009)).toMatchObject({
+      artifactZipSha256: 'a56543c43df9eef8072dfdadcab1e022d77d9b4e47f0d66e153c3529c4610d3f',
+      artifactId: 10_909_666_470,
+      candidateCommit: '366f1924df3b7d3aa18df99b27b2edcff0b695f4',
+      observationCount: 300,
+      rawArtifactSha256: 'abd46bf098aa9c82ab1efd3a8f513427c43f2937d9f2c6b16c9fa46045bb20e7',
+      workflowAttempt: 1,
+    });
     const gaps = sampleGapCalibration.runs.flatMap(run => {
-      expect(run.maximumSampleGapsMilliseconds).toHaveLength(75);
+      expect(run.maximumSampleGapsMilliseconds).toHaveLength(run.observationCount);
       expect(Number.isFinite(Date.parse(run.createdAt))).toBe(true);
       return run.maximumSampleGapsMilliseconds;
     });
@@ -481,16 +492,16 @@ describe('Context Brief citation scale benchmark', () => {
       p99Milliseconds: percentile(0.99),
     }).toEqual(sampleGapCalibration.expected);
     expect(sampleGapCalibration.breachThresholdMilliseconds).toBe(
-      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.breachThresholdMilliseconds,
+      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3.breachThresholdMilliseconds,
     );
     expect(derivedHardMaximumMilliseconds).toBe(
-      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.hardMaximumGapMilliseconds,
+      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3.hardMaximumGapMilliseconds,
     );
     expect(
       sampleGapCalibration.expected.breachCount / sampleGapCalibration.expected.observationCount,
-    ).toBeLessThanOrEqual(CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumBreachRate);
+    ).toBeLessThanOrEqual(CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3.maximumBreachRate);
     expect(maximumConsecutiveBreachesWithinRun).toBeLessThanOrEqual(
-      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumConsecutiveBreaches,
+      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3.maximumConsecutiveBreaches,
     );
   });
 
@@ -545,12 +556,12 @@ describe('Context Brief citation scale benchmark', () => {
   fcEffectProp(
     effectIt,
     'derives and gates sample-gap rate, consecutive runs, and hard maximum from observation order',
-    {gaps: fc.array(fc.integer({max: 500, min: 0}), {maxLength: 75, minLength: 1})},
+    {gaps: fc.array(fc.integer({max: 700, min: 0}), {maxLength: 300, minLength: 1})},
     ({gaps}) =>
       Effect.sync(() => {
         const summary = contextBriefCitationRssSampleGapSummary(gaps);
         const breaches = gaps.map(
-          gap => gap > CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.breachThresholdMilliseconds,
+          gap => gap > CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3.breachThresholdMilliseconds,
         );
         const breachCount = breaches.filter(Boolean).length;
         let run = 0;
@@ -567,16 +578,16 @@ describe('Context Brief citation scale benchmark', () => {
           sampleGapBreachRate: breachCount / breaches.length,
         });
         const shouldPass =
-          breachCount / breaches.length <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumBreachRate &&
-          maximumRun <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumConsecutiveBreaches &&
-          Math.max(...gaps) <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.hardMaximumGapMilliseconds;
+          breachCount / breaches.length <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3.maximumBreachRate &&
+          maximumRun <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3.maximumConsecutiveBreaches &&
+          Math.max(...gaps) <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3.hardMaximumGapMilliseconds;
         expect(contextBriefCitationRssSampleGapFailures(summary, breaches.length).length === 0).toBe(shouldPass);
       }),
     {fastCheck: {numRuns: 100}},
   );
 
   it('accepts bounded hosted stalls and rejects rate, consecutive, and hard-maximum violations independently', () => {
-    const pass = contextBriefCitationRssSampleGapSummary([297, 115, ...Array.from({length: 73}, () => 100)]);
+    const pass = contextBriefCitationRssSampleGapSummary([481, 115, ...Array.from({length: 73}, () => 100)]);
     expect(contextBriefCitationRssSampleGapFailures(pass, 75)).toEqual([]);
 
     const excessiveRate = contextBriefCitationRssSampleGapSummary([
@@ -597,9 +608,9 @@ describe('Context Brief citation scale benchmark', () => {
       expect.arrayContaining([expect.stringContaining('3 consecutive')]),
     );
 
-    const hardMaximum = contextBriefCitationRssSampleGapSummary([351, ...Array.from({length: 74}, () => 100)]);
+    const hardMaximum = contextBriefCitationRssSampleGapSummary([551, ...Array.from({length: 74}, () => 100)]);
     expect(contextBriefCitationRssSampleGapFailures(hardMaximum, 75)).toEqual(
-      expect.arrayContaining([expect.stringContaining('351ms exceeds hard maximum 350ms')]),
+      expect.arrayContaining([expect.stringContaining('551ms exceeds hard maximum 550ms')]),
     );
   });
 
@@ -1067,7 +1078,7 @@ function scaleArtifact(): ContextBriefCitationScaleArtifactV2 {
       rootStartIdentity: 'root-start',
       sampleGapBreachCount: 0,
       sampleGapBreachRate: 0,
-      sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
+      sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3,
       sampleAttempts: 10,
       sampleFailures: 0,
       scope: 'recursive-process-tree',
