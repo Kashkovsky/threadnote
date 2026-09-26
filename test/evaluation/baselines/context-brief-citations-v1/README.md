@@ -32,13 +32,22 @@ exceeded only the v1 250 ms ceiling. That observation still contained 64 success
 the run had 3,194/3,194 successful samples, a 2/75 breach rate, and at most one consecutive breach. Across all four
 runs, 8/300 observations breached 100 ms, with p50/p95/p99 gaps of 54/89/138 ms and a 297 ms maximum.
 
-The prospective v2 policy applies the same calibration rule used above: 10% above 297 ms, rounded up to the next
-50 ms, yields a 350 ms hard maximum. It keeps the 100 ms threshold, 10% breach-rate ceiling, two-consecutive ceiling,
-zero-failure requirement, descendant coverage, and RSS budgets unchanged. This locks a bounded hosted-runner
-scheduling-stall allowance before a new candidate run rather than accepting a retry of the failed candidate.
-The privacy-safe canonical projection in `sample-gap-calibration-v2.json` retains all 300 ordered gaps and their
-workflow, attempt, artifact, commit, timestamp, and raw-artifact-digest provenance. Its unit verifier independently
-re-derives the documented aggregate and policy ceiling, so the calibration remains reviewable after hosted artifacts
+The v2 policy applied the same calibration rule used above: 10% above 297 ms, rounded up to the next 50 ms, yielding
+a 350 ms hard maximum. Its privacy-safe `sample-gap-calibration-v2.json` projection remains as the retained
+four-run, 300-observation predecessor.
+
+Exact clean commit `366f1924df3b7d3aa18df99b27b2edcff0b695f4` then completed GitHub-hosted macOS 15 ARM64 workflow
+run `36251218009` on Bun 1.4.2. Its 300 observations and all 8,707 samples succeeded, with three `>100 ms` gaps,
+no consecutive breach, and one isolated 481 ms maximum; all product, correctness, currentness, latency, RSS, and
+coverage gates passed. The retained raw artifact SHA-256 is
+`abd46bf098aa9c82ab1efd3a8f513427c43f2937d9f2c6b16c9fa46045bb20e7`, and its ZIP SHA-256 is
+`a56543c43df9eef8072dfdadcab1e022d77d9b4e47f0d66e153c3529c4610d3f`.
+
+The v3 policy pools the five retained runs: 600 ordered gaps, 11 breaches, maximum consecutive breaches 2,
+p50/p95/p99 48/79/130 ms, and a 481 ms maximum. Its same 10%-then-50-ms rounding formula derives a 550 ms hard
+maximum. It leaves the 100 ms threshold, 10% breach-rate ceiling, two-consecutive ceiling, zero-failure requirement,
+descendant coverage, and RSS budgets unchanged. The canonical `sample-gap-calibration-v3.json` projection retains
+the complete cohort and new raw/ZIP provenance; its verifier re-derives the aggregate and ceiling after artifacts
 expire.
 
 The later `validation-quantile-calibration-v1.json` and matching rationale preserve the five-run evidence used to

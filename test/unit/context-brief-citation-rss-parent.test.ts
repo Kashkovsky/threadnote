@@ -18,7 +18,7 @@ import type {
 } from '../../scripts/context-brief-citation-rss-observer.js';
 import {waitForContextBriefCitationRssAcknowledgement} from '../../scripts/context-brief-citation-rss-observer.js';
 import {
-  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
 } from '../../src/evaluation/context-brief-citation-scale-contract.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -306,7 +306,7 @@ function artifact(overrides: Partial<ContextBriefCitationRssArtifactV2> = {}): C
     rootStartIdentity: '4242',
     sampleGapBreachCount: 0,
     sampleGapBreachRate: 0,
-    sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
+    sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3,
     sampleAttempts: 1,
     sampleFailures: 0,
     scope: 'recursive-process-tree',

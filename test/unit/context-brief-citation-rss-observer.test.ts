@@ -4,7 +4,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
-  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
 } from '../../src/evaluation/context-brief-citation-scale-contract.js';
 import type {BenchmarkProcessTreeSample} from '../../scripts/code-graph-benchmark-sampler.js';
@@ -77,7 +77,7 @@ describe('Context Brief citation RSS observer protocol', () => {
       rootStartIdentity: '4242',
       sampleGapBreachCount: 0,
       sampleGapBreachRate: 0,
-      sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
+      sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3,
       sampleAttempts: 6,
       sampleFailures: 2,
       scope: 'recursive-process-tree',
