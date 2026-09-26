@@ -2,6 +2,7 @@ import {Console, Crypto, DateTime, Effect, Exit, FileSystem, Option, Path, Schem
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {observeProcessInstanceIdentity, processInstanceIdentityMatches} from './process_identity.js';
 import {compareVersions} from '../release/version/compare.js';
+import {createMissingProcessFile} from './owned_file.js';
 
 class StandaloneProcessLeaseError extends Schema.TaggedError<StandaloneProcessLeaseError>()(
   'StandaloneProcessLeaseError',
@@ -13,6 +14,7 @@ class StandaloneProcessLeaseError extends Schema.TaggedError<StandaloneProcessLe
 
 const THREADNOTE_COMMAND = 'threadnote';
 const PROCESS_LEASE_HEARTBEAT_MILLISECONDS = 30_000;
+const PROCESS_LEASE_REPAIR_FAILURE_LIMIT = 3;
 const PROCESS_LEASE_DIAGNOSTIC_SCAN_LIMIT = 1_024;
 export const STANDALONE_RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
@@ -109,26 +111,23 @@ export function withStandaloneProcessLease<A, E, R>(
       const processStartIdentity = yield* observeProcessInstanceIdentity(system, system.processId);
       const leaseDirectory = path.join(root, 'leases', release.version);
       const leasePath = path.join(leaseDirectory, `${system.processId}.json`);
+      const content = `${JSON.stringify(
+        {
+          executable: system.executablePath,
+          parentProcessId: process.ppid,
+          processId: system.processId,
+          processStartIdentity,
+          retirementPolicy: options.retirementPolicy ?? 'terminate',
+          startedAt: DateTime.formatIso(yield* DateTime.now),
+          token,
+          version: release.version,
+        },
+        undefined,
+        2,
+      )}\n`;
       yield* Effect.gen(function* () {
         yield* fs.makeDirectory(leaseDirectory, {recursive: true, mode: 0o700});
-        yield* fs.writeFileString(
-          leasePath,
-          `${JSON.stringify(
-            {
-              executable: system.executablePath,
-              parentProcessId: process.ppid,
-              processId: system.processId,
-              processStartIdentity,
-              retirementPolicy: options.retirementPolicy ?? 'terminate',
-              startedAt: DateTime.formatIso(yield* DateTime.now),
-              token,
-              version: release.version,
-            },
-            undefined,
-            2,
-          )}\n`,
-          {mode: 0o600},
-        );
+        yield* fs.writeFileString(leasePath, content, {mode: 0o600});
       }).pipe(
         Effect.tapError(() =>
           Console.error(
@@ -137,8 +136,12 @@ export function withStandaloneProcessLease<A, E, R>(
         ),
       );
       yield* Effect.addFinalizer(() => removeOwnedLease(fs, leasePath, token));
-      yield* Effect.forkScoped(refreshProcessLease(fs, leasePath, token));
-      return yield* effect;
+      return yield* Effect.raceFirst(
+        refreshProcessLease(fs, leaseDirectory, leasePath, token, content, path.join(root, `.lease-${token}.tmp`)).pipe(
+          Effect.andThen(Effect.never),
+        ),
+        effect,
+      );
     }),
   );
 }
@@ -477,16 +480,50 @@ function boundedGracefulWait(value: number | undefined): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 30_000) : 5_000;
 }
 
-function refreshProcessLease(fs: FileSystem.FileSystem, leasePath: string, token: string) {
+function refreshProcessLease(
+  fs: FileSystem.FileSystem,
+  leaseDirectory: string,
+  leasePath: string,
+  token: string,
+  content: string,
+  temporary: string,
+) {
   return Effect.gen(function* () {
+    let repairFailures = 0;
+    let repairing = false;
     while (true) {
       yield* Effect.sleep(PROCESS_LEASE_HEARTBEAT_MILLISECONDS);
-      const lease = yield* readLeaseToken(fs, leasePath);
-      if (lease !== token) return;
-      const now = yield* DateTime.nowAsDate;
-      yield* fs.utimes(leasePath, now, now);
+      const retained = yield* Effect.gen(function* () {
+        if (!(yield* fs.exists(leasePath))) {
+          repairing = true;
+          yield* fs.makeDirectory(leaseDirectory, {recursive: true, mode: 0o700});
+          const restored = yield* createMissingProcessFile(fs, leasePath, temporary, content);
+          repairing = false;
+          repairFailures = 0;
+          return restored;
+        }
+        if ((yield* readLeaseToken(fs, leasePath, true)) !== token) return false;
+        repairing = false;
+        repairFailures = 0;
+        const now = yield* DateTime.nowAsDate;
+        yield* fs.utimes(leasePath, now, now);
+        return true;
+      }).pipe(
+        Effect.catch(() => {
+          if (!repairing || ++repairFailures < PROCESS_LEASE_REPAIR_FAILURE_LIMIT) return Effect.succeed(true);
+          const message =
+            `Threadnote could not restore its process lease after ${PROCESS_LEASE_REPAIR_FAILURE_LIMIT} consecutive attempts; ` +
+            'stopping this process to protect its release. Check installation filesystem write access and atomic hard-link support.';
+          return Console.error(message).pipe(Effect.andThen(Effect.fail(StandaloneProcessLeaseError.make({message}))));
+        }),
+      );
+      if (!retained) {
+        return yield* StandaloneProcessLeaseError.make({
+          message: 'Threadnote lost ownership of its process lease; stopping this process to protect its release.',
+        });
+      }
     }
-  }).pipe(Effect.ignore);
+  });
 }
 
 function removeOwnedLease(fs: FileSystem.FileSystem, leasePath: string, token: string) {
@@ -512,15 +549,15 @@ function rewriteLeaseProcessStartIdentity(fs: FileSystem.FileSystem, leasePath: 
   );
 }
 
-function readLeaseToken(fs: FileSystem.FileSystem, leasePath: string) {
-  return readProcessLease(fs, leasePath).pipe(
+function readLeaseToken(fs: FileSystem.FileSystem, leasePath: string, strict = false) {
+  return readProcessLease(fs, leasePath, strict).pipe(
     Effect.map(Option.map(lease => lease.token)),
     Effect.map(Option.getOrUndefined),
   );
 }
 
-function readProcessLease(fs: FileSystem.FileSystem, leasePath: string) {
-  return fs.readFileString(leasePath).pipe(
+function readProcessLease(fs: FileSystem.FileSystem, leasePath: string, strict = false) {
+  const read = fs.readFileString(leasePath).pipe(
     Effect.map(content => {
       let value: unknown;
       try {
@@ -570,6 +607,6 @@ function readProcessLease(fs: FileSystem.FileSystem, leasePath: string) {
         version: value.version,
       } satisfies ProcessLeaseFile);
     }),
-    Effect.orElseSucceed(() => Option.none<ProcessLeaseFile>()),
   );
+  return strict ? read : read.pipe(Effect.orElseSucceed(() => Option.none<ProcessLeaseFile>()));
 }

@@ -6,7 +6,8 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
-import {Effect, FileSystem} from 'effect';
+import {Deferred, Effect, FileSystem, PlatformError, Queue} from 'effect';
+import {TestClock, TestConsole} from 'effect/testing';
 import * as FC from 'fast-check';
 import {afterEach, beforeEach, describe} from 'vitest';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -64,6 +65,67 @@ function testRegistration(
 }
 
 describe('process diagnostics', () => {
+  it.effect('warns once on repeated unsupported publication and repairs when support returns', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-registration-unsupported-'});
+      const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
+      const attempts = yield* Queue.unbounded<void>();
+      let supported = false;
+      const flaky = FileSystem.FileSystem.of({
+        ...fs,
+        link: (from, to) =>
+          supported
+            ? fs.link(from, to)
+            : Effect.fail(
+                PlatformError.systemError({
+                  _tag: 'Unknown',
+                  module: 'FileSystem',
+                  method: 'link',
+                  description: 'ENOTSUP',
+                }),
+              ),
+        remove: (path, options) =>
+          fs
+            .remove(path, options)
+            .pipe(Effect.tap(() => (path.endsWith('.tmp') ? Queue.offer(attempts, undefined) : Effect.void))),
+      });
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'mcp',
+        Effect.gen(function* () {
+          // Initial publication is attempt one; a failed startup still retains the repair loop.
+          yield* Queue.take(attempts);
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            yield* TestClock.adjust(30_000);
+            yield* Queue.take(attempts);
+          }
+          expect(yield* TestConsole.errorLines).toEqual([expect.stringContaining('process registration')]);
+          supported = true;
+          yield* TestClock.adjust(30_000);
+          yield* Queue.take(attempts);
+          expect(JSON.parse(yield* fs.readFileString(file))).toMatchObject({processId: process.pid, role: 'mcp'});
+          yield* fs.remove(file);
+          supported = false;
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            yield* TestClock.adjust(30_000);
+            yield* Queue.take(attempts);
+          }
+          expect(yield* TestConsole.errorLines).toHaveLength(1);
+          supported = true;
+          yield* TestClock.adjust(30_000);
+          yield* Queue.take(attempts);
+          expect(yield* fs.exists(file)).toBe(true);
+        }),
+      ).pipe(Effect.provideService(FileSystem.FileSystem, flaky));
+      expect(yield* fs.exists(file)).toBe(false);
+    }).pipe(
+      provideTestLayer(SystemInfo.layer),
+      provideTestLayer(BunServices.layer),
+      provideTestLayer(TestConsole.layer),
+    ),
+  );
+
   it.effect('binds a process reference to the same registration snapshot as the displayed row', () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -293,7 +355,7 @@ describe('process diagnostics', () => {
     }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
   );
 
-  it.effect('restores a live registration file after inventory garbage-collected it', () =>
+  it.effect('restores a live registration file without activity after inventory garbage-collected it', () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-restore-registration-'});
@@ -306,9 +368,10 @@ describe('process diagnostics', () => {
           expect(yield* fileSystem.exists(registrationPath)).toBe(true);
           yield* fileSystem.remove(registrationPath);
           expect(yield* fileSystem.exists(registrationPath)).toBe(false);
-          yield* withThreadnoteProcessActivity('mcp', 'mcp-server', Effect.void, {
-            idleTransitionDelayMilliseconds: 60_000,
-          });
+          yield* TestClock.adjust(30_000);
+          for (let attempt = 0; attempt < 100 && !(yield* fileSystem.exists(registrationPath)); attempt += 1) {
+            yield* Effect.yieldNow;
+          }
           expect(yield* fileSystem.exists(registrationPath)).toBe(true);
           const listed = yield* readThreadnoteProcessDiagnostics(config);
           expect(listed.processes).toEqual([expect.objectContaining({processId: process.pid, role: 'mcp'})]);
@@ -316,6 +379,209 @@ describe('process diagnostics', () => {
         'mcp-server',
       );
     }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
+  it.effect('preserves a foreign registration during idle repair, activity changes, and cleanup', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-foreign-registration-'});
+      const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
+      let foreign = '';
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'mcp',
+        Effect.gen(function* () {
+          foreign = JSON.stringify({
+            ...JSON.parse(yield* fs.readFileString(file)),
+            token: 'foreign-registration-token',
+          });
+          yield* fs.writeFileString(file, foreign);
+          yield* TestClock.adjust(30_000);
+          yield* withThreadnoteProcessActivity('graph-builder', 'build', Effect.void);
+          expect(yield* fs.readFileString(file)).toBe(foreign);
+        }),
+      );
+      expect(yield* fs.readFileString(file)).toBe(foreign);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
+  );
+
+  it.effect.each([false, true])('does not reacquire a removed foreign or invalid registration (%s)', invalid =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-registration-lost-'});
+      const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
+      const observed = yield* Deferred.make<void>();
+      let watching = false;
+      const observedFs = FileSystem.FileSystem.of({
+        ...fs,
+        readFileString: (path, encoding) =>
+          fs
+            .readFileString(path, encoding)
+            .pipe(Effect.tap(() => (path === file && watching ? Deferred.succeed(observed, undefined) : Effect.void))),
+      });
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'mcp',
+        Effect.gen(function* () {
+          const original = JSON.parse(yield* fs.readFileString(file));
+          yield* fs.writeFileString(file, invalid ? '{}' : JSON.stringify({...original, token: 'foreign-owner-token'}));
+          watching = true;
+          yield* TestClock.adjust(30_000);
+          yield* Deferred.await(observed);
+          yield* fs.remove(file);
+          for (let tick = 0; tick < 3; tick += 1) {
+            yield* TestClock.adjust(30_000);
+            yield* withThreadnoteProcessActivity('graph-builder', 'build', Effect.void);
+            expect(yield* fs.exists(file)).toBe(false);
+          }
+        }),
+      ).pipe(Effect.provideService(FileSystem.FileSystem, observedFs));
+      expect(yield* fs.exists(file)).toBe(false);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
+  );
+
+  it.effect('reclaims a startup row only when its process identity is provably stale', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-registration-stale-startup-'});
+      const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
+      yield* fs.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+      yield* fs.writeFileString(
+        file,
+        JSON.stringify(testRegistration(process.pid, 'mcp', 'old-instance', 'old-instance-token')),
+      );
+      const system = SystemInfo.of({
+        ...nativeSystem,
+        canonicalProcessStartIdentity: () => Effect.succeed('current-instance'),
+        processStartIdentity: () => Effect.succeed('current-instance'),
+      });
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'mcp',
+        Effect.gen(function* () {
+          const restored = JSON.parse(yield* fs.readFileString(file));
+          expect(restored.processStartIdentity).toBe('current-instance');
+          expect(restored.token).not.toBe('old-instance-token');
+        }),
+      ).pipe(Effect.provideService(SystemInfo, system));
+      expect(yield* fs.exists(file)).toBe(false);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
+  );
+
+  it.effect.each(['current-instance', undefined])(
+    'preserves startup ownership with same or unknown identity (%s)',
+    identity =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const nativeSystem = yield* SystemInfo;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-registration-owned-startup-'});
+        const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
+        const foreign = JSON.stringify(
+          testRegistration(process.pid, 'mcp', 'current-instance', 'foreign-instance-token'),
+        );
+        yield* fs.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+        yield* fs.writeFileString(file, foreign);
+        const system = SystemInfo.of({
+          ...nativeSystem,
+          canonicalProcessStartIdentity: () => Effect.succeed(identity),
+          processStartIdentity: () => Effect.succeed(identity),
+        });
+        yield* withThreadnoteProcessRegistration(
+          home,
+          'mcp',
+          Effect.gen(function* () {
+            yield* withThreadnoteProcessActivity('graph-builder', 'build', Effect.void);
+            expect(yield* fs.readFileString(file)).toBe(foreign);
+            yield* fs.remove(file);
+            yield* TestClock.adjust(60_000);
+            yield* withThreadnoteProcessActivity('graph-builder', 'build', Effect.void);
+            expect(yield* fs.exists(file)).toBe(false);
+          }),
+        ).pipe(Effect.provideService(SystemInfo, system));
+      }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
+  );
+
+  it.effect('does not overwrite a foreign row replacing the stale startup inode during reclamation', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-registration-startup-race-'});
+      const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
+      const foreign = JSON.stringify(
+        testRegistration(process.pid, 'mcp', 'current-instance', 'foreign-instance-token'),
+      );
+      yield* fs.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+      yield* fs.writeFileString(
+        file,
+        JSON.stringify(testRegistration(process.pid, 'mcp', 'old-instance', 'old-instance-token')),
+      );
+      const interlocked = FileSystem.FileSystem.of({
+        ...fs,
+        open: (path, options) =>
+          Effect.gen(function* () {
+            const handle = yield* fs.open(path, options);
+            if (path === file) {
+              yield* fs.writeFileString(`${file}.foreign`, foreign);
+              yield* fs.rename(`${file}.foreign`, file);
+            }
+            return handle;
+          }),
+      });
+      const system = SystemInfo.of({
+        ...nativeSystem,
+        canonicalProcessStartIdentity: () => Effect.succeed('current-instance'),
+        processStartIdentity: () => Effect.succeed('current-instance'),
+      });
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'mcp',
+        Effect.gen(function* () {
+          expect(yield* fs.readFileString(file)).toBe(foreign);
+          yield* fs.remove(file);
+          yield* TestClock.adjust(60_000);
+          yield* withThreadnoteProcessActivity('graph-builder', 'build', Effect.void);
+          expect(yield* fs.exists(file)).toBe(false);
+        }),
+      ).pipe(Effect.provideService(SystemInfo, system), Effect.provideService(FileSystem.FileSystem, interlocked));
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
+  );
+
+  it.effect('retries idle registration repair after a transient filesystem failure', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-registration-retry-'});
+      const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
+      let fail = false;
+      let failures = 0;
+      const flaky = FileSystem.FileSystem.of({
+        ...fs,
+        makeDirectory: (directory, options) => {
+          if (fail) {
+            failures += 1;
+            return fs.makeDirectory(`${file}/missing`, {recursive: false});
+          }
+          return fs.makeDirectory(directory, options);
+        },
+      });
+      yield* withThreadnoteProcessRegistration(
+        home,
+        'mcp',
+        Effect.gen(function* () {
+          yield* fs.remove(file);
+          fail = true;
+          yield* TestClock.adjust(30_000);
+          for (let attempt = 0; attempt < 100 && failures === 0; attempt += 1) yield* fs.exists(file);
+          expect(failures).toBe(1);
+          fail = false;
+          yield* fs.exists(file);
+          yield* fs.exists(file);
+          yield* TestClock.adjust(30_000);
+          for (let attempt = 0; attempt < 100 && !(yield* fs.exists(file)); attempt += 1) yield* Effect.yieldNow;
+          expect(JSON.parse(yield* fs.readFileString(file))).toMatchObject({processId: process.pid, role: 'mcp'});
+        }),
+      ).pipe(Effect.provideService(FileSystem.FileSystem, flaky));
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
   );
 
   it.effect('removes a registration when the canonical process instance has been replaced', () =>
