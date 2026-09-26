@@ -521,10 +521,13 @@ export function codeGraphHeavyTailRatchetArtifact(
 }
 
 interface HeavyTailMeasurementRatchet {
+  readonly meanMaximum?: number;
   readonly maximum?: number;
   readonly minimum?: number;
+  readonly p50Maximum?: number;
   readonly p95Maximum?: number;
-  readonly samplesMinimum: 1;
+  readonly p99Maximum?: number;
+  readonly samplesMinimum: number;
   readonly unit: BenchmarkArtifactV1['measurements'][number]['unit'];
 }
 
@@ -671,7 +674,7 @@ export function assertHeavyTailReleaseRatchet(
   }
   const freshness = validateHeavyTailReleaseFreshness(artifacts, options.freshness);
   validateCodeGraphBenchmarkRatchet(options.checkedRatchet);
-  const ratchet = createCodeGraphHeavyTailRatchet(artifacts);
+  const observedRatchet = createCodeGraphHeavyTailRatchet(artifacts);
   for (const artifact of artifacts) {
     parseCodeGraphHeavyTailReleaseEvidence(artifact);
     const provenance = artifact.environment.provenance;
@@ -692,14 +695,18 @@ export function assertHeavyTailReleaseRatchet(
     enforceCodeGraphBenchmarkRatchet(artifact.ratchetArtifact, options.checkedRatchet);
   }
   if (
-    ratchet.metadata.evidenceClass !== 'governed-performance' ||
-    ratchet.metadata.candidateCommit !== options.candidateCommit
+    observedRatchet.metadata.evidenceClass !== 'governed-performance' ||
+    observedRatchet.metadata.candidateCommit !== options.candidateCommit
   ) {
     throw ScriptError.make({message: 'Heavy-tail release evidence runner identity is not replayable.'});
   }
-  if (ratchet.metadata.thresholdPolicy !== HEAVY_TAIL_THRESHOLD_POLICY) {
+  if (observedRatchet.metadata.thresholdPolicy !== HEAVY_TAIL_THRESHOLD_POLICY) {
     throw ScriptError.make({message: 'Heavy-tail release evidence threshold policy cannot be weakened.'});
   }
+  const ratchet = preserveCheckedHeavyTailRatchetLimits(
+    observedRatchet,
+    options.checkedRatchet as CodeGraphBenchmarkRatchetV1,
+  );
   assertHeavyTailRatchetNoWeaker(ratchet, options.checkedRatchet as CodeGraphBenchmarkRatchetV1);
   return {
     ...ratchet,
@@ -712,6 +719,42 @@ export function assertHeavyTailReleaseRatchet(
       releaseObservedAt: freshness.observedAt,
     },
   };
+}
+
+function preserveCheckedHeavyTailRatchetLimits(
+  generated: CodeGraphHeavyTailRatchet,
+  checked: CodeGraphBenchmarkRatchetV1,
+): CodeGraphHeavyTailRatchet {
+  const measurements: Record<string, HeavyTailMeasurementRatchet> = {};
+  for (const [name, generatedLimit] of Object.entries(generated.measurements)) {
+    const checkedLimit = checked.measurements[name];
+    measurements[name] =
+      checkedLimit === undefined || checkedLimit.unit !== generatedLimit.unit
+        ? generatedLimit
+        : {
+            meanMaximum: tighterUpperBound(generatedLimit.meanMaximum, checkedLimit.meanMaximum),
+            maximum: tighterUpperBound(generatedLimit.maximum, checkedLimit.maximum),
+            minimum: tighterLowerBound(generatedLimit.minimum, checkedLimit.minimum),
+            p50Maximum: tighterUpperBound(generatedLimit.p50Maximum, checkedLimit.p50Maximum),
+            p95Maximum: tighterUpperBound(generatedLimit.p95Maximum, checkedLimit.p95Maximum),
+            p99Maximum: tighterUpperBound(generatedLimit.p99Maximum, checkedLimit.p99Maximum),
+            samplesMinimum: Math.max(generatedLimit.samplesMinimum, checkedLimit.samplesMinimum ?? 1),
+            unit: generatedLimit.unit,
+          };
+  }
+  return {...generated, measurements};
+}
+
+function tighterUpperBound(generated: number | undefined, checked: number | undefined): number | undefined {
+  if (generated === undefined) return checked;
+  if (checked === undefined) return generated;
+  return Math.min(generated, checked);
+}
+
+function tighterLowerBound(generated: number | undefined, checked: number | undefined): number | undefined {
+  if (generated === undefined) return checked;
+  if (checked === undefined) return generated;
+  return Math.max(generated, checked);
 }
 
 function validateHeavyTailReleaseFreshness(

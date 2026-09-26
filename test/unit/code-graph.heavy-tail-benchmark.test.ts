@@ -454,7 +454,7 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
     ).toThrow(/span/iu);
   });
 
-  it('rejects fallback runner bindings and candidate evidence that weakens the checked ratchet', () => {
+  it('rejects fallback runner bindings and source evidence that exceeds the checked ratchet', () => {
     const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)];
     const options = releaseOptions(artifacts);
     expect(() => assertHeavyTailReleaseRatchet(artifacts, options)).not.toThrow();
@@ -475,24 +475,63 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
       ),
     );
     expect(() => assertHeavyTailReleaseRatchet(slower, options)).toThrow(/checked ratchet|parallel-duration/iu);
-    const checkedLimit = createCodeGraphHeavyTailRatchet(artifacts).measurements['parallel-duration'].p95Maximum!;
-    const nearLimit = artifacts.map((_, index) => {
-      const artifact = heavyTailArtifactWithMeasurement(
-        checkedLimit,
-        'parallel-duration',
-        0,
-        'parallel-language-mixed-request',
-        index * 10,
-      );
-      return withRecomputedHeavyTailRatchet({
-        ...artifact,
-        runs: {
-          ...artifact.runs,
-          single: {...artifact.runs.single, durationMilliseconds: checkedLimit / 0.89},
+  });
+
+  it('preserves the checked limit when accepted sub-millisecond samples derive excess noise headroom', () => {
+    const measurement = 'eight-workers-language-npm-manifest-parse';
+    const artifacts = [0.817_125, 1.493_625, 0.876_333].map((value, index) =>
+      heavyTailArtifactWithMeasurement(value, measurement, 0, 'parallel-language-mixed-request', index * 10),
+    );
+    const options = releaseOptions(artifacts);
+    const checkedRatchet = structuredClone(options.checkedRatchet) as Mutable<typeof options.checkedRatchet>;
+    checkedRatchet.measurements[measurement].p95Maximum = 6;
+
+    expect(createCodeGraphHeavyTailRatchet(artifacts).measurements[measurement].p95Maximum).toBe(7);
+    for (const artifact of artifacts) {
+      expect(() => enforceCodeGraphBenchmarkRatchet(artifact.ratchetArtifact, checkedRatchet)).not.toThrow();
+    }
+
+    const admitted = assertHeavyTailReleaseRatchet(artifacts, {...options, checkedRatchet});
+    expect(admitted.measurements[measurement].p95Maximum).toBe(6);
+  });
+
+  it('never relaxes checked upper or lower limits while retaining stricter observed limits', () => {
+    const upperMeasurement = 'eight-workers-language-npm-manifest-parse';
+    const lowerMeasurement = 'parallel-extraction-average-concurrency';
+    fc.assert(
+      fc.property(
+        fc.array(fc.double({max: 1.9, min: 0, noDefaultInfinity: true, noNaN: true}), {
+          maxLength: 3,
+          minLength: 3,
+        }),
+        fc.array(fc.double({max: 4, min: 1, noDefaultInfinity: true, noNaN: true}), {
+          maxLength: 3,
+          minLength: 3,
+        }),
+        (upperValues, lowerValues) => {
+          const artifacts = upperValues.map((value, index) =>
+            heavyTailArtifactWithMeasurement(value, upperMeasurement, lowerValues[index], lowerMeasurement, index * 10),
+          );
+          const generated = createCodeGraphHeavyTailRatchet(artifacts);
+          const options = releaseOptions(artifacts);
+          const checkedRatchet = structuredClone(options.checkedRatchet) as Mutable<typeof options.checkedRatchet>;
+          const checkedUpper = Math.max(...upperValues);
+          const checkedLower = Math.min(...lowerValues);
+          checkedRatchet.measurements[upperMeasurement].p95Maximum = checkedUpper;
+          checkedRatchet.measurements[lowerMeasurement].minimum = checkedLower;
+
+          const admitted = assertHeavyTailReleaseRatchet(artifacts, {...options, checkedRatchet});
+          const admittedUpper = admitted.measurements[upperMeasurement].p95Maximum!;
+          const admittedLower = admitted.measurements[lowerMeasurement].minimum!;
+
+          expect(admittedUpper).toBeLessThanOrEqual(checkedUpper);
+          expect(admittedUpper).toBeLessThanOrEqual(generated.measurements[upperMeasurement].p95Maximum!);
+          expect(admittedLower).toBeGreaterThanOrEqual(checkedLower);
+          expect(admittedLower).toBeGreaterThanOrEqual(generated.measurements[lowerMeasurement].minimum!);
         },
-      });
-    });
-    expect(() => assertHeavyTailReleaseRatchet(nearLimit, options)).toThrow(/weaker.*parallel-duration/iu);
+      ),
+      {numRuns: 32},
+    );
   });
 
   it('strictly parses release evidence and rejects outer/inner provenance mutations', () => {
