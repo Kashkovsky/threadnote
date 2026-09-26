@@ -70,6 +70,7 @@ import {
   RELEASE_EVIDENCE_HARNESS_DELTA_PATHS,
   isReviewedPublicBenchmarkRepository,
   projectExternalEvidenceMetadata,
+  releaseEvidenceVersionForRef,
   validateExternalRepositoryEvidence,
   type ExternalRepositoryPublicVerification,
 } from '../src/evaluation/external_evidence.js';
@@ -105,8 +106,6 @@ const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 const EXTERNAL_SAMPLER_READY_TIMEOUT_MS = 5_000;
 const EXTERNAL_SAMPLER_STOP_TIMEOUT_MS = 5_000;
 const EXTERNAL_SAMPLER_TERMINATE_TIMEOUT_MS = 1_000;
-const THREADNOTE_4_RELEASE_REF_PATTERN =
-  /^refs\/tags\/v4\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:beta|rc)\.(?:0|[1-9]\d*))?$/;
 const STRUCTURAL_DIGEST_SNAPSHOT_LEASE_MILLISECONDS = 60 * 60_000;
 const STRUCTURAL_DIGEST_SNAPSHOT_LEASE_RENEWAL_MILLISECONDS = 5 * 60_000;
 const STRUCTURAL_DIGEST_ROW_CHUNK_SIZE = 10_000;
@@ -5150,7 +5149,7 @@ function missingReleaseSourceProvenance(artifact: BenchmarkArtifactV1): readonly
       harnessCommit !== sha &&
       canonicalHarnessDelta);
   return typeof ref === 'string' &&
-    THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) &&
+    releaseEvidenceVersionForRef(ref) !== undefined &&
     typeof sha === 'string' &&
     EXACT_GIT_COMMIT_PATTERN.test(sha) &&
     resolvedSha === sha &&
@@ -5440,7 +5439,7 @@ export function resolvedReleaseEvidenceSource(
     new Set(normalizedDeltaPaths).size === normalizedDeltaPaths.length &&
     normalizedDeltaPaths.every(path => (RELEASE_EVIDENCE_HARNESS_DELTA_PATHS as readonly string[]).includes(path));
   if (
-    !THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) ||
+    releaseEvidenceVersionForRef(ref) === undefined ||
     !EXACT_GIT_COMMIT_PATTERN.test(sha) ||
     resolvedSha !== sha ||
     (!reviewedDelta && (checkoutCommit !== sha || harnessDeltaPaths.length > 0)) ||
@@ -5470,11 +5469,12 @@ const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateRele
   if (
     ref === undefined ||
     sha === undefined ||
-    !THREADNOTE_4_RELEASE_REF_PATTERN.test(ref) ||
+    releaseEvidenceVersionForRef(ref) === undefined ||
     !EXACT_GIT_COMMIT_PATTERN.test(sha)
   ) {
     return yield* ScriptError.make({
-      message: 'Release benchmark provenance requires a Threadnote 4 release tag and its exact commit SHA.',
+      message:
+        'Release benchmark provenance requires a canonical Threadnote 4-or-newer release tag and its exact commit SHA.',
     });
   }
   const [commit, dirty, resolvedSha] = yield* Effect.all(

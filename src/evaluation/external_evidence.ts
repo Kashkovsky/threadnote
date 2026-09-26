@@ -263,13 +263,24 @@ const EXTERNAL_PUBLIC_METADATA_KEY_SET = new Set<string>(EXTERNAL_PUBLIC_METADAT
 const RELEASE_EVIDENCE_HARNESS_DELTA_PATH_SET = new Set<string>(RELEASE_EVIDENCE_HARNESS_DELTA_PATHS);
 const EXACT_GIT_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const RELEASE_REF_PATTERN = /^refs\/tags\/v(4\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?)$/;
+const RELEASE_REF_PATTERN = /^refs\/tags\/v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:beta|rc)\.(0|[1-9]\d*))?)$/;
 const SAFE_RUNNER_CLASS = /^(?:github-hosted-linux-(?:arm64|x64)|local-unclassified|other)$/;
 const SAFE_RUNNER_IDENTITY = /^(?:local|runner-[0-9a-f]{16})$/;
 const LOCAL_PATH_PATTERN =
   /(?:^|[\s"'`])(?:\/Users\/|\/home\/|\/mnt\/[a-z]\/Users\/|\/[a-z]\/Users\/|[A-Za-z]:[\\/]|\\\\)/i;
 const INLINE_CREDENTIAL_PATTERN =
   /(?:ghp_|github_pat_|AKIA[0-9A-Z]{12,}|Bearer\s+\S+|(?:token|password|secret)\s*[:=]\s*\S+|https:\/\/[^/@\s:]+:[^/@\s]+@)/i;
+
+export function releaseEvidenceVersionForRef(ref: string): string | undefined {
+  const match = RELEASE_REF_PATTERN.exec(ref);
+  if (!match) return undefined;
+  const components = match
+    .slice(2)
+    .filter((component): component is string => component !== undefined)
+    .map(Number);
+  if (!components.every(Number.isSafeInteger) || Number(match[2]) < 4) return undefined;
+  return match[1];
+}
 
 export interface PublicGitHubRepositoryEvidence {
   readonly name: string;
@@ -781,7 +792,7 @@ function validateLanguageControls(
 function validateProvenance(artifact: BenchmarkArtifactV1, releaseBound: boolean, missing: string[]): void {
   const metadata = artifact.metadata;
   const releaseRef = metadata.releaseEvidenceRef;
-  const releaseMatch = typeof releaseRef === 'string' ? RELEASE_REF_PATTERN.exec(releaseRef) : null;
+  const releaseVersion = typeof releaseRef === 'string' ? releaseEvidenceVersionForRef(releaseRef) : undefined;
   const managedVersion = metadata.benchmarkValidatedManagedVersion;
   const managedVersionMatchesCommit =
     typeof managedVersion === 'string' &&
@@ -863,9 +874,9 @@ function validateProvenance(artifact: BenchmarkArtifactV1, releaseBound: boolean
         harnessCommit !== sha &&
         canonicalHarnessDelta);
     if (
-      !releaseMatch ||
-      (managedVersion !== `${releaseMatch[1]}-local.g${artifact.environment.commit}` &&
-        managedVersion !== `${releaseMatch[1]}.local.g${artifact.environment.commit}`) ||
+      releaseVersion === undefined ||
+      (managedVersion !== `${releaseVersion}-local.g${artifact.environment.commit}` &&
+        managedVersion !== `${releaseVersion}.local.g${artifact.environment.commit}`) ||
       typeof sha !== 'string' ||
       !EXACT_GIT_COMMIT_PATTERN.test(sha) ||
       metadata.releaseEvidenceResolvedSha !== sha ||

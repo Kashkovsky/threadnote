@@ -4,6 +4,7 @@ import {
 } from '../../../src/evaluation/public_controls.js';
 import {
   RELEASE_EVIDENCE_HARNESS_DELTA_PATHS,
+  releaseEvidenceVersionForRef,
   validateExternalRepositoryEvidence,
 } from '../../../src/evaluation/external_evidence.js';
 import type {BenchmarkArtifactV1} from '../../../src/evaluation/benchmark.js';
@@ -20,14 +21,12 @@ const retainedPerformanceTargetMilliseconds = new Map<string, number>([
   ['one-file-reindex-registration-lock-and-database-setup', 5_000],
   ['one-file-reindex-post-committed-scan-overlay-and-workspace', 5_000],
 ]);
-const threadnote4ReleaseRefPattern = /^refs\/tags\/v(4\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?)$/;
-const threadnote4ReleaseVersionPattern = /^v4\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?$/;
-
-function threadnote4ReleaseVersion(metadata: Record<string, unknown>): string {
-  const releaseMatch = threadnote4ReleaseRefPattern.exec(metadataString(metadata, 'releaseEvidenceRef'));
-  const releaseVersion = releaseMatch?.[1];
+function releaseEvidenceVersion(metadata: Record<string, unknown>): string {
+  const releaseVersion = releaseEvidenceVersionForRef(metadataString(metadata, 'releaseEvidenceRef'));
   if (releaseVersion === undefined) {
-    throw new Error('Performance harness release evidence does not name a Threadnote 4 release tag.');
+    throw new Error(
+      'Performance harness release evidence does not name a canonical Threadnote 4-or-newer release tag.',
+    );
   }
   return releaseVersion;
 }
@@ -543,8 +542,10 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'packageManifestSha256',
   ]);
   const threadnoteVersion = stringAt(threadnote, 'version', 'source.threadnote');
-  if (!threadnote4ReleaseVersionPattern.test(threadnoteVersion)) {
-    throw new Error('Performance evidence source.threadnote.version must be a Threadnote 4 release version.');
+  if (releaseEvidenceVersionForRef(`refs/tags/${threadnoteVersion}`) === undefined) {
+    throw new Error(
+      'Performance evidence source.threadnote.version must be a canonical Threadnote 4-or-newer release version.',
+    );
   }
   digestAt(threadnote, 'commit', 'source.threadnote', sha40Pattern);
   digestAt(threadnote, 'lockfileSha256', 'source.threadnote');
@@ -937,7 +938,7 @@ function validateHarnessRuntimeProvenance(
   positiveNumberAt(metadata, 'benchmarkValidatedManagedPayloadBytes', 'harness.metadata', true);
   positiveNumberAt(metadata, 'benchmarkValidatedManagedPayloadFileCount', 'harness.metadata', true);
   const managedVersion = metadataString(metadata, 'benchmarkValidatedManagedVersion');
-  const releaseVersion = threadnote4ReleaseVersion(metadata);
+  const releaseVersion = releaseEvidenceVersion(metadata);
   if (
     managedVersion !== `${releaseVersion}-local.g${commit}` &&
     managedVersion !== `${releaseVersion}.local.g${commit}`
@@ -1295,7 +1296,7 @@ export function retainedPerformanceArtifactFromHarness(
     },
     source: {
       threadnote: {
-        version: `v${threadnote4ReleaseVersion(metadata)}`,
+        version: `v${releaseEvidenceVersion(metadata)}`,
         commit: harness.environment.commit,
         lockfileSha256: binding.currentLockfileSha256,
         packageManifestSha256: binding.currentPackageManifestSha256,
