@@ -62,6 +62,7 @@ interface DirectoryAuthority {
   readonly mode: number;
   readonly path: string;
   readonly realPath: string;
+  readonly uid: number | undefined;
 }
 
 /**
@@ -343,7 +344,7 @@ function readState(
   dataPath: string,
   ancestors: readonly string[],
   identity: CodeGraphRefreshDemandIdentity,
-): Effect.Effect<CodeGraphRefreshDemandState, never> {
+): Effect.Effect<CodeGraphRefreshDemandState, never, SystemInfo> {
   return Effect.gen(function* () {
     if (!(yield* fs.exists(dataPath))) return emptyCodeGraphRefreshDemand(identity.checkoutId, identity.worktreeId);
     const before = yield* inspectPrivateDirectories(fs, ancestors);
@@ -447,7 +448,9 @@ function ensurePrivateDirectories(fs: FileSystem.FileSystem, directories: readon
     const [root, ...children] = directories;
     if (root === undefined) return;
     if ((yield* inspectPrivateDirectories(fs, [root])) === undefined)
-      return yield* CodeGraphRefreshDemandSuperseded.make({message: 'Threadnote home is not a private directory.'});
+      return yield* CodeGraphRefreshDemandSuperseded.make({
+        message: 'Threadnote home is not an owner-controlled directory.',
+      });
     const accepted: string[] = [root];
     for (const directory of children) {
       const before = yield* inspectPrivateDirectories(fs, accepted);
@@ -470,14 +473,15 @@ function ensurePrivateDirectories(fs: FileSystem.FileSystem, directories: readon
 
 function inspectPrivateDirectories(fs: FileSystem.FileSystem, directories: readonly string[]) {
   return Effect.gen(function* () {
+    const system = yield* SystemInfo;
     const authorities: DirectoryAuthority[] = [];
-    for (const directory of directories) {
+    for (const [index, directory] of directories.entries()) {
       if (Option.isSome(yield* fs.readLink(directory).pipe(Effect.option))) return undefined;
       const info = yield* fs.stat(directory).pipe(Effect.option);
       if (
         Option.isNone(info) ||
         info.value.type !== 'Directory' ||
-        !fileSystemModeIsPrivate(runtimePlatform, info.value.mode)
+        !refreshDemandDirectoryIsTrusted(system, info.value, index === 0)
       )
         return undefined;
       const birthtime = Option.getOrUndefined(info.value.birthtime);
@@ -490,10 +494,25 @@ function inspectPrivateDirectories(fs: FileSystem.FileSystem, directories: reado
         mode: info.value.mode,
         path: directory,
         realPath: yield* fs.realPath(directory),
+        uid: Option.getOrUndefined(info.value.uid),
       });
     }
     return authorities;
   });
+}
+
+function refreshDemandDirectoryIsTrusted(
+  system: SystemInfoShape,
+  info: FileSystem.File.Info,
+  threadnoteHome: boolean,
+): boolean {
+  if (system.platform === 'win32') return true;
+  const uid = Option.getOrUndefined(info.uid);
+  return (
+    system.userId !== undefined &&
+    uid === system.userId &&
+    (threadnoteHome ? (info.mode & 0o022) === 0 : fileSystemModeIsPrivate(runtimePlatform, info.mode))
+  );
 }
 
 function sameDirectories(left: readonly DirectoryAuthority[], right: readonly DirectoryAuthority[]): boolean {
@@ -508,7 +527,8 @@ function sameDirectories(left: readonly DirectoryAuthority[], right: readonly Di
         entry.ino === candidate.ino &&
         entry.mode === candidate.mode &&
         entry.path === candidate.path &&
-        entry.realPath === candidate.realPath
+        entry.realPath === candidate.realPath &&
+        entry.uid === candidate.uid
       );
     })
   );

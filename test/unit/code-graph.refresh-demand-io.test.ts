@@ -100,6 +100,95 @@ describe('code graph refresh demand sidecar', () => {
       ).pipe(provideTestLayer(TestLayer)),
   );
 
+  effectIt.effect('persists full and scoped demand below an owner-controlled legacy home', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        if (system.platform === 'win32') return;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-legacy-home-'});
+        yield* fs.chmod(home, 0o755);
+        const full = {checkoutId, threadnoteHome: home, worktreeId};
+        const scoped = {...full, scopeId: scopeA};
+
+        expect((yield* registerCodeGraphBackgroundDemand(full, firstKey)).type).toBe('claimed');
+        expect((yield* registerCodeGraphBackgroundDemand(scoped, secondKey)).type).toBe('claimed');
+
+        const fullPath = codeGraphRefreshDemandPath(path, home, checkoutId, worktreeId);
+        const scopedPath = codeGraphRefreshDemandPath(path, home, checkoutId, worktreeId, scopeA);
+        expect((yield* fs.stat(home)).mode & 0o777).toBe(0o755);
+        expect((yield* fs.stat(path.dirname(path.dirname(scopedPath)))).mode & 0o777).toBe(0o700);
+        expect((yield* fs.stat(path.dirname(scopedPath))).mode & 0o777).toBe(0o700);
+        expect((yield* fs.stat(fullPath)).mode & 0o777).toBe(0o600);
+        expect((yield* fs.stat(scopedPath)).mode & 0o777).toBe(0o600);
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
+  effectIt.effect('rejects a refresh-demand home writable by another principal', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const system = yield* SystemInfo;
+        if (system.platform === 'win32') return;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-shared-home-'});
+        yield* fs.chmod(home, 0o775);
+
+        const failure = yield* Effect.flip(
+          registerCodeGraphBackgroundDemand({checkoutId, threadnoteHome: home, worktreeId}, firstKey),
+        );
+        expect(Schema.is(CodeGraphRefreshDemandSuperseded)(failure)).toBe(true);
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
+  fcEffectProp(
+    effectIt,
+    'accepts exactly the group/other permission modes that cannot mutate the home',
+    [fc.integer({max: 0o77, min: 0})] as const,
+    ([sharedBits]) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const system = yield* SystemInfo;
+          if (system.platform === 'win32') return;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-mode-'});
+          yield* fs.chmod(home, 0o700 | sharedBits);
+          const registration = registerCodeGraphBackgroundDemand(
+            {checkoutId, threadnoteHome: home, worktreeId},
+            firstKey,
+          );
+
+          if ((sharedBits & 0o022) === 0) {
+            expect((yield* registration).type).toBe('claimed');
+          } else {
+            const failure = yield* Effect.flip(registration);
+            expect(Schema.is(CodeGraphRefreshDemandSuperseded)(failure)).toBe(true);
+          }
+        }),
+      ).pipe(provideTestLayer(TestLayer)),
+    {fastCheck: {numRuns: 32}},
+  );
+
+  effectIt.effect('rejects a refresh-demand home not owned by the current user', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const system = yield* SystemInfo;
+        if (system.platform === 'win32' || system.userId === undefined) return;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-foreign-home-'});
+
+        const failure = yield* Effect.flip(
+          registerCodeGraphBackgroundDemand({checkoutId, threadnoteHome: home, worktreeId}, firstKey).pipe(
+            Effect.provideService(SystemInfo, {...system, userId: system.userId + 1}),
+          ),
+        );
+        expect(Schema.is(CodeGraphRefreshDemandSuperseded)(failure)).toBe(true);
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
   effectIt.effect('recovers a stranded scoped demand lock and its recovery guard', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
