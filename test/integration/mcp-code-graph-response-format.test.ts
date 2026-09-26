@@ -94,18 +94,27 @@ describe('MCP code graph response format', () => {
           name: 'inspect_code_graph',
           arguments: {...args, responseFormat: 'text'},
         });
+        const agent = await client.callTool({
+          name: 'inspect_code_graph',
+          arguments: {...args, responseFormat: 'agent'},
+        });
         expect(dual.isError).not.toBe(true);
         expect(text.isError).not.toBe(true);
+        expect(agent.isError).not.toBe(true);
         expect(dual.structuredContent).toBeDefined();
         expect(text.structuredContent).toBeUndefined();
+        expect(agent.structuredContent).toBeUndefined();
         if (!Array.isArray(text.content)) throw new Error('Graph response content was not an array');
         expect(text.content).toHaveLength(1);
         const dualText = firstText(dual.content);
         const textOnly = firstText(text.content);
+        const agentOnly = firstText(agent.content);
         const parsed = JSON.parse(textOnly);
         expect(parsed).toEqual(dual.structuredContent);
         expect(parsed.trust).toEqual((dual.structuredContent as {trust: unknown}).trust);
         expect(parsed.snapshot).toEqual((dual.structuredContent as {snapshot: unknown}).snapshot);
+        expect(agentOnly.startsWith('TN-GRAPH/1\n')).toBe(true);
+        expect(agentOnly).toContain('coverage\t');
         dualBytes += measureAgentToolResponse({
           text: dualText,
           structuredContent: dual.structuredContent,
@@ -163,8 +172,14 @@ describe('MCP code graph response format', () => {
           name: 'inspect_code_graph',
           arguments: {...args, responseFormat: 'text'},
         });
+        const agent = await client.callTool({
+          name: 'inspect_code_graph',
+          arguments: {...args, responseFormat: 'agent'},
+        });
         expect(dual.isError).not.toBe(true);
         expect(text.isError).not.toBe(true);
+        expect(agent.isError).toBe(true);
+        expect(JSON.stringify(agent.content)).toContain('only for local repository inspections');
         expect(text.structuredContent).toBeUndefined();
         const parsed = JSON.parse(firstText(text.content));
         expect(withoutWorksetCursor(parsed)).toEqual(withoutWorksetCursor(dual.structuredContent));
@@ -190,6 +205,12 @@ describe('MCP code graph response format', () => {
           );
         }
       }
+      const localTooSmall = await client.callTool({
+        name: 'inspect_code_graph',
+        arguments: {budgetTokens: 500, callerCwd, operation: 'query', query: query.query},
+      });
+      expect(localTooSmall.isError).toBe(true);
+      expect(JSON.stringify(localTooSmall.content)).toContain('800 to 1500');
     } finally {
       await client?.close();
       await removePreparedCodeGraphWorksetFixture(fixture);

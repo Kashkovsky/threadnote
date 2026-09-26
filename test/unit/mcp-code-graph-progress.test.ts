@@ -354,7 +354,7 @@ describe('MCP code graph indexing progress', () => {
     'keeps optional refresh continuity deterministic, budgeted, and text-dual equivalent',
     {
       state: FC.constantFrom('active' as const, 'queued' as const, 'deferred' as const, 'idle' as const),
-      budgetTokens: FC.integer({min: 300, max: 1_500}),
+      budgetTokens: FC.integer({min: 800, max: 1_500}),
     },
     ({state, budgetTokens}) => {
       const refresh = {
@@ -655,6 +655,32 @@ describe('MCP code graph indexing progress', () => {
     expect(new TextEncoder().encode(response.text).byteLength).toBeLessThan(20 * 1_024);
   });
 
+  it('truncates adversarial graph fields before encoding their discarded tails', () => {
+    const verbose = verboseCodeGraphResult();
+    const result = {
+      ...verbose,
+      edges: [],
+      nodes: [{...verbose.nodes[0], signature: 'x'.repeat(2_000_000)}],
+      operation: 'node' as const,
+      warnings: [],
+    };
+    const encode = TextEncoder.prototype.encode;
+    let largestEncodedInput = 0;
+    TextEncoder.prototype.encode = function (input = '') {
+      largestEncodedInput = Math.max(largestEncodedInput, input.length);
+      if (input.length > 100_000) throw new Error('discarded source tail reached the UTF-8 encoder');
+      return encode.call(this, input);
+    };
+    try {
+      const response = codeGraphMcpResponse(result);
+      expect(response.structuredContent.nodes).toHaveLength(1);
+      expect(response.structuredContent.nodes[0]?.signature).toMatch(/…$/u);
+      expect(largestEncodedInput).toBeLessThan(100_000);
+    } finally {
+      TextEncoder.prototype.encode = encode;
+    }
+  });
+
   it('returns the exact graph projection through one opt-in text channel', () => {
     const response = codeGraphMcpResponse(verboseCodeGraphResult());
     const dual = formatCodeGraphMcpResponse(response);
@@ -674,11 +700,190 @@ describe('MCP code graph indexing progress', () => {
     expect(response.structuredContent).toEqual(dual.structuredContent);
   });
 
+  it('renders a deterministic schema-aware agent receipt without structured duplication', () => {
+    const response = codeGraphMcpResponse(verboseCodeGraphResult(), 1_500, undefined, 'agent');
+    const first = formatCodeGraphMcpResponse(response, 'agent');
+    const second = formatCodeGraphMcpResponse(response, 'agent');
+    const text = first.content[0].text;
+
+    expect(first).toEqual(second);
+    expect(first).not.toHaveProperty('structuredContent');
+    expect(text.startsWith('TN-GRAPH/1\n')).toBe(true);
+    expect(text).toContain('coverage\t');
+    expect(text).toContain('node\tn1\t');
+    expect(text).toContain('edge\t');
+    expect(measureAgentToolResponse({text}).totalBytes).toBeLessThanOrEqual(1_500 * 3);
+  });
+
+  it('admits the advertised minimum budget for every local graph response format', () => {
+    for (const responseFormat of ['dual', 'text', 'agent'] as const) {
+      const response = codeGraphMcpResponse(verboseCodeGraphResult(), 800, undefined, responseFormat);
+      const formatted = formatCodeGraphMcpResponse(response, responseFormat);
+      const measurement = measureAgentToolResponse({
+        ...(formatted.structuredContent === undefined ? {} : {structuredContent: formatted.structuredContent}),
+        text: formatted.content[0].text,
+      });
+      expect(measurement.estimatedTokens).toBeLessThanOrEqual(800);
+      expect(measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+    }
+  });
+
+  it('bounds mandatory project metadata at the local minimum budget', () => {
+    const result = {
+      ...verboseCodeGraphResult(),
+      outsideProjectGraph: {
+        paths: Array.from({length: 40}, (_, index) => `outside/${'深/'.repeat(200)}${index}.ts`),
+        state: 'outside-project-graph' as const,
+        suggestedActions: Array.from({length: 20}, (_, index) => `Select ${'根/'.repeat(200)} ${index}.`),
+      },
+      projectCoverage: {
+        completeness: 'partial' as const,
+        configuredRoots: Array.from({length: 40}, (_, index) => `apps/${'root/'.repeat(200)}${index}`),
+        dependencyComponents: 2,
+        kind: 'project' as const,
+        negativeProof: 'selected-graph-only' as const,
+        observedWorktreeCommit: 'w'.repeat(2_000),
+        project: 'project'.repeat(200),
+        reusedEquivalentSnapshot: false,
+        rootComponents: 3,
+        snapshotSourceCommit: 's'.repeat(2_000),
+      },
+    };
+    for (const responseFormat of ['dual', 'text', 'agent'] as const) {
+      const response = codeGraphMcpResponse(result, 800, undefined, responseFormat);
+      const formatted = formatCodeGraphMcpResponse(response, responseFormat);
+      expect(
+        measureAgentToolResponse({
+          ...(formatted.structuredContent === undefined ? {} : {structuredContent: formatted.structuredContent}),
+          text: formatted.content[0].text,
+        }).totalBytes,
+      ).toBeLessThanOrEqual(800 * 3);
+    }
+  });
+
+  it('admits an emoji-heavy zero-evidence mandatory receipt at the local minimum', () => {
+    const result = mandatoryEmojiGraphResult('😀'.repeat(5_000));
+    const refresh = {
+      queueToken: '😀'.repeat(5_000),
+      state: 'queued' as const,
+      type: 'code-graph-refresh-continuity' as const,
+      version: 1 as const,
+    };
+    for (const responseFormat of ['dual', 'text', 'agent'] as const) {
+      const response = codeGraphMcpResponse(result, 800, refresh, responseFormat);
+      const formatted = formatCodeGraphMcpResponse(response, responseFormat);
+      expect(response.structuredContent.output).toMatchObject({metadataTruncated: true, truncated: true});
+      expect(response.structuredContent.output).toMatchObject({
+        metadataOmissions: {
+          outsideProjectGraph: {paths: 50, suggestedActions: 50},
+          projectCoverage: {configuredRoots: 50},
+          refresh: true,
+        },
+      });
+      expect(
+        measureAgentToolResponse({
+          ...(formatted.structuredContent === undefined ? {} : {structuredContent: formatted.structuredContent}),
+          text: formatted.content[0].text,
+        }).totalBytes,
+      ).toBeLessThanOrEqual(800 * 3);
+    }
+  });
+
+  fcProp(
+    it,
+    'keeps pathological mandatory project metadata inside every accepted local format budget',
+    {
+      actions: FC.array(FC.string({maxLength: 1_000}), {maxLength: 24}),
+      paths: FC.array(FC.string({maxLength: 1_000}), {maxLength: 24}),
+      roots: FC.array(FC.string({maxLength: 1_000}), {maxLength: 24}),
+    },
+    ({actions, paths, roots}) => {
+      const result = {
+        ...verboseCodeGraphResult(),
+        outsideProjectGraph: {paths, state: 'outside-project-graph' as const, suggestedActions: actions},
+        projectCoverage: {
+          completeness: 'partial' as const,
+          configuredRoots: roots,
+          dependencyComponents: 2,
+          kind: 'project' as const,
+          negativeProof: 'selected-graph-only' as const,
+          observedWorktreeCommit: 'w'.repeat(2_000),
+          project: 'project'.repeat(200),
+          reusedEquivalentSnapshot: false,
+          rootComponents: 3,
+        },
+      };
+      for (const responseFormat of ['dual', 'text', 'agent'] as const) {
+        const response = codeGraphMcpResponse(result, 800, undefined, responseFormat);
+        const formatted = formatCodeGraphMcpResponse(response, responseFormat);
+        expect(
+          measureAgentToolResponse({
+            ...(formatted.structuredContent === undefined ? {} : {structuredContent: formatted.structuredContent}),
+            text: formatted.content[0].text,
+          }).totalBytes,
+        ).toBeLessThanOrEqual(800 * 3);
+      }
+    },
+    {fastCheck: {numRuns: 30}},
+  );
+
+  fcProp(
+    it,
+    'keeps multibyte mandatory receipts within every accepted local format budget',
+    {emojiCount: FC.integer({min: 1, max: 1_000})},
+    ({emojiCount}) => {
+      const result = mandatoryEmojiGraphResult('😀'.repeat(emojiCount));
+      for (const responseFormat of ['dual', 'text', 'agent'] as const) {
+        const response = codeGraphMcpResponse(result, 800, undefined, responseFormat);
+        const formatted = formatCodeGraphMcpResponse(response, responseFormat);
+        expect(
+          measureAgentToolResponse({
+            ...(formatted.structuredContent === undefined ? {} : {structuredContent: formatted.structuredContent}),
+            text: formatted.content[0].text,
+          }).totalBytes,
+        ).toBeLessThanOrEqual(800 * 3);
+      }
+    },
+    {fastCheck: {numRuns: 30}},
+  );
+
+  it('keeps agent edge cells valid JSON when endpoints or scalar values are irregular', () => {
+    const result = verboseCodeGraphResult();
+    const response = codeGraphMcpResponse(
+      {
+        ...result,
+        edges: [
+          {
+            ...result.edges[0],
+            evidencePath: 'src/界\tnewline\nfile.ts',
+            sourceId: undefined,
+            sourceName: 'source\t界\n',
+            targetId: undefined,
+            targetName: 'target\t界\n',
+          },
+        ],
+        nodes: [],
+      },
+      800,
+      undefined,
+      'agent',
+    );
+    const text = formatCodeGraphMcpResponse(response, 'agent').content[0].text;
+    const edge = text
+      .split('\n')
+      .find(line => line.startsWith('edge\t'))!
+      .split('\t');
+    expect(edge).toHaveLength(4);
+    expect(JSON.parse(edge[1])).toBeNull();
+    expect(JSON.parse(edge[2])).toBeNull();
+    expect(JSON.parse(edge[3])).toMatchObject({evidencePath: 'src/界\tnewline\nfile.ts'});
+  });
+
   fcProp(
     it,
     'preserves every projected graph fact when opting into text-only at supported budgets',
     {
-      budgetTokens: FC.option(FC.integer({max: 1_500, min: 500}), {nil: undefined}),
+      budgetTokens: FC.option(FC.integer({max: 1_500, min: 800}), {nil: undefined}),
       edgeCount: FC.integer({max: 20, min: 0}),
       nodeCount: FC.integer({max: 20, min: 0}),
       warningCount: FC.integer({max: 5, min: 0}),
@@ -705,6 +910,28 @@ describe('MCP code graph indexing progress', () => {
     {fastCheck: {numRuns: 60}},
   );
 
+  fcProp(
+    it,
+    'keeps agent graph output deterministic and within each accepted explicit budget',
+    {
+      budgetTokens: FC.integer({max: 1_500, min: 800}),
+      edgeCount: FC.integer({max: 20, min: 0}),
+      nodeCount: FC.integer({max: 20, min: 0}),
+    },
+    ({budgetTokens, edgeCount, nodeCount}) => {
+      const verbose = verboseCodeGraphResult();
+      const result = {...verbose, edges: verbose.edges.slice(0, edgeCount), nodes: verbose.nodes.slice(0, nodeCount)};
+      const first = formatCodeGraphMcpResponse(codeGraphMcpResponse(result, budgetTokens, undefined, 'agent'), 'agent');
+      const second = formatCodeGraphMcpResponse(
+        codeGraphMcpResponse(result, budgetTokens, undefined, 'agent'),
+        'agent',
+      );
+      expect(first).toEqual(second);
+      expect(measureAgentToolResponse({text: first.content[0].text}).totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
+    },
+    {fastCheck: {numRuns: 50}},
+  );
+
   it('keeps bounded path-search coverage distinct from MCP output truncation', () => {
     const result: CodeGraphQueryResult = {
       ...verboseCodeGraphResult(),
@@ -721,7 +948,7 @@ describe('MCP code graph indexing progress', () => {
       warnings: ['Path search was bounded by edge-limit.'],
     };
     const response = codeGraphMcpResponse(result, 1_500);
-    expect(response.structuredContent.searchCoverage).toEqual(result.searchCoverage);
+    expect(response.structuredContent).toMatchObject({searchCoverage: result.searchCoverage});
     expect(response.structuredContent.output.truncated).toBe(false);
   });
 
@@ -736,15 +963,15 @@ describe('MCP code graph indexing progress', () => {
     const result = {...verboseCodeGraphResult(), source};
     const compact = compactCodeGraphMcpResult(result);
     expect(compact.source).toEqual(source);
-    const response = codeGraphMcpResponse(result, 400);
-    expect(response.structuredContent.source).toEqual(source);
+    const response = codeGraphMcpResponse(result, 800);
+    expect(response.structuredContent).toMatchObject({source});
   });
 
   fcProp(
     it,
     'honors explicit local graph response budgets across result cardinalities',
     {
-      budgetTokens: FC.integer({max: 1_500, min: 300}),
+      budgetTokens: FC.integer({max: 1_500, min: 800}),
       edgeCount: FC.integer({max: 200, min: 0}),
       nodeCount: FC.integer({max: 100, min: 0}),
       warningCount: FC.integer({max: 20, min: 0}),
@@ -1150,6 +1377,57 @@ function verboseCodeGraphResult(): CodeGraphQueryResult {
     },
     version: 1,
     warnings: Array.from({length: 20}, (_, index) => `warning ${index} ${'w'.repeat(500)}`),
+  };
+}
+
+function mandatoryEmojiGraphResult(value: string): CodeGraphQueryResult {
+  const result = verboseCodeGraphResult();
+  return {
+    ...result,
+    edges: [],
+    nodes: [],
+    outsideProjectGraph: {
+      paths: Array.from({length: 50}, () => value),
+      state: 'outside-project-graph',
+      suggestedActions: Array.from({length: 50}, () => value),
+    },
+    projectCoverage: {
+      completeness: 'partial',
+      configuredRoots: Array.from({length: 50}, () => value),
+      dependencyComponents: 1,
+      kind: 'project',
+      negativeProof: 'selected-graph-only',
+      observedWorktreeCommit: value,
+      project: value,
+      reusedEquivalentSnapshot: false,
+      rootComponents: 1,
+      snapshotSourceCommit: value,
+    },
+    repository: {displayName: value, repositoryId: value},
+    outsideScopeChangedPaths: 50,
+    searchCoverage: {
+      directEdgeChecked: true,
+      inspectedEdges: 50,
+      limitsReached: ['depth', 'edge-limit', 'node-limit', 'time-budget'],
+      status: 'bounded',
+      visitedNodes: 50,
+    },
+    scope: {
+      evidence: 'bounded-lexical-observation',
+      lexicalCandidatesExamined: 1,
+      lexicalMatches: 1,
+      packageName: value,
+      type: 'package',
+    },
+    snapshot: {commit: value, dirty: false, id: value, worktreeId: value},
+    source: {
+      deltaCount: 1,
+      frontierCommit: value,
+      kind: 'shared-base-plus-local-overlay',
+      localCommit: value,
+      profileDigest: value,
+    },
+    warnings: [],
   };
 }
 

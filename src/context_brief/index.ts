@@ -32,6 +32,7 @@ import type {
   ContextBriefLogicalResultV1,
   ContextBriefPlanV1,
   ContextBriefRequestV1,
+  ContextBriefResponseFormat,
   ProjectedContextBriefV1,
 } from './types.js';
 
@@ -61,6 +62,7 @@ export interface ContextBriefCompilerDependencies<
   readonly projection?: (
     logical: ContextBriefLogicalResultV1,
     maximumEstimatedTokens: number,
+    responseFormat: ContextBriefResponseFormat,
   ) => Effect.Effect<ProjectedContextBriefV1, unknown, ProjectR>;
 }
 
@@ -148,9 +150,9 @@ export function instrumentContextBriefCompilerDependencies<
               Effect.orElseSucceed(() => ({gaps: ['procedure-evidence-unavailable'], procedures: []}) as const),
             ),
         }),
-    projection: (logical, maximumEstimatedTokens) =>
+    projection: (logical, maximumEstimatedTokens, responseFormat) =>
       reporter.projection(
-        sources.projection(logical, maximumEstimatedTokens),
+        sources.projection(logical, maximumEstimatedTokens, responseFormat),
         projected => projected.structuredContent.output.truncated,
         logical.coverage.memory.codeAnchors === undefined
           ? undefined
@@ -253,8 +255,8 @@ export const compileContextBriefWith = Effect.fn('contextBrief.compileWith')(fun
     verifiedProcedures: procedureEvidence.procedures,
   });
   return yield* dependencies.projection
-    ? dependencies.projection(logical, plan.outputBudgetTokens)
-    : Effect.sync(() => projectContextBrief(logical, plan.outputBudgetTokens));
+    ? dependencies.projection(logical, plan.outputBudgetTokens, plan.responseFormat)
+    : Effect.sync(() => projectContextBrief(logical, plan.outputBudgetTokens, plan.responseFormat));
 });
 
 /**
@@ -311,8 +313,8 @@ const compileContextBriefRuntime = Effect.fn('contextBrief.compileRuntime')(func
                     };
                   }),
                 ),
-          projection: (logical, maximumEstimatedTokens) =>
-            Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens)),
+          projection: (logical, maximumEstimatedTokens, responseFormat) =>
+            Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens, responseFormat)),
         },
         requestedRepositories,
       ),
@@ -320,6 +322,7 @@ const compileContextBriefRuntime = Effect.fn('contextBrief.compileRuntime')(func
         budgetTokens: request.outputBudgetTokens,
         ...(request.codeAnchors.codeRefs.length === 0 ? {} : {codeRefs: request.codeAnchors.codeRefs}),
         mode: request.mode,
+        ...(request.responseFormat === 'dual' ? {} : {responseFormat: request.responseFormat}),
         scope: request.scope,
         ...(request.surface === undefined ? {} : {surface: request.surface}),
         task: request.task,

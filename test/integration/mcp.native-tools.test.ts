@@ -73,7 +73,7 @@ const RECALL_PROGRESS_PHASES = [
 ] as const;
 
 const COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS = 10_000;
-const COLD_BUILD_RESPONSE_BUDGET_TOKENS = 400;
+const COLD_BUILD_RESPONSE_BUDGET_TOKENS = 800;
 
 const CORE_TOOL_NAMES = [
   'complete_activation_retrieval_proof',
@@ -302,6 +302,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain(
           'For non-trivial local repo work, call MCP `context_brief` with task + absolute `callerCwd`',
         );
+        expect(instructions).toContain('Prefer `responseFormat: "agent"`');
         expect(instructions).toContain('`recall_context` + `read_context`: memory alternative');
         expect(instructions.indexOf('context_brief')).toBeLessThan(instructions.indexOf('recall_context'));
         expect(instructions).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
@@ -342,7 +343,7 @@ describe('Threadnote MCP toolsets', () => {
         }
         const serializedToolsBytes = Buffer.byteLength(JSON.stringify(tools.tools));
         // Bound metadata growth without penalizing future concise descriptions.
-        expect(serializedToolsBytes).toBeLessThanOrEqual(30_500);
+        expect(serializedToolsBytes).toBeLessThanOrEqual(31_500);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );
@@ -363,6 +364,12 @@ describe('Threadnote MCP toolsets', () => {
         expect(readContext?.inputSchema.properties).toHaveProperty('responseFormat');
         expect(readContext?.inputSchema.properties).not.toHaveProperty('budgetTokens');
         expect(readContext?.inputSchema.properties).not.toHaveProperty('cursor');
+        for (const name of ['inspect_code_graph', 'context_brief']) {
+          const tool = tools.tools.find(candidate => candidate.name === name);
+          expect(JSON.stringify(tool?.inputSchema)).toContain('responseFormat');
+          expect(JSON.stringify(tool?.inputSchema)).toContain('agent');
+          expect(tool?.description).toContain('semantic truncation');
+        }
       },
       {toolset: null},
     );
@@ -2221,6 +2228,7 @@ describe('Threadnote MCP toolsets', () => {
               anyOf: expect.arrayContaining([{type: 'string'}, {items: {type: 'string'}, maxItems: 8, type: 'array'}]),
             },
             mode: {enum: ['brief', 'locate', 'explain', 'trace', 'impact']},
+            responseFormat: {enum: ['dual', 'agent']},
             surface: {type: 'string'},
             task: {type: 'string'},
             workset: {type: 'string'},
@@ -2252,6 +2260,27 @@ describe('Threadnote MCP toolsets', () => {
         expect(parseContextBriefAgentViewText(worksetOnlyText ?? '')).toEqual(
           projectContextBriefAgentView(parseContextBriefV1(worksetOnly.structuredContent)),
         );
+
+        const agentWorksetOnly = await client.callTool(
+          {
+            arguments: {
+              budgetTokens: 800,
+              responseFormat: 'agent',
+              task: 'Summarize the prepared engineering Workset without a local caller workspace.',
+              workset: 'engineering',
+            },
+            name: 'context_brief',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(agentWorksetOnly.isError, JSON.stringify(agentWorksetOnly)).not.toBe(true);
+        expect(agentWorksetOnly.structuredContent).toBeUndefined();
+        const agentText = (
+          (Array.isArray(agentWorksetOnly.content) ? agentWorksetOnly.content[0] : undefined) as TextContent | undefined
+        )?.text;
+        expect(parseContextBriefAgentViewText(agentText ?? '')).toBeDefined();
+        expect(Buffer.byteLength(agentText ?? '')).toBeLessThanOrEqual(800 * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN);
 
         const tooSmall = await client.callTool(
           {
@@ -2443,7 +2472,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(graphTool?.description).toContain('workset prepare');
         expect(graphTool?.description).toContain('published ready generation');
         expect(JSON.stringify(graphTool?.inputSchema)).toContain(
-          'Local or named-workset query response-token budget; worksets default to 1250, maximum 1500',
+          'Named Worksets accept 1-1500. Local repository responses accept 800-1500',
         );
         expect(JSON.stringify(graphTool?.inputSchema)).toContain(
           'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
@@ -2464,6 +2493,7 @@ describe('Threadnote MCP toolsets', () => {
             operation: {
               enum: ['query', 'node', 'neighbors', 'explain', 'path', 'impact', 'topology'],
             },
+            responseFormat: {enum: ['dual', 'text', 'agent']},
           },
           type: 'object',
         });

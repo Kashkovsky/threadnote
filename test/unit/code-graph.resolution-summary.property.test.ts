@@ -16,6 +16,7 @@ import type {
 } from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
+import {makeIdempotentFixtureTempDirectoryScoped} from '../helpers/fixture-temp-directory.js';
 
 const ResolutionSummaryTestLayer = CodeGraphStore.layer.pipe(
   Layer.provideMerge(SystemInfo.layer),
@@ -74,9 +75,10 @@ describe('persistent reference lookup summaries', () => {
           Effect.gen(function* () {
             const fileSystem = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
-            const root = yield* fileSystem.makeTempDirectoryScoped({
-              prefix: 'threadnote-resolution-summary-property-',
-            });
+            const root = yield* makeIdempotentFixtureTempDirectoryScoped(
+              fileSystem,
+              'threadnote-resolution-summary-property-',
+            );
             const fixture = resolutionFacts(root, testCase);
             const raw = yield* resolveWithTemporaryActivation(path.join(root, 'raw.sqlite'), fixture);
             const summarized = yield* resolveWithPersistentActivation(path.join(root, 'summarized.sqlite'), fixture);

@@ -25,6 +25,7 @@ export const CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
 export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
 
 export type ContextBriefMode = (typeof CONTEXT_BRIEF_MODES)[number];
+export type ContextBriefResponseFormat = 'dual' | 'agent';
 
 export function isContextBriefMode(value: string): value is ContextBriefMode {
   return CONTEXT_BRIEF_MODES.some(mode => mode === value);
@@ -119,6 +120,7 @@ export interface ContextBriefRequestV1 {
   readonly budgetTokens: number;
   readonly codeRefs?: readonly string[];
   readonly mode: ContextBriefMode;
+  readonly responseFormat?: ContextBriefResponseFormat;
   readonly scope: ContextBriefScopeV1;
   readonly surface?: string;
   readonly task: string;
@@ -149,6 +151,7 @@ export interface ContextBriefPlanV1 {
   };
   readonly mode: ContextBriefMode;
   readonly outputBudgetTokens: number;
+  readonly responseFormat: ContextBriefResponseFormat;
   readonly scope: ContextBriefScopeV1;
   readonly surface?: string;
   readonly task: string;
@@ -589,7 +592,7 @@ export type ProjectedContextBriefV4 = Omit<ProjectedContextBriefV1, 'structuredC
 };
 
 const UTF8 = new TextEncoder();
-const REQUEST_KEYS = new Set(['budgetTokens', 'codeRefs', 'mode', 'scope', 'surface', 'task']);
+const REQUEST_KEYS = new Set(['budgetTokens', 'codeRefs', 'mode', 'responseFormat', 'scope', 'surface', 'task']);
 const REPOSITORY_SCOPE_KEYS = new Set(['callerCwd', 'kind', 'project']);
 const WORKSET_SCOPE_KEYS = new Set(['kind', 'name', 'project']);
 const LOCAL_CONTEXT_BRIEF_SYMBOL_REF = /^cgs_[0-9a-f]{32}$/u;
@@ -613,16 +616,24 @@ export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV
   }
   const codeRefs = parseContextBriefCodeRefs(object.codeRefs);
   const mode = object.mode === undefined ? 'brief' : contextBriefMode(object.mode);
+  const responseFormat =
+    object.responseFormat === undefined ? 'dual' : contextBriefResponseFormat(object.responseFormat);
   const scope = parseScope(object.scope);
   const surface = object.surface === undefined ? undefined : boundedText(object.surface, 'surface', 128);
   return {
     budgetTokens,
     ...(codeRefs.length === 0 ? {} : {codeRefs}),
     mode,
+    ...(responseFormat === 'dual' ? {} : {responseFormat}),
     scope,
     ...(surface === undefined ? {} : {surface}),
     task,
   };
+}
+
+function contextBriefResponseFormat(value: unknown): ContextBriefResponseFormat {
+  if (value === 'dual' || value === 'agent') return value;
+  throw invalid('responseFormat must be dual or agent.');
 }
 
 /** Parse exact local Context Brief anchors without silently normalizing caller input. */
