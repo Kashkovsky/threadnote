@@ -1,5 +1,6 @@
 import {Context, Effect, Layer, Schema} from 'effect';
 import {succeedUndefined} from '../optional.js';
+import {SystemInfo} from '../system.js';
 import {LanguageModel} from 'effect/unstable/ai';
 import {shouldExpandRecall, type RecallConfidenceLevel} from '../../recall/rank.js';
 import type {RuntimeConfig} from '../../types.js';
@@ -10,6 +11,16 @@ import {
   type ResolvedEffectAiConfiguration,
 } from './consolidator.js';
 import {sha256Hex} from '../digest.js';
+import {
+  jevRecallFailureReceipt,
+  jevConfiguration,
+  logJevSelectionReceipt,
+  mergeJevRecallSelection,
+  runJevRecallCandidateSelection,
+  type JevConfiguration,
+  type JevSelectionRunner,
+  type JevSelectionReceipt,
+} from './jev.js';
 
 const MAX_RECALL_REWRITES = 2;
 const MAX_RECALL_REWRITE_LENGTH = 512;
@@ -228,19 +239,66 @@ export const selectExpandedRecallCandidatesEffect = Effect.fn('RecallCandidateSe
     input: RecallSelectionInput,
     runtimeConfig: Pick<RuntimeConfig, 'agentContextHome'>,
     resolved: ResolvedEffectAiConfiguration | undefined,
+    jev: JevConfiguration | undefined = undefined,
+    onJevReceipt: ((receipt: JevSelectionReceipt) => Effect.Effect<void>) | undefined = undefined,
   ) {
     if (input.candidates.length === 0) {
       return undefined;
     }
     const bounded = {...input, candidates: input.candidates.slice(0, MAX_RECALL_SELECTION_CANDIDATES)};
-    if (!resolved || !isLoopbackAiEndpoint(resolved.configuration.apiUrl)) return undefined;
-    return yield* boundedRecallCandidateSelection(
-      ensureEffectAiReady(runtimeConfig, resolved).pipe(
-        Effect.andThen(runEffectAiRecallSelection(bounded, resolved.configuration)),
-      ),
+    const baselineSelection =
+      resolved && isLoopbackAiEndpoint(resolved.configuration.apiUrl)
+        ? ensureEffectAiReady(runtimeConfig, resolved).pipe(
+            Effect.andThen(runEffectAiRecallSelection(bounded, resolved.configuration)),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : Effect.void.pipe(Effect.as(undefined));
+    if (!jev) return yield* boundedRecallCandidateSelection(baselineSelection);
+    return yield* selectRecallCandidatesWithJev(
+      baselineSelection,
+      bounded,
+      jev,
+      onJevReceipt,
+      runJevRecallCandidateSelection,
     );
   },
 );
+
+export const selectConfiguredRecallCandidatesEffect = Effect.fn('RecallCandidateSelector.selectConfigured')(function* (
+  input: RecallSelectionInput,
+  runtimeConfig: Pick<RuntimeConfig, 'agentContextHome'>,
+  resolved: ResolvedEffectAiConfiguration | undefined,
+) {
+  const jev = jevConfiguration((yield* SystemInfo).environment());
+  return yield* selectExpandedRecallCandidatesEffect(input, runtimeConfig, resolved, jev, logJevSelectionReceipt);
+});
+
+export function selectRecallCandidatesWithJev(
+  baselineSelection: Effect.Effect<readonly string[] | undefined, never>,
+  input: RecallSelectionInput,
+  jev: JevConfiguration,
+  onJevReceipt: ((receipt: JevSelectionReceipt) => Effect.Effect<void>) | undefined,
+  runJevSelection: JevSelectionRunner = runJevRecallCandidateSelection,
+): Effect.Effect<readonly string[] | undefined, never> {
+  let completedBaseline: readonly string[] | undefined;
+  const report = (receipt: JevSelectionReceipt) => (onJevReceipt ? onJevReceipt(receipt) : Effect.void);
+  return Effect.gen(function* () {
+    completedBaseline = yield* baselineSelection;
+    const result = yield* runJevSelection(input, jev);
+    return yield* report(result.receipt).pipe(Effect.as(mergeJevRecallSelection(completedBaseline, result, jev.mode)));
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: RECALL_SELECTION_TIMEOUT_MILLISECONDS,
+      orElse: () =>
+        report(jevRecallFailureReceipt(jev, input.candidates.length, 'timeout')).pipe(Effect.as(completedBaseline)),
+    }),
+    Effect.catchTag('JevDecisionFailed', () =>
+      report(jevRecallFailureReceipt(jev, input.candidates.length, 'provider-failure')).pipe(
+        Effect.as(completedBaseline),
+      ),
+    ),
+  );
+}
 
 export function boundedRecallCandidateSelection<A, E, R>(
   selection: Effect.Effect<A, E, R>,

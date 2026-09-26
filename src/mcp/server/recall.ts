@@ -22,7 +22,6 @@ import {
   mergeRecallRewritesForConfidence,
   recallHybridMinimumScore,
   recallRewriteLimitForConfidence,
-  selectExpandedRecallCandidatesEffect,
   shouldExpandRecall,
 } from '../../effect/ai/recall.js';
 import {sha256Hex} from '../../effect/digest.js';
@@ -38,6 +37,7 @@ import {
   type MemoryMetadata,
 } from '../../memory/document.js';
 import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
+import {makeMcpRecallCandidateSelector} from './recall_selection.js';
 import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code/citation.js';
 import {
   MEMORY_READ_MAXIMUM_CONTENT_BYTES,
@@ -1081,6 +1081,7 @@ function runRecallTool(
     const exactMatches = workspaceContext.exactMatches;
     let operationalWarnings = workspaceContext.operationalWarnings;
     const effectAi = workspaceContext.effectAi;
+    const selectRecallCandidates = makeMcpRecallCandidateSelector(config, effectAi, workspaceContext.jev, sections);
     let hybridMinimumScore = recallHybridMinimumScore(Number(threshold));
     const expansionQueries: string[] = [];
     const recallLimit = params.nodeLimit ?? 12;
@@ -1182,11 +1183,7 @@ function runRecallTool(
       : [];
     const indexSelectionIds =
       indexSelectionCandidates.length > 0
-        ? yield* selectExpandedRecallCandidatesEffect(
-            {candidates: indexSelectionCandidates, query: params.query},
-            config,
-            effectAi,
-          )
+        ? yield* selectRecallCandidates({candidates: indexSelectionCandidates, query: params.query})
         : undefined;
     const groundedExpansionQueries =
       indexSelectionIds && indexSelectionIds.length > 0
@@ -1242,11 +1239,7 @@ function runRecallTool(
         recallSections.expansionCandidates,
         Math.max(params.nodeLimit ?? 12, 12) * 2,
       );
-      const selectedIds = yield* selectExpandedRecallCandidatesEffect(
-        {candidates: selectionCandidates, query: params.query},
-        config,
-        effectAi,
-      );
+      const selectedIds = yield* selectRecallCandidates({candidates: selectionCandidates, query: params.query});
       if (selectedIds !== undefined) {
         const selectedUris = selectedRecallCandidateUris(
           selectionCandidates,

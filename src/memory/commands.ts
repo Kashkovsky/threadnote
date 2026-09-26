@@ -5,7 +5,7 @@ import {
   mergeRecallRewritesForConfidence,
   recallHybridMinimumScore,
   recallRewriteLimitForConfidence,
-  selectExpandedRecallCandidatesEffect,
+  selectConfiguredRecallCandidatesEffect,
   shouldExpandRecall,
 } from '../effect/ai/recall.js';
 import {resolveEffectAiConfiguration} from '../effect/ai/consolidator.js';
@@ -611,7 +611,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     indexSelectionCandidates.length > 0
       ? yield* withAnonymousTelemetryPhase(
           'model.inference',
-          selectExpandedRecallCandidatesEffect({candidates: indexSelectionCandidates, query}, config, effectAi),
+          selectConfiguredRecallCandidatesEffect({candidates: indexSelectionCandidates, query}, config, effectAi),
         )
       : undefined;
   const groundedExpansionQueries =
@@ -675,7 +675,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     );
     const selectedIds = yield* withAnonymousTelemetryPhase(
       'model.inference',
-      selectExpandedRecallCandidatesEffect({candidates: selectionCandidates, query}, config, effectAi),
+      selectConfiguredRecallCandidatesEffect({candidates: selectionCandidates, query}, config, effectAi),
     );
     if (selectedIds !== undefined) {
       const selectedUris = selectedRecallCandidateUris(

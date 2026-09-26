@@ -1061,9 +1061,6 @@ export function selectedRecallCandidateUris(
   selectedIds: readonly string[],
   anchorIds: readonly string[] = [],
 ): readonly string[] {
-  if (selectedIds.length === 0) {
-    return [];
-  }
   const selected = new Set([...anchorIds, ...selectedIds]);
   return candidates
     .filter(candidate => selected.has(candidate.id))

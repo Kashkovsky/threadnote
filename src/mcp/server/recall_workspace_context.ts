@@ -15,6 +15,7 @@ import {
   trimTrailingSlash,
 } from '../../utils.js';
 import {resolveEffectAiConfiguration} from '../../effect/ai/consolidator.js';
+import {jevConfiguration} from '../../effect/ai/jev.js';
 import {SystemInfo} from '../../effect/system.js';
 import {loadRecallExactMatches} from '../../recall/index.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../../recall/eligibility.js';
@@ -135,6 +136,7 @@ export function resolveRecallWorkspaceContext(config: RuntimeConfig, params: Rec
       : yield* resolveEffectAiConfiguration(config, (yield* SystemInfo).environment()).pipe(Effect.result);
     const effectAi =
       effectAiResult !== undefined && Result.isSuccess(effectAiResult) ? effectAiResult.success : undefined;
+    const jev = navigationOnly ? undefined : jevConfiguration((yield* SystemInfo).environment());
     if (effectAiResult !== undefined && Result.isFailure(effectAiResult)) {
       sections.push(
         `Local AI recall unavailable: ${errorMessage(effectAiResult.failure)}. Deterministic recall continued.`,
@@ -142,6 +144,7 @@ export function resolveRecallWorkspaceContext(config: RuntimeConfig, params: Rec
     }
     return {
       effectAi,
+      jev,
       eligibility,
       exactMatches: exactLookup.matches,
       navigationOnly,
