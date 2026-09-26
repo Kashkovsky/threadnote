@@ -12,8 +12,12 @@ export const STAGE3_PHASES = [
 ] as const;
 export type Stage3Phase = (typeof STAGE3_PHASES)[number];
 
-export interface Stage3Options {
-  readonly mode: 'plan' | 'execute';
+export interface Stage3PlanOptions {
+  readonly mode: 'plan';
+}
+
+export interface Stage3ExecuteOptions {
+  readonly mode: 'execute';
   readonly candidateCommit: string;
   readonly candidateRef: string;
   readonly candidateExecutable: string;
@@ -21,12 +25,15 @@ export interface Stage3Options {
   readonly output: string;
 }
 
+export type Stage3Options = Stage3PlanOptions | Stage3ExecuteOptions;
+
 export function stage3Usage(): string {
   return [
     'Usage: bun run gate:code-graph:stage3 -- [options]',
     '',
     'Runs the live Stage 3 code-graph release gate or prints its non-executing plan.',
-    'Required options: --mode <plan|execute> --candidate-commit <40-hex> --candidate-ref <ref>',
+    'Plan: --mode plan',
+    'Execute: --mode execute --candidate-commit <40-hex> --candidate-ref <ref>',
     '  --candidate-executable <absolute-path> --candidate-executable-sha256 <64-hex> --output <absolute-path>',
   ].join('\n');
 }
@@ -58,6 +65,10 @@ export function parseStage3Arguments(arguments_: readonly string[]): Stage3Optio
   };
   const mode = value('--mode');
   assertStage3(mode === 'plan' || mode === 'execute', 'arguments');
+  if (mode === 'plan') {
+    assertStage3(values.size === 1, 'arguments');
+    return {mode};
+  }
   const candidateCommit = value('--candidate-commit');
   const candidateExecutableSha256 = value('--candidate-executable-sha256');
   assertStage3(/^[0-9a-f]{40}$/u.test(candidateCommit), 'candidate-identity');

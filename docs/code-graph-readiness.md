@@ -47,8 +47,14 @@ after execution. It does not install or switch runtimes. It currently requires a
 temporary storage; subprocesses use an isolated process home and disabled inherited Git configuration.
 
 ```sh
+bun run gate:code-graph:stage3 -- --mode plan
+```
+
+Use `--mode execute` only when intentionally running the final candidate gate:
+
+```sh
 bun run gate:code-graph:stage3 -- \
-  --mode plan \
+  --mode execute \
   --candidate-ref <reviewed-ref> \
   --candidate-commit <exact-40-hex-commit> \
   --candidate-executable <absolute-canonical-managed-threadnote> \
@@ -56,10 +62,9 @@ bun run gate:code-graph:stage3 -- \
   --output <absolute-new-json-file-outside-any-git-checkout>
 ```
 
-Use `--mode execute` only when intentionally running the final candidate gate. Plan mode performs no candidate
-execution and cannot produce passing evidence. Execute mode accepts no observation imports or replay files. Any
-missing phase, ambiguous ownership, failed cleanup, changed runtime, or privacy failure refuses the run. The output
-parent must already exist, and an existing output file is never overwritten.
+Plan mode performs no candidate execution and cannot produce passing evidence. Execute mode accepts no observation
+imports or replay files. Any missing phase, ambiguous ownership, failed cleanup, changed runtime, or privacy failure
+refuses the run. The output parent must already exist, and an existing output file is never overwritten.
 
 The retained artifact contains candidate provenance, opaque continuity tokens, observed states, and bounded retry
 guidance. Paths, source text, process IDs, request fingerprints, and native errors stay out of the observation
