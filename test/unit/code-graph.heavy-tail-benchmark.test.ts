@@ -305,6 +305,8 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
       maximum: 268,
       minimum: 256,
     });
+    expect(ratchet.measurements['interrupted-extraction-average-concurrency']).toMatchObject({maximum: 4});
+    expect(ratchet.measurements['resumed-extraction-average-concurrency']).toMatchObject({maximum: 2});
     expect(ratchet.measurements['resumed-reused-files']).toMatchObject({maximum: 268, minimum: 256});
     expect(ratchet.measurements['single-reused-files']).toMatchObject({maximum: 0, minimum: 0});
     expect(ratchet.measurements['resume-retained-cache-coverage']).toMatchObject({maximum: 100, minimum: 100});
@@ -319,6 +321,24 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
       ),
     };
     expect(() => enforceCodeGraphBenchmarkRatchet(reducedInterruptionOvershoot, ratchet)).not.toThrow();
+
+    const toleratedConcurrencyEpsilon = createCodeGraphHeavyTailRatchet(
+      [0, 10, 20].map(offset =>
+        heavyTailArtifactWithMeasurement(
+          4.000_000_5,
+          'interrupted-extraction-average-concurrency',
+          2.000_000_5,
+          'resumed-extraction-average-concurrency',
+          offset,
+        ),
+      ),
+    );
+    expect(toleratedConcurrencyEpsilon.measurements['interrupted-extraction-average-concurrency']).toMatchObject({
+      maximum: 4,
+    });
+    expect(toleratedConcurrencyEpsilon.measurements['resumed-extraction-average-concurrency']).toMatchObject({
+      maximum: 2,
+    });
 
     const durationLimit = ratchet.measurements['parallel-duration'].p95Maximum!;
     const regressed = {

@@ -3,8 +3,8 @@ import {codeGraphExtractionWorkUnits, codeGraphSourceSizeBucket} from './progres
 
 const REQUEST_COST_SCALE = 1_024;
 const FACT_COST_SCALE = 4;
-const EXTRACTION_WINDOW_FILES_PER_WORKER = 8;
-const EXTRACTION_WINDOW_FILES_MAXIMUM = 64;
+const EXTRACTION_WINDOW_FILES_PER_WORKER = 36;
+const EXTRACTION_WINDOW_FILES_MAXIMUM = 96;
 
 export interface CodeGraphExtractionCostFile {
   readonly language: string;
@@ -39,9 +39,8 @@ export interface CodeGraphExtractionLane<Group extends CodeGraphExtractionCostGr
 
 /**
  * Keep enough independent parser work in flight to absorb file-cost skew
- * without retaining an entire 128-file inventory batch. Parser capacity is
- * capped at eight elsewhere, so this also bounds serialized facts retained
- * between persistence boundaries to at most 64 files.
+ * while bounding each extraction-result wave. Parser capacity is capped at
+ * eight elsewhere, so a wave contains at most 96 files.
  */
 export function codeGraphExtractionWindowSize(capacity: number): number {
   if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('Code graph parser capacity is invalid.');
@@ -128,13 +127,16 @@ export function takeCodeGraphExtractionWindow<Group extends CodeGraphExtractionC
   if (!Number.isSafeInteger(maximumFiles) || maximumFiles < 1) {
     throw new Error('Code graph extraction window is invalid.');
   }
+  const totalFiles = groups.reduce((total, group) => total + group.files.length, 0);
+  const windowCount = Math.ceil(totalFiles / maximumFiles);
+  const targetFiles = windowCount === 0 ? 0 : Math.ceil(totalFiles / windowCount);
   const selected: Group[] = [];
   const remaining: Group[] = [];
   let selectedFiles = 0;
   for (let index = 0; index < groups.length; index += 1) {
     const group = groups[index];
     if (group.files.length === 0) throw new Error('Code graph extraction group is empty.');
-    const available = maximumFiles - selectedFiles;
+    const available = targetFiles - selectedFiles;
     if (available === 0) {
       remaining.push(...groups.slice(index));
       break;

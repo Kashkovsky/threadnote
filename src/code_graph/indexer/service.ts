@@ -94,7 +94,7 @@ import {
   CodeGraphRefreshDemandSuperseded,
 } from '../refresh/demand.js';
 import {codeGraphMaintenanceIntentActive, withCodeGraphMaintenanceRegistration} from '../maintenance/gate.js';
-import {CodeGraphParserPool} from '../parser_worker.js';
+import {CodeGraphParserPool, warmPlannedParserCapacity} from '../parser_worker.js';
 import {withCodeGraphPreparedSpoolBudget} from '../prepared_spool_budget.js';
 import {repositoryIdentityMatchesExpectation, resolveRepositoryIdentity} from '../repository.js';
 import {captureSharedGraphImportBase} from '../sharing/client.js';
@@ -784,7 +784,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           overlayObservation: inventoryOverlayObservation,
                           onContentBatch: cacheCoalescer.onContentBatch,
                           onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
-                          onParserWorkPlanned: () => parserPool.warm(options.threadnoteHome),
+                          onParserWorkPlanned: fileCount =>
+                            warmPlannedParserCapacity(parserPool, options.threadnoteHome, fileCount),
                         });
                       }).pipe(
                         Effect.tap(() => cacheCoalescer.flush),

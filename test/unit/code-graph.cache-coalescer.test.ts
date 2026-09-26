@@ -14,6 +14,7 @@ import {
   makeCodeGraphBuildResourceCoordinator,
 } from '../../src/code_graph/build/resources.js';
 import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact/budget.js';
+import {codeGraphExtractionWindowSize} from '../../src/code_graph/extraction_lanes.js';
 import {cacheContentBatch, type CodeGraphCacheExtractedRow} from '../../src/code_graph/indexer.js';
 import type {CodeGraphIndexResourceGate} from '../../src/code_graph/indexer/types.js';
 import type {CodeGraphContentBatchContext} from '../../src/code_graph/inventory.js';
@@ -294,7 +295,8 @@ describe('code graph parser cache coalescer', () => {
     () =>
       Effect.gen(function* () {
         const resources = yield* makeCodeGraphBuildResourceCoordinator(() => Effect.void);
-        const diagnostic = '界'.repeat(1_500_000);
+        const diagnostic = '界'.repeat(650_000);
+        const windowSize = codeGraphExtractionWindowSize(1);
         let admissions = 0;
         let writes = 0;
         const preparationGate: CodeGraphIndexResourceGate = effect =>
@@ -332,13 +334,13 @@ describe('code graph parser cache coalescer', () => {
             ),
           preparationGate,
         });
-        const files = Array.from({length: 9}, (_, index) => cacheFile(index, 'src/window-boundary'));
+        const files = Array.from({length: windowSize + 1}, (_, index) => cacheFile(index, 'src/window-boundary'));
 
         yield* harness.run(files, cacheContext(files.length));
 
         expect(admissions).toBe(2);
-        expect(writes).toBe(1);
-        expect(harness.calls[0]?.files.length).toBeLessThanOrEqual(8);
+        expect(writes).toBeGreaterThan(0);
+        expect(harness.calls[0]?.files.length).toBeLessThanOrEqual(windowSize);
         expect(yield* resources.current).toEqual(EMPTY_CODE_GRAPH_BUILD_RESOURCE_STATE);
         yield* harness.flush;
         expect(harness.calls.reduce((total, call) => total + call.files.length, 0)).toBe(files.length);

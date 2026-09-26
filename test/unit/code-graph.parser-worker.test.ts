@@ -15,12 +15,14 @@ import {
   CODE_GRAPH_PARSER_WORKER_RESPONSE_BYTES_MAXIMUM,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
   CodeGraphParserPool,
+  ParserWorkerConfigurationError,
   budgetParserWorkerFacts,
   codeGraphParserPoolLayer,
   parserWorkerCapacity,
   parserWorkerResourceBudget,
   parserWorkerSourceByteBudget,
   parserWorkerSuccessResponseBytes,
+  warmPlannedParserCapacity,
   type ParserWorkerProcess,
   type ParserWorkerSpawner,
   type ParserWorkerSpawnOptions,
@@ -774,7 +776,7 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 1, maxSourceBytes: 64, spawnWorker: spawn})), Effect.scoped);
   });
 
-  it.effect('prepares every idle slot without protocol requests and reuses the workers for extraction', () => {
+  it.effect('warms every idle slot before extraction and reuses the workers', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
     const spawn: ParserWorkerSpawner = () => {
       const worker = echoProcess();
@@ -789,20 +791,205 @@ describe('code graph parser worker pool', () => {
 
       yield* pool.warm(home);
       expect(processes).toHaveLength(2);
-      expect(processes.every(process => process.writes.length === 0)).toBe(true);
+      expect(processes.every(process => process.writes[0]?.file.path === '.threadnote/parser-warmup.ts')).toBe(true);
 
-      const results = yield* Effect.all(
-        [
-          pool.extract(inventoryFile('src/warm-a.ts', 'export const warmA = true;'), home),
-          pool.extract(inventoryFile('src/warm-b.ts', 'export const warmB = true;'), home),
-        ],
+      const files = [
+        inventoryFile('src/warm-a.ts', 'export const warmA = true;'),
+        inventoryFile('src/warm-b.ts', 'export const warmB = true;'),
+      ];
+      const results = yield* Effect.forEach(
+        files,
+        file => pool.withParserSlot(home, [file], extract => extract(file)),
         {concurrency: 'unbounded'},
       );
 
       expect(results.every(result => !result.degraded)).toBe(true);
       expect(processes).toHaveLength(2);
-      expect(processes.reduce((total, process) => total + process.writes.length, 0)).toBe(2);
+      expect(processes.reduce((total, process) => total + process.writes.length, 0)).toBe(4);
     }).pipe(provideTestLayer(parserLayer({capacity: 2, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('bounds parser prewarming to the requested work', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-bounded-warm-'});
+      const pool = yield* CodeGraphParserPool;
+
+      yield* pool.warm(home, 2);
+      expect(processes).toHaveLength(2);
+      yield* pool.warm(home, 4);
+      expect(processes).toHaveLength(4);
+      expect(processes.every(process => process.writes[0]?.file.path === '.threadnote/parser-warmup.ts')).toBe(true);
+
+      for (const requestedSlots of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(yield* Effect.flip(pool.warm(home, requestedSlots))).toEqual(
+          ParserWorkerConfigurationError.make({message: 'Code graph parser warm slot count is invalid.'}),
+        );
+      }
+      expect(processes).toHaveLength(4);
+    }).pipe(provideTestLayer(parserLayer({capacity: 4, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('bounds concurrent parser prewarm launches', () => {
+    const releases: Array<() => void> = [];
+    let activeSpawns = 0;
+    let maximumActiveSpawns = 0;
+    let spawnCount = 0;
+    const spawn: ParserWorkerSpawner = () =>
+      new Promise(resolve => {
+        spawnCount += 1;
+        activeSpawns += 1;
+        maximumActiveSpawns = Math.max(maximumActiveSpawns, activeSpawns);
+        releases.push(() => {
+          activeSpawns -= 1;
+          resolve(echoProcess());
+        });
+      });
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-prewarm-concurrency-'});
+      const pool = yield* CodeGraphParserPool;
+
+      const warming = yield* Effect.forkScoped(pool.warm(home));
+      yield* waitUntil(() => spawnCount >= 4);
+      yield* Effect.yieldNow;
+      const firstWave = spawnCount;
+      for (const release of releases.splice(0)) release();
+      if (spawnCount < 8) {
+        yield* waitUntil(() => spawnCount === 8);
+        for (const release of releases.splice(0)) release();
+      }
+      yield* Fiber.join(warming);
+
+      expect(firstWave).toBe(4);
+      expect(maximumActiveSpawns).toBe(4);
+      expect(spawnCount).toBe(8);
+    }).pipe(provideTestLayer(parserLayer({capacity: 8, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('skips automatic single-slot preparation while preserving explicit warmup', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-single-warm-'});
+      const pool = yield* CodeGraphParserPool;
+
+      yield* warmPlannedParserCapacity(pool, home, 1);
+      expect(processes).toHaveLength(0);
+
+      yield* pool.warm(home);
+      expect(processes).toHaveLength(1);
+      expect(processes[0].writes.map(request => request.file.path)).toEqual(['.threadnote/parser-warmup.ts']);
+
+      const result = yield* pool.extract(inventoryFile('src/lazy.ts', 'export const lazy = true;'), home);
+      expect(result.degraded).toBe(false);
+      expect(processes).toHaveLength(1);
+      expect(processes[0].writes.map(request => request.file.path)).toEqual([
+        '.threadnote/parser-warmup.ts',
+        'src/lazy.ts',
+      ]);
+    }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('skips automatic preparation when planned work cannot reuse warmed workers', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-planned-warm-'});
+      const pool = yield* CodeGraphParserPool;
+
+      yield* warmPlannedParserCapacity(pool, home, 4);
+      expect(processes).toHaveLength(0);
+
+      const files = Array.from({length: 4}, (_, index) =>
+        inventoryFile(`src/planned-${index}.ts`, `export const planned${index} = true;`),
+      );
+      const results = yield* Effect.forEach(files, file => pool.withParserSlot(home, files, extract => extract(file)), {
+        concurrency: 'unbounded',
+      });
+
+      expect(processes).toHaveLength(4);
+      expect(results.every(result => !result.degraded)).toBe(true);
+      expect(processes.flatMap(process => process.writes.map(request => request.file.path)).sort()).toEqual(
+        files.map(file => file.path).sort(),
+      );
+    }).pipe(provideTestLayer(parserLayer({capacity: 4, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('does not warm extra slots when most planned files bypass parser workers', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-mixed-plan-'});
+      const source = inventoryFile('src/planned.ts', 'export const planned = true;');
+      const binary = Array.from({length: 12}, (_, index) => ({
+        ...inventoryFile(`assets/planned-${index}.png`, ''),
+        bytes: new Uint8Array([index]),
+        content: undefined,
+      }));
+      const files = [...binary, source];
+      const pool = yield* CodeGraphParserPool;
+
+      const results = yield* Effect.forEach(
+        Array.from({length: 4}),
+        () => pool.withParserSlot(home, files, extract => extract(source)),
+        {concurrency: 'unbounded'},
+      );
+
+      expect(results.every(result => !result.degraded)).toBe(true);
+      expect(processes).toHaveLength(4);
+      expect(processes.flatMap(process => process.writes.map(request => request.file.path))).toEqual([
+        'src/planned.ts',
+        'src/planned.ts',
+        'src/planned.ts',
+        'src/planned.ts',
+      ]);
+    }).pipe(provideTestLayer(parserLayer({capacity: 4, spawnWorker: spawn})), Effect.scoped);
+  });
+
+  it.effect('prepares reusable parser capacity before larger planned work', () => {
+    const processes: ScriptedParserWorkerProcess[] = [];
+    const spawn: ParserWorkerSpawner = () => {
+      const worker = echoProcess();
+      processes.push(worker);
+      return worker;
+    };
+
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-reused-warm-'});
+      const pool = yield* CodeGraphParserPool;
+
+      yield* warmPlannedParserCapacity(pool, home, 5);
+      expect(processes).toHaveLength(4);
+      expect(processes.every(process => process.writes[0]?.file.path === '.threadnote/parser-warmup.ts')).toBe(true);
+    }).pipe(provideTestLayer(parserLayer({capacity: 4, spawnWorker: spawn})), Effect.scoped);
   });
 
   it.effect('keeps a warming slot owned until an interrupted spawn settles', () => {
@@ -834,7 +1021,10 @@ describe('code graph parser worker pool', () => {
       );
       expect(result.degraded).toBe(false);
       expect(processes).toHaveLength(1);
-      expect(prepared.writes).toHaveLength(1);
+      expect(prepared.writes.map(request => request.file.path)).toEqual([
+        '.threadnote/parser-warmup.ts',
+        'src/reused-after-interrupt.ts',
+      ]);
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
@@ -916,7 +1106,7 @@ describe('code graph parser worker pool', () => {
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
-  it.effect('warms concurrently admitted parser slots before extraction', () => {
+  it.effect('extracts a small admitted session without a dummy warmup request', () => {
     const processes: ScriptedParserWorkerProcess[] = [];
     const spawn: ParserWorkerSpawner = () => {
       const worker = echoProcess();
@@ -934,10 +1124,7 @@ describe('code graph parser worker pool', () => {
 
       expect(results.map(result => result.facts.path)).toEqual(files.map(file => file.path));
       expect(processes).toHaveLength(1);
-      expect(processes[0].writes.map(request => request.file.path)).toEqual([
-        '.threadnote/parser-warmup.ts',
-        files[0].path,
-      ]);
+      expect(processes[0].writes.map(request => request.file.path)).toEqual([files[0].path]);
     }).pipe(provideTestLayer(parserLayer({capacity: 2, spawnWorker: spawn})), Effect.scoped);
   });
 

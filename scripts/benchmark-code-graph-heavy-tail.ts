@@ -530,6 +530,7 @@ interface HeavyTailMeasurementRatchet {
 
 const HEAVY_TAIL_RATCHET_RELATIVE_HEADROOM = 0.15;
 const HEAVY_TAIL_RATCHET_MILLISECOND_NOISE_HEADROOM = 5;
+const HEAVY_TAIL_NUMERIC_EPSILON = 1e-6;
 
 export interface CodeGraphHeavyTailRatchet {
   readonly environment: Readonly<Record<string, boolean | number | string>>;
@@ -815,8 +816,10 @@ function heavyTailMeasurementRatchet(
   const maximum = Math.max(...values);
   const base = {samplesMinimum: 1 as const, unit};
   const scheduleDependentResume = name.startsWith('interrupted-') || name.startsWith('resumed-');
-  if (name.endsWith('-extraction-average-concurrency') && !scheduleDependentResume) {
-    return {...base, minimum: floorThreshold(minimum * 0.9)};
+  if (name.endsWith('-extraction-average-concurrency')) {
+    return scheduleDependentResume
+      ? {...base, maximum: Math.ceil(maximum - HEAVY_TAIL_NUMERIC_EPSILON)}
+      : {...base, minimum: floorThreshold(minimum * 0.9)};
   }
   if (name.endsWith('-duration-reduction') || name.endsWith('-active-wall-reduction')) {
     return {...base, minimum: floorThreshold(minimum * 0.8)};
@@ -1665,9 +1668,9 @@ function validExtractionUtilization(value: unknown, workerCount: number): value 
     nonNegativeNumber(extraction.averageConcurrency) &&
     nonNegativeInteger(extraction.peakConcurrency) &&
     nonNegativeNumber(extraction.requestMilliseconds) &&
-    extraction.averageConcurrency <= workerCount + 1e-6 &&
+    extraction.averageConcurrency <= workerCount + HEAVY_TAIL_NUMERIC_EPSILON &&
     extraction.peakConcurrency <= workerCount &&
-    extraction.requestMilliseconds + 1e-6 >= extraction.activeWallMilliseconds
+    extraction.requestMilliseconds + HEAVY_TAIL_NUMERIC_EPSILON >= extraction.activeWallMilliseconds
   );
 }
 
@@ -1701,7 +1704,7 @@ function validLanguageTelemetry(value: unknown): value is HeavyTailLanguageTelem
     nonNegativeInteger(language.sourceBytes) &&
     nonNegativeInteger(language.symbols) &&
     language.degradedFiles <= language.files &&
-    language.requestMilliseconds + 1e-6 >= language.parseMilliseconds
+    language.requestMilliseconds + HEAVY_TAIL_NUMERIC_EPSILON >= language.parseMilliseconds
   );
 }
 
@@ -1715,7 +1718,7 @@ function validSlowFile(value: unknown): value is HeavyTailSlowFile {
     nonNegativeNumber(file.parseMilliseconds) &&
     typeof file.path === 'string' &&
     nonNegativeNumber(file.requestMilliseconds) &&
-    file.requestMilliseconds + 1e-6 >= file.parseMilliseconds
+    file.requestMilliseconds + HEAVY_TAIL_NUMERIC_EPSILON >= file.parseMilliseconds
   );
 }
 
