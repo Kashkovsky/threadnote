@@ -1,7 +1,7 @@
 import {readFile, readlink, rename, rm as nodeRm, symlink} from '../helpers/node-fs-promises.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Option, Path} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {codeGraphRepositoryLockPath} from '../../src/code_graph/layout.js';
@@ -78,6 +78,90 @@ describe('targeted code graph purge', () => {
         'must survive',
       );
     }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('recovers native checkout identity when Effect omits the inode', () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => mkdtemp('threadnote-targeted-graph-purge-native-inode-')),
+      home =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const checkoutId = '9'.repeat(64);
+          const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+          yield* Effect.promise(() => mkdir(repositoryRoot, {recursive: true}));
+          yield* Effect.promise(() => writeFile(join(repositoryRoot, 'graph-v3.sqlite'), 'disposable graph\n'));
+          const withoutInode = (info: FileSystem.File.Info): FileSystem.File.Info => ({
+            ...info,
+            ino: Option.none(),
+          });
+          const inodeOmittingFileSystem = FileSystem.FileSystem.of({
+            ...fs,
+            open: (target, options) =>
+              fs.open(target, options).pipe(
+                Effect.map(opened => {
+                  const descriptor = (opened as FileSystem.File & {readonly fd?: unknown}).fd;
+                  return {
+                    [FileSystem.FileTypeId]: FileSystem.FileTypeId,
+                    ...(typeof descriptor === 'number' ? {fd: descriptor} : {}),
+                    read: buffer => opened.read(buffer),
+                    readAlloc: size => opened.readAlloc(size),
+                    seek: (offset, from) => opened.seek(offset, from),
+                    stat: opened.stat.pipe(Effect.map(withoutInode)),
+                    sync: opened.sync,
+                    truncate: length => opened.truncate(length),
+                    write: buffer => opened.write(buffer),
+                    writeAll: buffer => opened.writeAll(buffer),
+                  };
+                }),
+              ),
+            stat: target => fs.stat(target).pipe(Effect.map(withoutInode)),
+          });
+
+          expect(
+            yield* purgeCodeGraphIndex(home, checkoutId, {dryRun: false}).pipe(
+              Effect.provideService(FileSystem.FileSystem, inodeOmittingFileSystem),
+            ),
+          ).toEqual({checkoutId, dryRun: false, existed: true});
+          expect(yield* Effect.promise(() => Bun.file(join(repositoryRoot, 'graph-v3.sqlite')).exists())).toBe(false);
+        }),
+      home => Effect.promise(() => rm(home, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('preserves a checkout when native identity cannot cohere with Effect metadata', () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => mkdtemp('threadnote-targeted-graph-purge-incoherent-identity-')),
+      home =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const checkoutId = '8'.repeat(64);
+          const repositoryRoot = join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+          const graph = join(repositoryRoot, 'graph-v3.sqlite');
+          yield* Effect.promise(() => mkdir(repositoryRoot, {recursive: true}));
+          yield* Effect.promise(() => writeFile(graph, 'must survive\n'));
+          const incoherentFileSystem = FileSystem.FileSystem.of({
+            ...fs,
+            stat: target =>
+              fs.stat(target).pipe(
+                Effect.map(info => ({
+                  ...info,
+                  dev: Number.isSafeInteger(info.dev + 1) ? info.dev + 1 : info.dev,
+                  ino: Option.none(),
+                })),
+              ),
+          });
+
+          const exit = yield* Effect.exit(
+            purgeCodeGraphIndex(home, checkoutId, {dryRun: false}).pipe(
+              Effect.provideService(FileSystem.FileSystem, incoherentFileSystem),
+            ),
+          );
+          expect(exit._tag).toBe('Failure');
+          expect(yield* Effect.promise(() => Bun.file(graph).exists())).toBe(true);
+          expect(yield* Effect.promise(() => readFile(graph, 'utf8'))).toContain('must survive');
+        }),
+      home => Effect.promise(() => rm(home, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it('rejects invalid checkout identities before inspecting storage', async () => {

@@ -1,4 +1,4 @@
-import {Config, Context, Deferred, Effect, Exit, Layer, Option, Ref, Semaphore, Schema} from 'effect';
+import {Config, Context, Deferred, Effect, Exit, FileSystem, Layer, Option, Ref, Semaphore, Schema} from 'effect';
 import {succeedUndefined} from './optional.js';
 import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
 import {withoutTelemetrySessionEnvironment} from '../telemetry/session.js';
@@ -77,6 +77,7 @@ interface NativeOperatingSystemModuleShape {
 }
 
 export interface RuntimeBigIntStats {
+  readonly birthtimeNs: bigint;
   readonly ctimeNs: bigint;
   readonly dev: bigint;
   readonly ino: bigint;
@@ -95,7 +96,19 @@ export interface RuntimeNativeFileStat {
   readonly mode: bigint;
   readonly mtime: Date;
   readonly size: bigint;
+  isDirectory(): boolean;
   isFile(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+export interface FileSystemIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+export interface FileSystemPathAuthority extends FileSystemIdentity {
+  readonly birthtimeNs: bigint;
+  readonly mode: bigint;
 }
 
 interface RuntimeDirectoryEntry {
@@ -319,6 +332,113 @@ export async function runtimeTouchBoundedStableRegularFile(
 /** Follows links while retaining exact device/inode identity beyond JavaScript's safe-integer range. */
 export function runtimeStat(path: string): Promise<RuntimeBigIntStats> {
   return nativeFileSystemPromises.stat(path, {bigint: true});
+}
+
+export function resolveFileSystemIdentity(
+  dev: number,
+  ino: Option.Option<number>,
+  exact?: FileSystemIdentity,
+): Option.Option<FileSystemIdentity> {
+  const observedIno = Option.getOrUndefined(ino);
+  return Number.isSafeInteger(dev) && observedIno !== undefined && Number.isSafeInteger(observedIno)
+    ? Option.some({dev: BigInt(dev), ino: BigInt(observedIno)})
+    : Option.fromNullishOr(exact);
+}
+
+export function readPathFileSystemIdentity(
+  path: string,
+  info: FileSystem.File.Info,
+  expectedType: 'Directory' | 'File',
+): Effect.Effect<Option.Option<FileSystemIdentity>> {
+  if (info.type !== expectedType) return Effect.succeedNone;
+  const observed = resolveFileSystemIdentity(info.dev, info.ino);
+  if (Option.isSome(observed)) return Effect.succeed(observed);
+  return readRuntimePathIdentity(path, expectedType).pipe(
+    Effect.map(exact =>
+      exact !== undefined && exactIdentityCoheres(info, exact) ? Option.some(exact) : Option.none(),
+    ),
+    Effect.orElseSucceed(() => Option.none()),
+  );
+}
+
+/** Native path metadata is sampled twice so callers can retain one coherent authority record. */
+export function readPathFileSystemAuthority(
+  path: string,
+  expectedType: 'Directory' | 'File',
+): Effect.Effect<Option.Option<FileSystemPathAuthority>> {
+  return Effect.tryPromise(async () => {
+    const before = await runtimeLstat(path);
+    const after = await runtimeLstat(path);
+    const first = runtimePathAuthority(before, expectedType);
+    const second = runtimePathAuthority(after, expectedType);
+    return first !== undefined &&
+      second !== undefined &&
+      sameFileSystemIdentity(first, second) &&
+      first.mode === second.mode &&
+      first.birthtimeNs === second.birthtimeNs
+      ? Option.some(first)
+      : Option.none();
+  }).pipe(Effect.orElseSucceed(() => Option.none()));
+}
+
+export function readOpenedFileSystemIdentity(
+  file: FileSystem.File,
+  info: FileSystem.File.Info,
+  expectedType: 'Directory' | 'File',
+): Effect.Effect<Option.Option<FileSystemIdentity>> {
+  if (info.type !== expectedType) return Effect.succeedNone;
+  const observed = resolveFileSystemIdentity(info.dev, info.ino);
+  if (Option.isSome(observed)) return Effect.succeed(observed);
+  const descriptor = (file as FileSystem.File & {readonly fd?: unknown}).fd;
+  if (typeof descriptor !== 'number' || !Number.isSafeInteger(descriptor) || descriptor < 0) {
+    return Effect.succeedNone;
+  }
+  return Effect.try(() => runtimeFileDescriptorStatSync(descriptor)).pipe(
+    Effect.map(exact => {
+      const identity = runtimeIdentity(exact, expectedType);
+      return identity !== undefined && exactIdentityCoheres(info, identity) ? Option.some(identity) : Option.none();
+    }),
+    Effect.orElseSucceed(() => Option.none()),
+  );
+}
+
+function exactIdentityCoheres(info: FileSystem.File.Info, exact: FileSystemIdentity): boolean {
+  const observedIno = Option.getOrUndefined(info.ino);
+  return (
+    (!Number.isSafeInteger(info.dev) || exact.dev === BigInt(info.dev)) &&
+    (observedIno === undefined || !Number.isSafeInteger(observedIno) || exact.ino === BigInt(observedIno))
+  );
+}
+
+function readRuntimePathIdentity(
+  path: string,
+  expectedType: 'Directory' | 'File',
+): Effect.Effect<FileSystemIdentity | undefined, unknown> {
+  return Effect.tryPromise(async () => {
+    const before = runtimeIdentity(await runtimeLstat(path), expectedType);
+    const after = runtimeIdentity(await runtimeLstat(path), expectedType);
+    return before !== undefined && after !== undefined && sameFileSystemIdentity(before, after) ? before : undefined;
+  });
+}
+
+export function sameFileSystemIdentity(left: FileSystemIdentity, right: FileSystemIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function runtimeIdentity(
+  info: RuntimeBigIntStats | RuntimeNativeFileStat,
+  expectedType: 'Directory' | 'File',
+): FileSystemIdentity | undefined {
+  const matchesType = expectedType === 'Directory' ? info.isDirectory() : info.isFile();
+  return matchesType && !info.isSymbolicLink() ? {dev: info.dev, ino: info.ino} : undefined;
+}
+
+function runtimePathAuthority(
+  info: RuntimeBigIntStats,
+  expectedType: 'Directory' | 'File',
+): FileSystemPathAuthority | undefined {
+  const identity = runtimeIdentity(info, expectedType);
+  return identity === undefined ? undefined : {...identity, birthtimeNs: info.birthtimeNs, mode: info.mode};
 }
 
 function stableRegularFile(info: RuntimeBigIntStats): boolean {

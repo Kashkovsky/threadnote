@@ -1,5 +1,12 @@
 import {Data, Effect, FileSystem, Option, Path, PlatformError} from 'effect';
-import {fileSystemModeIsPrivate, runtimePlatform} from '../../effect/system.js';
+import {
+  fileSystemModeIsPrivate,
+  readPathFileSystemAuthority,
+  readPathFileSystemIdentity,
+  runtimePlatform,
+  sameFileSystemIdentity,
+  type FileSystemIdentity,
+} from '../../effect/system.js';
 
 export const DEFERRED_CODE_ANCHOR_URI_ADDRESS_HEX_LENGTH = 32;
 export const DEFERRED_CODE_ANCHOR_ITEM_ROOT_NAME = 'i';
@@ -16,11 +23,11 @@ export const deferredCodeAnchorError = (message: string) => new DeferredCodeAnch
 export type DeferredCodeAnchorPathEntryKind = 'directory' | 'file' | 'missing' | 'other' | 'symlink';
 
 export interface DeferredCodeAnchorPrivateDirectoryAuthority {
-  readonly birthtimeMilliseconds: number;
-  readonly dev: number;
+  readonly birthtimeNs: bigint;
+  readonly dev: bigint;
   readonly directory: string;
-  readonly ino: number;
-  readonly mode: number;
+  readonly ino: bigint;
+  readonly mode: bigint;
   readonly realPath: string;
 }
 
@@ -59,24 +66,32 @@ export const inspectPrivateDeferredCodeAnchorDirectories = Effect.fn('memoryCode
           'Deferred code-anchor private directory must not be a link or non-directory.',
         );
       }
-      const info = yield* fs.stat(directory);
-      const birthtime = Option.getOrUndefined(info.birthtime);
-      const ino = Option.getOrUndefined(info.ino);
-      if (!fileSystemModeIsPrivate(runtimePlatform, info.mode)) {
-        return yield* deferredCodeAnchorError('Deferred code-anchor private directory is not private.');
-      }
-      if (birthtime === undefined || ino === undefined) {
+      const authority = yield* readPathFileSystemAuthority(directory, 'Directory');
+      if (Option.isNone(authority)) {
         return yield* deferredCodeAnchorError(
           'Deferred code-anchor private directory has insufficient identity metadata.',
         );
       }
+      if (!fileSystemModeIsPrivate(runtimePlatform, Number(authority.value.mode))) {
+        return yield* deferredCodeAnchorError('Deferred code-anchor private directory is not private.');
+      }
+      const realPath = yield* fs.realPath(directory);
+      const revalidated = yield* readPathFileSystemAuthority(directory, 'Directory');
+      if (
+        Option.isNone(revalidated) ||
+        !sameFileSystemIdentity(authority.value, revalidated.value) ||
+        authority.value.birthtimeNs !== revalidated.value.birthtimeNs ||
+        authority.value.mode !== revalidated.value.mode
+      ) {
+        return yield* deferredCodeAnchorError('Deferred code-anchor private directory changed during inspection.');
+      }
       authorities.push({
-        birthtimeMilliseconds: birthtime.getTime(),
-        dev: info.dev,
+        birthtimeNs: authority.value.birthtimeNs,
+        dev: authority.value.dev,
         directory,
-        ino,
-        mode: info.mode,
-        realPath: yield* fs.realPath(directory),
+        ino: authority.value.ino,
+        mode: authority.value.mode,
+        realPath,
       });
     }
     return authorities;
@@ -91,7 +106,7 @@ export function samePrivateDeferredCodeAnchorDirectories(
     left.length === right.length &&
     left.every(
       (authority, index) =>
-        authority.birthtimeMilliseconds === right[index]?.birthtimeMilliseconds &&
+        authority.birthtimeNs === right[index]?.birthtimeNs &&
         authority.dev === right[index]?.dev &&
         authority.directory === right[index]?.directory &&
         authority.ino === right[index]?.ino &&
@@ -171,8 +186,20 @@ export const removePrivateDeferredCodeAnchorFile = Effect.fn('memoryCodeAnchor.r
   if (!fileSystemModeIsPrivate(runtimePlatform, info.mode)) {
     return yield* deferredCodeAnchorError('Deferred code-anchor private file is not private.');
   }
+  const identity = yield* readPathFileSystemIdentity(target, info, 'File');
+  if (Option.isNone(identity)) return false;
   const beforeRemoval = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
-  if (beforeRemoval === undefined || !samePrivateDeferredCodeAnchorDirectories(before, beforeRemoval)) {
+  const current = yield* fs.stat(target).pipe(Effect.option);
+  const currentIdentity = Option.isSome(current)
+    ? yield* readPathFileSystemIdentity(target, current.value, 'File')
+    : Option.none<FileSystemIdentity>();
+  if (
+    beforeRemoval === undefined ||
+    !samePrivateDeferredCodeAnchorDirectories(before, beforeRemoval) ||
+    Option.isNone(current) ||
+    Option.isNone(currentIdentity) ||
+    !sameDeferredCodeAnchorFile(info, identity.value, current.value, currentIdentity.value)
+  ) {
     return yield* deferredCodeAnchorError('Deferred code-anchor private directory changed before removal.');
   }
   yield* fs.remove(target, {force: true});
@@ -197,6 +224,19 @@ export const removePrivateDeferredCodeAnchorRouteMarker = Effect.fn('memoryCodeA
       const info = yield* fs.stat(markerPath);
       if (!fileSystemModeIsPrivate(runtimePlatform, info.mode)) {
         return yield* deferredCodeAnchorError('Deferred code-anchor route marker is not private.');
+      }
+      const identity = yield* readPathFileSystemIdentity(markerPath, info, 'File');
+      if (Option.isNone(identity)) return false;
+      const current = yield* fs.stat(markerPath).pipe(Effect.option);
+      const currentIdentity = Option.isSome(current)
+        ? yield* readPathFileSystemIdentity(markerPath, current.value, 'File')
+        : Option.none<FileSystemIdentity>();
+      if (
+        Option.isNone(current) ||
+        Option.isNone(currentIdentity) ||
+        !sameDeferredCodeAnchorFile(info, identity.value, current.value, currentIdentity.value)
+      ) {
+        return yield* deferredCodeAnchorError('Deferred code-anchor route marker changed before removal.');
       }
     }
     const beforeRemoval = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
@@ -353,6 +393,13 @@ export const writePrivateDeferredCodeAnchorFile = Effect.fn('memoryCodeAnchor.wr
     yield* fs.remove(temporary, {force: true}).pipe(Effect.ignore);
     return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} staging file is not private.`);
   }
+  const temporaryIdentity = yield* readPathFileSystemIdentity(temporary, temporaryInfo, 'File');
+  if (Option.isNone(temporaryIdentity)) {
+    yield* fs.remove(temporary, {force: true}).pipe(Effect.ignore);
+    return yield* deferredCodeAnchorError(
+      `Deferred code-anchor ${label} staging file has insufficient identity metadata.`,
+    );
+  }
   const beforeRename = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
   if (beforeRename === undefined || !samePrivateDeferredCodeAnchorDirectories(ancestorAuthority, beforeRename)) {
     yield* fs.remove(temporary, {force: true}).pipe(Effect.ignore);
@@ -365,10 +412,12 @@ export const writePrivateDeferredCodeAnchorFile = Effect.fn('memoryCodeAnchor.wr
     return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} must not be a symbolic link.`);
   }
   const targetInfo = yield* fs.stat(target);
+  const targetIdentity = yield* readPathFileSystemIdentity(target, targetInfo, 'File');
   if (
     targetInfo.type !== 'File' ||
     !fileSystemModeIsPrivate(runtimePlatform, targetInfo.mode) ||
-    !samePrivateDeferredCodeAnchorFile(temporaryInfo, targetInfo)
+    Option.isNone(targetIdentity) ||
+    !sameDeferredCodeAnchorFile(temporaryInfo, temporaryIdentity.value, targetInfo, targetIdentity.value)
   ) {
     return yield* deferredCodeAnchorError(`Deferred code-anchor ${label} changed during write.`);
   }
@@ -378,12 +427,16 @@ export const writePrivateDeferredCodeAnchorFile = Effect.fn('memoryCodeAnchor.wr
   }
 });
 
-function samePrivateDeferredCodeAnchorFile(left: FileSystem.File.Info, right: FileSystem.File.Info): boolean {
+export function sameDeferredCodeAnchorFile(
+  left: FileSystem.File.Info,
+  leftIdentity: FileSystemIdentity,
+  right: FileSystem.File.Info,
+  rightIdentity: FileSystemIdentity,
+): boolean {
   return (
     left.type === 'File' &&
     right.type === 'File' &&
-    left.dev === right.dev &&
-    Option.getOrUndefined(left.ino) === Option.getOrUndefined(right.ino) &&
+    sameFileSystemIdentity(leftIdentity, rightIdentity) &&
     left.mode === right.mode &&
     left.size === right.size &&
     Option.getOrUndefined(left.birthtime)?.getTime() === Option.getOrUndefined(right.birthtime)?.getTime() &&

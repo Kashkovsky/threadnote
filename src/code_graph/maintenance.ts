@@ -1,6 +1,7 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import type {DoctorCheck} from '../types.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file/lock.js';
+import {readOpenedFileSystemIdentity, readPathFileSystemIdentity} from '../effect/system.js';
 import {
   codeGraphMaintenanceLockPath,
   codeGraphRepositoriesRoot,
@@ -93,8 +94,8 @@ export interface CodeGraphIndexPurgeInterlock {
 }
 
 interface CodeGraphIndexPurgeTarget {
-  readonly dev: number;
-  readonly ino: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
   readonly path: string;
 }
 
@@ -1222,17 +1223,16 @@ function cleanTemporaryMaterializationSpoolFile(
   return Effect.scoped(
     Effect.gen(function* () {
       const info = yield* fs.stat(candidate);
-      const ino = Option.getOrUndefined(info.ino);
-      if (info.type !== 'File' || ino === undefined) return 0;
-      const target = {dev: info.dev, ino, path: candidate} satisfies CodeGraphIndexPurgeTarget;
+      const identity = yield* readPathFileSystemIdentity(candidate, info, 'File');
+      if (Option.isNone(identity)) return 0;
+      const target = {...identity.value, path: candidate} satisfies CodeGraphIndexPurgeTarget;
       const opened = yield* fs.open(candidate, {flag: 'r'});
       const openedInfo = yield* opened.stat;
-      const openedIno = Option.getOrUndefined(openedInfo.ino);
+      const openedIdentity = yield* readOpenedFileSystemIdentity(opened, openedInfo, 'File');
       if (
-        openedInfo.type !== 'File' ||
-        openedIno === undefined ||
-        target.dev !== openedInfo.dev ||
-        target.ino !== openedIno
+        Option.isNone(openedIdentity) ||
+        target.dev !== openedIdentity.value.dev ||
+        target.ino !== openedIdentity.value.ino
       ) {
         return yield* CodeGraphMaintenanceError.make({message: 'Temporary graph file changed while opening.'});
       }
@@ -1278,13 +1278,14 @@ function verifyCodeGraphSpoolCleanupAuthority(
       return yield* CodeGraphMaintenanceError.make({message: 'Temporary graph file became a symbolic link.'});
     }
     const currentInfo = yield* fs.stat(fileTarget.path).pipe(Effect.option);
-    const currentIno = Option.isSome(currentInfo) ? Option.getOrUndefined(currentInfo.value.ino) : undefined;
+    const currentIdentity = Option.isSome(currentInfo)
+      ? yield* readPathFileSystemIdentity(fileTarget.path, currentInfo.value, 'File')
+      : Option.none();
     if (
       Option.isNone(currentInfo) ||
-      currentInfo.value.type !== 'File' ||
-      currentIno === undefined ||
-      currentInfo.value.dev !== fileTarget.dev ||
-      currentIno !== fileTarget.ino
+      Option.isNone(currentIdentity) ||
+      currentIdentity.value.dev !== fileTarget.dev ||
+      currentIdentity.value.ino !== fileTarget.ino
     ) {
       return yield* CodeGraphMaintenanceError.make({message: 'Temporary graph file target changed during cleanup.'});
     }
@@ -1425,13 +1426,13 @@ function openCodeGraphIndexPurgeTarget(
 
     const opened = yield* fs.open(planned.path, {flag: 'r'});
     const openedInfo = yield* opened.stat;
-    const openedIno = Option.getOrUndefined(openedInfo.ino);
-    if (openedInfo.type !== 'Directory' || openedIno === undefined) {
+    const openedIdentity = yield* readOpenedFileSystemIdentity(opened, openedInfo, 'Directory');
+    if (Option.isNone(openedIdentity)) {
       return yield* CodeGraphMaintenanceError.make({
         message: 'Refusing code graph purge without stable checkout identity metadata.',
       });
     }
-    const target = {dev: openedInfo.dev, ino: openedIno, path: planned.path} satisfies CodeGraphIndexPurgeTarget;
+    const target = {...openedIdentity.value, path: planned.path} satisfies CodeGraphIndexPurgeTarget;
     const current = yield* inspectCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
     if (!sameCodeGraphIndexPurgeTarget(target, current)) {
       return yield* CodeGraphMaintenanceError.make({message: 'Code graph checkout target changed before purge.'});
@@ -1491,13 +1492,13 @@ function inspectCodeGraphIndexPurgeTarget(
         message: 'Refusing code graph purge outside the repositories root.',
       });
     }
-    const ino = Option.getOrUndefined(repositoryInfo.value.ino);
-    if (ino === undefined) {
+    const identity = yield* readPathFileSystemIdentity(repositoryRoot, repositoryInfo.value, 'Directory');
+    if (Option.isNone(identity)) {
       return yield* CodeGraphMaintenanceError.make({
         message: 'Refusing code graph purge without stable checkout identity metadata.',
       });
     }
-    return {dev: repositoryInfo.value.dev, ino, path: canonicalRepository};
+    return {...identity.value, path: canonicalRepository};
   });
 }
 
@@ -1509,8 +1510,8 @@ function inspectQuarantinedCodeGraphIndexPurgeTarget(
     if (yield* isSymbolicLink(fs, quarantine)) return undefined;
     const info = yield* fs.stat(quarantine).pipe(Effect.option);
     if (Option.isNone(info) || info.value.type !== 'Directory') return undefined;
-    const ino = Option.getOrUndefined(info.value.ino);
-    return ino === undefined ? undefined : {dev: info.value.dev, ino, path: quarantine};
+    const identity = yield* readPathFileSystemIdentity(quarantine, info.value, 'Directory');
+    return Option.isNone(identity) ? undefined : {...identity.value, path: quarantine};
   });
 }
 
