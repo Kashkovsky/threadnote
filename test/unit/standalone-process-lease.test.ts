@@ -39,6 +39,7 @@ const awaitLease = (fs: FileSystem.FileSystem, file: string) =>
   Effect.gen(function* () {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if (yield* fs.exists(file)) return;
+      yield* Effect.yieldNow;
     }
     expect(yield* fs.exists(file)).toBe(true);
   });
