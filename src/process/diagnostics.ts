@@ -7,12 +7,15 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {orderThreadnoteProcessesByAttention} from './attention.js';
 import {observeProcessInstanceIdentity, processInstanceIdentityMatches} from './process_identity.js';
 import {withoutTelemetrySessionEnvironment} from '../telemetry/session.js';
+import {createMissingProcessFile, linkMissingProcessFile} from './owned_file.js';
 
 const PROCESS_DIAGNOSTICS_SCHEMA_VERSION = 1;
 const PROCESS_DIAGNOSTICS_LIMIT = 100;
 const PROCESS_DIAGNOSTICS_SCAN_LIMIT = 256;
 const PROCESS_REGISTRATION_LIMIT_BYTES = 16 * 1024;
 const PROCESS_MEMORY_QUERY_TIMEOUT_MS = 5_000;
+const PROCESS_REGISTRATION_RECONCILE_MILLISECONDS = 30_000;
+const PROCESS_REGISTRATION_REPAIR_WARNING_LIMIT = 3;
 const SAFE_OPERATION = /^[a-z][a-z0-9-]{0,47}$/;
 
 export type ThreadnoteProcessRole =
@@ -116,6 +119,9 @@ interface ActiveProcessRegistration {
   readonly file: string;
   readonly fileSystem: FileSystem.FileSystem;
   idleWriteFiber?: Fiber.Fiber<void>;
+  ownershipLost: boolean;
+  repairFailures: number;
+  repairFailureReported: boolean;
   readonly parentProcessId: number;
   readonly processId: number;
   readonly processStartIdentity?: string;
@@ -169,7 +175,20 @@ export function withThreadnoteProcessRegistration<A, E, R>(
 ): Effect.Effect<A, E, R | SystemInfo | FileSystem.FileSystem | Path.Path | Crypto.Crypto> {
   return Effect.acquireUseRelease(
     registerThreadnoteProcess(home, baseRole, baseOperation),
-    () => effect,
+    active =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          if (Option.isSome(active)) {
+            yield* Effect.gen(function* () {
+              while (true) {
+                yield* Effect.sleep(PROCESS_REGISTRATION_RECONCILE_MILLISECONDS);
+                yield* writeCurrentRegistration(true).pipe(Effect.ignore);
+              }
+            }).pipe(Effect.forkScoped({startImmediately: true}));
+          }
+          return yield* effect;
+        }),
+      ),
     active => unregisterThreadnoteProcess(active),
   );
 }
@@ -533,6 +552,9 @@ function registerThreadnoteProcess(home: string, baseRole: RegisteredThreadnoteP
       processId: system.processId,
       processStartIdentity: yield* observeProcessInstanceIdentity(system, system.processId),
       originalTitle: process.title,
+      ownershipLost: false,
+      repairFailures: 0,
+      repairFailureReported: false,
       path,
       startedAt: DateTime.formatIso(yield* DateTime.now),
       token: yield* crypto.randomUUIDv4,
@@ -540,7 +562,8 @@ function registerThreadnoteProcess(home: string, baseRole: RegisteredThreadnoteP
     };
     registration = Option.some(active);
     setBestEffortProcessTitle(baseRole);
-    yield* writeCurrentRegistration();
+    yield* reclaimStaleRegistration(active);
+    yield* writeCurrentRegistration().pipe(Effect.ignore);
     return active;
   }).pipe(
     Effect.catch(() =>
@@ -563,6 +586,7 @@ function unregisterThreadnoteProcess(active: Option.Option<ActiveProcessRegistra
     setBestEffortProcessTitleValue(active.value.originalTitle);
     yield* active.value.writeSemaphore.withPermit(
       Effect.gen(function* () {
+        if (active.value.ownershipLost) return;
         const current = yield* readRegistrationFile(active.value.fileSystem, active.value.file);
         if (Option.isSome(current) && current.value.token === active.value.token) {
           yield* active.value.fileSystem.remove(active.value.file, {force: true});
@@ -572,22 +596,29 @@ function unregisterThreadnoteProcess(active: Option.Option<ActiveProcessRegistra
   }).pipe(Effect.ignore);
 }
 
-function writeCurrentRegistration(): Effect.Effect<void, unknown> {
+function writeCurrentRegistration(missingOnly = false): Effect.Effect<void, unknown> {
   return Effect.suspend(() => {
     if (Option.isNone(registration)) return Effect.void;
     const active = registration.value;
     return active.writeSemaphore.withPermit(
       Effect.gen(function* () {
-        if (Option.isNone(registration) || registration.value.token !== active.token) return;
+        if (active.ownershipLost || Option.isNone(registration) || registration.value.token !== active.token) return;
+        const exists = yield* active.fileSystem.exists(active.file);
+        if (exists) {
+          const stored = yield* readRegistrationFileStrict(active.fileSystem, active.file);
+          if (Option.isNone(stored) || stored.value.token !== active.token) {
+            active.ownershipLost = true;
+            return;
+          }
+          active.repairFailures = 0;
+          if (missingOnly) return;
+        }
         const current = currentProcessActivity();
         const role = current?.role ?? active.baseRole;
         setBestEffortProcessTitle(role);
         const currentOperation = current?.operation ?? active.baseOperation;
         const stateKey = `${role}\0${currentOperation ?? ''}`;
-        if (active.queuedStateKey === stateKey) {
-          const exists = yield* active.fileSystem.exists(active.file).pipe(Effect.orElseSucceed(() => false));
-          if (exists) return;
-        }
+        if (active.queuedStateKey === stateKey && exists) return;
         const value: ProcessRegistrationFile = {
           baseRole: active.baseRole,
           ...(currentOperation === undefined ? {} : {currentOperation}),
@@ -601,13 +632,26 @@ function writeCurrentRegistration(): Effect.Effect<void, unknown> {
           updatedAt: DateTime.formatIso(yield* DateTime.now),
         };
         active.queuedStateKey = stateKey;
-        yield* writeRegistrationFile(active, value).pipe(
+        const written = yield* writeRegistrationFile(active, value, !exists).pipe(
           Effect.tapError(() =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               if (active.queuedStateKey === stateKey) active.queuedStateKey = undefined;
+              if (
+                exists ||
+                ++active.repairFailures < PROCESS_REGISTRATION_REPAIR_WARNING_LIMIT ||
+                active.repairFailureReported
+              )
+                return;
+              active.repairFailureReported = true;
+              yield* Console.error(
+                `Threadnote could not restore its process registration after ${PROCESS_REGISTRATION_REPAIR_WARNING_LIMIT} consecutive attempts; diagnostics may omit this process. ` +
+                  'Repair will continue. Check filesystem write access and atomic hard-link support.',
+              );
             }),
           ),
         );
+        if (!written) active.ownershipLost = true;
+        else active.repairFailures = 0;
       }),
     );
   });
@@ -648,17 +692,78 @@ function activityPriority(role: ProcessActivity['role']): number {
   return role === 'graph-builder' ? 3 : role === 'graph-waiter' ? 2 : 1;
 }
 
-function writeRegistrationFile(
-  active: ActiveProcessRegistration,
-  value: ProcessRegistrationFile,
-): Effect.Effect<void, unknown> {
+function writeRegistrationFile(active: ActiveProcessRegistration, value: ProcessRegistrationFile, missing: boolean) {
   const temporary = active.path.join(active.directory, `.${active.processId}.${active.token}.tmp`);
   return Effect.gen(function* () {
     yield* active.fileSystem.makeDirectory(active.directory, {recursive: true, mode: 0o700});
+    const content = `${JSON.stringify(value, undefined, 2)}\n`;
+    if (missing) return yield* createMissingProcessFile(active.fileSystem, active.file, temporary, content);
     yield* active.fileSystem.remove(temporary, {force: true});
-    yield* active.fileSystem.writeFileString(temporary, `${JSON.stringify(value, undefined, 2)}\n`, {mode: 0o600});
+    yield* active.fileSystem.writeFileString(temporary, content, {mode: 0o600});
+    const current = yield* readRegistrationFileStrict(active.fileSystem, active.file);
+    if (Option.isNone(current) || current.value.token !== active.token) return false;
     yield* active.fileSystem.rename(temporary, active.file);
-  }).pipe(Effect.ensuring(active.fileSystem.remove(temporary, {force: true}).pipe(Effect.ignore)));
+    return true;
+  }).pipe(
+    Effect.ensuring(missing ? Effect.void : active.fileSystem.remove(temporary, {force: true}).pipe(Effect.ignore)),
+  );
+}
+
+function reclaimStaleRegistration(active: ActiveProcessRegistration) {
+  const quarantine = active.path.join(active.directory, `.${active.processId}.${active.token}.reclaim`);
+  let moved = false;
+  let restoreQuarantine = true;
+  return Effect.gen(function* () {
+    const previous = yield* readRegistrationFileStrict(active.fileSystem, active.file);
+    if (
+      Option.isNone(previous) ||
+      previous.value.processId !== active.processId ||
+      processInstanceIdentityMatches(previous.value.processStartIdentity, active.processStartIdentity)
+    ) {
+      active.ownershipLost = true;
+      return;
+    }
+    yield* active.fileSystem.remove(quarantine, {force: true});
+    yield* Effect.uninterruptible(
+      active.fileSystem.rename(active.file, quarantine).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            moved = true;
+          }),
+        ),
+      ),
+    );
+    const captured = yield* readRegistrationFileStrict(active.fileSystem, quarantine);
+    if (
+      Option.isNone(captured) ||
+      captured.value.processId !== previous.value.processId ||
+      captured.value.processStartIdentity !== previous.value.processStartIdentity ||
+      captured.value.token !== previous.value.token
+    ) {
+      active.ownershipLost = true;
+      return;
+    }
+    restoreQuarantine = false;
+  }).pipe(
+    Effect.ensuring(
+      Effect.gen(function* () {
+        if (!moved || !(yield* active.fileSystem.exists(quarantine))) return;
+        if (restoreQuarantine && !(yield* active.fileSystem.exists(active.file))) {
+          yield* linkMissingProcessFile(active.fileSystem, quarantine, active.file).pipe(Effect.ignore);
+        }
+        if (!restoreQuarantine || (yield* active.fileSystem.exists(active.file))) {
+          yield* active.fileSystem.remove(quarantine, {force: true});
+        }
+      }).pipe(Effect.ignore),
+    ),
+    Effect.catchIf(
+      error => error.reason._tag === 'NotFound',
+      () =>
+        Effect.sync(() => {
+          if (moved) active.ownershipLost = true;
+        }),
+    ),
+  );
 }
 
 function processDiagnosticsDirectory(path: Path.Path, home: string): string {
@@ -669,12 +774,25 @@ function readRegistrationFile(
   fs: FileSystem.FileSystem,
   file: string,
 ): Effect.Effect<Option.Option<ProcessRegistrationFile>> {
+  return readRegistrationFileStrict(fs, file).pipe(Effect.orElseSucceed(() => Option.none()));
+}
+
+function readRegistrationFileStrict(fs: FileSystem.FileSystem, file: string) {
   return Effect.gen(function* () {
-    if (Number((yield* fs.stat(file)).size) > PROCESS_REGISTRATION_LIMIT_BYTES) return Option.none();
+    if (Number((yield* fs.stat(file)).size) > PROCESS_REGISTRATION_LIMIT_BYTES)
+      return Option.none<ProcessRegistrationFile>();
     const source = yield* fs.readFileString(file);
-    const value = yield* Effect.try(() => JSON.parse(source) as unknown);
+    return parseRegistrationFile(source);
+  });
+}
+
+function parseRegistrationFile(source: string): Option.Option<ProcessRegistrationFile> {
+  try {
+    const value: unknown = JSON.parse(source);
     return isProcessRegistrationFile(value) ? Option.some(value) : Option.none();
-  }).pipe(Effect.orElseSucceed(() => Option.none()));
+  } catch {
+    return Option.none();
+  }
 }
 
 function isProcessRegistrationFile(value: unknown): value is ProcessRegistrationFile {

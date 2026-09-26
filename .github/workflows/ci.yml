@@ -393,6 +393,8 @@ jobs:
           test/unit/command-shim.test.ts
           test/unit/effect-command.test.ts
           test/unit/effect-system.test.ts
+          test/unit/standalone-process-lease.test.ts
+          test/unit/process-diagnostics.test.ts
           test/unit/local-ai.test.ts
           test/unit/update.test.ts
           test/unit/mcp.test.ts

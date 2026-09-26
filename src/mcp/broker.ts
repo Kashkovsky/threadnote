@@ -4,6 +4,7 @@ import {Predicate, Schema} from 'effect';
 const MCP_BROKER_MAX_LINE_BYTES = 32 * 1024 * 1024;
 const MCP_BROKER_REPLAY_TIMEOUT_MILLISECONDS = 10_000;
 const MCP_BROKER_CHILD_STOP_WAIT_MILLISECONDS = 1_000;
+const MCP_BROKER_CHILD_IDLE_TIMEOUT_MILLISECONDS = 5 * 60_000;
 const MCP_BROKER_RUNTIME_EXIT_ERROR =
   'Threadnote MCP runtime exited before responding. A write may have committed. Read the canonical record before deciding whether to retry; do not replay the write blindly.';
 const MCP_BROKER_RUNTIME_REPLACED_ERROR =
@@ -41,6 +42,7 @@ export type McpBrokerFailureEvent =
   | {readonly area: 'promotion'; readonly reason: 'protocol' | 'timeout'};
 
 export interface McpBrokerDependencies {
+  readonly childIdleTimeoutMilliseconds?: number;
   readonly input: AsyncIterable<Uint8Array>;
   readonly onFailure?: (event: McpBrokerFailureEvent) => void;
   readonly readActiveRelease: () => Promise<StandaloneActiveRelease | undefined>;
@@ -90,7 +92,13 @@ class McpBroker {
   readonly #dependencies: McpBrokerDependencies;
   readonly #serverRequestRoutes = new Map<string, ServerRequestRoute>();
   readonly #serverRequestRoutesByChildId = new Map<string, ServerRequestRoute>();
+  readonly #retiringChildren = new Set<Promise<void>>();
+  readonly #terminalOutputFailure = Promise.withResolvers<never>();
   #child: ActiveBrokerChild | undefined;
+  #closed = false;
+  #handlingClientLine = false;
+  #idleChildTimer: ReturnType<typeof setTimeout> | undefined;
+  #pendingOutputWrites = 0;
   #nextChildGeneration = 0;
   #nextServerRequestSequence = 0;
   #initializeLine: string | undefined;
@@ -112,12 +120,27 @@ class McpBroker {
 
   async run(): Promise<void> {
     try {
-      for await (const line of ndjsonLines(this.#dependencies.input)) {
-        await this.#handleClientLine(line);
-      }
+      await Promise.race([this.#readClientInput(), this.#terminalOutputFailure.promise]);
     } finally {
+      this.#closed = true;
+      this.#cancelIdleChildTimer();
       await this.#stopCurrentChild();
+      await Promise.all(this.#retiringChildren);
       await this.#outputTail.catch(() => undefined);
+    }
+  }
+
+  async #readClientInput(): Promise<void> {
+    for await (const line of ndjsonLines(this.#dependencies.input)) {
+      if (this.#closed) return;
+      this.#cancelIdleChildTimer();
+      this.#handlingClientLine = true;
+      try {
+        await this.#handleClientLine(line);
+      } finally {
+        this.#handlingClientLine = false;
+        this.#scheduleIdleChildRetirement();
+      }
     }
   }
 
@@ -132,6 +155,7 @@ class McpBroker {
     let trackedRequest = false;
     try {
       const current = await this.#ensureCurrentChild();
+      if (this.#closed) return;
       if (envelope?.method === 'initialize' && requestId !== undefined) {
         this.#pendingInitialize = {
           child: current,
@@ -155,6 +179,7 @@ class McpBroker {
       }
       await this.#writeChildLine(current.child, line);
     } catch (cause) {
+      if (this.#closed) return;
       const pending = [...this.#clientRequests.values()];
       this.#clientRequests.clear();
       const failedChild = this.#child;
@@ -185,6 +210,7 @@ class McpBroker {
 
   async #ensureCurrentChild(): Promise<ActiveBrokerChild> {
     const active = await this.#dependencies.readActiveRelease();
+    if (this.#closed) throw McpBrokerError.make({message: 'Threadnote MCP client transport is closed.'});
     if (active === undefined) {
       if (this.#child !== undefined) return this.#child;
       throw McpBrokerError.make({message: MCP_BROKER_NO_ACTIVE_RELEASE_ERROR, reason: 'no-active-release'});
@@ -200,6 +226,7 @@ class McpBroker {
       return this.#child;
     }
     await this.#stopCurrentChild();
+    if (this.#closed) throw McpBrokerError.make({message: 'Threadnote MCP client transport is closed.'});
     const next = this.#startChild(active);
     if (this.#initializeLine !== undefined && this.#initializeRequestId !== undefined) {
       await this.#replayInitialization(next);
@@ -240,6 +267,7 @@ class McpBroker {
     });
     await Promise.all([outputPump, active.child.exited.catch(() => -1)]);
     if (this.#child !== active) return;
+    this.#cancelIdleChildTimer();
     this.#reportFailure({area: 'child', reason: 'exit'});
     this.#child = undefined;
     if (this.#pendingInitialize?.child === active) this.#pendingInitialize = undefined;
@@ -258,8 +286,10 @@ class McpBroker {
   async #readChildOutput(active: ActiveBrokerChild): Promise<void> {
     for await (const line of ndjsonLines(active.child.output)) {
       if (this.#child !== active) continue;
+      this.#cancelIdleChildTimer();
       const envelope = parseJsonRpcEnvelope(line);
       let outgoingLine = line;
+      let completedRequest: string | undefined;
       if (isJsonRpcId(envelope?.id)) {
         const idKey = jsonRpcIdKey(envelope.id);
         if (active.replay?.idKey === idKey && envelope?.method === undefined) {
@@ -283,7 +313,7 @@ class McpBroker {
           }
         }
         if (envelope?.method === undefined) {
-          this.#clientRequests.delete(idKey);
+          completedRequest = idKey;
         } else {
           const route = this.#createServerRequestRoute(active, envelope.id);
           outgoingLine = replaceJsonRpcId(line, route.externalId);
@@ -297,11 +327,10 @@ class McpBroker {
           outgoingLine = replaceCancelledRequestId(line, route.externalId);
         }
       }
-      // Keep pumping runtime output when the editor-owned stdout write fails.
-      // A dropped progress frame must not look like a child exit while work
-      // continues, and a later result can still be delivered if the client is
-      // still reading.
       await this.#queueOutput(outgoingLine).catch(() => undefined);
+      if (this.#closed) return;
+      if (this.#child === active && completedRequest !== undefined) this.#clientRequests.delete(completedRequest);
+      this.#scheduleIdleChildRetirement();
     }
   }
 
@@ -328,16 +357,20 @@ class McpBroker {
     if (this.#initializedLine !== undefined) await this.#writeChildLine(active.child, this.#initializedLine);
   }
 
-  async #stopCurrentChild(): Promise<void> {
-    const active = this.#child;
-    if (active === undefined) return;
+  async #stopCurrentChild(active = this.#child): Promise<void> {
+    if (active === undefined || this.#child !== active) return;
+    this.#cancelIdleChildTimer();
     this.#child = undefined;
     if (this.#pendingInitialize?.child === active) this.#pendingInitialize = undefined;
     await this.#cancelServerRequestRoutes(active);
     this.#deleteServerRequestRoutes(active);
     active.replay?.reject(McpBrokerError.make({message: 'Threadnote MCP runtime promotion was superseded.'}));
     active.replay = undefined;
-    await Promise.resolve(active.child.input.end()).catch(() => undefined);
+    try {
+      void Promise.resolve(active.child.input.end()).catch(() => undefined);
+    } catch {
+      // A closed stdin still needs the bounded exit and signal sequence.
+    }
     if (await exitsWithin(active.child, MCP_BROKER_CHILD_STOP_WAIT_MILLISECONDS)) return;
     try {
       active.child.kill('SIGTERM');
@@ -351,6 +384,42 @@ class McpBroker {
       // The child already exited.
     }
     await exitsWithin(active.child, MCP_BROKER_CHILD_STOP_WAIT_MILLISECONDS);
+  }
+
+  #childIsIdle(active: ActiveBrokerChild): boolean {
+    return (
+      !this.#closed &&
+      this.#child === active &&
+      !this.#handlingClientLine &&
+      this.#pendingOutputWrites === 0 &&
+      this.#clientRequests.size === 0 &&
+      this.#serverRequestRoutes.size === 0 &&
+      this.#pendingInitialize === undefined &&
+      active.replay === undefined
+    );
+  }
+
+  #cancelIdleChildTimer(): void {
+    if (this.#idleChildTimer === undefined) return;
+    clearTimeout(this.#idleChildTimer);
+    this.#idleChildTimer = undefined;
+  }
+
+  #scheduleIdleChildRetirement(): void {
+    const active = this.#child;
+    if (active === undefined || !this.#childIsIdle(active) || this.#idleChildTimer !== undefined) return;
+    const configured = this.#dependencies.childIdleTimeoutMilliseconds;
+    const timeout =
+      configured !== undefined && Number.isSafeInteger(configured) && configured > 0 && configured <= 2_147_483_647
+        ? configured
+        : MCP_BROKER_CHILD_IDLE_TIMEOUT_MILLISECONDS;
+    this.#idleChildTimer = setTimeout(() => {
+      this.#idleChildTimer = undefined;
+      if (!this.#childIsIdle(active)) return;
+      const retiring = this.#stopCurrentChild(active).catch(() => undefined);
+      this.#retiringChildren.add(retiring);
+      void retiring.finally(() => this.#retiringChildren.delete(retiring));
+    }, timeout);
   }
 
   #createServerRequestRoute(active: ActiveBrokerChild, originalId: string | number): ServerRequestRoute {
@@ -433,9 +502,25 @@ class McpBroker {
   }
 
   #queueOutput(line: string): Promise<void> {
-    const write = this.#outputTail.then(() => this.#dependencies.writeOutput(line));
+    if (this.#closed) return Promise.resolve();
+    this.#cancelIdleChildTimer();
+    this.#pendingOutputWrites += 1;
+    const write = this.#outputTail.then(async () => {
+      if (this.#closed) return;
+      try {
+        await this.#dependencies.writeOutput(line);
+      } catch (cause) {
+        if (recoverableProgressWriteFailure(line, cause)) return;
+        this.#closed = true;
+        this.#cancelIdleChildTimer();
+        this.#terminalOutputFailure.reject(McpBrokerError.make({message: 'Threadnote MCP client output failed.'}));
+      }
+    });
     this.#outputTail = write.catch(() => undefined);
-    return write;
+    return write.finally(() => {
+      this.#pendingOutputWrites -= 1;
+      this.#scheduleIdleChildRetirement();
+    });
   }
 
   #reportFailure(event: McpBrokerFailureEvent): void {
@@ -462,10 +547,25 @@ async function writeChildLine(child: McpBrokerChild, line: string): Promise<void
 }
 
 async function exitsWithin(child: McpBrokerChild, timeoutMilliseconds: number): Promise<boolean> {
-  return Promise.race([
-    child.exited.then(() => true).catch(() => true),
-    Bun.sleep(timeoutMilliseconds).then(() => false),
-  ]);
+  const timeout = Promise.withResolvers<boolean>();
+  const timer = setTimeout(() => timeout.resolve(false), timeoutMilliseconds);
+  try {
+    return await Promise.race([child.exited.then(() => true).catch(() => true), timeout.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function recoverableProgressWriteFailure(line: string, cause: unknown): boolean {
+  const envelope = parseJsonRpcEnvelope(line);
+  return (
+    envelope?.method === 'notifications/progress' &&
+    envelope.id === undefined &&
+    typeof cause === 'object' &&
+    cause !== null &&
+    'code' in cause &&
+    (cause.code === 'EAGAIN' || cause.code === 'EWOULDBLOCK')
+  );
 }
 
 async function* ndjsonLines(input: AsyncIterable<Uint8Array>): AsyncGenerator<string> {

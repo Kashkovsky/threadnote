@@ -703,7 +703,7 @@ async function expectInFlightToolResultAfterDroppedProgress(progressFrames: numb
     writeOutput: async line => {
       const envelope = JSON.parse(line) as {readonly method?: string};
       if (envelope.method === 'notifications/progress') {
-        throw new Error('temporary client write failure');
+        throw Object.assign(new Error('temporary client write failure'), {code: 'EAGAIN'});
       }
       clientOutput.pushLine(line);
     },
