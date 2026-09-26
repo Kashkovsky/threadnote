@@ -20,13 +20,28 @@ import {
   RECALL_SELECTION_TIMEOUT_MILLISECONDS,
   recallHybridMinimumScore,
   RecallQueryExpander,
+  selectRecallCandidatesWithJev,
   selectRecallCandidatesEffect,
   selectExpandedRecallCandidatesEffect,
   shouldExpandRecall,
 } from '../../src/effect/ai/recall.js';
+import {
+  jevConfiguration,
+  runJevRecallCandidateSelection,
+  type JevConfiguration,
+  type JevTransport,
+} from '../../src/effect/ai/jev.js';
+import {selectedRecallCandidateUris} from '../../src/recall/runtime.js';
 import {recallScoreThresholdPolicy, validatedRecallScoreThreshold} from '../../src/utils.js';
 
 describe('Effect AI recall expansion', () => {
+  const enforcedJev = jevConfiguration({
+    THREADNOTE_DECISION_PROVIDER: 'jev',
+    THREADNOTE_JEV_MODE: 'enforced',
+    THREADNOTE_JEV_MODEL: 'jev-1.13.0',
+    TYPESAFE_API_KEY: 'test-key',
+  }) as JevConfiguration;
+
   it('only expands weak deterministic recalls', () => {
     expect(shouldExpandRecall({level: 'no_answer'})).toBe(true);
     expect(shouldExpandRecall({level: 'low'})).toBe(true);
@@ -205,6 +220,117 @@ describe('Effect AI recall expansion', () => {
           undefined,
         ),
       ).toBeUndefined();
+    }),
+  );
+
+  it.effect('enforces a valid empty Jev decision while downstream anchors stay protected', () =>
+    selectRecallCandidatesWithJev(
+      Effect.succeed(['a']),
+      {candidates: [{id: 'a', summary: 'anchor', uri: 'threadnote://a'}], query: 'query'},
+      enforcedJev,
+      undefined,
+      () =>
+        Effect.succeed({
+          receipt: {
+            candidateCount: 1,
+            fallback: 'none',
+            mode: 'enforced',
+            model: 'jev-1.13.0',
+            outcome: 'empty',
+            selectedCount: 0,
+          },
+          selectedIds: [],
+        }),
+    ).pipe(
+      Effect.tap(selected =>
+        Effect.sync(() => {
+          expect(selected).toEqual([]);
+          expect(
+            selectedRecallCandidateUris([{id: 'a', summary: 'anchor', uri: 'threadnote://a'}], selected ?? [], ['a']),
+          ).toEqual(['threadnote://a']);
+          expect(
+            selectedRecallCandidateUris([{id: 'a', summary: 'anchor', uri: 'threadnote://a'}], selected ?? []),
+          ).toEqual([]);
+        }),
+      ),
+    ),
+  );
+
+  it.effect('uses one shared Jev deadline, keeps a completed baseline, and emits one timeout receipt', () =>
+    Effect.gen(function* () {
+      let interrupted = 0;
+      const receipts: unknown[] = [];
+      const selection = selectRecallCandidatesWithJev(
+        Effect.sleep(4_000).pipe(Effect.as(['baseline'])),
+        {candidates: [{id: 'a', summary: 'candidate', uri: 'threadnote://a'}], query: 'query'},
+        enforcedJev,
+        receipt => Effect.sync(() => receipts.push(receipt)),
+        () =>
+          Effect.sleep(2_000).pipe(
+            Effect.as({
+              receipt: {
+                candidateCount: 1,
+                fallback: 'none',
+                mode: 'enforced',
+                model: 'jev-1.13.0',
+                outcome: 'accepted',
+                selectedCount: 1,
+              } as const,
+              selectedIds: ['a'] as const,
+            }),
+            Effect.onInterrupt(() => Effect.sync(() => (interrupted += 1))),
+          ),
+      );
+      const fiber = yield* selection.pipe(Effect.forkChild);
+      yield* TestClock.adjust(RECALL_SELECTION_TIMEOUT_MILLISECONDS);
+      expect(yield* Fiber.join(fiber)).toEqual(['baseline']);
+      expect(interrupted).toBe(1);
+      expect(receipts).toEqual([
+        expect.objectContaining({fallback: 'timeout', outcome: 'provider-failure', selectedCount: 0}),
+      ]);
+    }),
+  );
+
+  it.effect('fails open with one receipt when a 2xx Jev response is malformed', () => {
+    const receipts: unknown[] = [];
+    const transport: JevTransport = {
+      post: () =>
+        Effect.succeed({
+          body: {answers: {}, model: 'jev-1.13.0', usage: {input_tokens: 1, output_tokens: 1}},
+          status: 200,
+        }),
+    };
+    return selectRecallCandidatesWithJev(
+      Effect.succeed(['baseline']),
+      {candidates: [{id: 'a', summary: 'candidate', uri: 'threadnote://a'}], query: 'query'},
+      enforcedJev,
+      receipt => Effect.sync(() => receipts.push(receipt)),
+      (input, config) => runJevRecallCandidateSelection(input, config, transport),
+    ).pipe(
+      Effect.tap(selected =>
+        Effect.sync(() => {
+          expect(selected).toEqual(['baseline']);
+          expect(receipts).toEqual([
+            expect.objectContaining({fallback: 'provider-failure', outcome: 'provider-failure', selectedCount: 0}),
+          ]);
+        }),
+      ),
+    );
+  });
+
+  it.effect('preserves external interruption of the shared Jev selection', () =>
+    Effect.gen(function* () {
+      const fiber = yield* selectRecallCandidatesWithJev(
+        Effect.succeed(['baseline']),
+        {candidates: [{id: 'a', summary: 'candidate', uri: 'threadnote://a'}], query: 'query'},
+        enforcedJev,
+        undefined,
+        () => Effect.never,
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(fiber);
+      const exit = yield* Fiber.await(fiber);
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
     }),
   );
 

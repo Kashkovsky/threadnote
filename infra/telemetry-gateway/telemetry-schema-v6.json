@@ -676,6 +676,8 @@
       "install",
       "install-hooks",
       "install_shared_skill",
+      "jev",
+      "jev.status",
       "list",
       "list_context",
       "list_shared_skills",

@@ -28,6 +28,7 @@ import {
   lifecycleMcpTools,
 } from './docsLifecycleReference.js';
 import {localAiDocsArticle} from './docsLocalAi.js';
+import {jevConfigurationBlocks, jevConfigurationRows} from './docsJev.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
 import {upgradeFromThreadnote4DocsArticle} from './docsUpgradeV5.js';
@@ -370,7 +371,6 @@ export const mcpTools: McpToolReference[] = [
     keyInputs: ['name', 'agent', 'kind', 'team', 'dryRun', 'force'],
   },
 ];
-
 export const docsSections: DocsSection[] = [
   {
     id: 'getting-started',
@@ -1895,8 +1895,10 @@ threadnote report-issue \\
               ['THREADNOTE_CANDIDATE_POLICY', 'Session candidate mode: suggest, handoff-only, or off', 'suggest'],
               ['THREADNOTE_AUTO_UPDATE', 'Set to 1 to enable hook-driven update checks', 'unset'],
               ['THREADNOTE_NO_SPINNER', 'Disable interactive progress spinners', 'unset'],
+              ...jevConfigurationRows,
             ],
           },
+          ...jevConfigurationBlocks,
           {
             type: 'warning',
             text: 'THREADNOTE_INSTALL_ROOT is an advanced managed-install and test-isolation boundary, not a per-agent data-home setting. Other internal build, worker, release-source, parser-asset, and command-limit variables are implementation or test controls. Do not copy them into agent configs.',

@@ -38,6 +38,8 @@ import {
   runLocalAiStop,
   runLocalAiUninstall,
 } from './local-ai.js';
+import {makeJevCommand} from './jev_cli.js';
+import {makeImageProjectionCommand} from './image_projection_cli.js';
 import {
   runArchive,
   runCompact,
@@ -331,14 +333,9 @@ const telemetry = Command.make('telemetry').pipe(
   Command.withSubcommands([telemetryStatus, telemetryEnable, telemetryDisable]),
 );
 
-const imageProjection = Command.make(
-  'image-projection',
-  {
-    disable: boolean('disable', 'Turn off MCP memory image projection and persist immediately'),
-    enable: boolean('enable', 'Turn on MCP memory image projection and persist immediately'),
-  },
-  options => withRuntimeEffect(config => runImageProjectionCommand(config, options)),
-).pipe(Command.withDescription('Show or persist optional MCP memory image projection'));
+const imageProjection = makeImageProjectionCommand(options =>
+  withRuntimeEffect(config => runImageProjectionCommand(config, options)),
+);
 
 const reportIssue = Command.make(
   'report-issue',
@@ -1900,6 +1897,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('version', version),
   registerTopLevelCommand('logs', logs),
   registerTopLevelCommand('telemetry', telemetry, {productionLog: {mode: 'never'}}),
+  registerTopLevelCommand('jev', makeJevCommand(), {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('image-projection', imageProjection, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('report-issue', reportIssue, {productionLog: {mode: 'never'}}),
   registerTopLevelCommand('update', update),

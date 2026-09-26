@@ -200,6 +200,12 @@ describe('CLI production log policy', () => {
       writeAnonymousTelemetry: true,
       writeProductionLog: false,
     });
+    expect(inspectCliInvocation(['jev', 'status', '--json'])).toEqual({
+      operation: 'jev',
+      telemetryOperation: 'jev.status',
+      writeAnonymousTelemetry: true,
+      writeProductionLog: false,
+    });
   });
 
   it('derives anonymous graph operations only from registered command words', () => {
