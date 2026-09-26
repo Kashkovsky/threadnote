@@ -455,7 +455,7 @@ describe('code graph release evidence', () => {
     ).toThrow(/clean exact release source provenance/);
   });
 
-  it('accepts only exact Threadnote 4 release tags in completed evidence', () => {
+  it('accepts exact canonical Threadnote 4-or-newer release tags in completed evidence', () => {
     const artifact = benchmarkArtifact(
       requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
       {
@@ -472,7 +472,8 @@ describe('code graph release evidence', () => {
     });
 
     expect(() => assertProductionReleaseEvidence(withRef('refs/tags/v4.1.0-beta.1'))).not.toThrow();
-    for (const ref of ['refs/tags/v4.1.0-beta', 'refs/tags/v3.1.0', 'refs/tags/v5.1.0', 'refs/heads/v4.1.0']) {
+    expect(() => assertProductionReleaseEvidence(withRef('refs/tags/v5.0.2'))).not.toThrow();
+    for (const ref of ['refs/tags/v4.1.0-beta', 'refs/tags/v3.1.0', 'refs/tags/v5.01.0', 'refs/heads/v4.1.0']) {
       expect(() => assertProductionReleaseEvidence(withRef(ref))).toThrow(/clean exact release source provenance/);
     }
   });
@@ -508,15 +509,16 @@ describe('code graph release evidence', () => {
     );
   });
 
-  it('accepts every stable, beta, and RC Threadnote 4 tag', () => {
+  it('accepts every canonical stable, beta, and RC Threadnote 4-or-newer tag', () => {
     const commit = '0123456789abcdef0123456789abcdef01234567';
+    const majorVersionNumber = fc.integer({max: 10_000, min: 4});
     const versionNumber = fc.integer({max: 10_000, min: 0});
     const prerelease = fc.option(fc.tuple(fc.constantFrom('beta', 'rc'), versionNumber), {nil: undefined});
 
     fc.assert(
-      fc.property(versionNumber, versionNumber, prerelease, (minor, patch, channel) => {
+      fc.property(majorVersionNumber, versionNumber, versionNumber, prerelease, (major, minor, patch, channel) => {
         const suffix = channel === undefined ? '' : `-${channel[0]}.${channel[1]}`;
-        const ref = `refs/tags/v4.${minor}.${patch}${suffix}`;
+        const ref = `refs/tags/v${major}.${minor}.${patch}${suffix}`;
 
         expect(resolvedReleaseEvidenceSource(ref, commit, commit, commit, false)).toEqual({
           ref,
@@ -621,13 +623,13 @@ describe('code graph release evidence', () => {
 
   it.each([
     'refs/tags/v3.9.9',
-    'refs/tags/v5.0.0',
+    'refs/tags/v9007199254740992.0.0',
     'refs/tags/v4.0',
     'refs/tags/v4.0.1-alpha.1',
     'refs/tags/v4.0.1-beta',
     'refs/tags/v4.00.1',
     'refs/heads/v4.0.1',
-  ])('rejects non-Threadnote-4 release ref %s', ref => {
+  ])('rejects non-canonical or pre-Threadnote-4 release ref %s', ref => {
     const commit = '0123456789abcdef0123456789abcdef01234567';
     expect(() => resolvedReleaseEvidenceSource(ref, commit, commit, commit, false)).toThrow(/locally resolvable tag/);
   });
@@ -3315,6 +3317,16 @@ describe('code graph release evidence', () => {
 
     expect(() => assertExternalPerformanceEvidence(artifact)).not.toThrow();
     expect(() => validateRetainedPerformancePayload(artifact)).not.toThrow();
+    const threadnote5Artifact: BenchmarkArtifactV1 = {
+      ...artifact,
+      metadata: {
+        ...artifact.metadata,
+        benchmarkValidatedManagedVersion: `5.0.2-local.g${commit}`,
+        releaseEvidenceRef: 'refs/tags/v5.0.2',
+      },
+    };
+    expect(() => assertExternalPerformanceEvidence(threadnote5Artifact)).not.toThrow();
+    expect(() => validateRetainedPerformancePayload(threadnote5Artifact)).not.toThrow();
     const harnessDeltaArtifact: BenchmarkArtifactV1 = {
       ...artifact,
       metadata: {

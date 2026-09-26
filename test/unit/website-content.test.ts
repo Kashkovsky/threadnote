@@ -2219,6 +2219,28 @@ Measure the system before changing its implementation language.
     }
   });
 
+  it('projects canonical Threadnote 5 release provenance into retained website evidence', () => {
+    const fixture = verifiedPerformanceFixture();
+    const metadata = fixture.metadata as Record<string, unknown>;
+    const commit = (fixture.environment as Record<string, unknown>).commit;
+    metadata.releaseEvidenceRef = 'refs/tags/v5.0.2';
+    metadata.benchmarkValidatedManagedVersion = `5.0.2-local.g${commit}`;
+    const artifactBytes = fixtureBytes(fixture);
+    const evidence = bindRetainedPerformanceArtifact({
+      artifactBytes,
+      artifactPublicUrl: performanceArtifactPublicUrl('/'),
+      binding: fixtureBinding(artifactBytes),
+      currentLockfileSha256: fixtureLockfileSha256,
+      currentPackageManifestSha256: fixturePackageManifestSha256,
+      currentSourceTreeSha256: 'f'.repeat(64),
+    });
+
+    expect(evidence.state).toBe('verified');
+    if (evidence.state === 'verified') {
+      expect(evidence.artifact.source.threadnote.version).toBe('v5.0.2');
+    }
+  });
+
   it('keeps harness and website validation fail-closed under the same adversarial mutations', () => {
     const mutations: readonly [string, (fixture: Record<string, unknown>) => void][] = [
       [
@@ -2258,9 +2280,9 @@ Measure the system before changing its implementation language.
         },
       ],
       [
-        'release tag outside Threadnote 4',
+        'pre-Threadnote-4 release tag',
         fixture => {
-          (fixture.metadata as Record<string, unknown>).releaseEvidenceRef = 'refs/tags/v5.0.0';
+          (fixture.metadata as Record<string, unknown>).releaseEvidenceRef = 'refs/tags/v3.9.9';
         },
       ],
       [

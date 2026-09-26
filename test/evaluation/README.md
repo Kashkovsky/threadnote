@@ -803,8 +803,9 @@ distribution.
 
 `beta30-staging-development.json` preserves the reviewed same-runner staging experiments, including the first 10k
 direct-persistent observation and its source-artifact SHA-256. Every source run was dirty and local, so this compact
-record is development evidence only. A release artifact is accepted only when it carries the Threadnote 4 release tag,
-the exact matching commit, and a clean checkout; missing provenance is a hard failure rather than an implicit pass.
+record is development evidence only. A release artifact is accepted only when it carries a canonical Threadnote
+4-or-newer release tag, the exact matching commit, and a clean checkout; missing provenance is a hard failure rather
+than an implicit pass.
 The compact direct record retains the reviewed top-level cold and one-file wall-time measurements under their exact raw
 artifact phase names. The split snapshot phases are:
 
