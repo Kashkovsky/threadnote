@@ -1802,7 +1802,10 @@ describe('deferred code-anchor outbox', () => {
 
         let recovered = false;
         for (let attempt = 0; attempt < 4 && !recovered; attempt += 1) {
-          const receipt = yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {limit: 1});
+          const receipt = yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {
+            limit: 1,
+            passTimeoutMilliseconds: TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS,
+          });
           recovered = receipt.conflictCount === 1;
         }
 
