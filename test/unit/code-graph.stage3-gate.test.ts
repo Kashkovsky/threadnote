@@ -22,9 +22,11 @@ import '../../scripts/support/code-graph-stage3-lock-child.js';
 import {withStage3Cleanup} from '../../scripts/support/code-graph-stage3-lifecycle.js';
 import {assertStage3StrictStateEnvelope} from '../../scripts/support/code-graph-stage3-scenarios.js';
 
-const arguments_ = [
+const planArguments = ['--mode', 'plan'];
+
+const executeArguments = [
   '--mode',
-  'plan',
+  'execute',
   '--candidate-commit',
   'a'.repeat(40),
   '--candidate-ref',
@@ -36,6 +38,12 @@ const arguments_ = [
   '--output',
   '/not-a-directory/gate.json',
 ];
+
+function executeOptions() {
+  const options = parseStage3Arguments(executeArguments);
+  if (options.mode !== 'execute') throw new Error('Expected execute options.');
+  return options;
+}
 
 async function gitResult(directory: string): Promise<Stage3CommandResult> {
   const child = Bun.spawn(['git', '-C', directory, 'rev-parse', '--show-toplevel'], {stdout: 'pipe', stderr: 'pipe'});
@@ -62,7 +70,7 @@ function cleanupDriver(
   closeFails = false,
   observedIdentity = 'identity',
 ) {
-  const driver = new Stage3Driver(parseStage3Arguments(arguments_));
+  const driver = new Stage3Driver(executeOptions());
   const system = {
     isProcessRunning: (processId: number) => processId >= 3,
     signalProcess: (processId: number) => events.push(`signal-${processId}`),
@@ -112,27 +120,29 @@ function cleanupDriver(
 
 describe('Stage 3 live release gate contract', () => {
   it('plans the real phases without executing or writing evidence', async () => {
-    expect(parseStage3Arguments(arguments_).mode).toBe('plan');
-    expect(await runStage3Gate(arguments_)).toEqual(stage3Plan());
+    expect(parseStage3Arguments(planArguments)).toEqual({mode: 'plan'});
+    expect(await runStage3Gate(planArguments)).toEqual(stage3Plan());
     expect(stage3Plan()).toMatchObject({executed: false, linkedWorktrees: 3, simultaneousMcpHosts: 2});
+    const runbook = readFileSync(join(import.meta.dirname, '../../docs/code-graph-readiness.md'), 'utf8');
+    expect(runbook).toContain('bun run gate:code-graph:stage3 -- --mode plan');
+    expect(runbook).toContain('  --mode execute \\');
   });
 
   it('refuses observation imports, implicit execution, duplicate flags, and unpinned identities', () => {
     for (const invalid of [
-      [...arguments_, '--observations', '/fake.json'],
-      [...arguments_, '--mode', 'execute'],
-      arguments_.slice(2),
-      arguments_.map(value => (value === 'a'.repeat(40) ? 'HEAD' : value)),
-      arguments_.map(value => (value === 'b'.repeat(64) ? 'unknown' : value)),
-      arguments_.map(value => (value === '/not-an-executable' ? './threadnote' : value)),
+      [...planArguments, '--observations', '/fake.json'],
+      [...planArguments, '--candidate-ref', 'candidate'],
+      [...planArguments, '--mode', 'execute'],
+      executeArguments.slice(2),
+      executeArguments.map(value => (value === 'a'.repeat(40) ? 'HEAD' : value)),
+      executeArguments.map(value => (value === 'b'.repeat(64) ? 'unknown' : value)),
+      executeArguments.map(value => (value === '/not-an-executable' ? './threadnote' : value)),
     ])
       expect(() => parseStage3Arguments(invalid)).toThrow();
   });
 
   it('fails execute preflight on a mismatching HEAD before running a candidate', async () => {
-    await expect(runStage3Gate(arguments_.map(value => (value === 'plan' ? 'execute' : value)))).rejects.toThrow(
-      'candidate-head',
-    );
+    await expect(runStage3Gate(executeArguments)).rejects.toThrow('candidate-head');
   });
 
   it('keeps fixture anchors stable while every target changes source', () => {
@@ -164,7 +174,7 @@ describe('Stage 3 live release gate contract', () => {
     const corruptFile = mkdtempSync(join(tmpdir(), 'threadnote-stage3-corrupt-file-'));
     const corruptDirectoryOutput = join(corruptDirectory, 'output');
     const corruptFileOutput = join(corruptFile, 'output');
-    const markerDriver = new Stage3Driver(parseStage3Arguments(arguments_));
+    const markerDriver = new Stage3Driver(executeOptions());
     try {
       expect(Bun.spawnSync(['git', '-C', worktree, 'init', '-q']).exitCode).toBe(0);
       mkdirSync(join(corruptDirectory, '.git'));
