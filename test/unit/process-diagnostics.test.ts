@@ -502,15 +502,61 @@ describe('process diagnostics', () => {
       }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
   );
 
-  it.effect('does not overwrite a foreign row replacing the stale startup inode during reclamation', () =>
+  fcEffectProp(
+    it,
+    'does not overwrite a foreign row replacing the stale startup inode during reclamation',
+    {foreignToken: FC.string({maxLength: 60, minLength: 16})},
+    ({foreignToken}) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const nativeSystem = yield* SystemInfo;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-registration-startup-race-'});
+        const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
+        const displaced = `${file}.displaced`;
+        const foreign = JSON.stringify(testRegistration(process.pid, 'mcp', 'current-instance', foreignToken));
+        yield* fs.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
+        yield* fs.writeFileString(
+          file,
+          JSON.stringify(testRegistration(process.pid, 'mcp', 'old-instance', 'old-instance-token')),
+        );
+        const interlocked = FileSystem.FileSystem.of({
+          ...fs,
+          rename: (oldPath, newPath) =>
+            Effect.gen(function* () {
+              if (oldPath === file) {
+                yield* fs.rename(oldPath, displaced);
+                yield* fs.writeFileString(oldPath, foreign);
+              }
+              yield* fs.rename(oldPath, newPath);
+            }),
+        });
+        const system = SystemInfo.of({
+          ...nativeSystem,
+          canonicalProcessStartIdentity: () => Effect.succeed('current-instance'),
+          processStartIdentity: () => Effect.succeed('current-instance'),
+        });
+        yield* withThreadnoteProcessRegistration(
+          home,
+          'mcp',
+          Effect.gen(function* () {
+            expect(yield* fs.readFileString(file)).toBe(foreign);
+            yield* fs.remove(file);
+            yield* TestClock.adjust(60_000);
+            yield* withThreadnoteProcessActivity('graph-builder', 'build', Effect.void);
+            expect(yield* fs.exists(file)).toBe(false);
+          }),
+        ).pipe(Effect.provideService(SystemInfo, system), Effect.provideService(FileSystem.FileSystem, interlocked));
+      }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer)),
+    {fastCheck: {numRuns: 20}},
+  );
+
+  it.effect('does not publish after the captured startup quarantine disappears', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const nativeSystem = yield* SystemInfo;
-      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-registration-startup-race-'});
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-registration-missing-quarantine-'});
       const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
-      const foreign = JSON.stringify(
-        testRegistration(process.pid, 'mcp', 'current-instance', 'foreign-instance-token'),
-      );
+      let removedQuarantine = false;
       yield* fs.makeDirectory(join(home, 'runtime', 'processes'), {recursive: true});
       yield* fs.writeFileString(
         file,
@@ -518,14 +564,13 @@ describe('process diagnostics', () => {
       );
       const interlocked = FileSystem.FileSystem.of({
         ...fs,
-        open: (path, options) =>
+        readFileString: (path, encoding) =>
           Effect.gen(function* () {
-            const handle = yield* fs.open(path, options);
-            if (path === file) {
-              yield* fs.writeFileString(`${file}.foreign`, foreign);
-              yield* fs.rename(`${file}.foreign`, file);
+            if (path.endsWith('.reclaim')) {
+              removedQuarantine = true;
+              yield* fs.remove(path);
             }
-            return handle;
+            return yield* fs.readFileString(path, encoding);
           }),
       });
       const system = SystemInfo.of({
@@ -537,9 +582,8 @@ describe('process diagnostics', () => {
         home,
         'mcp',
         Effect.gen(function* () {
-          expect(yield* fs.readFileString(file)).toBe(foreign);
-          yield* fs.remove(file);
-          yield* TestClock.adjust(60_000);
+          expect(removedQuarantine).toBe(true);
+          expect(yield* fs.exists(file)).toBe(false);
           yield* withThreadnoteProcessActivity('graph-builder', 'build', Effect.void);
           expect(yield* fs.exists(file)).toBe(false);
         }),

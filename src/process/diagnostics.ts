@@ -7,7 +7,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {orderThreadnoteProcessesByAttention} from './attention.js';
 import {observeProcessInstanceIdentity, processInstanceIdentityMatches} from './process_identity.js';
 import {withoutTelemetrySessionEnvironment} from '../telemetry/session.js';
-import {createMissingProcessFile} from './owned_file.js';
+import {createMissingProcessFile, linkMissingProcessFile} from './owned_file.js';
 
 const PROCESS_DIAGNOSTICS_SCHEMA_VERSION = 1;
 const PROCESS_DIAGNOSTICS_LIMIT = 100;
@@ -710,40 +710,58 @@ function writeRegistrationFile(active: ActiveProcessRegistration, value: Process
 }
 
 function reclaimStaleRegistration(active: ActiveProcessRegistration) {
-  return Effect.scoped(
-    Effect.gen(function* () {
-      if (!(yield* active.fileSystem.exists(active.file))) return;
-      const file = yield* active.fileSystem.open(active.file, {flag: 'r+'});
-      const bytes = yield* file.readAlloc(PROCESS_REGISTRATION_LIMIT_BYTES + 1);
-      const previous =
-        Option.isSome(bytes) && bytes.value.length <= PROCESS_REGISTRATION_LIMIT_BYTES
-          ? parseRegistrationFile(new TextDecoder().decode(bytes.value))
-          : Option.none<ProcessRegistrationFile>();
-      if (
-        Option.isNone(previous) ||
-        previous.value.processId !== active.processId ||
-        processInstanceIdentityMatches(previous.value.processStartIdentity, active.processStartIdentity)
-      ) {
-        active.ownershipLost = true;
-        return;
-      }
-      const content = new TextEncoder().encode(
-        `${JSON.stringify({
-          ...previous.value,
-          processStartIdentity: active.processStartIdentity,
-          startedAt: active.startedAt,
-          token: active.token,
-        })}\n`,
-      );
-      // Reclaim only the verified stale inode; a concurrently replaced path remains untouched.
-      yield* file.seek(0n, 'start');
-      yield* file.writeAll(content);
-      yield* file.truncate(content.length);
-    }),
-  ).pipe(
+  const quarantine = active.path.join(active.directory, `.${active.processId}.${active.token}.reclaim`);
+  let moved = false;
+  let restoreQuarantine = true;
+  return Effect.gen(function* () {
+    const previous = yield* readRegistrationFileStrict(active.fileSystem, active.file);
+    if (
+      Option.isNone(previous) ||
+      previous.value.processId !== active.processId ||
+      processInstanceIdentityMatches(previous.value.processStartIdentity, active.processStartIdentity)
+    ) {
+      active.ownershipLost = true;
+      return;
+    }
+    yield* active.fileSystem.remove(quarantine, {force: true});
+    yield* Effect.uninterruptible(
+      active.fileSystem.rename(active.file, quarantine).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            moved = true;
+          }),
+        ),
+      ),
+    );
+    const captured = yield* readRegistrationFileStrict(active.fileSystem, quarantine);
+    if (
+      Option.isNone(captured) ||
+      captured.value.processId !== previous.value.processId ||
+      captured.value.processStartIdentity !== previous.value.processStartIdentity ||
+      captured.value.token !== previous.value.token
+    ) {
+      active.ownershipLost = true;
+      return;
+    }
+    restoreQuarantine = false;
+  }).pipe(
+    Effect.ensuring(
+      Effect.gen(function* () {
+        if (!moved || !(yield* active.fileSystem.exists(quarantine))) return;
+        if (restoreQuarantine && !(yield* active.fileSystem.exists(active.file))) {
+          yield* linkMissingProcessFile(active.fileSystem, quarantine, active.file).pipe(Effect.ignore);
+        }
+        if (!restoreQuarantine || (yield* active.fileSystem.exists(active.file))) {
+          yield* active.fileSystem.remove(quarantine, {force: true});
+        }
+      }).pipe(Effect.ignore),
+    ),
     Effect.catchIf(
       error => error.reason._tag === 'NotFound',
-      () => Effect.void,
+      () =>
+        Effect.sync(() => {
+          if (moved) active.ownershipLost = true;
+        }),
     ),
   );
 }
