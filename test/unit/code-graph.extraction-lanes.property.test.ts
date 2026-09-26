@@ -31,8 +31,8 @@ describe('code graph extraction scheduling', () => {
         const lower = Math.min(left, right);
         const upper = Math.max(left, right);
         expect(codeGraphExtractionWindowSize(lower)).toBeLessThanOrEqual(codeGraphExtractionWindowSize(upper));
-        expect(codeGraphExtractionWindowSize(lower)).toBe(lower * 8);
-        expect(codeGraphExtractionWindowSize(upper)).toBe(upper * 8);
+        expect(codeGraphExtractionWindowSize(lower)).toBe(Math.min(96, lower * 36));
+        expect(codeGraphExtractionWindowSize(upper)).toBe(Math.min(96, upper * 36));
       }),
       {numRuns: 100},
     );
@@ -120,6 +120,36 @@ describe('code graph extraction scheduling', () => {
       }),
       {numRuns: 200},
     );
+  });
+
+  it('balances bounded windows so the final extraction wave is not underfilled', () => {
+    fc.assert(
+      fc.property(fc.array(groupArbitrary, {maxLength: 160}), fc.integer({max: 64, min: 1}), (groups, maximumFiles) => {
+        const remaining = [...groups];
+        const windowSizes: number[] = [];
+        while (remaining.length > 0) {
+          const [window, rest] = takeCodeGraphExtractionWindow(remaining, maximumFiles);
+          windowSizes.push(window.reduce((total, group) => total + group.files.length, 0));
+          remaining.splice(0, remaining.length, ...rest);
+        }
+        if (windowSizes.length > 1) {
+          expect(Math.max(...windowSizes) - Math.min(...windowSizes)).toBeLessThanOrEqual(1);
+        }
+      }),
+      {numRuns: 200},
+    );
+
+    const heavyTailGroups = Array.from({length: 268}, (_, index) =>
+      group('typescript', `src/heavy-tail-${index}.ts`, 1),
+    );
+    const windowSizes: number[] = [];
+    let remaining = heavyTailGroups;
+    while (remaining.length > 0) {
+      const [window, rest] = takeCodeGraphExtractionWindow(remaining, codeGraphExtractionWindowSize(8));
+      windowSizes.push(window.reduce((total, candidate) => total + candidate.files.length, 0));
+      remaining = rest as TestGroup[];
+    }
+    expect(windowSizes).toEqual([90, 89, 89]);
   });
 
   it('rejects empty groups, invalid capacity, and malformed observations', () => {

@@ -48,6 +48,7 @@ const STDERR_BYTES_LIMIT = 32 * 1_024;
 const WORKER_SHUTDOWN_TIMEOUT_MILLISECONDS = 500;
 const SLOT_RETRY_MILLISECONDS = 25;
 const SLOT_STALE_MILLISECONDS = 30_000;
+const PARSER_WORKER_PREWARM_CONCURRENCY = 4;
 const PARSER_WORKER_MEMORY_BYTES_PER_SLOT = 8 * 1_024 * 1_024 * 1_024;
 const PARSER_WORKER_WARMUP_SOURCE = 'export const __threadnoteParserWarmup = true;\n';
 const PARSER_WORKER_WARMUP_FILE: CodeGraphInventoryFile = {
@@ -196,6 +197,11 @@ export interface ParserWorkerResourceBudgetOptions {
   readonly maximumRssBytes?: number;
 }
 
+export class ParserWorkerConfigurationError extends Schema.TaggedError<ParserWorkerConfigurationError>()(
+  'ParserWorkerConfigurationError',
+  {message: Schema.String},
+) {}
+
 export interface CodeGraphParserPoolShape {
   readonly capacity: number;
   readonly extract: (
@@ -209,8 +215,19 @@ export interface CodeGraphParserPoolShape {
       extract: (file: CodeGraphInventoryFile) => Effect.Effect<CodeGraphParserResult, never>,
     ) => Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E, R>;
-  readonly warm: (threadnoteHome: string) => Effect.Effect<void, never>;
+  readonly warm: (
+    threadnoteHome: string,
+    requestedSlots?: number,
+  ) => Effect.Effect<void, ParserWorkerConfigurationError>;
   readonly trimIdle: Effect.Effect<void, never>;
+}
+
+export function warmPlannedParserCapacity(
+  pool: CodeGraphParserPoolShape,
+  threadnoteHome: string,
+  fileCount: number,
+): Effect.Effect<void, ParserWorkerConfigurationError> {
+  return fileCount <= pool.capacity ? Effect.void : pool.warm(threadnoteHome, fileCount);
 }
 
 class ParserWorkerSessionUseError<E> {
@@ -319,12 +336,36 @@ export function codeGraphParserPoolLayer(
         };
         const requiresWorker = (file: CodeGraphInventoryFile) =>
           file.bytes === undefined && sourceBudgetResult(file) === undefined;
+        const workPlans = new WeakMap<
+          readonly CodeGraphInventoryFile[],
+          {readonly required: boolean; readonly warm: boolean}
+        >();
+        const workPlan = (files: readonly CodeGraphInventoryFile[]) => {
+          const cached = workPlans.get(files);
+          if (cached !== undefined) return cached;
+          let workerFiles = 0;
+          for (const file of files) {
+            if (!requiresWorker(file)) continue;
+            workerFiles += 1;
+            if (workerFiles > capacity) break;
+          }
+          const planned = {required: workerFiles > 0, warm: capacity > 1 && workerFiles > capacity};
+          workPlans.set(files, planned);
+          return planned;
+        };
         const extractWithoutSlot = (file: CodeGraphInventoryFile) => {
           const budgeted = sourceBudgetResult(file);
           return Effect.succeed(
             budgeted ?? degradedResult(file, ParserWorkerError.of(file.bytes === undefined ? 'protocol' : 'operation')),
           );
         };
+        const warmSlot = (slot: ParserWorkerSlot, threadnoteHome: string) =>
+          fromPromiseInterruptibleAwaiting(
+            signal => slot.warm(threadnoteHome, signal),
+            cause => (Schema.is(ParserWorkerError)(cause) ? cause : ParserWorkerError.of('protocol')),
+          );
+        const prewarmSlot = (slot: ParserWorkerSlot, threadnoteHome: string) =>
+          fromPromise('warm parser worker', () => slot.warm(threadnoteHome, new AbortController().signal));
 
         return {
           service: CodeGraphParserPool.of({
@@ -348,8 +389,9 @@ export function codeGraphParserPoolLayer(
                 slot => Queue.offer(available, slot),
               );
             },
-            withParserSlot: (threadnoteHome, files, use) =>
-              files.some(requiresWorker)
+            withParserSlot: (threadnoteHome, files, use) => {
+              const planned = workPlan(files);
+              return planned.required
                 ? Effect.acquireUseRelease(
                     Queue.take(available),
                     slot =>
@@ -361,13 +403,7 @@ export function codeGraphParserPoolLayer(
                         threadnoteHome,
                         capacity,
                         slot.index,
-                        (capacity === 1
-                          ? Effect.void
-                          : fromPromiseInterruptibleAwaiting(
-                              signal => slot.warm(threadnoteHome, signal),
-                              cause => (Schema.is(ParserWorkerError)(cause) ? cause : ParserWorkerError.of('protocol')),
-                            )
-                        ).pipe(
+                        (planned.warm ? warmSlot(slot, threadnoteHome) : Effect.void).pipe(
                           Effect.andThen(
                             use(file => extractFromSlot(slot, file, threadnoteHome)).pipe(
                               Effect.mapError(error => new ParserWorkerSessionUseError(error)),
@@ -383,22 +419,33 @@ export function codeGraphParserPoolLayer(
                       ),
                     slot => Queue.offer(available, slot),
                   )
-                : use(extractWithoutSlot),
-            warm: threadnoteHome =>
-              Effect.acquireUseRelease(
-                Queue.clear(available),
-                idleSlots =>
-                  Effect.forEach(
-                    idleSlots,
-                    slot =>
-                      fromPromiseInterruptibleAwaiting(
-                        _signal => slot.prepare(threadnoteHome),
-                        cause => (Schema.is(ParserWorkerError)(cause) ? cause : ParserWorkerError.of('protocol')),
-                      ),
-                    {concurrency: 'unbounded', discard: true},
-                  ).pipe(Effect.ignore),
-                idleSlots => Queue.offerAll(available, idleSlots),
-              ).pipe(Effect.asVoid),
+                : use(extractWithoutSlot);
+            },
+            warm: (threadnoteHome, requestedSlots = capacity) =>
+              Number.isSafeInteger(requestedSlots) && requestedSlots >= 0
+                ? Effect.acquireUseRelease(
+                    Queue.clear(available),
+                    idleSlots =>
+                      Effect.forEach(
+                        idleSlots.slice(0, Math.min(capacity, requestedSlots)),
+                        slot =>
+                          withGlobalParserSlot(
+                            crypto,
+                            fs,
+                            path,
+                            system,
+                            threadnoteHome,
+                            capacity,
+                            slot.index,
+                            prewarmSlot(slot, threadnoteHome),
+                          ),
+                        {concurrency: PARSER_WORKER_PREWARM_CONCURRENCY, discard: true},
+                      ).pipe(Effect.ignore),
+                    idleSlots => Queue.offerAll(available, idleSlots),
+                  ).pipe(Effect.asVoid)
+                : Effect.fail(
+                    ParserWorkerConfigurationError.make({message: 'Code graph parser warm slot count is invalid.'}),
+                  ),
             trimIdle: Effect.acquireUseRelease(
               Queue.clear(available),
               idleSlots =>
@@ -572,16 +619,6 @@ class ParserWorkerSlot {
     } catch (cause) {
       if (Option.isSome(connection)) await this.discard(connection.value).catch(() => undefined);
       throw cause;
-    } finally {
-      this.scheduleIdleEviction();
-    }
-  }
-
-  async prepare(threadnoteHome: string): Promise<void> {
-    if (this.closed) throw ParserWorkerError.of('exit');
-    this.cancelIdleEviction();
-    try {
-      await this.activeConnection(threadnoteHome);
     } finally {
       this.scheduleIdleEviction();
     }

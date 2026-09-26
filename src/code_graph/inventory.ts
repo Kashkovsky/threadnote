@@ -1400,6 +1400,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       .filter(entry => entry.parse)
       .map(entry => committedInventoryFile(identity, entry, languagePacks)),
   ]);
+  const parserWorkFileCount = orderedNeedsContent.reduce((count, entry) => count + (entry.parse ? 1 : 0), 0);
   let parserWorkPrepared = false;
   for (let offset = 0; offset < metadataOnlyContent.length; offset += CODE_GRAPH_CAT_FILE_BATCH_ENTRIES) {
     const batch = metadataOnlyContent.slice(offset, offset + CODE_GRAPH_CAT_FILE_BATCH_ENTRIES);
@@ -1455,12 +1456,27 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       unit: 'files',
     }) ?? Effect.void;
     const expectedBytes = batch.reduce((total, entry) => total + entry.size, 0) + batch.length * 256;
-    const readingStarted = performance.now();
-    const result = yield* runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
-      input: new TextEncoder().encode(`${batch.map(entry => entry.blobId).join('\n')}\n`),
-      maxOutputBytes: expectedBytes,
-      timeoutMs: 0,
-    });
+    const prepareParserWork =
+      !parserWorkPrepared && parserWorkFileCount > 0
+        ? Effect.suspend(() => {
+            parserWorkPrepared = true;
+            return onParserWorkPlanned?.(parserWorkFileCount) ?? Effect.void;
+          })
+        : Effect.void;
+    const [, {readingMilliseconds, result}] = yield* Effect.all(
+      [
+        prepareParserWork,
+        Effect.suspend(() => {
+          const readingStarted = performance.now();
+          return runBinaryCommandEffect('git', ['-C', identity.repoRoot, 'cat-file', '--batch'], {
+            input: new TextEncoder().encode(`${batch.map(entry => entry.blobId).join('\n')}\n`),
+            maxOutputBytes: expectedBytes,
+            timeoutMs: 0,
+          }).pipe(Effect.map(result => ({readingMilliseconds: performance.now() - readingStarted, result})));
+        }),
+      ],
+      {concurrency: 'unbounded'},
+    );
     const blobs = parseGitCatFileBatch(result.stdout, batch);
     const contentBatch: CodeGraphInventoryFile[] = [];
     for (let index = 0; index < batch.length; index += 1) {
@@ -1486,12 +1502,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
       const retained = retainResolutionContext(hydrated, languagePacks);
       files.push(retained);
     }
-    const readingMilliseconds = performance.now() - readingStarted;
     if (contentBatch.length > 0) {
-      if (!parserWorkPrepared) {
-        parserWorkPrepared = true;
-        yield* onParserWorkPlanned?.() ?? Effect.void;
-      }
       yield* onContentBatch?.(contentBatch, {
         ...(blobReuseCounts.size === 0 ? {} : {blobReuseCounts}),
         extractionPlan,
