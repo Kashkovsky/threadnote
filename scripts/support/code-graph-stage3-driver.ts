@@ -17,7 +17,7 @@ import {
   verifyManagedDevelopmentRuntimeForSourceCheckout,
 } from '../development-runtime.js';
 import {processInstanceIdentityMatches} from '../../src/process/process_identity.js';
-import {assertStage3, stage3Record, type Stage3Options} from './code-graph-stage3-contract.js';
+import {assertStage3, stage3Record, type Stage3ExecuteOptions} from './code-graph-stage3-contract.js';
 
 export const stage3SourceRoot = Bun.fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/u, '');
 export const STAGE3_DEADLINE = 120_000;
@@ -116,7 +116,7 @@ export class Stage3Driver {
   environment: Record<string, string> = {};
   private lockOrdinal = 0;
 
-  constructor(readonly options: Stage3Options) {}
+  constructor(readonly options: Stage3ExecuteOptions) {}
 
   async services() {
     return {
