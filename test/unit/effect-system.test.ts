@@ -2,6 +2,7 @@ import {fcEffectProp, fcProp} from '../helpers/fast-check-property.js';
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
+import {BunFileSystem} from '@effect/platform-bun';
 import {
   closeSync,
   existsSync,
@@ -16,7 +17,7 @@ import {
 import {cpus, release, tmpdir, totalmem} from '../helpers/node-os.js';
 import {join, posix as posixPath, win32 as windowsPath} from '../helpers/node-path.js';
 import {succeedUndefined} from '../../src/effect/optional.js';
-import {Clock, Deferred, Effect, Fiber} from 'effect';
+import {Clock, Deferred, Effect, FileSystem, Fiber, Option} from 'effect';
 import {TestClock} from 'effect/testing';
 import * as FC from 'fast-check';
 import {describe, expect, it, vi} from 'vitest';
@@ -39,6 +40,9 @@ import {
   processResourceUsageMaxRssBytes,
   probeAvailableDiskBytes,
   probeRuntimeAvailableDiskBytes,
+  readOpenedFileSystemIdentity,
+  readPathFileSystemIdentity,
+  resolveFileSystemIdentity,
   windowsDiskCapacityWorkerInvocation,
   probeWindowsProcessStartIdentity,
   readCanonicalProcessStartIdentity,
@@ -87,6 +91,80 @@ describe('SystemInfo structural path adapter', () => {
         expect(fileSystemModeIsPrivate(platform, mode)).toBe(platform === 'win32' || (mode & 0o077) === 0);
       }),
     {fastCheck: {numRuns: 100}},
+  );
+
+  fcEffectProp(
+    effectIt,
+    'uses observed safe filesystem identities and otherwise requires an exact identity',
+    {
+      dev: FC.constantFrom(0, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1),
+      exact: FC.option(
+        FC.record({
+          dev: FC.bigInt({max: (1n << 64n) - 1n, min: 0n}),
+          ino: FC.bigInt({max: (1n << 96n) - 1n, min: 0n}),
+        }),
+        {nil: undefined},
+      ),
+      ino: FC.option(FC.constantFrom(0, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1), {nil: undefined}),
+    },
+    ({dev, exact, ino}) =>
+      Effect.sync(() => {
+        const observed = ino === undefined ? Option.none<number>() : Option.some(ino);
+        const expected =
+          Number.isSafeInteger(dev) && ino !== undefined && Number.isSafeInteger(ino)
+            ? {dev: BigInt(dev), ino: BigInt(ino)}
+            : exact;
+        expect(Option.getOrUndefined(resolveFileSystemIdentity(dev, observed, exact))).toEqual(expected);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  effectIt.effect('uses native identities only for matching types and usable descriptors', () =>
+    Effect.scoped(
+      Effect.acquireUseRelease(
+        Effect.sync(() => mkdtempSync(join(tmpdir(), 'threadnote-filesystem-identity-'))),
+        root =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const target = join(root, 'target');
+            yield* fs.writeFileString(target, 'threadnote');
+            const info = yield* fs.stat(target);
+            const withoutInode = {...info, ino: Option.none<number>()};
+            const expected = {dev: BigInt(info.dev), ino: BigInt(Option.getOrThrow(info.ino))};
+
+            expect(yield* readPathFileSystemIdentity(target, withoutInode, 'File')).toEqual(Option.some(expected));
+            yield* Effect.acquireUseRelease(
+              Effect.sync(() => openSync(target, 'r')),
+              fd =>
+                readOpenedFileSystemIdentity({fd} as unknown as FileSystem.File, withoutInode, 'File').pipe(
+                  Effect.tap(identity => Effect.sync(() => expect(identity).toEqual(Option.some(expected)))),
+                ),
+              fd => Effect.sync(() => closeSync(fd)),
+            );
+            expect(yield* readPathFileSystemIdentity(target, withoutInode, 'Directory')).toEqual(Option.none());
+            expect(yield* readPathFileSystemIdentity(join(root, 'missing'), withoutInode, 'File')).toEqual(
+              Option.none(),
+            );
+            expect(
+              yield* readOpenedFileSystemIdentity({fd: -1} as unknown as FileSystem.File, withoutInode, 'File'),
+            ).toEqual(Option.none());
+            expect(yield* readOpenedFileSystemIdentity({} as FileSystem.File, withoutInode, 'File')).toEqual(
+              Option.none(),
+            );
+            expect(
+              yield* readOpenedFileSystemIdentity({fd: 0} as unknown as FileSystem.File, withoutInode, 'Directory'),
+            ).toEqual(Option.none());
+            expect(
+              yield* readOpenedFileSystemIdentity(
+                {fd: Number.MAX_SAFE_INTEGER} as unknown as FileSystem.File,
+                withoutInode,
+                'File',
+              ),
+            ).toEqual(Option.none());
+          }),
+        root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+      ),
+    ).pipe(provideTestLayer(BunFileSystem.layer)),
   );
 
   it('streams every UTF-8 directory name across native read buffers', async () => {

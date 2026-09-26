@@ -1,5 +1,5 @@
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, FileSystem, Path, PlatformError, Ref} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Option, Path, PlatformError, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import {fcProp} from '../helpers/fast-check-property.js';
 import fc from 'fast-check';
@@ -456,6 +456,28 @@ describe('deferred code-anchor outbox', () => {
 
         expect(String(failure)).toContain('private directory');
         expect((yield* fixture.fs.stat(fixture.outbox)).mode & 0o777).toBe(0o777);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('recovers native directory identity when Effect omits the inode', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const inodeOmittingFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          stat: target => fixture.fs.stat(target).pipe(Effect.map(info => ({...info, ino: Option.none()}))),
+        });
+
+        const staged = yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Native inode fallback.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/native-inode.ts']),
+        }).pipe(Effect.provideService(FileSystem.FileSystem, inodeOmittingFileSystem));
+
+        expect(staged.intentId).toMatch(/^tnca_[a-f0-9]{32}$/u);
+        expect(yield* fixtureIntentPaths(fixture)).toHaveLength(1);
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );

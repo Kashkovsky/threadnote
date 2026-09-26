@@ -5,7 +5,13 @@ import {sha256Hex} from '../../effect/digest.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file/lock.js';
 import {withMemoryUriLocks} from '../../effect/memory_lock.js';
 import {ResourceStore} from '../../effect/resource-store.js';
-import {fileSystemModeIsPrivate, runtimePlatform, runtimeTextDirectoryNamePage} from '../../effect/system.js';
+import {
+  fileSystemModeIsPrivate,
+  readOpenedFileSystemIdentity,
+  readPathFileSystemIdentity,
+  runtimePlatform,
+  runtimeTextDirectoryNamePage,
+} from '../../effect/system.js';
 import {uriSegment} from '../../manifest.js';
 import {parseResourceId, validatePortableSegment} from '../../storage/resource-id.js';
 import type {RuntimeConfig} from '../../types.js';
@@ -55,6 +61,7 @@ import {
   readPrivateDeferredCodeAnchorDirectory,
   removePrivateDeferredCodeAnchorFile,
   removePrivateDeferredCodeAnchorRouteMarker,
+  sameDeferredCodeAnchorFile,
   samePrivateDeferredCodeAnchorDirectories,
   validatePrivateDeferredCodeAnchorDirectories,
   writePrivateDeferredCodeAnchorFile,
@@ -1301,18 +1308,24 @@ const readPrivateDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.readPriv
   ) {
     return undefined;
   }
+  const beforeIdentity = yield* readPathFileSystemIdentity(intentPath, before.value, 'File');
+  if (Option.isNone(beforeIdentity)) return undefined;
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const opened = yield* fs.open(intentPath, {flag: 'r'});
       const openedBefore = yield* opened.stat;
       const pathOpened = yield* fs.stat(intentPath);
+      const openedBeforeIdentity = yield* readOpenedFileSystemIdentity(opened, openedBefore, 'File');
+      const pathOpenedIdentity = yield* readPathFileSystemIdentity(intentPath, pathOpened, 'File');
       const ancestorsOpened = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
       if (
         ancestorsOpened === undefined ||
         !samePrivateDeferredCodeAnchorDirectories(ancestorAuthority, ancestorsOpened) ||
         Option.isSome(yield* fs.readLink(intentPath).pipe(Effect.option)) ||
-        !sameDeferredCodeAnchorIntentFile(before.value, openedBefore) ||
-        !sameDeferredCodeAnchorIntentFile(before.value, pathOpened)
+        Option.isNone(openedBeforeIdentity) ||
+        Option.isNone(pathOpenedIdentity) ||
+        !sameDeferredCodeAnchorFile(before.value, beforeIdentity.value, openedBefore, openedBeforeIdentity.value) ||
+        !sameDeferredCodeAnchorFile(before.value, beforeIdentity.value, pathOpened, pathOpenedIdentity.value)
       ) {
         return undefined;
       }
@@ -1326,13 +1339,17 @@ const readPrivateDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.readPriv
       }
       const openedAfter = yield* opened.stat;
       const pathAfter = yield* fs.stat(intentPath);
+      const openedAfterIdentity = yield* readOpenedFileSystemIdentity(opened, openedAfter, 'File');
+      const pathAfterIdentity = yield* readPathFileSystemIdentity(intentPath, pathAfter, 'File');
       const ancestorsAfter = yield* inspectPrivateDeferredCodeAnchorDirectories(fs, ancestorDirectories);
       if (
         ancestorsAfter === undefined ||
         !samePrivateDeferredCodeAnchorDirectories(ancestorAuthority, ancestorsAfter) ||
         Option.isSome(yield* fs.readLink(intentPath).pipe(Effect.option)) ||
-        !sameDeferredCodeAnchorIntentFile(before.value, openedAfter) ||
-        !sameDeferredCodeAnchorIntentFile(before.value, pathAfter) ||
+        Option.isNone(openedAfterIdentity) ||
+        Option.isNone(pathAfterIdentity) ||
+        !sameDeferredCodeAnchorFile(before.value, beforeIdentity.value, openedAfter, openedAfterIdentity.value) ||
+        !sameDeferredCodeAnchorFile(before.value, beforeIdentity.value, pathAfter, pathAfterIdentity.value) ||
         offset > MAX_DEFERRED_CODE_ANCHOR_INTENT_BYTES ||
         BigInt(offset) !== before.value.size
       ) {
@@ -1345,18 +1362,6 @@ const readPrivateDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.readPriv
     }),
   ).pipe(Effect.orElseSucceed(() => undefined));
 });
-
-function sameDeferredCodeAnchorIntentFile(left: FileSystem.File.Info, right: FileSystem.File.Info): boolean {
-  return (
-    left.type === 'File' &&
-    right.type === 'File' &&
-    left.dev === right.dev &&
-    Option.getOrUndefined(left.ino) === Option.getOrUndefined(right.ino) &&
-    left.size === right.size &&
-    left.mode === right.mode &&
-    Option.getOrUndefined(left.mtime)?.getTime() === Option.getOrUndefined(right.mtime)?.getTime()
-  );
-}
 
 const discardStoredDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.discardStored')(function* (
   config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>,
