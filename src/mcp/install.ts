@@ -1072,6 +1072,7 @@ const buildOmpMcpServerConfig = Effect.fn('mcp.buildOmpServerConfig')(function* 
     args: command.slice(1),
     command: command[0],
     env: mcpEnvironmentObject(config, options.toolset, 'omp'),
+    instructions: false,
     type: 'stdio',
   };
 });
