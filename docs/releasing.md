@@ -450,7 +450,7 @@ close implementation gates before merge, but only a tag-triggered artifact may c
 these experiments are publication dependencies. Keep public surrogate results, private path-free aggregate evidence,
 and checked-in same-machine comparisons separate; do not combine them into a synthetic percentile.
 
-Every Threadnote 4 version tag starts a separate production-large evidence workflow on `ubuntu-24.04`; publication
+Every canonical Threadnote release tag for major version 4 or later (stable, beta, or RC) starts a separate production-large evidence workflow on `ubuntu-24.04`; publication
 never waits for it. Before fixture construction, the workflow pins benchmark temporary storage to the runner-temp
 filesystem and records whether that filesystem satisfies the unchanged 120 GiB governed admission floor. A runner
 that does not satisfy the floor does not start the benchmark: the exact-tag capacity classification is retained, and
@@ -464,7 +464,7 @@ Capacity classifications, aggregate phase/materialization evidence, failure chec
 upload digest are retained for 90 days. Treat a successful completed result as `n=1` same-runner evidence, not as a portable p95. The heavy-tail job remains
 separate parser/cache coverage and must not be used as a substitute for production-scale materialization evidence.
 
-Completed release evidence remains provenance-strict: the artifact must name the Threadnote 4 tag and exact matching commit,
+Completed release evidence remains provenance-strict: the artifact must name a canonical Threadnote release tag for major version 4 or later and its exact matching commit,
 the local checkout must resolve that tag through `ref^{commit}` to the same SHA, and the measured checkout must be
 clean. The benchmark workflow explicitly checks out the event ref and verifies that resolution before measurement. A
 production-shaped run without that provenance remains useful development evidence, but it cannot be presented as

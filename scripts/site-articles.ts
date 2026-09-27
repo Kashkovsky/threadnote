@@ -454,7 +454,7 @@ export function renderWebsitePostHtml(template: string, post: WebsitePost): stri
   let html = template;
   html = replaceTagAttribute(html, 'meta', 'name', 'description', 'content', post.summary);
   html = replaceTagAttribute(html, 'link', 'rel', 'canonical', 'href', details.canonicalUrl);
-  html = replaceTagAttribute(html, 'link', 'rel', 'icon', 'href', '../../../threadnote-logo.svg');
+  html = replaceTagAttribute(html, 'link', 'rel', 'icon', 'href', '../../../favicon.svg');
   html = replaceTagAttribute(html, 'meta', 'property', 'og:title', 'content', details.pageTitle);
   html = replaceTagAttribute(html, 'meta', 'property', 'og:description', 'content', post.summary);
   html = replaceTagAttribute(html, 'meta', 'property', 'og:type', 'content', 'article');

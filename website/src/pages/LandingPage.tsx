@@ -390,7 +390,7 @@ export default function LandingPage() {
           </div>
           <div className="manager-teaser__app">
             <aside>
-              <strong>TN</strong>
+              <img alt="Threadnote" className="manager-teaser__brand" src={siteHref('threadnote-logo.svg')} />
               <span className="is-active">Graph</span>
               <span>Memory</span>
               <span>Shares</span>

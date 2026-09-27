@@ -61,7 +61,7 @@ export function renderDocsArticleHtml(
   let html = template;
   html = replaceTagAttribute(html, 'meta', 'name', 'description', 'content', article.summary);
   html = replaceTagAttribute(html, 'link', 'rel', 'canonical', 'href', canonicalUrl);
-  html = replaceTagAttribute(html, 'link', 'rel', 'icon', 'href', '../../threadnote-logo.svg');
+  html = replaceTagAttribute(html, 'link', 'rel', 'icon', 'href', '../../favicon.svg');
   html = replaceTagAttribute(html, 'meta', 'property', 'og:title', 'content', pageTitle);
   html = replaceTagAttribute(html, 'meta', 'property', 'og:description', 'content', article.summary);
   html = replaceTagAttribute(html, 'meta', 'property', 'og:type', 'content', 'article');

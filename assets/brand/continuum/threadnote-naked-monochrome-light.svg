@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Threadnote">
+  <title>Threadnote Continuum</title>
+  <desc>A continuous t and n with an extended tail. naked, monochrome / light.</desc>
+  <g fill="#182124">
+  <g transform="translate(128 128) scale(.86) translate(-134 -128)" fill="none" stroke="#182124" stroke-width="36" stroke-linejoin="round" stroke-linecap="butt">
+  <path d="M70 40V162C70 184 84 196 102 196S134 184 134 162V156C134 132 148 116 166 116S198 132 198 156V184Q198 194 208 194H238M30 96H110"/>
+  </g>
+  </g>
+</svg>
