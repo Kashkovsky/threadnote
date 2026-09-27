@@ -2933,7 +2933,12 @@ describe('Threadnote MCP toolsets', () => {
         while (Date.now() < deadline) {
           const candidate = await client.callTool(
             {
-              arguments: {callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
+              arguments: {
+                callerCwd: repository,
+                operation: 'query',
+                query: 'coldGraphSymbol',
+                responseFormat: 'dual',
+              },
               name: 'inspect_code_graph',
             },
             undefined,
@@ -2967,6 +2972,7 @@ describe('Threadnote MCP toolsets', () => {
               callerCwd: repository,
               operation: 'query',
               query: 'coldGraphSymbol',
+              responseFormat: 'dual',
             },
             name: 'inspect_code_graph',
           },
@@ -3091,7 +3097,12 @@ describe('Threadnote MCP toolsets', () => {
 
           const dirtyStale = await client.callTool(
             {
-              arguments: {callerCwd: repository, operation: 'query', query: 'indexedBeforePull'},
+              arguments: {
+                callerCwd: repository,
+                operation: 'query',
+                query: 'indexedBeforePull',
+                responseFormat: 'dual',
+              },
               name: 'inspect_code_graph',
             },
             undefined,
@@ -3284,7 +3295,12 @@ describe('Threadnote MCP toolsets', () => {
 
           const stale = await client.callTool(
             {
-              arguments: {callerCwd: repository, operation: 'query', query: 'indexedBeforePull'},
+              arguments: {
+                callerCwd: repository,
+                operation: 'query',
+                query: 'indexedBeforePull',
+                responseFormat: 'dual',
+              },
               name: 'inspect_code_graph',
             },
             undefined,
@@ -3336,6 +3352,7 @@ describe('Threadnote MCP toolsets', () => {
               callerCwd: repository,
               codeRefs: ['src/index.ts'],
               project: 'threadnote',
+              responseFormat: 'dual',
               task: 'Recover the automatically finalized deferred memory backlink.',
             },
             name: 'context_brief',
@@ -3372,6 +3389,7 @@ describe('Threadnote MCP toolsets', () => {
               ],
               mode: 'locate',
               project: 'threadnote',
+              responseFormat: 'dual',
               task: 'Locate every recoveryContextBrief implementation and its attached memory contract.',
             },
             name: 'context_brief',
@@ -3491,7 +3509,12 @@ describe('Threadnote MCP toolsets', () => {
           const startedAt = Date.now();
           const borrowed = await client.callTool(
             {
-              arguments: {callerCwd: worktree, operation: 'query', query: 'sharedBeforeDivergence'},
+              arguments: {
+                callerCwd: worktree,
+                operation: 'query',
+                query: 'sharedBeforeDivergence',
+                responseFormat: 'dual',
+              },
               name: 'inspect_code_graph',
             },
             undefined,
@@ -3590,7 +3613,12 @@ describe('Threadnote MCP toolsets', () => {
           const attachedStartedAt = Date.now();
           const attached = await client.callTool(
             {
-              arguments: {callerCwd: worktree, operation: 'query', query: repositoryFixture.before},
+              arguments: {
+                callerCwd: worktree,
+                operation: 'query',
+                query: repositoryFixture.before,
+                responseFormat: 'dual',
+              },
               name: 'inspect_code_graph',
             },
             undefined,
@@ -3614,7 +3642,12 @@ describe('Threadnote MCP toolsets', () => {
           const editedStartedAt = Date.now();
           const edited = await client.callTool(
             {
-              arguments: {callerCwd: worktree, operation: 'query', query: repositoryFixture.before},
+              arguments: {
+                callerCwd: worktree,
+                operation: 'query',
+                query: repositoryFixture.before,
+                responseFormat: 'dual',
+              },
               name: 'inspect_code_graph',
             },
             undefined,
@@ -3685,7 +3718,12 @@ describe('Threadnote MCP toolsets', () => {
         expect(typeof firstSnapshotId).toBe('string');
         const hot = await client.callTool(
           {
-            arguments: {callerCwd: repository, operation: 'query', query: 'beforeSessionWatch'},
+            arguments: {
+              callerCwd: repository,
+              operation: 'query',
+              query: 'beforeSessionWatch',
+              responseFormat: 'dual',
+            },
             name: 'inspect_code_graph',
           },
           undefined,
@@ -3701,7 +3739,12 @@ describe('Threadnote MCP toolsets', () => {
         await new Promise(resolve => setTimeout(resolve, 500));
         const deferred = await client.callTool(
           {
-            arguments: {callerCwd: repository, operation: 'query', query: 'afterSessionWatch'},
+            arguments: {
+              callerCwd: repository,
+              operation: 'query',
+              query: 'afterSessionWatch',
+              responseFormat: 'dual',
+            },
             name: 'inspect_code_graph',
           },
           undefined,
@@ -3734,7 +3777,12 @@ describe('Threadnote MCP toolsets', () => {
 
         const removed = await client.callTool(
           {
-            arguments: {callerCwd: repository, operation: 'query', query: 'beforeSessionWatch'},
+            arguments: {
+              callerCwd: repository,
+              operation: 'query',
+              query: 'beforeSessionWatch',
+              responseFormat: 'dual',
+            },
             name: 'inspect_code_graph',
           },
           undefined,
