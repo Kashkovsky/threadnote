@@ -17,10 +17,92 @@ import {
   sortCodeGraphMaterializationSpoolSurfaces,
 } from '../../src/code_graph/materialization/spool.js';
 import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '../../src/code_graph/materialization/spool/surfaces.js';
+import {codeGraphPersistentCapacityDemand, evaluateCodeGraphDiskCapacity} from '../../src/code_graph/disk/capacity.js';
+import {
+  codeGraphSpoolSortCapacityBoundary,
+  observeCodeGraphSpoolSortCapacity,
+} from '../../src/code_graph/materialization/spool/capacity.js';
 import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from '../../src/code_graph/sqlite_statement.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 
 describe('code graph materialization spool', () => {
+  fcProp(
+    it,
+    'bounds sequential sorting by the largest surface regardless of order',
+    {
+      loads: FC.array(
+        FC.record({bytes: FC.integer({max: 1_000_000, min: 0}), rows: FC.integer({max: 10_000, min: 0})}),
+        {maxLength: CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length},
+      ),
+    },
+    ({loads}) => {
+      const boundary = codeGraphSpoolSortCapacityBoundary(loads);
+      expect(boundary.finalFactBytes).toBe(loads.reduce((maximum, load) => Math.max(maximum, load.bytes), 0));
+      expect(boundary.rowCount).toBe(loads.reduce((maximum, load) => Math.max(maximum, load.rows), 0));
+      expect(codeGraphSpoolSortCapacityBoundary([...loads].reverse())).toEqual(boundary);
+      for (const load of loads) {
+        expect(boundary.finalFactBytes).toBeGreaterThanOrEqual(load.bytes);
+        expect(boundary.rowCount).toBeGreaterThanOrEqual(load.rows);
+      }
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('observes only pending raw surface payload, including UTF-8 bytes', () => {
+    const database = new Database(':memory:', {strict: true});
+    try {
+      configureCodeGraphMaterializationSpoolDatabase(database);
+      initializeCodeGraphMaterializationSpoolDatabase(database, {
+        checkoutId: 'a'.repeat(64),
+        extractorSet: 'extractor-v1',
+        graphContentId: `cgc_${'b'.repeat(40)}`,
+        repositoryId: 'c'.repeat(64),
+        snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+      });
+      database.exec(`
+        INSERT INTO materialization_raw_reexports (source_path, local_name, target_path, imported_name)
+        VALUES ('src/é.ts', 'α', 'lib.ts', 'x')
+      `);
+      database.exec(`
+        INSERT INTO materialization_raw_symbol_terms (term, symbol_id, weight)
+        VALUES ('δ', 'symbol-1', 1.0), ('δ', 'symbol-2', 0.5)
+      `);
+      const boundary = observeCodeGraphSpoolSortCapacity(database);
+      expect(boundary).toEqual({
+        finalFactBytes: 26,
+        operation: 'sort persistent code graph materialization spool',
+        rowCount: 2,
+      });
+      sealCodeGraphMaterializationSpool(database, 0);
+      sortCodeGraphMaterializationSpoolSurfaces(database);
+      expect(observeCodeGraphSpoolSortCapacity(database)).toEqual({...boundary, finalFactBytes: 0, rowCount: 0});
+    } finally {
+      database.close();
+    }
+  });
+
+  it('admits a sequential sidecar sort when aggregate facts would falsely exceed available space', () => {
+    const gib = 1024 ** 3;
+    const loads = Array.from({length: 4}, () => ({bytes: 2 * gib, rows: 1_000_000}));
+    const capacity = (finalFactBytes: number) =>
+      evaluateCodeGraphDiskCapacity({
+        demand: codeGraphPersistentCapacityDemand({
+          boundary: {...codeGraphSpoolSortCapacityBoundary(loads), finalFactBytes},
+          lexicalFormatVersion: 1,
+          pageSize: 8192,
+          walAutoCheckpointPages: 1000,
+        }),
+        durableAvailableBytes: 50 * gib,
+        filesystemsShared: true,
+        freelistBytes: 0,
+        reservedDurableBytes: 0,
+        reservedTemporaryBytes: 0,
+        temporaryAvailableBytes: 50 * gib,
+      });
+    expect(capacity(codeGraphSpoolSortCapacityBoundary(loads).finalFactBytes).state).toBe('healthy');
+    expect(capacity(loads.reduce((sum, load) => sum + load.bytes, 0)).state).toBe('pressure');
+  });
+
   fcProp(
     it,
     'releases successful and failed prepared statements before strong close',

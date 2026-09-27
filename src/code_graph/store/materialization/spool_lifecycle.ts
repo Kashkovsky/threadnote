@@ -13,6 +13,7 @@ import {
   type CodeGraphMaterializationSpoolHeader,
 } from '../../materialization/spool.js';
 import {codeGraphMaterializationSpoolApplyPlan} from '../../materialization/spool/apply_surfaces.js';
+import {observeCodeGraphSpoolSortCapacity} from '../../materialization/spool/capacity.js';
 import {
   appendCodeGraphMaterializationSpoolFactBatch,
   prepareCodeGraphMaterializationSpoolFactBatch,
@@ -42,7 +43,6 @@ import {partitionPersistedReferenceEdges} from '../resolution/core.js';
 import {persistedFullBatchFingerprint} from '../staging_core.js';
 import type {CodeGraphStoreRuntime} from '../runtime.js';
 import {classifyCodeGraphStoreFailure} from '../failure.js';
-import {codeGraphSqliteGet} from '../../sqlite_statement.js';
 import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError, type CodeGraphStoreFailure} from '../../types.js';
 
 interface PersistentSpoolSnapshotRow {
@@ -166,19 +166,7 @@ export const preparePersistentMaterializationSpool = Effect.fn('codeGraph.prepar
       Effect.gen(function* () {
         const sortBoundary = yield* usePersistentSpool(runtime, header, context, database => {
           sealCodeGraphMaterializationSpool(database, expectedBatchCount);
-          const totals = codeGraphSqliteGet<{
-            readonly fact_bytes: number | bigint;
-            readonly row_count: number | bigint;
-          }>(
-            database,
-            'SELECT COALESCE(SUM(fact_bytes), 0) AS fact_bytes, COALESCE(SUM(row_count), 0) AS row_count FROM materialization_spool_batches',
-          );
-          if (totals === null) throw CodeGraphStoreError.of('Persistent materialization spool totals are missing.');
-          return {
-            finalFactBytes: Number(totals.fact_bytes),
-            operation: 'sort persistent code graph materialization spool',
-            rowCount: Number(totals.row_count),
-          } satisfies CodeGraphDirectPersistentCapacityBoundary;
+          return observeCodeGraphSpoolSortCapacity(database);
         });
         return yield* protect(
           sortBoundary,

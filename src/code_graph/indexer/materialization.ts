@@ -989,7 +989,10 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
       ? (codeGraphDiskReservationFilesystemKey(input.protection.system.platform, durableFilesystem.value) ??
         'durable-filesystem-unknown')
       : 'durable-filesystem-unknown',
-    freelistBytes: pageStorage?.reclaimableBytes ?? 0,
+    freelistBytes:
+      input.boundary.operation === 'sort persistent code graph materialization spool'
+        ? 0
+        : (pageStorage?.reclaimableBytes ?? 0),
     temporaryAvailableBytes,
     temporaryFilesystemKey: Option.isSome(temporaryFilesystem)
       ? (codeGraphDiskReservationFilesystemKey(input.protection.system.platform, temporaryFilesystem.value) ??
