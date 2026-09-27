@@ -3378,15 +3378,16 @@ describe('Threadnote MCP toolsets', () => {
           selectionBasis: 'code-citation',
           uri: expect.stringMatching(/^threadnote:\/\/memory\/tn_[a-z0-9_-]+$/u),
         });
+        const recoveryCodeRefs = [
+          'src/index.ts',
+          ...Array.from({length: 7}, (_, index) => `src/context-brief-recovery-${index}.ts`),
+        ];
         const boundedRecovery = await client.callTool(
           {
             arguments: {
               budgetTokens: 1_500,
               callerCwd: repository,
-              codeRefs: [
-                'src/index.ts',
-                ...Array.from({length: 7}, (_, index) => `src/context-brief-recovery-${index}.ts`),
-              ],
+              codeRefs: recoveryCodeRefs,
               mode: 'locate',
               project: 'threadnote',
               responseFormat: 'dual',
@@ -3424,6 +3425,37 @@ describe('Threadnote MCP toolsets', () => {
           Buffer.byteLength(JSON.stringify(boundedRecovery.structuredContent)) +
             Buffer.byteLength(boundedRecoveryText ?? ''),
         ).toBeLessThanOrEqual(1_500 * 3);
+        const compactFloor = await client.callTool(
+          {
+            arguments: {
+              budgetTokens: 800,
+              callerCwd: repository,
+              codeRefs: recoveryCodeRefs,
+              mode: 'locate',
+              project: 'threadnote',
+              responseFormat: 'agent',
+              task: 'Locate every recoveryContextBrief implementation and its attached memory contract.',
+            },
+            name: 'context_brief',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(compactFloor.isError, JSON.stringify(compactFloor)).not.toBe(true);
+        expect(compactFloor.structuredContent).toBeUndefined();
+        const compactFloorText = (
+          (Array.isArray(compactFloor.content) ? compactFloor.content[0] : undefined) as TextContent | undefined
+        )?.text;
+        const compactFloorView = parseContextBriefAgentViewText(compactFloorText ?? '');
+        const compactFloorCard = compactFloorView.graph?.cards?.[0];
+        const compactFloorRecovery = compactFloorView.recommendedFollowUps?.[0];
+        expect(compactFloorCard).toMatchObject({ref: expect.stringMatching(/^cgs_/u)});
+        expect(compactFloorRecovery).toMatchObject({
+          operation: 'inspect-node',
+          rank: 0,
+          ref: compactFloorCard?.ref,
+        });
+        expect(Buffer.byteLength(compactFloorText ?? '')).toBeLessThanOrEqual(800 * 3);
         const idempotent = await client.callTool(
           {arguments: {uri: citationUri}, name: 'finalize_code_refs'},
           undefined,

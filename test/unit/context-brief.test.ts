@@ -467,12 +467,25 @@ describe('Context Brief compiler', () => {
     () =>
       Effect.gen(function* () {
         for (const mode of ['trace', 'impact'] as const) {
-          const minimum = yield* compileCodeLinkedRecoveryFixture(24, 1, 800, {contractCount: 64, mode});
+          const minimum = yield* compileCodeLinkedRecoveryFixture(24, 1, 800, {
+            contractCount: 64,
+            mode,
+            responseFormat: 'agent',
+          });
           const result = yield* compileCodeLinkedRecoveryFixture(24, 1, 1_500, {contractCount: 64, mode});
           const brief = result.structuredContent;
           const agentView = parseContextBriefAgentViewText(result.text);
 
           expect(minimum.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+          expect(minimum.structuredContent.graph.cards[0]).toMatchObject({
+            id: 'recovery-card-0',
+            ref: recoveryGraphCardRef(0),
+          });
+          expect(minimum.structuredContent.graph.contracts[0]).toMatchObject({
+            id: 'recovery-contract-0',
+            sourceRef: recoveryGraphCardRef(1),
+            targetRef: recoveryGraphCardRef(0),
+          });
           expect(minimum.structuredContent.recommendedFollowUps[0]).toMatchObject({
             operation: 'inspect-node',
             rank: 0,
@@ -2090,6 +2103,30 @@ describe('Context Brief compiler', () => {
     }),
   );
 
+  effectIt.effect('keeps primary graph evidence beside its recovery action at the agent budget floor', () =>
+    Effect.gen(function* () {
+      const result = yield* compileTaskOnlyMixedCitationFixture(800, {
+        mode: 'locate',
+        responseFormat: 'agent',
+        validationStatus: 'changed',
+      });
+      const brief = result.structuredContent;
+      const agentView = parseContextBriefAgentViewText(result.text);
+      const primaryCard = brief.graph.cards[0];
+      const recovery = brief.recommendedFollowUps[0];
+
+      expect(primaryCard).toMatchObject({rank: 0, ref: recoveryGraphCardRef(0)});
+      expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: primaryCard.ref});
+      expect(agentView.graph?.cards?.[0]).toMatchObject({
+        path: primaryCard.symbol.path,
+        qualifiedName: primaryCard.symbol.qualifiedName,
+        ref: primaryCard.ref,
+      });
+      expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
+      expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+    }),
+  );
+
   fcEffectProp(
     effectIt,
     'does not let citation metadata on a lower-ranked lexical candidate evict the uncited memory prefix',
@@ -2139,6 +2176,33 @@ describe('Context Brief compiler', () => {
         expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: recoveryGraphCardRef(0)});
         expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
         expect(agentView.graph?.continuation).toEqual(brief.graph.continuation);
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
+      }),
+    {fastCheck: {numRuns: 30}},
+  );
+
+  fcEffectProp(
+    effectIt,
+    'keeps actionable primary graph evidence in agent responses at every accepted budget',
+    {
+      budget: fc.integer({min: 800, max: 1_500}),
+      cardCount: fc.integer({min: 12, max: 16}),
+      memoryCount: fc.integer({min: 1, max: 8}),
+    },
+    ({budget, cardCount, memoryCount}) =>
+      Effect.gen(function* () {
+        const result = yield* compileCodeLinkedRecoveryFixture(cardCount, memoryCount, budget, {
+          responseFormat: 'agent',
+        });
+        const brief = result.structuredContent;
+        const recovery = brief.recommendedFollowUps[0];
+        const primaryCard = brief.graph.cards[0];
+        const agentView = parseContextBriefAgentViewText(result.text);
+
+        expect(primaryCard).toMatchObject({rank: 0, ref: recoveryGraphCardRef(0)});
+        expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: primaryCard.ref});
+        expect(agentView.graph?.cards?.[0]?.ref).toBe(primaryCard.ref);
+        expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
         expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
       }),
     {fastCheck: {numRuns: 30}},
@@ -2492,6 +2556,8 @@ function compileTaskOnlyMixedCitationFixture(
   budget: number,
   options: {
     readonly excerptLength?: number;
+    readonly mode?: 'brief' | 'locate';
+    readonly responseFormat?: 'agent';
     readonly validationStatus?: 'changed' | 'exact';
   } = {},
 ) {
@@ -2604,7 +2670,12 @@ function compileTaskOnlyMixedCitationFixture(
           },
         }),
     },
-    {...request(budget), task: 'Coordinate the Threadnote 5.0 release.'},
+    {
+      ...request(budget),
+      ...(options.mode === undefined ? {} : {mode: options.mode}),
+      ...(options.responseFormat === undefined ? {} : {responseFormat: options.responseFormat}),
+      task: 'Coordinate the Threadnote 5.0 release.',
+    },
   );
 }
 

@@ -259,8 +259,13 @@ function projectContextBriefCore(
   logical = withStableMemoryIdentityGap(logical);
   const maximumBytes = projectionMaximumBytes(maximumEstimatedTokens);
   const items = projectionItems(logical);
-  const baseRequiredItems = [requiredCoverageGapItem(logical, items), requiredGraphRecoveryItem(logical, items)].filter(
-    (item): item is ProjectionItem => item !== undefined,
+  const graphRecoveryItem = requiredGraphRecoveryItem(logical, items);
+  const baseRequiredItems = uniqueProjectionItems(
+    [
+      requiredCoverageGapItem(logical, items),
+      ...requiredAgentGraphEvidenceItems(logical, items, responseFormat, graphRecoveryItem),
+      graphRecoveryItem,
+    ].filter((item): item is ProjectionItem => item !== undefined),
   );
   const fixedCore = requiredCodeLinkedEvidenceCore(logical, items, baseRequiredItems, responseFormat);
   const fixedProjection = renderProjection(
@@ -336,7 +341,7 @@ export function projectContextBriefAgentView(brief: ContextBriefV1): ContextBrie
     line: card.symbol.line,
     path: utf8Prefix(card.symbol.path, 96),
     qualifiedName: utf8Prefix(card.symbol.qualifiedName, 96),
-    reason: utf8Prefix(card.reason, 96),
+    reason: utf8Prefix(card.reason, 64),
     ref: card.ref,
     repositoryKey: card.repositoryKey,
   }));
@@ -1206,6 +1211,41 @@ function requiredCoverageGapItem(
 }
 
 /**
+ * Agent responses must keep the evidence named by their recovery action, not only the selector.
+ * Relationship modes also retain the highest-ranked direct contract for that primary card.
+ */
+function requiredAgentGraphEvidenceItems(
+  logical: ContextBriefLogicalResultV1,
+  items: readonly ProjectionItem[],
+  responseFormat: ContextBriefResponseFormat,
+  recoveryItem: ProjectionItem | undefined,
+): readonly ProjectionItem[] {
+  if (responseFormat !== 'agent') return [];
+  const recovery =
+    recoveryItem?.lane === 'follow-up'
+      ? logical.recommendedFollowUps.find(followUp => followUp.id === recoveryItem.id)
+      : undefined;
+  if (recovery?.operation === 'graph-status') return [];
+  const primaryCard =
+    recovery?.operation === 'inspect-node'
+      ? logical.graph.cards.find(card => card.ref === recovery.ref)
+      : [...logical.graph.cards].sort((left, right) => left.rank - right.rank || compareText(left.id, right.id))[0];
+  if (primaryCard === undefined) return [];
+  const cardItem = items.find(item => item.lane === 'graph-card' && item.id === primaryCard.id);
+  if (cardItem === undefined || (logical.mode !== 'trace' && logical.mode !== 'impact')) {
+    return cardItem === undefined ? [] : [cardItem];
+  }
+  const directContract = [...logical.graph.contracts]
+    .filter(contract => contract.sourceRef === primaryCard.ref || contract.targetRef === primaryCard.ref)
+    .sort((left, right) => left.rank - right.rank || compareText(left.id, right.id))[0];
+  const contractItem =
+    directContract === undefined
+      ? undefined
+      : items.find(item => item.lane === 'graph-contract' && item.id === directContract.id);
+  return contractItem === undefined ? [cardItem] : [cardItem, contractItem];
+}
+
+/**
  * A projected graph page that drops cards cannot expose its upstream cursor: doing so would skip
  * the omitted part of the current page. Reserve the planner's first exact card selector instead.
  * If the ready snapshot itself could not be read, reserve the bounded graph-status diagnostic.
@@ -1634,7 +1674,7 @@ function compactProjectedMemory(
       ...cohortMemory,
       ...compactActionCard,
       ...(cohortCodeRelations === undefined ? {} : {codeRelations: cohortCodeRelations}),
-      excerpt: memory.actionCard === undefined ? utf8Prefix(memory.excerpt, 96) : '',
+      excerpt: memory.actionCard === undefined ? utf8Prefix(memory.excerpt, 80) : '',
       uri: stableUri,
     };
   }
