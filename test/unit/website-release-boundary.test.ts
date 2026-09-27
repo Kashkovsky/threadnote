@@ -31,7 +31,7 @@ describe('website and standalone release boundary', () => {
     );
   });
 
-  it('uses one small-scale graph mark across README, website, and packaged Manager surfaces', async () => {
+  it('uses the approved Continuum mark across README, website, and packaged Manager surfaces', async () => {
     const canonicalPath = join(root, 'assets', 'brand', 'threadnote-logo.svg');
     const websitePath = join(root, 'website', 'public', 'threadnote-logo.svg');
     const [canonical, website, readme, brand, managerSource, managerUi, selfContainedCheck] = await Promise.all([
@@ -45,6 +45,14 @@ describe('website and standalone release boundary', () => {
     ]);
 
     expect(website).toBe(canonical);
+    const [favicon, circle] = await Promise.all([
+      readFile(join(root, 'website/public/favicon.svg'), 'utf8'),
+      readFile(join(root, 'assets/brand/continuum/threadnote-circle-brand-dark.svg'), 'utf8'),
+    ]);
+    expect(favicon).toBe(circle);
+    expect(favicon).toContain('<circle cx="128" cy="128" r="128" fill="#141b1e"/>');
+    expect(readme).toContain('(prefers-color-scheme: dark)');
+    expect(readme).toContain('threadnote-naked-brand-light.svg');
     expect(readme).toContain('./assets/brand/threadnote-logo.svg');
     expect(brand).toContain("siteHref('threadnote-logo.svg')");
     expect(brand).not.toContain('<svg');
@@ -53,29 +61,30 @@ describe('website and standalone release boundary', () => {
     expect(managerUi).toContain('src="/threadnote-logo.svg"');
     expect(selfContainedCheck).toContain('standalone build output does not contain the canonical Threadnote logo');
 
-    expect(canonical).toContain('viewBox="0 0 4267 4267"');
+    expect(canonical).toContain('viewBox="0 0 256 256"');
     expect(canonical).toContain('fill="#67e8c7"');
     expect(canonical).not.toContain('linearGradient');
     expect(canonical).not.toContain('stop-color=');
-    expect(canonical).not.toContain('stroke=');
+    expect(canonical).toContain('stroke="#67e8c7"');
+    expect(canonical).toContain('stroke-width="36"');
+    expect(canonical).toContain('translate(128 128) scale(.86) translate(-134 -128)');
     expect(canonical).not.toMatch(
       /<\?(?:xml)|<!DOCTYPE|<(?:circle|filter|foreignObject|image|rect|script|text)\b|(?:href|xlink:href)=/,
     );
     const markPaths = [...canonical.matchAll(/<path\b[^>]*\bd="([^"]+)"[^>]*\/>/g)].map(match => match[1]);
     expect(markPaths).toHaveLength(1);
-    expect(markPaths[0]).toMatch(/Z$/);
+    expect(markPaths[0]).toContain('H238M30 96H110');
     expect(
       createHash('sha256')
         .update(markPaths[0] ?? '')
         .digest('hex'),
-    ).toBe('51b0989e27705e2338a58272feb519ac2ce37a49dfe536932c1ab2ad882f7427');
+    ).toBe('18c5a6586497960a69da473e7ededade79525f43c33115a546c7c31042a6d648');
 
     for (const legacyPath of [
       join(root, 'docs', 'threadnote-logo.svg'),
       join(root, 'docs', 'threadnote-logo-inverted.svg'),
       join(root, 'manager', 'threadnote-logo.svg'),
       join(root, 'manager', 'threadnote-logo-inverted.svg'),
-      join(root, 'website', 'public', 'favicon.svg'),
     ]) {
       await expect(access(legacyPath)).rejects.toThrow();
     }
@@ -85,14 +94,15 @@ describe('website and standalone release boundary', () => {
       'performance/index.html',
       'performance/graphify/index.html',
       'docs/index.html',
+      'agents/index.html',
       'whats-new/index.html',
       'pro-tips/index.html',
       'manager-demo/index.html',
       'faq/index.html',
     ]) {
       const html = await readFile(join(root, 'website', entry), 'utf8');
-      expect(html).toContain('threadnote-logo.svg');
-      expect(html).not.toContain('favicon.svg');
+      expect(html).toMatch(/<link rel="icon" href="(?:\.\/|\.\.\/)+favicon\.svg"/);
+      expect(html).not.toMatch(/rel="icon"[^>]*threadnote-logo/);
     }
   });
 

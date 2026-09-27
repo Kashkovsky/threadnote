@@ -1921,18 +1921,11 @@ p {
   border-right: 1px solid #26303d;
 }
 
-.manager-teaser__app > aside strong {
-  display: grid;
-  width: 26px;
-  height: 26px;
+.manager-teaser__brand {
+  display: block;
+  width: 32px;
+  height: 32px;
   margin: 0 auto 18px;
-  color: var(--ink);
-  font:
-    var(--font-size-min)/1 'JetBrains Mono Variable',
-    monospace;
-  background: var(--teal);
-  border-radius: 5px;
-  place-items: center;
 }
 
 .manager-teaser__app > aside span {
