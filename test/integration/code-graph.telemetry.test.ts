@@ -136,16 +136,19 @@ describe('code graph terminal telemetry wiring', () => {
     }).pipe(provideTestLayer(harness.layer));
   });
 
-  effectIt.effect('keeps dual graph output by default and exposes exact JSON with responseFormat=text', () => {
+  effectIt.effect('defaults graph output to agent text and exposes exact JSON with explicit formats', () => {
     const harness = registeredTelemetryHarness(capturingTracer().tracer, () => {});
     return Effect.gen(function* () {
       const args = {callerCwd: TELEMETRY_REPOSITORY_ROOT, operation: 'query', query: 'fixture'};
-      const dual = yield* harness.inspect(args);
+      const agent = yield* harness.inspect(args);
+      const dual = yield* harness.inspect({...args, responseFormat: 'dual'});
       const text = yield* harness.inspect({...args, responseFormat: 'text'});
       const invalid = yield* harness.inspect({...args, responseFormat: 'unknown'});
       const defaultError = yield* harness.inspect({...args, callerCwd: 'relative'});
       const textError = yield* harness.inspect({...args, callerCwd: 'relative', responseFormat: 'text'});
 
+      expect(agent.isError).not.toBe(true);
+      expect(agent.structuredContent).toBeUndefined();
       expect(dual.isError).not.toBe(true);
       expect(text.isError).not.toBe(true);
       expect(invalid.isError).toBe(true);
