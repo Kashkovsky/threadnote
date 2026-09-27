@@ -73,6 +73,21 @@ describe('code graph materialization spool', () => {
         operation: 'sort persistent code graph materialization spool',
         rowCount: 2,
       });
+      codeGraphSqliteRun(
+        database,
+        'INSERT INTO materialization_raw_reexports (source_path, local_name, target_path, imported_name) VALUES (?, ?, ?, ?)',
+        "src/x'); DROP TABLE materialization_raw_symbol_terms; --",
+        'name',
+        'target',
+        'imported',
+      );
+      expect(observeCodeGraphSpoolSortCapacity(database).finalFactBytes).toBeGreaterThan(boundary.finalFactBytes);
+      expect(
+        codeGraphSqliteGet<{readonly count: number}>(
+          database,
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'materialization_raw_symbol_terms'",
+        ),
+      ).toEqual({count: 1});
       sealCodeGraphMaterializationSpool(database, 0);
       sortCodeGraphMaterializationSpoolSurfaces(database);
       expect(observeCodeGraphSpoolSortCapacity(database)).toEqual({...boundary, finalFactBytes: 0, rowCount: 0});
