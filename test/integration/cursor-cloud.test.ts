@@ -297,13 +297,18 @@ describe('Cursor Cloud integration', () => {
           }),
         ).resolves.toContain('team must match the share containing uri');
         const allSharesRecall = await client.callTool({
-          arguments: {callerCwd: process.cwd(), query: 'Durable contract'},
+          arguments: {callerCwd: process.cwd(), query: 'Durable contract', responseFormat: 'dual'},
           name: 'recall_context',
         });
         expect(JSON.stringify(allSharesRecall.structuredContent)).toContain('/shared/docs/');
         expect(JSON.stringify(allSharesRecall.structuredContent)).toContain('/shared/engineering/');
         const docsRecall = await client.callTool({
-          arguments: {callerCwd: process.cwd(), query: 'Durable contract', team: 'docs'},
+          arguments: {
+            callerCwd: process.cwd(),
+            query: 'Durable contract',
+            responseFormat: 'dual',
+            team: 'docs',
+          },
           name: 'recall_context',
         });
         expect(JSON.stringify(docsRecall.structuredContent)).toContain('/shared/docs/');

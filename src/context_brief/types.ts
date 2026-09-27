@@ -482,6 +482,8 @@ export interface ProjectedContextBriefV1 {
  */
 export interface ContextBriefAgentViewV1 {
   readonly activeHandoffs?: readonly ContextBriefAgentViewMemoryV1[];
+  /** Deterministic task-level synthesis over only the evidence retained in this agent view. */
+  readonly answer?: string;
   readonly briefVersion: ContextBriefResponseVersion;
   readonly coverage?: {
     readonly codeAnchors?: ContextBriefCodeAnchorCoverageV3;
@@ -617,14 +619,14 @@ export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV
   const codeRefs = parseContextBriefCodeRefs(object.codeRefs);
   const mode = object.mode === undefined ? 'brief' : contextBriefMode(object.mode);
   const responseFormat =
-    object.responseFormat === undefined ? 'dual' : contextBriefResponseFormat(object.responseFormat);
+    object.responseFormat === undefined ? 'agent' : contextBriefResponseFormat(object.responseFormat);
   const scope = parseScope(object.scope);
   const surface = object.surface === undefined ? undefined : boundedText(object.surface, 'surface', 128);
   return {
     budgetTokens,
     ...(codeRefs.length === 0 ? {} : {codeRefs}),
     mode,
-    ...(responseFormat === 'dual' ? {} : {responseFormat}),
+    ...(object.responseFormat === undefined ? {} : {responseFormat}),
     scope,
     ...(surface === undefined ? {} : {surface}),
     task,

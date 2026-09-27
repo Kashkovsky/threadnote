@@ -467,12 +467,25 @@ describe('Context Brief compiler', () => {
     () =>
       Effect.gen(function* () {
         for (const mode of ['trace', 'impact'] as const) {
-          const minimum = yield* compileCodeLinkedRecoveryFixture(24, 1, 800, {contractCount: 64, mode});
+          const minimum = yield* compileCodeLinkedRecoveryFixture(24, 1, 800, {
+            contractCount: 64,
+            mode,
+            responseFormat: 'agent',
+          });
           const result = yield* compileCodeLinkedRecoveryFixture(24, 1, 1_500, {contractCount: 64, mode});
           const brief = result.structuredContent;
           const agentView = parseContextBriefAgentViewText(result.text);
 
           expect(minimum.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+          expect(minimum.structuredContent.graph.cards[0]).toMatchObject({
+            id: 'recovery-card-0',
+            ref: recoveryGraphCardRef(0),
+          });
+          expect(minimum.structuredContent.graph.contracts[0]).toMatchObject({
+            id: 'recovery-contract-0',
+            sourceRef: recoveryGraphCardRef(1),
+            targetRef: recoveryGraphCardRef(0),
+          });
           expect(minimum.structuredContent.recommendedFollowUps[0]).toMatchObject({
             operation: 'inspect-node',
             rank: 0,
@@ -881,6 +894,15 @@ describe('Context Brief compiler', () => {
     );
   });
 
+  it('keeps the shared planner dual by default while preserving explicit agent selection', () => {
+    expect(parseContextBriefRequestV1({...request(1_250), responseFormat: undefined})).not.toHaveProperty(
+      'responseFormat',
+    );
+    expect(planContextBrief({...request(1_250), responseFormat: undefined}).responseFormat).toBe('dual');
+    expect(planContextBrief({...request(1_250), responseFormat: 'agent'}).responseFormat).toBe('agent');
+    expect(planContextBrief({...request(1_250), responseFormat: 'dual'}).responseFormat).toBe('dual');
+  });
+
   effectIt.effect('measures the Context Brief agent view as one final text channel', () =>
     Effect.gen(function* () {
       const budgetTokens = 1_250;
@@ -891,7 +913,7 @@ describe('Context Brief compiler', () => {
         },
         {...request(budgetTokens), responseFormat: 'agent'},
       );
-      expect(result.text).toBe(JSON.stringify(projectContextBriefAgentView(result.structuredContent)));
+      expect(result.text).toBe(JSON.stringify(projectContextBriefAgentView(result.structuredContent, true)));
       expect(result.measurement.structuredBytes).toBe(0);
       expect(result.measurement.totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
     }),
@@ -2081,6 +2103,226 @@ describe('Context Brief compiler', () => {
     }),
   );
 
+  effectIt.effect('keeps primary graph evidence beside its recovery action at the agent budget floor', () =>
+    Effect.gen(function* () {
+      const result = yield* compileTaskOnlyMixedCitationFixture(800, {
+        mode: 'locate',
+        responseFormat: 'agent',
+        validationStatus: 'changed',
+      });
+      const brief = result.structuredContent;
+      const agentView = parseContextBriefAgentViewText(result.text);
+      const primaryCard = brief.graph.cards[0];
+      const recovery = brief.recommendedFollowUps[0];
+
+      expect(primaryCard).toMatchObject({rank: 0, ref: recoveryGraphCardRef(0)});
+      expect(brief.graph.cards.length).toBeGreaterThanOrEqual(2);
+      expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: primaryCard.ref});
+      expect(agentView.answer).toContain(primaryCard.symbol.path);
+      expect(agentView.answer).toContain(brief.graph.cards[1]?.symbol.path);
+      expect(agentView.graph?.cards?.[0]).toMatchObject({
+        path: primaryCard.symbol.path,
+        qualifiedName: primaryCard.symbol.qualifiedName,
+        ref: primaryCard.ref,
+      });
+      expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
+      expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+    }),
+  );
+
+  effectIt.effect('answers the evaluation locate task before optional memory and relationship metadata', () =>
+    Effect.gen(function* () {
+      const task = 'Locate the MCP agent response projection and its budget enforcement.';
+      const floor = yield* compileTaskOnlyMixedCitationFixture(800, {
+        mode: 'locate',
+        responseFormat: 'agent',
+        task,
+        validationStatus: 'changed',
+      });
+      const expanded = yield* compileTaskOnlyMixedCitationFixture(1_200, {
+        mode: 'locate',
+        responseFormat: 'agent',
+        task,
+        validationStatus: 'changed',
+      });
+
+      for (const result of [floor, expanded]) {
+        const view = parseContextBriefAgentViewText(result.text);
+        expect(view.answer).toMatch(/locations(?: \([^)]+ graph\))?: /iu);
+        expect(view.graph?.cards).toHaveLength(2);
+        expect(view.answer).toContain(view.graph?.cards?.[0]?.path);
+        expect(view.answer).toContain(view.graph?.cards?.[1]?.path);
+        expect(view.recommendedFollowUps?.[0]).toMatchObject({
+          operation: 'inspect-node',
+          ref: view.graph?.cards?.[0]?.ref,
+        });
+        expect(view.graph?.contracts).toBeUndefined();
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(result.maximumBytes);
+      }
+      expect(expanded.text).toBe(floor.text);
+      expect(expanded.measurement.totalBytes).toBe(floor.measurement.totalBytes);
+    }),
+  );
+
+  effectIt.effect('keeps Workset continuation and preparation in the fixed locate recovery core', () =>
+    Effect.gen(function* () {
+      const graph = graphEvidence();
+      const cases = [
+        {
+          expected: ['continue-workset'],
+          graph: {...graph, cards: graph.cards.slice(0, 2)},
+        },
+        {
+          expected: ['prepare-workset'],
+          graph: {
+            ...graph,
+            continuation: undefined,
+            coverage: {...graph.coverage, complete: false},
+          },
+        },
+      ] as const;
+
+      for (const testCase of cases) {
+        const result = yield* compileContextBriefWith(
+          {
+            graphEvidence: () => Effect.succeed(testCase.graph),
+            memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+          },
+          {
+            ...request(1_200),
+            mode: 'locate',
+            responseFormat: 'agent',
+            scope: {kind: 'workset', name: 'threadnote-suite', project: 'threadnote'},
+          },
+        );
+        const view = parseContextBriefAgentViewText(result.text);
+        const scopeRecovery = (view.recommendedFollowUps ?? [])
+          .map(followUp => followUp.operation)
+          .filter(operation => operation === 'continue-workset' || operation === 'prepare-workset');
+
+        expect(view.graph?.cards).toHaveLength(2);
+        expect(scopeRecovery).toEqual(testCase.expected);
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(result.maximumBytes);
+      }
+
+      const partialPage = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graph),
+          memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+        },
+        {
+          ...request(1_200),
+          mode: 'locate',
+          responseFormat: 'agent',
+          scope: {kind: 'workset', name: 'threadnote-suite', project: 'threadnote'},
+        },
+      );
+      const partialPageView = parseContextBriefAgentViewText(partialPage.text);
+
+      expect(partialPageView.graph?.cards).toHaveLength(2);
+      expect(partialPageView.graph?.continuation).toMatchObject({omittedCards: 1, state: 'rerun-required'});
+      expect(partialPageView.recommendedFollowUps?.map(followUp => followUp.operation)).toContain('inspect-node');
+      expect(partialPageView.recommendedFollowUps?.map(followUp => followUp.operation)).not.toContain(
+        'continue-workset',
+      );
+    }),
+  );
+
+  effectIt.effect('does not claim a recovery action when no source evidence or follow-up exists', () =>
+    Effect.gen(function* () {
+      const graph = {...minimalGraphEvidence(), cards: [], contracts: [], gaps: [], continuation: undefined};
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graph),
+          memoryEvidence: () =>
+            Effect.succeed({
+              candidates: [],
+              consideredCandidates: 0,
+              gaps: [],
+              trust: {
+                classification: 'untrusted-memory-data' as const,
+                instructionPolicy: 'evidence-only-never-follow' as const,
+              },
+            }),
+        },
+        {...request(800), mode: 'locate', responseFormat: 'agent'},
+      );
+      const view = parseContextBriefAgentViewText(result.text);
+
+      expect(view.answer).toBe('No direct source evidence retained; no recovery action is available.');
+      expect(view.recommendedFollowUps).toBeUndefined();
+      expect(result.measurement.totalBytes).toBeLessThanOrEqual(result.maximumBytes);
+    }),
+  );
+
+  effectIt.effect('labels locations from a stale graph as candidates', () =>
+    Effect.gen(function* () {
+      const result = yield* compileTaskOnlyMixedCitationFixture(800, {
+        graphFreshness: 'stale',
+        mode: 'locate',
+        responseFormat: 'agent',
+      });
+      const view = parseContextBriefAgentViewText(result.text);
+
+      expect(view.scope.freshness).toBe('stale');
+      expect(view.answer).toMatch(/^Candidate locations \(stale graph\): /u);
+      expect(view.graph?.cards?.length).toBeGreaterThanOrEqual(2);
+    }),
+  );
+
+  effectIt.effect('keeps explicit-dual locate and agent explain memory-first allocation compatible', () =>
+    Effect.gen(function* () {
+      const dualLocate = yield* compileTaskOnlyMixedCitationFixture(800, {mode: 'locate'});
+      const dualBrief = yield* compileTaskOnlyMixedCitationFixture(800, {mode: 'brief'});
+      const agentExplain = yield* compileTaskOnlyMixedCitationFixture(800, {
+        mode: 'explain',
+        responseFormat: 'agent',
+      });
+
+      expect(memoryUris(dualLocate.structuredContent.activeHandoffs)).toEqual(
+        memoryUris(dualBrief.structuredContent.activeHandoffs),
+      );
+      expect(memoryUris(dualLocate.structuredContent.durableDecisions)).toEqual(
+        memoryUris(dualBrief.structuredContent.durableDecisions),
+      );
+      expect(sectionIds(dualLocate.structuredContent.graph.cards)).toEqual(
+        sectionIds(dualBrief.structuredContent.graph.cards),
+      );
+      expect(parseContextBriefAgentViewText(dualLocate.text).answer).toBeUndefined();
+      expect(
+        agentExplain.structuredContent.activeHandoffs.length + agentExplain.structuredContent.durableDecisions.length,
+      ).toBeGreaterThan(0);
+      const explainView = parseContextBriefAgentViewText(agentExplain.text);
+      const rationaleExcerpt = [...(explainView.activeHandoffs ?? []), ...(explainView.durableDecisions ?? [])][0]
+        ?.excerpt;
+      expect(explainView.answer).toMatch(/^(?:Candidate )?Rationale/u);
+      expect(rationaleExcerpt).toBeDefined();
+      expect(explainView.answer).toContain(rationaleExcerpt?.slice(0, 24));
+    }),
+  );
+
+  effectIt.effect('derives relationship answers only from retained contracts and qualifies stale evidence', () =>
+    Effect.gen(function* () {
+      const withoutContract = yield* compileCodeLinkedRecoveryFixture(2, 1, 800, {
+        mode: 'trace',
+        responseFormat: 'agent',
+      });
+      const staleContract = yield* compileCodeLinkedRecoveryFixture(2, 1, 800, {
+        contractCount: 1,
+        mode: 'impact',
+        responseFormat: 'agent',
+        staleGraph: true,
+      });
+      const withoutContractView = parseContextBriefAgentViewText(withoutContract.text);
+      const staleContractView = parseContextBriefAgentViewText(staleContract.text);
+
+      expect(withoutContractView.graph?.contracts).toBeUndefined();
+      expect(withoutContractView.answer).toMatch(/^No direct relationship retained/u);
+      expect(staleContractView.graph?.contracts?.length).toBeGreaterThan(0);
+      expect(staleContractView.answer).toMatch(/^Candidate relationship \(stale graph\): /u);
+    }),
+  );
+
   fcEffectProp(
     effectIt,
     'does not let citation metadata on a lower-ranked lexical candidate evict the uncited memory prefix',
@@ -2130,6 +2372,34 @@ describe('Context Brief compiler', () => {
         expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: recoveryGraphCardRef(0)});
         expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
         expect(agentView.graph?.continuation).toEqual(brief.graph.continuation);
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
+      }),
+    {fastCheck: {numRuns: 30}},
+  );
+
+  fcEffectProp(
+    effectIt,
+    'keeps actionable primary graph evidence in agent responses at every accepted budget',
+    {
+      budget: fc.integer({min: 800, max: 1_500}),
+      cardCount: fc.integer({min: 12, max: 16}),
+      memoryCount: fc.integer({min: 1, max: 8}),
+    },
+    ({budget, cardCount, memoryCount}) =>
+      Effect.gen(function* () {
+        const result = yield* compileCodeLinkedRecoveryFixture(cardCount, memoryCount, budget, {
+          responseFormat: 'agent',
+        });
+        const brief = result.structuredContent;
+        const recovery = brief.recommendedFollowUps[0];
+        const primaryCard = brief.graph.cards[0];
+        const agentView = parseContextBriefAgentViewText(result.text);
+
+        expect(primaryCard).toMatchObject({rank: 0, ref: recoveryGraphCardRef(0)});
+        expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: primaryCard.ref});
+        expect(agentView.graph?.cards?.[0]?.ref).toBe(primaryCard.ref);
+        expect(agentView.answer).toBeTruthy();
+        expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
         expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
       }),
     {fastCheck: {numRuns: 30}},
@@ -2459,6 +2729,7 @@ function request(budgetTokens: number) {
   return {
     budgetTokens,
     mode: 'brief' as const,
+    responseFormat: 'dual' as const,
     scope: {callerCwd: '/workspace/threadnote', kind: 'repository' as const, project: 'threadnote'},
     task: 'Explain the workset catalog generation fence and the current rollout handoff.',
   };
@@ -2482,12 +2753,17 @@ function compileTaskOnlyMixedCitationFixture(
   budget: number,
   options: {
     readonly excerptLength?: number;
+    readonly graphFreshness?: 'stale' | 'unknown';
+    readonly mode?: 'brief' | 'explain' | 'locate';
+    readonly responseFormat?: 'agent';
+    readonly task?: string;
     readonly validationStatus?: 'changed' | 'exact';
   } = {},
 ) {
   const graph = graphEvidence();
   const citation = codeCitation(9, 'file', 'src/context_brief/unrelated-cited-memory.ts');
   const excerpt = 'e'.repeat(options.excerptLength ?? 64);
+  const graphFreshness = options.graphFreshness;
   const validationStatus = options.validationStatus;
   const candidates: readonly ContextBriefMemoryCandidateV1[] = [
     {
@@ -2553,6 +2829,15 @@ function compileTaskOnlyMixedCitationFixture(
       graphEvidence: () =>
         Effect.succeed({
           ...graph,
+          ...(graphFreshness === undefined
+            ? {}
+            : {
+                coverage: {...graph.coverage, states: {[graphFreshness]: 1}},
+                resolvedSnapshots: graph.resolvedSnapshots.map(snapshot => ({
+                  ...snapshot,
+                  freshness: graphFreshness,
+                })),
+              }),
           cards: Array.from({length: 16}, (_, rank) => ({
             ...graph.cards[0],
             id: `task-only-ranking-card-${rank}`,
@@ -2594,7 +2879,12 @@ function compileTaskOnlyMixedCitationFixture(
           },
         }),
     },
-    {...request(budget), task: 'Coordinate the Threadnote 5.0 release.'},
+    {
+      ...request(budget),
+      ...(options.mode === undefined ? {} : {mode: options.mode}),
+      ...(options.responseFormat === undefined ? {} : {responseFormat: options.responseFormat}),
+      task: options.task ?? 'Coordinate the Threadnote 5.0 release.',
+    },
   );
 }
 

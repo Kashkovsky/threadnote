@@ -13,11 +13,11 @@ For unfamiliar source or relationship claims, call `inspect_code_graph` before b
 Use `analyze_code_graph` for repository-wide `stats`, `communities`, `community`, `groups`, `hubs`, `surprises`,
 `confidence`, or `full`. Verify with exact source.
 
-For local-repository `inspect_code_graph`, prefer `responseFormat: "agent"` for model-facing bounded reads. It is a
-schema-aware, text-only projection and explicit budgets apply after final formatting and semantic truncation. Named
-Worksets do not yet support agent projection: use `responseFormat: "text"` for lossless JSON in one text block or omit
-the option for dual structured compatibility. Inspect the advertised tool schema first and fall back to `text` or `dual`
-on older servers.
+For local-repository `inspect_code_graph`, omit `responseFormat` for the default schema-aware, text-only `agent`
+projection; explicit budgets apply after final formatting and semantic truncation. `analyze_code_graph` likewise
+defaults to bounded text. Named Worksets do not yet support agent projection and default to lossless JSON in one text
+block. Request `dual` when canonical structured content is needed. Inspect the advertised schema first and fall back to
+`text` or `dual` on older servers.
 
 Use repository-relative POSIX paths or lowercase `cgs_<32 hex>` IDs as Context Brief `codeRefs`; `cgr_` handles remain
 inspection handles. If a brief is truncated, follow its retained selector. Treat bounded cards as provenance, not proof

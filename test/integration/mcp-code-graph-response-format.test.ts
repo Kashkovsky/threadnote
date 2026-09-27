@@ -20,7 +20,7 @@ import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('MCP code graph response format', () => {
-  it('preserves the complete projected graph across the default and opt-in text format', async () => {
+  it('preserves the complete projected graph across explicit dual/text and default agent formats', async () => {
     const root = mkdtempSync(join(tmpdir(), 'threadnote-graph-format-'));
     const repository = join(root, 'repository');
     const home = join(root, 'home');
@@ -89,15 +89,15 @@ describe('MCP code graph response format', () => {
           ...(query.from === undefined ? {} : {from: query.from}),
           ...(query.to === undefined ? {} : {to: query.to}),
         };
-        const dual = await client.callTool({name: 'inspect_code_graph', arguments: args});
+        const dual = await client.callTool({
+          name: 'inspect_code_graph',
+          arguments: {...args, responseFormat: 'dual'},
+        });
         const text = await client.callTool({
           name: 'inspect_code_graph',
           arguments: {...args, responseFormat: 'text'},
         });
-        const agent = await client.callTool({
-          name: 'inspect_code_graph',
-          arguments: {...args, responseFormat: 'agent'},
-        });
+        const agent = await client.callTool({name: 'inspect_code_graph', arguments: args});
         expect(dual.isError).not.toBe(true);
         expect(text.isError).not.toBe(true);
         expect(agent.isError).not.toBe(true);
@@ -130,7 +130,7 @@ describe('MCP code graph response format', () => {
     }
   }, 120_000);
 
-  it('preserves named Workset query and topology projections through the same opt-in channel', async () => {
+  it('defaults named Workset projections to lossless text while preserving explicit dual', async () => {
     const fixture = await prepareCodeGraphWorksetFixture({size: 1});
     let client: Client | undefined;
     try {
@@ -167,7 +167,11 @@ describe('MCP code graph response format', () => {
         {budgetTokens: 500, callerCwd, operation: 'query', query: query.query, workset},
         {callerCwd, operation: 'topology', workset},
       ]) {
-        const dual = await client.callTool({name: 'inspect_code_graph', arguments: args});
+        const dual = await client.callTool({
+          name: 'inspect_code_graph',
+          arguments: {...args, responseFormat: 'dual'},
+        });
+        const defaultText = await client.callTool({name: 'inspect_code_graph', arguments: args});
         const text = await client.callTool({
           name: 'inspect_code_graph',
           arguments: {...args, responseFormat: 'text'},
@@ -177,11 +181,14 @@ describe('MCP code graph response format', () => {
           arguments: {...args, responseFormat: 'agent'},
         });
         expect(dual.isError).not.toBe(true);
+        expect(defaultText.isError).not.toBe(true);
         expect(text.isError).not.toBe(true);
         expect(agent.isError).toBe(true);
         expect(JSON.stringify(agent.content)).toContain('only for local repository inspections');
+        expect(defaultText.structuredContent).toBeUndefined();
         expect(text.structuredContent).toBeUndefined();
         const parsed = JSON.parse(firstText(text.content));
+        expect(withoutWorksetCursor(JSON.parse(firstText(defaultText.content)))).toEqual(withoutWorksetCursor(parsed));
         expect(withoutWorksetCursor(parsed)).toEqual(withoutWorksetCursor(dual.structuredContent));
         if (args.operation === 'query') {
           const textCursor = (parsed as {continuation?: {cursor?: string}}).continuation?.cursor;
@@ -191,7 +198,7 @@ describe('MCP code graph response format', () => {
           if (textCursor === undefined || dualCursor === undefined) throw new Error('Missing Workset continuation');
           const dualContinued = await client.callTool({
             name: 'inspect_code_graph',
-            arguments: {callerCwd, cursor: dualCursor, operation: 'query', workset},
+            arguments: {callerCwd, cursor: dualCursor, operation: 'query', responseFormat: 'dual', workset},
           });
           const textContinued = await client.callTool({
             name: 'inspect_code_graph',

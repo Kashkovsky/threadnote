@@ -333,6 +333,7 @@ describe('JSON MCP host configuration', () => {
                 THREADNOTE_MCP_TOOLSET: 'core',
                 THREADNOTE_USER: 'test-user',
               },
+              instructions: false,
               type: 'stdio',
             },
           },
