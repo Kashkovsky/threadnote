@@ -365,6 +365,8 @@ describe('code graph disk capacity properties', () => {
       retryable: false,
     });
     expect(failure.message).not.toMatch(/[\\/]/u);
+    expect(failure.message).toContain('Operation: protect code graph storage.');
+    expect(failure.message).toContain('durable filesystem: 30 required, 0 available bytes.');
     expect(failure.operation).not.toContain('/Users/private');
     expect(Object.keys(failure)).not.toContain('decision');
     expect(isNonResumableCodeGraphBuildFailure(failure)).toBe(true);
@@ -410,6 +412,8 @@ describe('code graph disk capacity properties', () => {
       retryable: true,
     });
     expect(failure.message).not.toMatch(/[\\/]/u);
+    expect(failure.message).toContain('Operation: protect code graph storage.');
+    expect(failure.message).toContain('Observation: available-space-unknown.');
     expect(isNonResumableCodeGraphBuildFailure(failure)).toBe(false);
     expect(isCodeGraphCapacityPause(failure)).toBe(true);
     expect(

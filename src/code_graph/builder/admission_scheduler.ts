@@ -48,10 +48,19 @@ export function selectCodeGraphBuilderAdmissionTickets<T extends CodeGraphBuilde
   activeCheckoutIds: readonly (string | undefined)[],
   nowMilliseconds: number,
 ): readonly T[] {
-  return orderCodeGraphBuilderAdmissionQueue(tickets, activeCheckoutIds, nowMilliseconds).slice(
-    0,
-    Math.max(0, CODE_GRAPH_BUILDER_HOME_CAPACITY - activeCheckoutIds.length),
-  );
+  const availableSlots = Math.max(0, CODE_GRAPH_BUILDER_HOME_CAPACITY - activeCheckoutIds.length);
+  const occupied = new Set(activeCheckoutIds.filter(id => id !== undefined));
+  const selected: T[] = [];
+  for (const ticket of orderCodeGraphBuilderAdmissionQueue(tickets, activeCheckoutIds, nowMilliseconds)) {
+    if (selected.length === availableSlots) break;
+    // Background worktrees of one checkout share a graph database. Avoid two
+    // large, speculative materializations competing for its filesystem.
+    if (ticket.admissionClass === 'background' && ticket.checkoutId !== undefined && occupied.has(ticket.checkoutId))
+      continue;
+    selected.push(ticket);
+    if (ticket.checkoutId !== undefined) occupied.add(ticket.checkoutId);
+  }
+  return selected;
 }
 
 /** Project an advisory total order from current occupancy; recompute it whenever a slot changes. */

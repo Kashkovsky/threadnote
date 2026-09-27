@@ -1041,9 +1041,12 @@ export class CodeGraphDiskCapacityObservationError extends Schema.TaggedError<Co
   readonly recovery = 'retry-read-only' as const;
   readonly retryable = true as const;
 
-  static of(): CodeGraphDiskCapacityObservationError {
+  static of(operation?: string, diagnostic?: string): CodeGraphDiskCapacityObservationError {
     return CodeGraphDiskCapacityObservationError.make({
-      message: 'Code graph storage capacity could not be observed; the bounded write was not started.',
+      message:
+        'Code graph storage capacity could not be observed; the bounded write was not started.' +
+        (operation === undefined ? '' : ` Operation: ${operation}.`) +
+        (diagnostic === undefined ? '' : ` ${diagnostic}`),
       operation: 'observe code graph storage capacity',
     });
   }
@@ -1060,9 +1063,12 @@ export class CodeGraphDiskCapacityPressureError extends Schema.TaggedError<CodeG
   readonly recovery = 'free-space' as const;
   readonly retryable = false as const;
 
-  static of(operation: string): CodeGraphDiskCapacityPressureError {
+  static of(operation: string, diagnostic?: string): CodeGraphDiskCapacityPressureError {
     return CodeGraphDiskCapacityPressureError.make({
-      message: 'Code graph storage capacity is insufficient; the bounded write was not started.',
+      message:
+        'Code graph storage capacity is insufficient; the bounded write was not started.' +
+        ` Operation: ${operation}.` +
+        (diagnostic === undefined ? '' : ` ${diagnostic}`),
       operation,
     });
   }

@@ -2,11 +2,12 @@ import {Crypto, Effect, Exit, FileSystem, Path, Schema} from 'effect';
 import {succeedUndefined} from '../../effect/optional.js';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {syncDirectoryBestEffort} from '../../effect/file/durability.js';
-import {withExclusiveFileLock} from '../../effect/file/lock.js';
+import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file/lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../../effect/system.js';
 import {
   CODE_GRAPH_DISK_RESERVATION_OPERATIONS,
   codeGraphDiskCapacityFailure,
+  codeGraphDiskCapacityDiagnostic,
   codeGraphDiskCapacityReservationProjection,
   codeGraphUtf8ByteLength,
   evaluateCodeGraphDiskCapacity,
@@ -111,12 +112,16 @@ class CodeGraphDiskReservationLedgerError extends Schema.TaggedError<CodeGraphDi
 class CodeGraphDiskReservationClaimControl extends Schema.TaggedError<CodeGraphDiskReservationClaimControl>()(
   'CodeGraphDiskReservationClaimControl',
   {
+    diagnostic: Schema.optionalKey(Schema.String),
     message: Schema.String,
     state: Schema.Literals(['physical-pressure', 'reservation-pressure', 'unknown']),
   },
 ) {
-  static of(state: 'physical-pressure' | 'reservation-pressure' | 'unknown'): CodeGraphDiskReservationClaimControl {
-    return CodeGraphDiskReservationClaimControl.make({message: state, state});
+  static of(
+    state: 'physical-pressure' | 'reservation-pressure' | 'unknown',
+    diagnostic?: string,
+  ): CodeGraphDiskReservationClaimControl {
+    return CodeGraphDiskReservationClaimControl.make({diagnostic, message: state, state});
   }
 }
 
@@ -220,7 +225,10 @@ export const acquireCodeGraphDiskReservation = Effect.fn('codeGraph.diskReservat
   let backoffIndex = 0;
   while (true) {
     const attempt = yield* claimAttempt(options, processStartIdentity).pipe(
-      Effect.orElseSucceed(() => ({state: 'unknown' as const})),
+      Effect.matchEffect({
+        onFailure: cause => Effect.succeed({diagnostic: claimFailureDiagnostic(cause), state: 'unknown' as const}),
+        onSuccess: Effect.succeed,
+      }),
     );
     if (attempt.state === 'claimed') return attempt.lease;
     if (attempt.state === 'unknown') {
@@ -231,6 +239,7 @@ export const acquireCodeGraphDiskReservation = Effect.fn('codeGraph.diskReservat
           state: 'unknown',
         },
         options.boundary.operation,
+        attempt.diagnostic,
       );
     }
     if (attempt.state === 'physical-pressure') {
@@ -238,12 +247,14 @@ export const acquireCodeGraphDiskReservation = Effect.fn('codeGraph.diskReservat
         return yield* codeGraphDiskCapacityFailure(
           {calibrationIdentity: 'disk-reservation-physical-pressure', filesystems: [], state: 'pressure'},
           options.boundary.operation,
+          attempt.diagnostic,
         );
       }
       if (maintenanceAttempted) {
         return yield* codeGraphDiskCapacityFailure(
           {calibrationIdentity: 'disk-reservation-physical-pressure', filesystems: [], state: 'pressure'},
           options.boundary.operation,
+          attempt.diagnostic,
         );
       }
       maintenanceAttempted = true;
@@ -265,6 +276,7 @@ export const acquireCodeGraphDiskReservation = Effect.fn('codeGraph.diskReservat
       return yield* codeGraphDiskCapacityFailure(
         {calibrationIdentity: 'disk-reservation-contention', filesystems: [], state: 'pressure'},
         options.boundary.operation,
+        attempt.diagnostic,
       );
     }
     if (!waitingReported) {
@@ -335,34 +347,45 @@ export function withCodeGraphDiskReservation<A, E, R, R2>(
       // publication, acquireUseRelease has already installed the finalizer.
       const attempted = yield* Effect.acquireUseRelease(
         claimAttempt(options, processStartIdentity).pipe(
-          Effect.orElseSucceed(() => ({state: 'unknown' as const})),
+          Effect.matchEffect({
+            onFailure: cause => Effect.succeed({diagnostic: claimFailureDiagnostic(cause), state: 'unknown' as const}),
+            onSuccess: Effect.succeed,
+          }),
           Effect.flatMap(attempt =>
             attempt.state === 'claimed'
               ? Effect.succeed(attempt.lease)
-              : Effect.fail(CodeGraphDiskReservationClaimControl.of(attempt.state)),
+              : Effect.fail(CodeGraphDiskReservationClaimControl.of(attempt.state, attempt.diagnostic)),
           ),
         ),
         () => transaction,
         lease => reservationFinalizer(options, lease),
       ).pipe(
         Effect.map(value => ({state: 'completed' as const, value})),
-        Effect.catchIf(Schema.is(CodeGraphDiskReservationClaimControl), error => Effect.succeed({state: error.state})),
+        Effect.catchIf(Schema.is(CodeGraphDiskReservationClaimControl), error =>
+          Effect.succeed({diagnostic: error.diagnostic, state: error.state}),
+        ),
       );
       if (attempted.state === 'completed') return attempted.value;
       if (attempted.state === 'unknown') {
-        return yield* unknownReservationFailure(options, 'disk-reservation-observation-unavailable');
+        return yield* unknownReservationFailure(
+          options,
+          'disk-reservation-observation-unavailable',
+          attempted.diagnostic,
+        );
       }
       if (attempted.state === 'physical-pressure') {
         if (options.claimMode === 'nonblocking-one-attempt') {
           return yield* codeGraphDiskCapacityFailure(
             {calibrationIdentity: 'disk-reservation-physical-pressure', filesystems: [], state: 'pressure'},
             options.boundary.operation,
+            attempted.diagnostic,
           );
         }
         if (maintenanceAttempted) {
           return yield* codeGraphDiskCapacityFailure(
             {calibrationIdentity: 'disk-reservation-physical-pressure', filesystems: [], state: 'pressure'},
             options.boundary.operation,
+            attempted.diagnostic,
           );
         }
         maintenanceAttempted = true;
@@ -375,6 +398,7 @@ export function withCodeGraphDiskReservation<A, E, R, R2>(
         return yield* codeGraphDiskCapacityFailure(
           {calibrationIdentity: 'disk-reservation-contention', filesystems: [], state: 'pressure'},
           options.boundary.operation,
+          attempted.diagnostic,
         );
       }
       if (!waitingReported) {
@@ -411,11 +435,24 @@ function reservationFinalizer<R>(options: CodeGraphDiskReservationOptions<R>, le
 function unknownReservationFailure(
   options: Pick<CodeGraphDiskReservationOptions<unknown>, 'boundary'>,
   calibrationIdentity: string,
+  diagnostic?: string,
 ) {
   return codeGraphDiskCapacityFailure(
     {calibrationIdentity, reason: 'reservation-input-unknown', state: 'unknown'},
     options.boundary.operation,
+    diagnostic,
   );
+}
+
+function claimFailureDiagnostic(cause: unknown): string {
+  if (
+    Schema.is(CodeGraphDiskReservationLedgerError)(cause) &&
+    cause.message === 'Disk reservation observation timed out.'
+  ) {
+    return 'Reservation observation timed out after 5 seconds.';
+  }
+  if (isFileLockTimeout(cause)) return 'Reservation ledger lock timed out.';
+  return 'Reservation claim failed before capacity was measured.';
 }
 
 function releaseCodeGraphDiskReservationWithRetry<R>(
@@ -468,8 +505,13 @@ const claimAttempt = Effect.fn('codeGraph.diskReservation.claimAttempt')(functio
         reservedTemporaryBytes: 0,
         temporaryAvailableBytes: observation.temporaryAvailableBytes,
       });
-      if (zero.state === 'unknown') return {state: 'unknown'} as const;
-      if (zero.state === 'pressure') return {state: 'physical-pressure'} as const;
+      if (zero.state === 'unknown')
+        return {diagnostic: codeGraphDiskCapacityDiagnostic(zero), state: 'unknown'} as const;
+      if (zero.state === 'pressure')
+        return {
+          diagnostic: `Physical capacity pressure. ${codeGraphDiskCapacityDiagnostic(zero)}`,
+          state: 'physical-pressure',
+        } as const;
 
       const reservedDurableBytes = snapshot.reservedByFilesystem.get(observation.durableFilesystemKey) ?? 0;
       const reservedTemporaryBytes = filesystemsShared
@@ -484,8 +526,13 @@ const claimAttempt = Effect.fn('codeGraph.diskReservation.claimAttempt')(functio
         reservedTemporaryBytes,
         temporaryAvailableBytes: observation.temporaryAvailableBytes,
       });
-      if (reserved.state === 'unknown') return {state: 'unknown'} as const;
-      if (reserved.state === 'pressure') return {state: 'reservation-pressure'} as const;
+      if (reserved.state === 'unknown')
+        return {diagnostic: codeGraphDiskCapacityDiagnostic(reserved), state: 'unknown'} as const;
+      if (reserved.state === 'pressure')
+        return {
+          diagnostic: `Concurrent reservation pressure. ${codeGraphDiskCapacityDiagnostic(reserved)}`,
+          state: 'reservation-pressure',
+        } as const;
 
       const projection = codeGraphDiskCapacityReservationProjection({
         demand: observation.demand,
@@ -494,7 +541,7 @@ const claimAttempt = Effect.fn('codeGraph.diskReservation.claimAttempt')(functio
         temporaryFilesystemKey: observation.temporaryFilesystemKey,
       });
       if (projection.state === 'unknown' || projection.filesystems.length < 1 || projection.filesystems.length > 2) {
-        return {state: 'unknown'} as const;
+        return {diagnostic: 'Reservation projection is unavailable.', state: 'unknown'} as const;
       }
       const token = sha256HexSync(`${system.processId}\0${yield* crypto.randomUUIDv4}`);
       const receipt: CodeGraphDiskReservationReceipt = {

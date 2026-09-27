@@ -540,10 +540,25 @@ export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput)
 export function codeGraphDiskCapacityFailure(
   decision: CodeGraphDiskCapacityDecision,
   operation: string,
+  diagnostic = codeGraphDiskCapacityDiagnostic(decision),
 ): CodeGraphDiskCapacityPressureError | CodeGraphDiskCapacityObservationError {
+  const safeOperation = capacityOperation(operation);
+  const detail = diagnostic.length > 0 ? diagnostic : undefined;
   return decision.state === 'pressure'
-    ? CodeGraphDiskCapacityPressureError.of(capacityOperation(operation))
-    : CodeGraphDiskCapacityObservationError.of();
+    ? CodeGraphDiskCapacityPressureError.of(safeOperation, detail)
+    : CodeGraphDiskCapacityObservationError.of(safeOperation, detail);
+}
+
+/** Path-free measurements retained in terminal build status for failed capacity checks. */
+export function codeGraphDiskCapacityDiagnostic(decision: CodeGraphDiskCapacityDecision): string {
+  if (decision.state === 'unknown') return `Observation: ${decision.reason}.`;
+  return decision.filesystems
+    .map(
+      filesystem =>
+        `${filesystem.role} filesystem: ${filesystem.requiredBytes} required, ` +
+        `${filesystem.availableBytes} available bytes.`,
+    )
+    .join(' ');
 }
 
 /** Only these typed failures preserve a deterministic persistent receipt prefix. */

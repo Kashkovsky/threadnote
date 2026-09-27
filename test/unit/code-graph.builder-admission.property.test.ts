@@ -75,6 +75,29 @@ describe('checkout-aware builder scheduler properties', () => {
     );
   });
 
+  it('keeps background builds for one checkout serial even when a home slot is free', () => {
+    const first = {admissionClass: 'background' as const, checkoutId: 'a', createdAt: 0, token: 'first'};
+    const second = {...first, createdAt: 1, token: 'second'};
+    const unrelated = {...first, checkoutId: 'b', createdAt: 2, token: 'unrelated'};
+    expect(select([first, second], [], 0)).toEqual([first]);
+    expect(select([first, second, unrelated], [], 0)).toEqual([first, unrelated]);
+    expect(select([first, second], ['a'], 0)).toEqual([]);
+    expect(select([first, {...second, admissionClass: 'current-required' as const}], [], 0)).toHaveLength(1);
+  });
+
+  it('never selects a background ticket for an occupied checkout', () => {
+    fc.assert(
+      fc.property(tickets, fc.array(fc.constantFrom('a', 'b', 'c'), {maxLength: capacity}), (input, active) => {
+        const occupied = new Set(active);
+        for (const ticket of select(input, active, aging * 2)) {
+          if (ticket.admissionClass === 'background') expect(occupied.has(ticket.checkoutId)).toBe(false);
+          occupied.add(ticket.checkoutId);
+        }
+      }),
+      {numRuns: 200},
+    );
+  });
+
   it('has a total FIFO order within each effective rank, including equal timestamp tokens', () => {
     fc.assert(
       fc.property(tickets, fc.integer({min: 0, max: aging * 3}), (input, now) => {

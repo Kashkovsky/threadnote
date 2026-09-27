@@ -269,6 +269,14 @@ describe('code graph disk reservation ledger', () => {
           expect(yield* Ref.get(maintenanceRuns)).toBe(1);
           yield* releaseCodeGraphDiskReservation(physical, lease);
 
+          const persistentPressure = reservationOptions(fixture, {
+            maintenance: Effect.void,
+            observe: Effect.succeed({...healthyObservation, durableAvailableBytes: 0, temporaryAvailableBytes: 0}),
+          });
+          const pressure = yield* Effect.flip(acquireCodeGraphDiskReservation(persistentPressure));
+          expect(pressure.message).toContain('Physical capacity pressure.');
+          expect(pressure.message).toContain('shared filesystem: 30 required, 0 available bytes.');
+
           const unknownMaintenanceRuns = yield* Ref.make(0);
           const unknown = reservationOptions(fixture, {
             maintenance: Ref.update(unknownMaintenanceRuns, count => count + 1),
@@ -284,6 +292,8 @@ describe('code graph disk reservation ledger', () => {
           const failed = yield* Effect.flip(acquireCodeGraphDiskReservation(unknown));
 
           expect(failed).toBeInstanceOf(CodeGraphDiskCapacityObservationError);
+          expect(failed.message).toContain('Operation: stage persistent code graph facts.');
+          expect(failed.message).toContain('Observation: page-storage-unknown.');
           expect(yield* Ref.get(unknownMaintenanceRuns)).toBe(0);
           expect(
             yield* FileSystem.FileSystem.pipe(Effect.flatMap(service => service.readDirectory(fixture.ledgerRoot))),
