@@ -1066,6 +1066,7 @@ describe('built self-contained distribution', () => {
             callerCwd: graphRepository,
             operation: 'query',
             query: 'exclusive file lock',
+            responseFormat: 'dual',
           },
           name: 'inspect_code_graph',
         },
@@ -1080,7 +1081,7 @@ describe('built self-contained distribution', () => {
       expect(JSON.stringify(graph.structuredContent)).toContain('withExclusiveFileLock');
       const graphAnalysis = await client.callTool(
         {
-          arguments: {callerCwd: graphRepository, operation: 'stats'},
+          arguments: {callerCwd: graphRepository, operation: 'stats', responseFormat: 'dual'},
           name: 'analyze_code_graph',
         },
         undefined,
