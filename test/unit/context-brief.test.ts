@@ -881,6 +881,15 @@ describe('Context Brief compiler', () => {
     );
   });
 
+  it('keeps the shared planner dual by default while preserving explicit agent selection', () => {
+    expect(parseContextBriefRequestV1({...request(1_250), responseFormat: undefined})).not.toHaveProperty(
+      'responseFormat',
+    );
+    expect(planContextBrief({...request(1_250), responseFormat: undefined}).responseFormat).toBe('dual');
+    expect(planContextBrief({...request(1_250), responseFormat: 'agent'}).responseFormat).toBe('agent');
+    expect(planContextBrief({...request(1_250), responseFormat: 'dual'}).responseFormat).toBe('dual');
+  });
+
   effectIt.effect('measures the Context Brief agent view as one final text channel', () =>
     Effect.gen(function* () {
       const budgetTokens = 1_250;
@@ -2459,6 +2468,7 @@ function request(budgetTokens: number) {
   return {
     budgetTokens,
     mode: 'brief' as const,
+    responseFormat: 'dual' as const,
     scope: {callerCwd: '/workspace/threadnote', kind: 'repository' as const, project: 'threadnote'},
     task: 'Explain the workset catalog generation fence and the current rollout handoff.',
   };

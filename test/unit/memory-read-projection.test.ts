@@ -13,11 +13,18 @@ import {
 } from '../../src/memory/read/projection.js';
 
 describe('complete memory read projection', () => {
-  it('keeps the dual-channel response as the compatibility default', () => {
-    const read = projectMemoryRead([
-      {text: '# Decision\nPreserve the citation.\n', uri: 'threadnote://test/decision.md'},
-    ]);
-    expect(memoryReadMcpStructuredContent(read)).toBe(read.structuredContent);
+  it('defaults to text-channel metadata while explicit dual preserves the body', () => {
+    fc.assert(
+      fc.property(fc.string({maxLength: 2_000}), text => {
+        const read = projectMemoryRead([{text, uri: 'threadnote://test/decision.md'}]);
+        const omitted = memoryReadMcpStructuredContent(read);
+        const explicitText = memoryReadMcpStructuredContent(read, 'text');
+        expect(omitted).toEqual(explicitText);
+        expect(omitted).not.toHaveProperty('content');
+        expect(memoryReadMcpStructuredContent(read, 'dual')).toBe(read.structuredContent);
+      }),
+      {numRuns: 50},
+    );
   });
 
   it('moves complete text into one authoritative channel without dropping read metadata', () => {

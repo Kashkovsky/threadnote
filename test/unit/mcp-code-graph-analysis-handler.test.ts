@@ -197,7 +197,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       ]) {
         const started = harness.awaitIsolatedInspectCall(harness.observation.isolatedInspectCalls + 1);
         const fiber = yield* harness
-          .invokeInspect({callerCwd: ready.identity.repoRoot, ...request})
+          .invokeInspect({callerCwd: ready.identity.repoRoot, responseFormat: 'dual', ...request})
           .pipe(Effect.forkChild({startImmediately: true}));
         yield* started;
         yield* TestClock.adjust('30 seconds');
@@ -261,6 +261,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         operation: 'query',
         project: 'web',
         query: 'value',
+        responseFormat: 'dual',
       });
 
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
@@ -325,6 +326,10 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       const result = yield* harness.invoke({callerCwd: ready.identity.repoRoot, operation: 'stats'});
 
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+      expect(result.content).toEqual([
+        expect.objectContaining({type: 'text', text: expect.stringContaining('Graph analysis:')}),
+      ]);
       expect(harness.observation.ensureOptions).toEqual([
         {
           cwd: ready.identity.repoRoot,
@@ -341,6 +346,22 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       expect(harness.observation.statusOptions[0]?.afterIdentityObserved).toEqual(expect.any(Function));
       expect(harness.observation.statusOptions[0]?.telemetry).toBeDefined();
       expect(harness.observation.attachOptions).toEqual([]);
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect('keeps canonical analysis structured content behind explicit dual format', () => {
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});
+
+    return Effect.gen(function* () {
+      const result = yield* harness.invoke({
+        callerCwd: ready.identity.repoRoot,
+        operation: 'stats',
+        responseFormat: 'dual',
+      });
+
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({operation: 'stats', type: 'code-graph-analysis'});
     }).pipe(provideTestLayer(harness.layer));
   });
 

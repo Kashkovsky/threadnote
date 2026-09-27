@@ -166,10 +166,10 @@ describe('agent instructions', () => {
     expect(normalizedGraph).toContain('`path` connects local');
     expect(normalizedGraph).toContain('qualified Workset endpoints');
     expect(normalizedGraph).toContain('local-repository `inspect_code_graph`');
-    expect(normalizedGraph).toContain('`responseFormat: "agent"`');
+    expect(normalizedGraph).toContain('omit `responseFormat` for the default schema-aware, text-only `agent`');
     expect(normalizedGraph).toContain('final formatting and semantic truncation');
-    expect(normalizedGraph).toContain('`responseFormat: "text"` for lossless JSON');
-    expect(normalizedGraph).toContain('dual structured compatibility');
+    expect(normalizedGraph).toContain('default to lossless JSON in one text block');
+    expect(normalizedGraph).toContain('Request `dual` when canonical structured content is needed');
     expect(normalizedGraph).toContain('Named Worksets do not yet support agent projection');
     for (const analysisOperation of [
       '`stats`',

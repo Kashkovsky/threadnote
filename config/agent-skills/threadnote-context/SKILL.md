@@ -13,8 +13,9 @@ current anchors are known. This is the normal Context Brief lifecycle. For memor
 `recall_context` with project and absolute `callerCwd`, then `read_context` every relevant `threadnote://` pointer before
 relying on it. Recall output is pointers, not evidence.
 
-For ordinary model-facing reads, request `responseFormat: "agent"`: it is the schema-aware text projection and its
-explicit budget applies after final formatting and semantic truncation. Use default `dual` when structured content is
+For ordinary model-facing reads, omit `responseFormat`: current servers default Context Brief and recall to the
+schema-aware `agent` text projection, and `read_context` to text plus non-duplicated structured metadata. Explicit
+budgets apply after final formatting and semantic truncation. Request `dual` when canonical structured content is
 needed. Inspect the tool schema and use dual on older servers that do not advertise agent format.
 
 Use `memoryRefs` and optional typed `relationTypes` for deliberate one-hop navigation; this is not recursive discovery.

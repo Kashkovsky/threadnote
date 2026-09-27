@@ -174,7 +174,7 @@ export function projectMemoryRead(
 
 export function memoryReadMcpStructuredContent(
   read: MemoryRead,
-  responseFormat: MemoryReadMcpResponseFormat = 'dual',
+  responseFormat: MemoryReadMcpResponseFormat = 'text',
 ): MemoryReadMcpStructuredContent {
   if (responseFormat === 'dual') return read.structuredContent;
   const {content: _content, version: _version, ...metadata} = read.structuredContent;

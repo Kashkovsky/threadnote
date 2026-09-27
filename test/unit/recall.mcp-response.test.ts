@@ -106,9 +106,72 @@ describe('recall MCP response projection', () => {
   });
 
   it('surfaces all normal-workflow feedback actions and distinguishes applied', () => {
-    const projected = projectRecallMcpResponse(logical([hit(1)]));
+    const projected = projectRecallMcpResponse(logical([hit(1)]), {responseFormat: 'dual'});
 
     expect(projected.text).toContain('recall_feedback useful|wrong|pin|dismiss|applied');
+  });
+
+  it('defaults to a deterministic text-only semantic agent projection', () => {
+    const firstHit = hit(1, {
+      rankReasons: [{code: 'exact_term_match', contribution: 0.18, detail: 'Quoted\tvalue\nwith \\ unicode: 🚀'}],
+      uri: 'threadnote://user/test/memories/durable/projects/threadnote/a path/🚀.md',
+    });
+    const response = {
+      ...seededNavigation([firstHit]),
+      memoryScope: {root: 'threadnote://shared/team/memories', type: 'threadnote-memory-scope', version: 1},
+      notices: ['A notice with a tab\tand newline\n'],
+      warnings: [lexicalIndexUnavailableWarning()],
+    };
+    const first = projectRecallMcpResponse(response, {explain: true});
+    const second = projectRecallMcpResponse(response, {explain: true});
+
+    expect(first).toEqual(second);
+    expect(first.responseFormat).toBe('agent');
+    expect(first.measurement.structuredBytes).toBe(0);
+    expect(first.text).toMatch(/^TN-RECALL\/1\n/);
+    expect(first.text).toContain(JSON.stringify(firstHit.uri));
+    expect(first.text).toContain('result\t1\t');
+    expect(first.text).toContain('connection\t1\t');
+    expect(first.text).toContain('premise\t1\t');
+    expect(first.text).toContain('memoryScope\t');
+    expect(first.text).toContain('confidence\t');
+    expect(first.text).toContain('nextAction\t');
+    expect(first.text).toContain('notice\t');
+    expect(first.text).toContain('warning\t');
+    expect(first.text).toContain('\\tvalue\\nwith');
+    expect(first.text).not.toContain('Quoted\tvalue\nwith');
+  });
+
+  it('keeps the legacy dual channels only when explicitly requested', () => {
+    const projected = projectRecallMcpResponse(logical([hit(1)]), {responseFormat: 'dual'});
+
+    expect(projected.responseFormat).toBe('dual');
+    expect(projected.measurement.structuredBytes).toBeGreaterThan(0);
+    expect(projected.text).toContain('Recall returned 1/1 unread pointer(s)');
+  });
+
+  it('retains at least as many ranked pointers as dual under the same transport budget', () => {
+    const response = logical(
+      Array.from({length: 30}, (_, index) =>
+        hit(index, {
+          rankReasons: [
+            {
+              code: 'exact_term_match',
+              contribution: 0.18,
+              detail: `Matched the requested implementation contract at rank ${index}`,
+            },
+          ],
+          uri: `threadnote://user/test/memories/durable/projects/threadnote/token-efficient-result-${index}.md`,
+        }),
+      ),
+    );
+    const agent = projectRecallMcpResponse(response, {budgetTokens: 1_500});
+    const dual = projectRecallMcpResponse(response, {budgetTokens: 1_500, responseFormat: 'dual'});
+
+    expect(agent.structuredContent.results.length).toBeGreaterThanOrEqual(dual.structuredContent.results.length);
+    expect(agent.measurement.totalBytes).toBeLessThan(dual.measurement.totalBytes);
+    expect(agent.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+    expect(dual.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
   });
 
   it('fits bounded notices, scope, and degraded-index guidance at the advertised minimum', () => {
@@ -143,7 +206,10 @@ describe('recall MCP response projection', () => {
 
   it('keeps degraded lexical state typed and visible when no pointer is available', () => {
     const warning = lexicalIndexUnavailableWarning();
-    const projected = projectRecallMcpResponse({...logical([]), warnings: [warning, warning]});
+    const projected = projectRecallMcpResponse(
+      {...logical([]), warnings: [warning, warning]},
+      {responseFormat: 'dual'},
+    );
 
     expect(projected.structuredContent.results).toEqual([]);
     expect(projected.structuredContent.warnings).toEqual([warning]);
@@ -153,7 +219,7 @@ describe('recall MCP response projection', () => {
   });
 
   it('returns a compact unread queue by default and restores ranking detail only with explain', () => {
-    const compact = projectRecallMcpResponse(logical([hit(1)]), {budgetTokens: 1_500});
+    const compact = projectRecallMcpResponse(logical([hit(1)]), {budgetTokens: 1_500, responseFormat: 'dual'});
 
     expect(compact.structuredContent.confidence?.basis).toBe('ranked-relevance');
     expect(compact.structuredContent).toMatchObject({
@@ -177,7 +243,11 @@ describe('recall MCP response projection', () => {
     expect(compact.structuredContent.results[0]).not.toHaveProperty('signals');
     expect(compact.text).toContain('Ranked pointers are not evidence');
 
-    const explained = projectRecallMcpResponse(logical([hit(1)]), {budgetTokens: 1_500, explain: true});
+    const explained = projectRecallMcpResponse(logical([hit(1)]), {
+      budgetTokens: 1_500,
+      explain: true,
+      responseFormat: 'dual',
+    });
     expect(explained.structuredContent.output).toMatchObject({explain: true, explainDetails: 'included'});
     expect(explained.structuredContent.queryExpansions).toEqual(['expanded query']);
     expect(explained.structuredContent.results[0]).toMatchObject({
@@ -248,7 +318,7 @@ describe('recall MCP response projection', () => {
           ],
         },
       },
-      {budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS},
+      {budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS, responseFormat: 'dual'},
     );
 
     expect(projected.structuredContent.memoryConnections).toMatchObject({
@@ -322,6 +392,9 @@ describe('recall MCP response projection', () => {
     );
     expect(first.structuredContent.memoryConnections?.coverage.premiseCount).toBe(
       first.structuredContent.memoryConnections?.premises.length,
+    );
+    expect(first.text).toContain(
+      'recovery\t"increase-budgetTokens-if-below-1500-or-narrow-memoryRefs-or-relationTypes"',
     );
   });
 
@@ -448,8 +521,8 @@ describe('recall MCP response projection', () => {
       uri: `threadnote://user/test/memories/durable/projects/threadnote/${'verified-connection-'.repeat(4)}.md`,
     });
     const response = seededNavigation([directHit]);
-    const narrow = projectRecallMcpResponse(response, {budgetTokens: 700});
-    const expanded = projectRecallMcpResponse(response, {budgetTokens: 1_000});
+    const narrow = projectRecallMcpResponse(response, {budgetTokens: 700, responseFormat: 'dual'});
+    const expanded = projectRecallMcpResponse(response, {budgetTokens: 1_000, responseFormat: 'dual'});
 
     expect(narrow.structuredContent.output).toMatchObject({budgetLimited: true, retryBudgetTokens: 1_500});
     expect(narrow.structuredContent.confidence).toMatchObject({basis: 'response-budget', level: 'low'});
@@ -479,7 +552,7 @@ describe('recall MCP response projection', () => {
         coverage: {...seeded.memoryConnections.coverage, connectionCount: 1, resultCount: 1},
       },
     };
-    const projected = projectRecallMcpResponse(response, {budgetTokens: 700});
+    const projected = projectRecallMcpResponse(response, {budgetTokens: 700, responseFormat: 'dual'});
 
     expect(projected.structuredContent.results.map(result => result.uri)).toEqual([topical.uri]);
     expect(projected.structuredContent.confidence).toMatchObject({basis: 'ranked-relevance', level: 'medium'});
@@ -506,7 +579,7 @@ describe('recall MCP response projection', () => {
             expect(output.budgetLimited).toBe(true);
             expect(memoryConnections?.coverage.resultCount).toBe(0);
             if (budgetTokens < 1_500) expect(output.retryBudgetTokens).toBe(1_500);
-            expect(projected.text).toContain('Verified one-hop navigation evidence omitted by the response budget.');
+            expect(projected.text).toContain('Verified one-hop navigation evidence omitted by response budget.');
           } else {
             expect(confidence?.basis).toBe('explicit-memory-connection');
             expect(memoryConnections?.coverage.resultCount).toBeGreaterThan(0);
@@ -845,5 +918,65 @@ describe('recall MCP response projection', () => {
       ),
       {numRuns: 100},
     );
+  });
+
+  it('keeps agent receipts UTF-8-safe, immutable, ranked, and monotonic across budgets', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.stringMatching(/^[a-z0-9-]{1,180}$/), {
+          minLength: 1,
+          maxLength: 30,
+          selector: value => value,
+        }),
+        segments => {
+          const results = segments.map((segment, index) =>
+            hit(index, {
+              rankReasons: [{code: 'exact_term_match', contribution: 0.18, detail: `Match ${segment}\t🚀\n${index}`}],
+              uri: `threadnote://user/test/memories/durable/projects/threadnote/${segment}.md`,
+            }),
+          );
+          const response = logical(results, ['notice\t🚀\nquoted "value"']);
+          const before = structuredClone(response);
+          const narrow = projectRecallMcpResponse(response, {budgetTokens: 700});
+          const expanded = projectRecallMcpResponse(response, {budgetTokens: 1_500});
+
+          expect(response).toEqual(before);
+          expect(narrow).toEqual(projectRecallMcpResponse(response, {budgetTokens: 700}));
+          expect(narrow.measurement.structuredBytes).toBe(0);
+          expect(expanded.measurement.structuredBytes).toBe(0);
+          expect(narrow.measurement.totalBytes).toBeLessThanOrEqual(700 * 3);
+          expect(expanded.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+
+          const narrowUris = narrow.structuredContent.results.map(result => result.uri);
+          const expandedUris = expanded.structuredContent.results.map(result => result.uri);
+          expect(narrowUris).toEqual(results.slice(0, narrowUris.length).map(result => result.uri));
+          expect(expandedUris).toEqual(results.slice(0, expandedUris.length).map(result => result.uri));
+          expect(expandedUris.slice(0, narrowUris.length)).toEqual(narrowUris);
+          expect(expandedUris.length).toBeGreaterThanOrEqual(narrowUris.length);
+
+          for (const row of expanded.text.trimEnd().split('\n')) {
+            const fields = row.split('\t');
+            if (fields[0] === 'result' || fields[0] === 'notice') {
+              expect(() => JSON.parse(fields.at(-1) ?? '')).not.toThrow();
+            }
+          }
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
+  it('renders recovery as a JSON-safe agent row when a budget omits ranked pointers', () => {
+    const projected = projectRecallMcpResponse(
+      seededNavigation([
+        hit(1, {
+          uri: `threadnote://user/test/memories/durable/projects/threadnote/${'long-uri-segment-'.repeat(250)}.md`,
+        }),
+      ]),
+      {budgetTokens: 700},
+    );
+
+    expect(projected.structuredContent.output.budgetLimited).toBe(true);
+    expect(projected.text).toContain('recovery\t"retry-recall-context-with-budgetTokens-1500"');
   });
 });

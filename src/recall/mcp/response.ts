@@ -54,11 +54,16 @@ export interface RecallMcpConfidence extends RecallConfidence {
 export interface RecallMcpResponseProjectionOptions {
   readonly budgetTokens?: number;
   readonly explain?: boolean;
+  /** Agent mode omits the duplicate structured channel and budgets the semantic text receipt alone. */
+  readonly responseFormat?: RecallMcpResponseFormat;
 }
+
+export type RecallMcpResponseFormat = 'dual' | 'agent';
 
 export interface ProjectedRecallMcpResponse {
   readonly maximumBytes: number;
   readonly measurement: AgentToolResponseMeasurement;
+  readonly responseFormat: RecallMcpResponseFormat;
   readonly structuredContent: RecallMcpStructuredContent;
   readonly text: string;
 }
@@ -138,6 +143,7 @@ export function projectRecallMcpResponse(
       `Recall response budget must be an integer from ${RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS} to ${RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS}.`,
     );
   }
+  const responseFormat = options.responseFormat ?? 'agent';
   const maximumBytes = budgetTokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;
   const projectionMaximumBytes = Math.max(1, maximumBytes - POST_PROJECTION_NOTICE_RESERVE_BYTES);
   const explain = options.explain === true;
@@ -168,8 +174,8 @@ export function projectRecallMcpResponse(
           includeExplainDetails,
           limits,
         );
-        const text = renderRecallMcpText(structuredContent, notices);
-        const measurement = measureAgentToolResponse({structuredContent, text});
+        const text = renderRecallMcpTextForFormat(structuredContent, notices, responseFormat);
+        const measurement = measureRecallMcpResponse(structuredContent, text, responseFormat);
         minimumBytes = Math.min(minimumBytes, measurement.totalBytes);
         if (measurement.totalBytes <= projectionMaximumBytes) selected = {measurement, structuredContent};
       }
@@ -179,9 +185,28 @@ export function projectRecallMcpResponse(
   return {
     maximumBytes,
     measurement: selected.measurement,
+    responseFormat,
     structuredContent: selected.structuredContent,
-    text: renderRecallMcpText(selected.structuredContent, notices),
+    text: renderRecallMcpTextForFormat(selected.structuredContent, notices, responseFormat),
   };
+}
+
+function measureRecallMcpResponse(
+  structuredContent: RecallMcpStructuredContent,
+  text: string,
+  responseFormat: RecallMcpResponseFormat,
+): AgentToolResponseMeasurement {
+  return measureAgentToolResponse(responseFormat === 'agent' ? {text} : {structuredContent, text});
+}
+
+function renderRecallMcpTextForFormat(
+  response: RecallMcpStructuredContent,
+  notices: readonly string[],
+  responseFormat: RecallMcpResponseFormat,
+): string {
+  return responseFormat === 'agent'
+    ? renderRecallMcpAgentText(response, notices)
+    : renderRecallMcpText(response, notices);
 }
 
 export function renderRecallMcpText(response: RecallMcpStructuredContent, notices: readonly string[] = []): string {
@@ -210,6 +235,51 @@ export function renderRecallMcpText(response: RecallMcpStructuredContent, notice
     ...(response.warnings ?? []).map(renderRecallOperationalWarning),
     ...notices,
   ].join('\n');
+}
+
+/** A deterministic, text-only recall receipt. Every value is JSON encoded so tabs,
+ * newlines, and nested records cannot alter its row grammar. */
+export function renderRecallMcpAgentText(
+  response: RecallMcpStructuredContent,
+  notices: readonly string[] = [],
+): string {
+  const scalar = (value: unknown) => JSON.stringify(value);
+  const lines = ['TN-RECALL/1', 'evidence\t"unread-pointers-not-evidence;read-with-read_context"'];
+  for (const key of ['rankerVersion', 'confidence', 'memoryScope', 'nextAction'] as const) {
+    if (response[key] !== undefined) lines.push(`${key}\t${scalar(response[key])}`);
+  }
+  lines.push(`output\t${scalar(response.output)}`);
+  for (const [index, result] of response.results.entries()) {
+    lines.push(`result\t${index + 1}\t${scalar(result)}`);
+  }
+  if (response.results.length > 0) lines.push('feedback\t"recall_feedback useful|wrong|pin|dismiss|applied"');
+  if (response.memoryConnections !== undefined) {
+    lines.push(`coverage\t${scalar(response.memoryConnections.coverage)}`);
+    for (const [index, connection] of response.memoryConnections.connections.entries()) {
+      lines.push(`connection\t${index + 1}\t${scalar(connection)}`);
+    }
+    for (const [index, premise] of response.memoryConnections.premises.entries()) {
+      lines.push(`premise\t${index + 1}\t${scalar(premise)}`);
+    }
+  }
+  if (response.queryExpansions !== undefined) lines.push(`queryExpansions\t${scalar(response.queryExpansions)}`);
+  for (const warning of response.warnings ?? []) lines.push(`warning\t${scalar(warning)}`);
+  for (const notice of notices) lines.push(`notice\t${scalar(notice)}`);
+  if (response.memoryConnections?.coverage.truncated === true) {
+    lines.push('recovery\t"increase-budgetTokens-if-below-1500-or-narrow-memoryRefs-or-relationTypes"');
+  }
+  if (response.output.truncated || response.output.budgetLimited) {
+    lines.push(
+      `recovery\t${scalar(
+        response.output.budgetLimited
+          ? response.output.retryBudgetTokens === undefined
+            ? 'narrow-recall-inputs-and-retry'
+            : `retry-recall-context-with-budgetTokens-${response.output.retryBudgetTokens}`
+          : 'increase-budgetTokens-or-narrow-recall-inputs',
+      )}`,
+    );
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 function renderStructuredContent(

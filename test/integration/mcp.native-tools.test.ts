@@ -214,9 +214,13 @@ async function connectMcpClient(fixture: McpFixture, options: McpClientOptions =
 async function callCodeGraphUntilReady(client: Client, arguments_: Readonly<Record<string, unknown>>) {
   const deadline = Date.now() + 90_000;
   for (;;) {
-    const result = await client.callTool({arguments: arguments_, name: 'inspect_code_graph'}, undefined, {
-      timeout: 30_000,
-    });
+    const result = await client.callTool(
+      {arguments: {responseFormat: 'dual', ...arguments_}, name: 'inspect_code_graph'},
+      undefined,
+      {
+        timeout: 30_000,
+      },
+    );
     const structured = result.structuredContent as
       {readonly retryAfterMilliseconds?: unknown; readonly state?: unknown} | undefined;
     if (!isRetryableCodeGraphState(structured?.state)) return result;
@@ -295,31 +299,20 @@ describe('Threadnote MCP toolsets', () => {
     await withMcpClient(
       async client => {
         const instructions = client.getInstructions() ?? '';
-        expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(640);
+        expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(384);
         expect(instructions).toContain('callerCwd');
         expect(instructions).toContain('threadnote://');
         expect(instructions).toContain('handoff');
+        expect(instructions).toContain('Non-trivial local work starts `context_brief`');
+        expect(instructions).toContain('absolute `callerCwd` (compact agent output is default)');
+        expect(instructions).toContain('Read recalled `threadnote://` pointers');
+        expect(instructions).toContain('verify graph evidence against exact source');
+        expect(instructions).toContain('End with private `remember_context(kind=handoff)`');
         expect(instructions).toContain(
-          'For non-trivial local repo work, call MCP `context_brief` with task + absolute `callerCwd`',
+          'Never auto-apply/share or store secrets, credentials, customer data, raw production logs',
         );
-        expect(instructions).toContain('Prefer `responseFormat: "agent"`');
-        expect(instructions).toContain('`recall_context` + `read_context`: memory alternative');
-        expect(instructions.indexOf('context_brief')).toBeLessThan(instructions.indexOf('recall_context'));
-        expect(instructions).toContain('`threadnote context brief --cwd <cwd> --task <task>`');
-        expect(instructions).not.toContain('threadnote context brief --caller-cwd');
-        expect(instructions).toContain('`threadnote://` pointers unread, not evidence');
-        expect(instructions).toContain('Use `inspect_code_graph`/`analyze_code_graph`, then exact source');
-        expect(instructions).toContain('Close with private `remember_context(kind=handoff)`');
-        expect(instructions).toContain('Optional five-field KD: `review_session_context`');
-        expect(instructions).toContain(
-          '`apply_memory_candidates` with `approve` (optional `editedText`), `defer`, or `reject`',
-        );
-        expect(instructions).toContain('Never auto-apply/share');
-        expect(instructions).toContain('No sensitive data; confirm publishes; never publish handoffs/preferences');
-        expect(instructions).not.toContain('Start with `recall_context`');
-        expect(instructions).not.toContain(
-          'Store durable knowledge; `review_session_context` adds approved candidates',
-        );
+        expect(instructions).toContain('Publishing requires confirmation');
+        expect(instructions.indexOf('context_brief')).toBeLessThan(instructions.indexOf('remember_context'));
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
         expect(reviewTool?.description).toContain('five-field Knowledge Delta');
         expect(reviewTool?.description).toContain('handoff is separate and required');
@@ -342,8 +335,8 @@ describe('Threadnote MCP toolsets', () => {
           expect(tools.tools.map(tool => tool.name)).not.toContain(fullOnlyTool);
         }
         const serializedToolsBytes = Buffer.byteLength(JSON.stringify(tools.tools));
-        // Bound metadata growth without penalizing future concise descriptions.
-        expect(serializedToolsBytes).toBeLessThanOrEqual(31_500);
+        // Ratchet the always-loaded core tool metadata while leaving room for concise guidance.
+        expect(serializedToolsBytes).toBeLessThanOrEqual(31_000);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );
@@ -544,6 +537,7 @@ describe('Threadnote MCP toolsets', () => {
             nodeLimit: {maximum: 100, minimum: 1, type: 'integer'},
             project: {type: 'string'},
             query: {description: expect.stringContaining('optional when memoryRefs'), type: 'string'},
+            responseFormat: {enum: ['dual', 'agent']},
             threshold: {maximum: 1, minimum: 0, type: 'number'},
           },
           type: 'object',
@@ -656,9 +650,25 @@ describe('Threadnote MCP toolsets', () => {
           'structured-recall.md',
           canonicalMemoryContent('structured-recall', 'Structured recall ranking anchor qz-structured-7788.'),
         );
-        const result = await client.callTool(
+        const defaultResult = await client.callTool(
           {
             arguments: {project: 'threadnote', query: 'qz-structured-7788', threshold: 0},
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5000},
+        );
+        expect(defaultResult.structuredContent).toBeUndefined();
+        expect((defaultResult.content as TextContent[])[0]?.text ?? '').toMatch(/^TN-RECALL\/1\n/);
+
+        const result = await client.callTool(
+          {
+            arguments: {
+              project: 'threadnote',
+              query: 'qz-structured-7788',
+              responseFormat: 'dual',
+              threshold: 0,
+            },
             name: 'recall_context',
           },
           undefined,
@@ -691,7 +701,13 @@ describe('Threadnote MCP toolsets', () => {
 
         const explained = await client.callTool(
           {
-            arguments: {explain: true, project: 'threadnote', query: 'qz-structured-7788', threshold: 0},
+            arguments: {
+              explain: true,
+              project: 'threadnote',
+              query: 'qz-structured-7788',
+              responseFormat: 'dual',
+              threshold: 0,
+            },
             name: 'recall_context',
           },
           undefined,
@@ -752,6 +768,7 @@ describe('Threadnote MCP toolsets', () => {
               memoryRefs: ['threadnote://memory/tn_mcp_connection_seed'],
               project: 'threadnote',
               relationTypes: ['depends_on'],
+              responseFormat: 'dual',
             },
             name: 'recall_context',
           },
@@ -843,7 +860,12 @@ describe('Threadnote MCP toolsets', () => {
 
         const result = await client.callTool(
           {
-            arguments: {project: 'threadnote', query: 'qz-identity-7788', threshold: 0},
+            arguments: {
+              project: 'threadnote',
+              query: 'qz-identity-7788',
+              responseFormat: 'dual',
+              threshold: 0,
+            },
             name: 'recall_context',
           },
           undefined,
@@ -882,7 +904,7 @@ describe('Threadnote MCP toolsets', () => {
 
         const configured = await client.callTool(
           {
-            arguments: {project: 'threadnote', query: 'qz-environment-8811'},
+            arguments: {project: 'threadnote', query: 'qz-environment-8811', responseFormat: 'dual'},
             name: 'recall_context',
           },
           undefined,
@@ -894,7 +916,12 @@ describe('Threadnote MCP toolsets', () => {
 
         const broadened = await client.callTool(
           {
-            arguments: {project: 'threadnote', query: 'qz-environment-8811', threshold: 0},
+            arguments: {
+              project: 'threadnote',
+              query: 'qz-environment-8811',
+              responseFormat: 'dual',
+              threshold: 0,
+            },
             name: 'recall_context',
           },
           undefined,
@@ -990,7 +1017,11 @@ describe('Threadnote MCP toolsets', () => {
 
         const result = await client.callTool(
           {
-            arguments: {project: 'threadnote', query: 'degraded lexical exact anchor 7788'},
+            arguments: {
+              project: 'threadnote',
+              query: 'degraded lexical exact anchor 7788',
+              responseFormat: 'dual',
+            },
             name: 'recall_context',
           },
           undefined,
@@ -1145,7 +1176,11 @@ describe('Threadnote MCP toolsets', () => {
         const content = canonicalMemoryContent('bounded-read', `${'Unicode evidence 🙂漢字\n'.repeat(1_000)}terminal`);
         await writeCanonicalMemory(fixture.home, 'bounded-read.md', content);
 
-        const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
+        const result = await client.callTool(
+          {arguments: {responseFormat: 'dual', uri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         const output = Array.isArray(result.content) ? result.content : [];
         const structured = result.structuredContent as ReadStructuredContent;
@@ -1163,18 +1198,14 @@ describe('Threadnote MCP toolsets', () => {
     );
   }, 40_000);
 
-  it('returns complete text once when read_context opts into text response format', async () => {
+  it('returns complete text once in the default read_context response format', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/text-read.md';
         const content = canonicalMemoryContent('text-read', `${'Evidence 🙂漢字\n'.repeat(500)}terminal`);
         await writeCanonicalMemory(fixture.home, 'text-read.md', content);
 
-        const result = await client.callTool(
-          {arguments: {responseFormat: 'text', uri}, name: 'read_context'},
-          undefined,
-          {timeout: 30_000},
-        );
+        const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         const output = Array.isArray(result.content) ? result.content : [];
         const structured = result.structuredContent as Record<string, unknown>;
@@ -1208,9 +1239,13 @@ describe('Threadnote MCP toolsets', () => {
         );
         await writeCanonicalMemory(fixture.home, 'imaged-read.md', content);
 
-        const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {
-          timeout: 30_000,
-        });
+        const result = await client.callTool(
+          {arguments: {responseFormat: 'dual', uri}, name: 'read_context'},
+          undefined,
+          {
+            timeout: 30_000,
+          },
+        );
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         const output = Array.isArray(result.content) ? result.content : [];
         const structured = result.structuredContent as ReadStructuredContent;
@@ -1261,7 +1296,10 @@ describe('Threadnote MCP toolsets', () => {
         let sourceHash: string | undefined;
         const parts: string[] = [];
         for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
-          const result = await client.callTool({arguments: {uri, offsetBytes, sourceHash}, name: 'read_context'});
+          const result = await client.callTool({
+            arguments: {offsetBytes, responseFormat: 'dual', sourceHash, uri},
+            name: 'read_context',
+          });
           expect(result.isError, JSON.stringify(result)).not.toBe(true);
           const page = result.structuredContent as ReadStructuredContent;
           const resultContent = Array.isArray(result.content) ? result.content : [];
@@ -1325,9 +1363,11 @@ describe('Threadnote MCP toolsets', () => {
           {mode: 0o600},
         );
 
-        const result = await client.callTool({arguments: {uri: requestedUri}, name: 'read_context'}, undefined, {
-          timeout: 30_000,
-        });
+        const result = await client.callTool(
+          {arguments: {responseFormat: 'dual', uri: requestedUri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         const output = Array.isArray(result.content) ? result.content : [];
         const structured = result.structuredContent as ReadStructuredContent;
@@ -1352,9 +1392,11 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(recalled.isError, JSON.stringify(recalled)).not.toBe(true);
         const identityAlias = `threadnote://memory/${memoryId}`;
-        const aliasRead = await client.callTool({arguments: {uri: identityAlias}, name: 'read_context'}, undefined, {
-          timeout: 30_000,
-        });
+        const aliasRead = await client.callTool(
+          {arguments: {responseFormat: 'dual', uri: identityAlias}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
         expect(aliasRead.isError, JSON.stringify(aliasRead)).not.toBe(true);
         expect(aliasRead.structuredContent).toMatchObject({content, requestedUri: identityAlias});
         expect(aliasRead.structuredContent).not.toHaveProperty('canonicalUri');
@@ -1384,9 +1426,11 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(recalled.isError, JSON.stringify(recalled)).not.toBe(true);
 
-        const result = await client.callTool({arguments: {uri: alias}, name: 'read_context'}, undefined, {
-          timeout: 30_000,
-        });
+        const result = await client.callTool(
+          {arguments: {responseFormat: 'dual', uri: alias}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         const output = Array.isArray(result.content) ? result.content : [];
         const structured = result.structuredContent as ReadStructuredContent;
@@ -1515,7 +1559,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(result.structuredContent).toEqual(recovery);
 
         const recalled = await client.callTool(
-          {arguments: recovery.nextAction.arguments, name: recovery.nextAction.tool},
+          {arguments: {...recovery.nextAction.arguments, responseFormat: 'dual'}, name: recovery.nextAction.tool},
           undefined,
           {timeout: 5_000},
         );
@@ -1525,9 +1569,11 @@ describe('Threadnote MCP toolsets', () => {
         ).results?.map(entry => entry.uri);
         expect(recalledUris).toContain(canonicalUri);
 
-        const canonical = await client.callTool({arguments: {uri: canonicalUri}, name: 'read_context'}, undefined, {
-          timeout: 5_000,
-        });
+        const canonical = await client.callTool(
+          {arguments: {responseFormat: 'dual', uri: canonicalUri}, name: 'read_context'},
+          undefined,
+          {timeout: 5_000},
+        );
         expect(canonical.isError).not.toBe(true);
         expect((canonical.structuredContent as ReadStructuredContent).content).toBe(content);
       },
@@ -1565,9 +1611,11 @@ describe('Threadnote MCP toolsets', () => {
         expect(replaced.isError, JSON.stringify(replaced)).not.toBe(true);
         expect(replaced.structuredContent).toMatchObject({memoryUri: canonicalUri, replacementCleanupPending: false});
 
-        const read = await client.callTool({arguments: {uri: requestedUri}, name: 'read_context'}, undefined, {
-          timeout: 30_000,
-        });
+        const read = await client.callTool(
+          {arguments: {responseFormat: 'dual', uri: requestedUri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
         expect(read.isError, JSON.stringify(read)).not.toBe(true);
         const output = Array.isArray(read.content) ? read.content : [];
         const structured = read.structuredContent as ReadStructuredContent;
@@ -1859,7 +1907,7 @@ describe('Threadnote MCP toolsets', () => {
           await writeCanonicalMemory(fixture.home, `${name}.md`, contents[index]);
         }
 
-        const result = await client.callTool({arguments: {uris}, name: 'read_context'});
+        const result = await client.callTool({arguments: {responseFormat: 'dual', uris}, name: 'read_context'});
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         const output = Array.isArray(result.content) ? result.content : [];
         const structured = result.structuredContent as ReadStructuredContent;
@@ -1913,9 +1961,13 @@ describe('Threadnote MCP toolsets', () => {
             await Bun.sleep(10);
           }
 
-          const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {
-            timeout: 30_000,
-          });
+          const result = await client.callTool(
+            {arguments: {responseFormat: 'dual', uri}, name: 'read_context'},
+            undefined,
+            {
+              timeout: 30_000,
+            },
+          );
           const output = Array.isArray(result.content) ? result.content : [];
           const primary = output[0] as TextContent | undefined;
           const structured = result.structuredContent as ReadStructuredContent;
@@ -2020,6 +2072,7 @@ describe('Threadnote MCP toolsets', () => {
               nodeLimit: 5,
               project: 'monorepo',
               query: 'implementation note',
+              responseFormat: 'dual',
               threshold: 0,
             },
             name: 'recall_context',
@@ -2088,6 +2141,7 @@ describe('Threadnote MCP toolsets', () => {
               nodeLimit: 5,
               project: 'threadnote',
               query: 'current branch latest handoff durable feature memory',
+              responseFormat: 'dual',
               threshold: 0,
             },
             name: 'recall_context',
@@ -2149,6 +2203,7 @@ describe('Threadnote MCP toolsets', () => {
               nodeLimit: 12,
               project: 'requested-project',
               query: 'current repo latest handoff project precedence',
+              responseFormat: 'dual',
               threshold: 0,
             },
             name: 'recall_context',
@@ -2172,6 +2227,7 @@ describe('Threadnote MCP toolsets', () => {
               callerCwd: workspace,
               nodeLimit: 12,
               query: 'current repo latest handoff project precedence',
+              responseFormat: 'dual',
               threshold: 0,
             },
             name: 'recall_context',
@@ -2249,23 +2305,17 @@ describe('Threadnote MCP toolsets', () => {
           {timeout: 10_000},
         );
         expect(worksetOnly.isError, JSON.stringify(worksetOnly)).not.toBe(true);
-        expect(worksetOnly.structuredContent).toMatchObject({
-          scope: {kind: 'workset', name: 'engineering'},
-          type: 'context-brief',
-          version: 2,
-        });
+        expect(worksetOnly.structuredContent).toBeUndefined();
         const worksetOnlyText = (
           (Array.isArray(worksetOnly.content) ? worksetOnly.content[0] : undefined) as TextContent | undefined
         )?.text;
-        expect(parseContextBriefAgentViewText(worksetOnlyText ?? '')).toEqual(
-          projectContextBriefAgentView(parseContextBriefV1(worksetOnly.structuredContent)),
-        );
+        expect(parseContextBriefAgentViewText(worksetOnlyText ?? '')).toBeDefined();
 
-        const agentWorksetOnly = await client.callTool(
+        const dualWorksetOnly = await client.callTool(
           {
             arguments: {
               budgetTokens: 800,
-              responseFormat: 'agent',
+              responseFormat: 'dual',
               task: 'Summarize the prepared engineering Workset without a local caller workspace.',
               workset: 'engineering',
             },
@@ -2274,13 +2324,21 @@ describe('Threadnote MCP toolsets', () => {
           undefined,
           {timeout: 10_000},
         );
-        expect(agentWorksetOnly.isError, JSON.stringify(agentWorksetOnly)).not.toBe(true);
-        expect(agentWorksetOnly.structuredContent).toBeUndefined();
-        const agentText = (
-          (Array.isArray(agentWorksetOnly.content) ? agentWorksetOnly.content[0] : undefined) as TextContent | undefined
+        expect(dualWorksetOnly.isError, JSON.stringify(dualWorksetOnly)).not.toBe(true);
+        expect(dualWorksetOnly.structuredContent).toMatchObject({
+          scope: {kind: 'workset', name: 'engineering'},
+          type: 'context-brief',
+          version: 2,
+        });
+        const dualText = (
+          (Array.isArray(dualWorksetOnly.content) ? dualWorksetOnly.content[0] : undefined) as TextContent | undefined
         )?.text;
-        expect(parseContextBriefAgentViewText(agentText ?? '')).toBeDefined();
-        expect(Buffer.byteLength(agentText ?? '')).toBeLessThanOrEqual(800 * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN);
+        expect(parseContextBriefAgentViewText(dualText ?? '')).toEqual(
+          projectContextBriefAgentView(parseContextBriefV1(dualWorksetOnly.structuredContent)),
+        );
+        expect(Buffer.byteLength(worksetOnlyText ?? '')).toBeLessThanOrEqual(
+          800 * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN,
+        );
 
         const tooSmall = await client.callTool(
           {
@@ -2340,6 +2398,7 @@ describe('Threadnote MCP toolsets', () => {
               callerCwd: repository,
               mode: 'brief',
               project: 'threadnote',
+              responseFormat: 'dual',
               task: 'Locate the current cold-start contract and active handoff.',
             },
             name: 'context_brief',
@@ -2365,6 +2424,7 @@ describe('Threadnote MCP toolsets', () => {
               codeRefs: 'src/index.ts',
               mode: 'brief',
               project: 'threadnote',
+              responseFormat: 'dual',
               task: 'Locate the current cold-start contract and active handoff.',
             },
             name: 'context_brief',
@@ -2516,6 +2576,7 @@ describe('Threadnote MCP toolsets', () => {
             operation: {
               enum: ['stats', 'communities', 'community', 'groups', 'hubs', 'surprises', 'confidence', 'full'],
             },
+            responseFormat: {enum: ['dual', 'agent']},
           },
           type: 'object',
         });
@@ -2569,6 +2630,16 @@ describe('Threadnote MCP toolsets', () => {
         expect(['current', 'deferred']).toContain(
           (result.structuredContent as {readonly freshness?: unknown} | undefined)?.freshness,
         );
+        const defaultGraph = await client.callTool(
+          {
+            arguments: {callerCwd: impactRepository, nodeLimit: 5, operation: 'query', query: 'CodeGraphQueryService'},
+            name: 'inspect_code_graph',
+          },
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(defaultGraph.structuredContent).toBeUndefined();
+        expect((defaultGraph.content as TextContent[])[0]?.text ?? '').toMatch(/^TN-GRAPH\/1\n/);
 
         await writeFile(
           join(impactRepository, 'src', 'index.ts'),
@@ -2678,7 +2749,7 @@ describe('Threadnote MCP toolsets', () => {
 
         const analysis = await client.callTool(
           {
-            arguments: {callerCwd: impactRepository, operation: 'stats'},
+            arguments: {callerCwd: impactRepository, operation: 'stats', responseFormat: 'dual'},
             name: 'analyze_code_graph',
           },
           undefined,
@@ -2717,9 +2788,20 @@ describe('Threadnote MCP toolsets', () => {
           ).byteLength,
         ).toBeLessThanOrEqual(24 * 1_024);
 
+        const defaultAnalysis = await client.callTool(
+          {
+            arguments: {callerCwd: impactRepository, operation: 'stats'},
+            name: 'analyze_code_graph',
+          },
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(defaultAnalysis.structuredContent).toBeUndefined();
+        expect((defaultAnalysis.content as TextContent[])[0]?.text ?? '').toContain('Graph analysis:');
+
         const communities = await client.callTool(
           {
-            arguments: {callerCwd: impactRepository, operation: 'communities'},
+            arguments: {callerCwd: impactRepository, operation: 'communities', responseFormat: 'dual'},
             name: 'analyze_code_graph',
           },
           undefined,
@@ -2732,7 +2814,13 @@ describe('Threadnote MCP toolsets', () => {
         expect(communityId).toMatch(/^cgc_[a-f0-9]{32}$/);
         const community = await client.callTool(
           {
-            arguments: {callerCwd: impactRepository, communityId, memberLimit: 1, operation: 'community'},
+            arguments: {
+              callerCwd: impactRepository,
+              communityId,
+              memberLimit: 1,
+              operation: 'community',
+              responseFormat: 'dual',
+            },
             name: 'analyze_code_graph',
           },
           undefined,
@@ -3117,7 +3205,12 @@ describe('Threadnote MCP toolsets', () => {
           expect(await readFile(join(pendingRoot, pendingNames[0]), 'utf8')).toContain('src/index.ts');
           const privateOutboxRecall = await client.callTool(
             {
-              arguments: {callerCwd: repository, project: 'threadnote', query: 'src/index.ts'},
+              arguments: {
+                callerCwd: repository,
+                project: 'threadnote',
+                query: 'src/index.ts',
+                responseFormat: 'dual',
+              },
               name: 'recall_context',
             },
             undefined,
@@ -3912,6 +4005,7 @@ describe('Threadnote MCP toolsets', () => {
             nodeLimit: 12,
             project: 'threadnote',
             query: 'canonical approved candidates guidance',
+            responseFormat: 'dual',
             threshold: 0,
           },
           name: 'recall_context',
@@ -3927,6 +4021,7 @@ describe('Threadnote MCP toolsets', () => {
             nodeLimit: 12,
             project: 'threadnote',
             query: 'approved candidates',
+            responseFormat: 'dual',
             threshold: 0,
           },
           name: 'recall_context',

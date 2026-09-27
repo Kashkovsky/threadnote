@@ -838,7 +838,7 @@ export function registerSearchTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description,
+      description: `${description} Defaults to compact TN-RECALL/1 text; dual adds structured content.`,
       inputSchema: {
         budgetTokens: McpInput.integer('Response tokens: 700-1500; default 1500', {
           minimum: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
@@ -856,6 +856,7 @@ export function registerSearchTool(
         relationTypes: McpInput.literalsOrLiterals(MEMORY_RELATION_TYPES, 'Relation-type filter', {
           maximumItems: 5,
         }),
+        responseFormat: McpInput.literals(['dual', 'agent'], 'Default agent; dual adds structured content.'),
         explain: McpInput.boolean('Include reasons and warnings'),
         threshold: McpInput.number('Relevance floor; env or 0.3', {
           minimum: 0,
@@ -876,6 +877,7 @@ export function registerSearchTool(
         project,
         query,
         relationTypes,
+        responseFormat,
         threshold,
         team,
         uri,
@@ -956,6 +958,7 @@ export function registerSearchTool(
           includeArchived: includeArchived === true,
           memoryRefs: memoryConnections?.memoryRefs,
           relationTypes: memoryConnections?.relationTypes,
+          responseFormat,
           threshold: threshold === undefined ? undefined : String(threshold),
           allowedUriScopes: memoryScope ? (scopedUri ? [scopedUri] : cursorCloudScopeRoots(memoryScope)) : undefined,
           syncTeam: selectedShare?.team ?? uriShare?.team,
@@ -992,6 +995,7 @@ interface RecallToolParams {
   readonly project: string | undefined;
   readonly query: string;
   readonly relationTypes: readonly MemoryRelationType[] | undefined;
+  readonly responseFormat: 'dual' | 'agent' | undefined;
   readonly threshold: string | undefined;
   readonly syncTeam: string | undefined;
   readonly workset: string | undefined;
@@ -1294,7 +1298,7 @@ function runRecallTool(
             rankerVersion: RECALL_RANKER_VERSION,
             results: recallSections.ranked.slice(0, params.nodeLimit ?? 12),
           },
-          {budgetTokens: params.budgetTokens, explain: params.explain},
+          params,
         ),
       catch: error =>
         Schema.is(AgentResponseBudgetTooSmallError)(error)
@@ -1303,7 +1307,7 @@ function runRecallTool(
     });
     return {
       content: [{type: 'text' as const, text: projected.text}],
-      structuredContent: projected.structuredContent,
+      ...(projected.responseFormat === 'dual' ? {structuredContent: projected.structuredContent} : {}),
     };
   });
 }
@@ -1360,11 +1364,11 @@ export function registerReadTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Read up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. responseFormat=text: body in text content[0] only; default dual repeats it. Oversize: mode=outline or section, or page with offsetBytes=0; follow nextOffsetBytes/sourceHash.`,
+      description: `${description} Read up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Default text avoids duplicating the body; dual repeats it in structuredContent. Oversize: mode=outline or section, or page with offsetBytes=0.`,
       inputSchema: {
         mode: McpInput.literals(['content', 'outline']),
         offsetBytes: McpInput.integer('UTF-8 byte offset for an explicit bounded page; start at 0', {minimum: 0}),
-        responseFormat: McpInput.literals(['dual', 'text'], 'text omits structured body'),
+        responseFormat: McpInput.literals(['dual', 'text'], 'Default text; dual repeats body in structuredContent.'),
         section: McpInput.string(),
         sourceHash: McpInput.string('SHA-256 from the first page; required when offsetBytes > 0'),
         uri: McpInput.string(),

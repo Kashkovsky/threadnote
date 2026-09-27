@@ -38,16 +38,17 @@ bun run eval:memory-read-token-efficiency -- --text
 On the frozen fixtures, text-only structured metadata reduces combined MCP bytes by 49.85% for the citation-heavy
 case and 50.61% for the long Unicode case; it adds 10 bytes to the short case. These are transmitted UTF-8 bytes and
 Threadnote's `ceil(bytes / 3)` estimate, **not** provider-billed tokens or task-quality evidence. The compatibility
-default remains dual-channel. The release gate for any broader default requires a paired provider-usage and
-task-quality study across supported clients, plus exact-current citation, authorization, no-answer, and recovery
-non-regression. Full content remains available through the default format.
+escape remains explicit `responseFormat=dual`; ordinary local reads now default to the non-duplicating text projection.
+The release-quality claim still requires a paired provider-usage and task-quality study across supported clients, plus
+exact-current citation, authorization, no-answer, and recovery non-regression. Full content remains available through
+explicit dual format.
 
 ## Graph response single-channel baseline v1
 
 `baselines/graph-response-single-channel-v1/baseline.json` records the frozen five-query graph fixture, pre-change
 dual-channel bytes, and a paired model pilot. The normal integration test starts an isolated MCP server and proves that
-the opt-in `inspect_code_graph responseFormat=text` JSON parses to the exact default structured projection on all five
-queries, including path, impact, and no-answer, while the default response remains dual-channel:
+`inspect_code_graph responseFormat=text` JSON parses to the exact explicit-dual structured projection on all five
+queries, including path, impact, and no-answer, while the local model-facing default is the TN-GRAPH agent projection:
 
 ```sh
 bun --bun vitest run test/integration/mcp-code-graph-response-format.test.ts test/unit/mcp-code-graph-progress.test.ts
@@ -57,8 +58,8 @@ The checked-in baseline measures 66,686 dual versus 53,404 text-only UTF-8 bytes
 `dd73e2d7aee74b1ff4147f2094a7161ef8d57a0c`. Two counterbalanced model runs per query and format returned 20/20
 correct, graph-ID-grounded answers, including abstention on the no-answer query; reported input tokens were 159,446
 dual versus 151,708 text-only across those calls. The model pilot uses synthetic evidence and Codex CLI scaffolding,
-so it is not a powered task-quality or provider-cost result. Keep the default dual format for existing clients. A
-broader default requires a larger paired corpus and supported-client compatibility evidence.
+so it is not a powered task-quality or provider-cost claim. Explicit dual remains the canonical compatibility path;
+a product-level savings claim still requires a larger paired corpus and supported-client compatibility evidence.
 
 ## MemoryConnectionsBench v1 (A+B)
 

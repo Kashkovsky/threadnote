@@ -322,7 +322,7 @@ const compileContextBriefRuntime = Effect.fn('contextBrief.compileRuntime')(func
         budgetTokens: request.outputBudgetTokens,
         ...(request.codeAnchors.codeRefs.length === 0 ? {} : {codeRefs: request.codeAnchors.codeRefs}),
         mode: request.mode,
-        ...(request.responseFormat === 'dual' ? {} : {responseFormat: request.responseFormat}),
+        responseFormat: request.responseFormat,
         scope: request.scope,
         ...(request.surface === undefined ? {} : {surface: request.surface}),
         task: request.task,
