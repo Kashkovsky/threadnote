@@ -4,6 +4,7 @@ import {createHash} from '../helpers/node-crypto.js';
 import {mkdtemp, mkdir, readFile, realpath, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
+import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS,
@@ -11,7 +12,10 @@ import {
   assertTraceIsolation,
   runCodeMemoryLinkAppServerTurn,
 } from '../../scripts/code-memory-link-app-server-client.js';
-import {selectCodeMemoryLinkQualifyingActionItemId} from '../../scripts/run-code-memory-link-codex-client.js';
+import {
+  createCodeMemoryLinkCodexClientTrialV1,
+  selectCodeMemoryLinkQualifyingActionItemId,
+} from '../../scripts/run-code-memory-link-codex-client.js';
 import {
   CODE_MEMORY_LINK_SAFE_EXECUTABLE_NAMES,
   createCodeMemoryLinkCodexIsolation,
@@ -512,6 +516,116 @@ describe('Code Memory Link Codex app-server transport', () => {
     expect(
       assertCodeMemoryLinkAgentEvidenceLedgerV1({assignment, evidence: [receipt], manifest, trials: [trial]}),
     ).toEqual([receipt]);
+
+    for (const observed of [missingCallRawEvidence, failedCallRawEvidence]) {
+      const observedProjection = deriveCodeMemoryLinkCodexAppServerProjectionV1({
+        evidence: observed.appServer,
+        rubric,
+      });
+      const emittedSummary = createCodeMemoryLinkCodexClientTrialV1({
+        bindings: observed.bindings,
+        judgment: {
+          acceptedStaleOrHarmful: trialSummary.acceptedStaleOrHarmful,
+          adjudicationHash: trialSummary.adjudicationHash,
+          constraintAdherence: trialSummary.constraintAdherence,
+          taskPassed: true,
+        },
+        projection: observedProjection,
+      });
+      expect(emittedSummary.taskPassed).toBe(false);
+      const observedTrial = createCodeMemoryLinkAgentAbTrialV1({
+        candidate,
+        invocationNonce,
+        postRuntime: runtime,
+        preRuntime: runtime,
+        previousReceiptDigest: null,
+        trial: emittedSummary,
+        trialId: trial.trialId,
+      });
+      const observedReceipt = createCodeMemoryLinkAgentEvidenceReceiptV1({
+        previousEvidenceDigest: null,
+        rawEvidence: observed,
+        trialId: observedTrial.trialId,
+      });
+      expect(
+        assertCodeMemoryLinkAgentEvidenceLedgerV1({
+          assignment,
+          evidence: [observedReceipt],
+          manifest,
+          trials: [observedTrial],
+        }),
+      ).toEqual([observedReceipt]);
+      expect(observedProjection.contextBriefProtocolAdhered).toBe(false);
+      expect(observedTrial.taskPassed).toBe(false);
+      const staticallyPassedTrial = createCodeMemoryLinkAgentAbTrialV1({
+        candidate,
+        invocationNonce,
+        postRuntime: runtime,
+        preRuntime: runtime,
+        previousReceiptDigest: null,
+        trial: {
+          ...trialSummary,
+          firstUsefulMemoryUse: observedProjection.firstUsefulMemoryUse,
+          providerUsageHash: observedProjection.providerUsageHash,
+          taskPassed: true,
+        },
+        trialId: trial.trialId,
+      });
+      expect(() =>
+        assertCodeMemoryLinkAgentEvidenceLedgerV1({
+          assignment,
+          evidence: [observedReceipt],
+          manifest,
+          trials: [staticallyPassedTrial],
+        }),
+      ).toThrow(/does not independently reproduce its trial outcome/u);
+    }
+
+    const mismatchedManifest = {
+      ...manifest,
+      tasks: [
+        {
+          ...manifest.tasks[0],
+          expectedResponseHashes: {...manifest.tasks[0].expectedResponseHashes, noMemory: 'f'.repeat(64)},
+        },
+      ],
+    };
+    expect(() =>
+      assertCodeMemoryLinkAgentEvidenceLedgerV1({
+        assignment,
+        evidence: [receipt],
+        manifest: mismatchedManifest,
+        trials: [trial],
+      }),
+    ).toThrow(/model-visible response differs from the preregistered arm projection/u);
+    fc.assert(
+      fc.property(
+        fc
+          .array(fc.constantFrom(...'0123456789abcdef'), {minLength: 64, maxLength: 64})
+          .map(characters => characters.join(''))
+          .filter(hash => hash !== manifest.tasks[0].expectedResponseHashes.noMemory),
+        wrongHash => {
+          const changedManifest = {
+            ...manifest,
+            tasks: [
+              {
+                ...manifest.tasks[0],
+                expectedResponseHashes: {...manifest.tasks[0].expectedResponseHashes, noMemory: wrongHash},
+              },
+            ],
+          };
+          expect(() =>
+            assertCodeMemoryLinkAgentEvidenceLedgerV1({
+              assignment,
+              evidence: [receipt],
+              manifest: changedManifest,
+              trials: [trial],
+            }),
+          ).toThrow(/model-visible response differs from the preregistered arm projection/u);
+        },
+      ),
+      {numRuns: 20},
+    );
 
     const pending = createCodeMemoryLinkAgentPendingCommitV1({evidence: receipt, index: 0, trial});
     expect(

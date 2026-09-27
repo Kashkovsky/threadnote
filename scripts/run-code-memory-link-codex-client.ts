@@ -10,7 +10,10 @@ import {
   deriveCodeMemoryLinkCodexAppServerProjectionV1,
   normalizeCodeMemoryLinkCodexAppServerEvidenceV1,
   type CodeMemoryLinkArmPacketV1,
+  type CodeMemoryLinkCodexAppServerProjectionV1,
+  type CodeMemoryLinkStaticJudgmentV1,
 } from '../src/evaluation/code-memory-link-agent-protocol.js';
+import type {CodeMemoryLinkAgentAbClientTrialSummaryV1} from '../src/evaluation/code-memory-link-agent-ab.js';
 import {
   CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION,
   assertCodeMemoryLinkCodexArtifacts,
@@ -392,32 +395,11 @@ export async function runCodeMemoryLinkCodexExecutionTask(
       version: 1,
     } satisfies Omit<CodeMemoryLinkCodexRawEvidenceV1, 'evidenceHash'>;
     const rawEvidence = createCodeMemoryLinkCodexRawEvidenceV1(rawWithoutHash);
-    const trial = {
-      acceptedStaleOrHarmful: judge.judgment.acceptedStaleOrHarmful,
-      adjudicationHash: judge.judgment.adjudicationHash,
-      approvalCommit: harness.approvalCommit,
-      armPosition: harness.armPosition,
-      assignmentHash: harness.assignmentHash,
-      blindLabel: harness.blindLabel,
-      budget: harness.budget,
-      clientId: harness.clientId,
-      constraintAdherence: judge.judgment.constraintAdherence,
-      evidenceKind: 'external-agent',
-      firstUsefulMemoryUse: projection.firstUsefulMemoryUse,
-      fixtureHash: harness.fixtureHash,
-      manifestHash: harness.manifestHash,
-      packetHash: harness.packetHash,
-      providerUsageHash: projection.providerUsageHash,
-      rubricHash: harness.rubricHash,
-      runNonce: harness.runNonce,
-      runOrder: harness.runOrder,
-      taskId: harness.taskId,
-      taskKind: harness.taskKind,
-      taskPassed: judge.judgment.taskPassed,
-      tokenAccounting: 'provider-reported',
-      totalTaskUsage: projection.totalTaskUsage,
-      version: 1,
-    } as const;
+    const trial = createCodeMemoryLinkCodexClientTrialV1({
+      bindings: rawEvidence.bindings,
+      judgment: judge.judgment,
+      projection,
+    });
     output = {rawEvidence, trial, version: CODE_MEMORY_LINK_CODEX_CLIENT_OUTPUT_VERSION};
   } catch (error) {
     executionFailed = true;
@@ -446,6 +428,43 @@ export async function runCodeMemoryLinkCodexExecutionTask(
   }
   if (output === undefined) throw new Error('Code Memory Link execution completed without a sealed output.');
   return output;
+}
+
+export function createCodeMemoryLinkCodexClientTrialV1(input: {
+  readonly bindings: CodeMemoryLinkCodexRawEvidenceV1['bindings'];
+  readonly judgment: Pick<
+    CodeMemoryLinkStaticJudgmentV1,
+    'acceptedStaleOrHarmful' | 'adjudicationHash' | 'constraintAdherence' | 'taskPassed'
+  >;
+  readonly projection: CodeMemoryLinkCodexAppServerProjectionV1;
+}): CodeMemoryLinkAgentAbClientTrialSummaryV1 {
+  const {bindings, judgment, projection} = input;
+  return {
+    acceptedStaleOrHarmful: judgment.acceptedStaleOrHarmful,
+    adjudicationHash: judgment.adjudicationHash,
+    approvalCommit: bindings.approvalCommit,
+    armPosition: bindings.armPosition,
+    assignmentHash: bindings.assignmentHash,
+    blindLabel: bindings.blindLabel,
+    budget: bindings.budget,
+    clientId: bindings.clientId,
+    constraintAdherence: judgment.constraintAdherence,
+    evidenceKind: 'external-agent',
+    firstUsefulMemoryUse: projection.firstUsefulMemoryUse,
+    fixtureHash: bindings.fixtureHash,
+    manifestHash: bindings.manifestHash,
+    packetHash: bindings.packetHash,
+    providerUsageHash: projection.providerUsageHash,
+    rubricHash: bindings.rubricHash,
+    runNonce: bindings.runNonce,
+    runOrder: bindings.runOrder,
+    taskId: bindings.taskId,
+    taskKind: bindings.taskKind,
+    taskPassed: projection.taskPassed,
+    tokenAccounting: 'provider-reported',
+    totalTaskUsage: projection.totalTaskUsage,
+    version: 1,
+  };
 }
 
 export function parseCodeMemoryLinkCodexHarnessEnvironment(
