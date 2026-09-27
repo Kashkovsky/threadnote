@@ -8,14 +8,6 @@ export interface CodeGraphSpoolSortSurfaceLoad {
   readonly rows: number;
 }
 
-/** Surface names and selected columns must remain simple, checked-in SQL identifiers. */
-function capacityIdentifier(value: string): string {
-  if (!/^[a-z_][a-z0-9_]*$/u.test(value)) {
-    throw new Error('Code graph materialization spool sort identifier is invalid.');
-  }
-  return value;
-}
-
 /** Sorting commits one surface at a time, so only the largest pending surface is live. */
 export function codeGraphSpoolSortCapacityBoundary(
   loads: readonly CodeGraphSpoolSortSurfaceLoad[],
@@ -36,12 +28,9 @@ export function observeCodeGraphSpoolSortCapacity(database: Database): CodeGraph
     ).map(row => row.name),
   );
   const loads = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.flatMap(surface => {
-    const table = `materialization_raw_${capacityIdentifier(surface.name)}`;
+    const table = `materialization_raw_${surface.name}`;
     if (!pending.has(table)) return [];
-    const payload = surface.columns
-      .split(', ')
-      .map(column => `COALESCE(LENGTH(CAST(${capacityIdentifier(column)} AS BLOB)), 0)`)
-      .join(' + ');
+    const payload = surface.columns.map(column => `COALESCE(LENGTH(CAST(${column} AS BLOB)), 0)`).join(' + ');
     const row = codeGraphSqliteGet<{
       readonly bytes: bigint | number;
       readonly rows: bigint | number;

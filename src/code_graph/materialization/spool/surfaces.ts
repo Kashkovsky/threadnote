@@ -2,7 +2,7 @@ import type {Database} from 'bun:sqlite';
 import {codeGraphSqliteAll} from '../../sqlite_statement.js';
 
 export interface CodeGraphMaterializationSpoolSurface {
-  readonly columns: string;
+  readonly columns: readonly string[];
   readonly distinct?: boolean;
   readonly name: string;
   readonly orderBy: string;
@@ -10,47 +10,107 @@ export interface CodeGraphMaterializationSpoolSurface {
 
 export const CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES = [
   {
-    columns:
-      'id, content_hash, kind, name, qualified_name, path, language, arity, lookup_keys_json, ' +
-      'resolution_domain, resolution_scope_id, package_name, exported, signature, documentation, span_json',
+    columns: [
+      'id',
+      'content_hash',
+      'kind',
+      'name',
+      'qualified_name',
+      'path',
+      'language',
+      'arity',
+      'lookup_keys_json',
+      'resolution_domain',
+      'resolution_scope_id',
+      'package_name',
+      'exported',
+      'signature',
+      'documentation',
+      'span_json',
+    ],
     name: 'symbols',
     orderBy: 'id',
   },
   {
-    columns: 'lookup_key, symbol_id, resolution_domain, exported, provenance, evidence_edge_id, evidence_path',
+    columns: [
+      'lookup_key',
+      'symbol_id',
+      'resolution_domain',
+      'exported',
+      'provenance',
+      'evidence_edge_id',
+      'evidence_path',
+    ],
     name: 'lookup',
     orderBy: 'lookup_key, symbol_id',
   },
   {
-    columns:
-      'id, source_id, source_name, relation, target_id, target_name, provenance, confidence, ' +
-      'evidence_path, evidence_span_json',
+    columns: [
+      'id',
+      'source_id',
+      'source_name',
+      'relation',
+      'target_id',
+      'target_name',
+      'provenance',
+      'confidence',
+      'evidence_path',
+      'evidence_span_json',
+    ],
     name: 'edges',
     orderBy: 'id',
   },
   {
-    columns:
-      'edge_id, resolution_domain, exported_only, alias_lookup_keys_json, lookup_tiers_json, candidate_count, ' +
-      'candidate_payload_bytes, source_id, source_name, relation, target_name, provenance, confidence, ' +
-      'evidence_path, evidence_span_json',
+    columns: [
+      'edge_id',
+      'resolution_domain',
+      'exported_only',
+      'alias_lookup_keys_json',
+      'lookup_tiers_json',
+      'candidate_count',
+      'candidate_payload_bytes',
+      'source_id',
+      'source_name',
+      'relation',
+      'target_name',
+      'provenance',
+      'confidence',
+      'evidence_path',
+      'evidence_span_json',
+    ],
     name: 'references',
     orderBy: 'edge_id',
   },
   {
-    columns: 'source_path, local_name, target_path, imported_name',
+    columns: ['source_path', 'local_name', 'target_path', 'imported_name'],
     distinct: true,
     name: 'reexports',
     orderBy: 'source_path, local_name, target_path, imported_name',
   },
   {
-    columns:
-      'id, version, scheme, role, kind, resolution_domain, identity, package_name, package_version, import_path, ' +
-      'qualified_name, component_id, symbol_id, dependency_kind, evidence_path, evidence_span_json',
+    columns: [
+      'id',
+      'version',
+      'scheme',
+      'role',
+      'kind',
+      'resolution_domain',
+      'identity',
+      'package_name',
+      'package_version',
+      'import_path',
+      'qualified_name',
+      'component_id',
+      'symbol_id',
+      'dependency_kind',
+      'evidence_path',
+      'evidence_span_json',
+    ],
     name: 'monikers',
     orderBy: 'id',
   },
   {
-    columns: 'term, symbol_id, weight',
+    columns: ['term', 'symbol_id', 'weight'],
     name: 'symbol_terms',
     orderBy: 'term, symbol_id',
   },
@@ -195,7 +255,7 @@ export function sortCodeGraphMaterializationSpoolSurface(
   database.exec(
     lexicalTerms +
       `CREATE TABLE materialization_ordered_${surface.name} AS ` +
-      `SELECT ${distinct}${surface.columns} FROM materialization_raw_${surface.name} ORDER BY ${surface.orderBy}; ` +
+      `SELECT ${distinct}${surface.columns.join(', ')} FROM materialization_raw_${surface.name} ORDER BY ${surface.orderBy}; ` +
       `DROP TABLE materialization_raw_${surface.name}`,
   );
 }
