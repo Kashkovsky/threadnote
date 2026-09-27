@@ -145,6 +145,33 @@ describe('Stage 3 live release gate contract', () => {
     await expect(runStage3Gate(executeArguments)).rejects.toThrow('candidate-head');
   });
 
+  it('pins programmatic graph calls to dual when consuming structured content', async () => {
+    const driver = new Stage3Driver(executeOptions());
+    const calls: unknown[] = [];
+    const host = {
+      client: {
+        callTool: async (request: unknown) => {
+          calls.push(request);
+          return {isError: false, structuredContent: {operation: 'query'}};
+        },
+      },
+    } as never;
+    const tree = {cwd: '/fixture'} as never;
+    try {
+      await expect(driver.call(host, tree, {operation: 'query', responseFormat: 'agent'})).resolves.toEqual({
+        operation: 'query',
+      });
+      expect(calls).toEqual([
+        {
+          arguments: {callerCwd: '/fixture', operation: 'query', responseFormat: 'dual'},
+          name: 'inspect_code_graph',
+        },
+      ]);
+    } finally {
+      await driver.runtime.dispose();
+    }
+  });
+
   it('keeps fixture anchors stable while every target changes source', () => {
     const variants = ['f1', 'f2', 'f3'].map(stage3Fixture);
     expect(new Set(variants).size).toBe(3);

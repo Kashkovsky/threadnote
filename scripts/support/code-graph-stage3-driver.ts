@@ -296,7 +296,10 @@ export class Stage3Driver {
 
   async call(host: Stage3Host, tree: Stage3Worktree, arguments_: Record<string, unknown>) {
     const response = await host.client.callTool(
-      {name: 'inspect_code_graph', arguments: {callerCwd: tree.cwd, ...arguments_}},
+      {
+        name: 'inspect_code_graph',
+        arguments: {callerCwd: tree.cwd, ...arguments_, responseFormat: 'dual'},
+      },
       undefined,
       {timeout: 30_000},
     );
