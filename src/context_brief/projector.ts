@@ -265,6 +265,7 @@ function projectContextBriefCore(
       requiredCoverageGapItem(logical, items),
       ...requiredAgentGraphEvidenceItems(logical, items, responseFormat, graphRecoveryItem),
       requiredAgentExplanationMemoryItem(logical, items, responseFormat),
+      ...requiredAgentWorksetRecoveryItems(logical, items, responseFormat),
       graphRecoveryItem,
     ].filter((item): item is ProjectionItem => item !== undefined),
   );
@@ -286,15 +287,18 @@ function projectContextBriefCore(
     ? fixedCore.excludedKeys
     : requiredLanePredecessorExclusions(items, requiredItems, fixedCore.allCohortKeys);
   const suppressOptional = !admitFixedCore && fixedCoreHasExtras;
+  const suppressOptionalAgentLocate =
+    responseFormat === 'agent' && logical.mode === 'locate' && logical.coverage.memory.codeAnchors === undefined;
   const requiredKeys = new Set(requiredItems.map(projectionItemKey));
-  const optionalItems = suppressOptional
-    ? []
-    : laneStableOptionalProjectionItems(
-        items.filter(item => {
-          const key = projectionItemKey(item);
-          return !requiredKeys.has(key) && !excludedKeys.has(key);
-        }),
-      );
+  const optionalItems =
+    suppressOptional || suppressOptionalAgentLocate
+      ? []
+      : laneStableOptionalProjectionItems(
+          items.filter(item => {
+            const key = projectionItemKey(item);
+            return !requiredKeys.has(key) && !excludedKeys.has(key);
+          }),
+        );
   const selectItems = (count: number): readonly ProjectionItem[] => [
     ...requiredItems,
     ...optionalItems.slice(0, count),
@@ -1082,7 +1086,18 @@ function renderMinimumProjection(
   logical: ContextBriefLogicalResultV1,
   requiredItems: readonly ProjectionItem[],
 ): ContextBriefV1 {
-  const recoveryIds = new Set(requiredItems.filter(item => item.lane === 'follow-up').map(item => item.id));
+  const continueWorksetIds = new Set(
+    logical.recommendedFollowUps
+      .filter(followUp => followUp.operation === 'continue-workset')
+      .map(followUp => followUp.id),
+  );
+  const recoveryIds = new Set(
+    requiredItems
+      .filter(
+        item => item.lane === 'follow-up' && (logical.graph.cards.length === 0 || !continueWorksetIds.has(item.id)),
+      )
+      .map(item => item.id),
+  );
   const recommendedFollowUps = logical.recommendedFollowUps.filter(followUp => recoveryIds.has(followUp.id));
   const gaps = logical.coverage.gaps.slice(0, 1);
   const omissions = {
@@ -1296,6 +1311,32 @@ function requiredAgentExplanationMemoryItem(
     return undefined;
   }
   return items.find(item => item.lane === 'handoff' || item.lane === 'durable-decision');
+}
+
+/** A bounded locate answer must not strand a partial or unprepared Workset. */
+function requiredAgentWorksetRecoveryItems(
+  logical: ContextBriefLogicalResultV1,
+  items: readonly ProjectionItem[],
+  responseFormat: ContextBriefResponseFormat,
+): readonly ProjectionItem[] {
+  if (
+    responseFormat !== 'agent' ||
+    logical.mode !== 'locate' ||
+    logical.scope.kind !== 'workset' ||
+    logical.coverage.memory.codeAnchors !== undefined
+  ) {
+    return [];
+  }
+  const recoveryIds = new Set(
+    logical.recommendedFollowUps
+      .filter(
+        followUp =>
+          (followUp.operation === 'continue-workset' && logical.graph.cards.length <= 2) ||
+          followUp.operation === 'prepare-workset',
+      )
+      .map(followUp => followUp.id),
+  );
+  return items.filter(item => item.lane === 'follow-up' && recoveryIds.has(item.id));
 }
 
 /**

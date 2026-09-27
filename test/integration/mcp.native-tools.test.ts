@@ -3479,7 +3479,7 @@ describe('Threadnote MCP toolsets', () => {
         )?.text;
         const evaluationFloorView = parseContextBriefAgentViewText(evaluationFloorText ?? '');
         expect(evaluationFloorView.answer).toMatch(/locations(?: \([^)]+ graph\))?: /iu);
-        expect(evaluationFloorView.graph?.cards?.length).toBeGreaterThanOrEqual(2);
+        expect(evaluationFloorView.graph?.cards).toHaveLength(2);
         expect(evaluationFloorView.answer).toContain(evaluationFloorView.graph?.cards?.[0]?.path);
         expect(evaluationFloorView.answer).toContain(evaluationFloorView.graph?.cards?.[1]?.path);
         expect(evaluationFloorView.recommendedFollowUps?.[0]).toMatchObject({

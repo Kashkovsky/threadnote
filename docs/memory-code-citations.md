@@ -318,11 +318,12 @@ memory excerpts and authority/trust, citation actions, coverage gaps, issues, fo
 contract supports clients that expose only one MCP result channel; consumers must not assume both channels reach the
 model. The combined MCP text-plus-structured UTF-8 size is still charged to the requested response budget.
 When MCP selects `responseFormat: "agent"`, the view also starts with a bounded `answer` derived only from evidence
-retained in that response. A task-only `locate` brief reserves two source cards when available and admits source cards
-before optional memory or relationship metadata; the answer names at most the first two retained paths. If no source
-card fits, the answer explicitly says that direct evidence was not retained and mentions recovery only when a recovery
-action is present. Explicit `dual` responses and the plain CLI keep their prior audit projection without this synthetic
-answer, preserving compatibility for structured consumers.
+retained in that response. A task-only `locate` brief returns a fixed useful core: two source cards when available, the
+matching recovery action, and required coverage receipts. It does not spend a larger caller budget on extra cards or
+optional memory and relationship metadata; the answer names at most the two retained paths. If no source card fits,
+the answer explicitly says that direct evidence was not retained and mentions recovery only when a recovery action is
+present. Explicit `dual` responses and the plain CLI keep their prior audit projection without this synthetic answer,
+preserving compatibility for structured consumers.
 
 Validation reads only already-ready exact-current repository snapshots. A Workset brief checks citations only in its
 configured member paths and does not fan out cold builds. Missing or stale members remain explicit unknown coverage;

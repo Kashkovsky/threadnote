@@ -2149,7 +2149,7 @@ describe('Context Brief compiler', () => {
       for (const result of [floor, expanded]) {
         const view = parseContextBriefAgentViewText(result.text);
         expect(view.answer).toMatch(/locations(?: \([^)]+ graph\))?: /iu);
-        expect(view.graph?.cards?.length).toBeGreaterThanOrEqual(2);
+        expect(view.graph?.cards).toHaveLength(2);
         expect(view.answer).toContain(view.graph?.cards?.[0]?.path);
         expect(view.answer).toContain(view.graph?.cards?.[1]?.path);
         expect(view.recommendedFollowUps?.[0]).toMatchObject({
@@ -2159,6 +2159,72 @@ describe('Context Brief compiler', () => {
         expect(view.graph?.contracts).toBeUndefined();
         expect(result.measurement.totalBytes).toBeLessThanOrEqual(result.maximumBytes);
       }
+      expect(expanded.text).toBe(floor.text);
+      expect(expanded.measurement.totalBytes).toBe(floor.measurement.totalBytes);
+    }),
+  );
+
+  effectIt.effect('keeps Workset continuation and preparation in the fixed locate recovery core', () =>
+    Effect.gen(function* () {
+      const graph = graphEvidence();
+      const cases = [
+        {
+          expected: ['continue-workset'],
+          graph: {...graph, cards: graph.cards.slice(0, 2)},
+        },
+        {
+          expected: ['prepare-workset'],
+          graph: {
+            ...graph,
+            continuation: undefined,
+            coverage: {...graph.coverage, complete: false},
+          },
+        },
+      ] as const;
+
+      for (const testCase of cases) {
+        const result = yield* compileContextBriefWith(
+          {
+            graphEvidence: () => Effect.succeed(testCase.graph),
+            memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+          },
+          {
+            ...request(1_200),
+            mode: 'locate',
+            responseFormat: 'agent',
+            scope: {kind: 'workset', name: 'threadnote-suite', project: 'threadnote'},
+          },
+        );
+        const view = parseContextBriefAgentViewText(result.text);
+        const scopeRecovery = (view.recommendedFollowUps ?? [])
+          .map(followUp => followUp.operation)
+          .filter(operation => operation === 'continue-workset' || operation === 'prepare-workset');
+
+        expect(view.graph?.cards).toHaveLength(2);
+        expect(scopeRecovery).toEqual(testCase.expected);
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(result.maximumBytes);
+      }
+
+      const partialPage = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graph),
+          memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+        },
+        {
+          ...request(1_200),
+          mode: 'locate',
+          responseFormat: 'agent',
+          scope: {kind: 'workset', name: 'threadnote-suite', project: 'threadnote'},
+        },
+      );
+      const partialPageView = parseContextBriefAgentViewText(partialPage.text);
+
+      expect(partialPageView.graph?.cards).toHaveLength(2);
+      expect(partialPageView.graph?.continuation).toMatchObject({omittedCards: 1, state: 'rerun-required'});
+      expect(partialPageView.recommendedFollowUps?.map(followUp => followUp.operation)).toContain('inspect-node');
+      expect(partialPageView.recommendedFollowUps?.map(followUp => followUp.operation)).not.toContain(
+        'continue-workset',
+      );
     }),
   );
 
