@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="./assets/brand/threadnote-logo.svg" alt="Threadnote logo" width="112">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/brand/threadnote-logo.svg">
+    <img src="./assets/brand/continuum/threadnote-naked-brand-light.svg" alt="Threadnote logo" width="112" height="112">
+  </picture>
 </p>
 
 # Threadnote

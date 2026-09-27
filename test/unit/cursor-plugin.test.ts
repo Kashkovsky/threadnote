@@ -96,9 +96,9 @@ describe('Cursor plugin package', () => {
     expect(lifecycle).not.toContain('installCursorPlugin');
     expect(lifecycle).not.toContain('removeCursorPlugin');
     expect(update).not.toContain('installCursorPlugin');
-    expect(marketplaceLogo).toContain('viewBox="0 0 4267 4267"');
-    expect(marketplaceLogo).toContain('<rect width="4267" height="4267" rx="960" fill="#10151d"/>');
-    expect(marketplaceLogo).toContain('stroke="#26303d"');
+    expect(marketplaceLogo).toContain('viewBox="0 0 256 256"');
+    expect(marketplaceLogo).toContain('<rect width="256" height="256" rx="44" fill="#141b1e"/>');
+    expect(marketplaceLogo).toContain('stroke-width="36"');
     expect(marketplaceLogo).toContain('fill="#67e8c7"');
     expect(svgPathData(marketplaceLogo)).toBe(svgPathData(canonicalLogo));
   });

@@ -1734,7 +1734,7 @@ The body remains ordinary **Markdown**.
 
     expect(rendered).toContain('<title>Cross-repository worksets · Docs — Threadnote</title>');
     expect(rendered).toContain('<link rel="canonical" href="https://threadnote.io/docs/worksets/" />');
-    expect(rendered).toContain('<link rel="icon" href="../../threadnote-logo.svg"');
+    expect(rendered).toContain('<link rel="icon" href="../../favicon.svg"');
     expect(rendered).toContain('<meta property="og:title" content="Cross-repository worksets · Docs — Threadnote" />');
     expect(rendered).toContain('<meta property="og:type" content="article" />');
     expect(rendered).toContain('<meta property="og:url" content="https://threadnote.io/docs/worksets/" />');
@@ -1783,6 +1783,8 @@ Make the bottleneck observable.
     expect(renderedArticle).toContain(
       '<link rel="canonical" href="https://threadnote.io/whats-new/articles/evidence-before-rewrites/" />',
     );
+    expect(renderedArticle).toContain('<link rel="icon" href="../../../favicon.svg"');
+    expect(renderedRelease).toContain('<link rel="icon" href="../../../favicon.svg"');
     expect(renderedArticle).toContain('<meta property="og:type" content="article" />');
     expect(renderedArticle).toContain(
       '<meta property="og:image" content="https://threadnote.io/evidence-before-rewrites-og.png" />',
