@@ -299,19 +299,18 @@ describe('Threadnote MCP toolsets', () => {
     await withMcpClient(
       async client => {
         const instructions = client.getInstructions() ?? '';
-        expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(384);
+        expect(Buffer.byteLength(instructions)).toBeLessThanOrEqual(360);
         expect(instructions).toContain('callerCwd');
         expect(instructions).toContain('threadnote://');
         expect(instructions).toContain('handoff');
-        expect(instructions).toContain('Non-trivial local work starts `context_brief`');
-        expect(instructions).toContain('absolute `callerCwd` (compact agent output is default)');
+        expect(instructions).toContain('Threadnote: cross-session memory, context briefs, code graphs, handoffs');
+        expect(instructions).toContain('For non-trivial work call `context_brief`');
+        expect(instructions).toContain('task + absolute `callerCwd`');
         expect(instructions).toContain('Read recalled `threadnote://` pointers');
-        expect(instructions).toContain('verify graph evidence against exact source');
-        expect(instructions).toContain('End with private `remember_context(kind=handoff)`');
-        expect(instructions).toContain(
-          'Never auto-apply/share or store secrets, credentials, customer data, raw production logs',
-        );
-        expect(instructions).toContain('Publishing requires confirmation');
+        expect(instructions).toContain('verify source');
+        expect(instructions).toContain('Finish with private `remember_context(kind=handoff)`');
+        expect(instructions).toContain('Never auto-apply/share or store secrets, credentials, customer data, raw logs');
+        expect(instructions).toContain('Confirm publishing');
         expect(instructions.indexOf('context_brief')).toBeLessThan(instructions.indexOf('remember_context'));
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
         expect(reviewTool?.description).toContain('five-field Knowledge Delta');
@@ -335,7 +334,7 @@ describe('Threadnote MCP toolsets', () => {
           expect(tools.tools.map(tool => tool.name)).not.toContain(fullOnlyTool);
         }
         const serializedToolsBytes = Buffer.byteLength(JSON.stringify(tools.tools));
-        // Ratchet the always-loaded core tool metadata while leaving room for concise guidance.
+        // Ratchet the eager-host fallback catalog; search-capable hosts can defer these definitions.
         expect(serializedToolsBytes).toBeLessThanOrEqual(31_000);
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
