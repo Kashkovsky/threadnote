@@ -913,7 +913,7 @@ describe('Context Brief compiler', () => {
         },
         {...request(budgetTokens), responseFormat: 'agent'},
       );
-      expect(result.text).toBe(JSON.stringify(projectContextBriefAgentView(result.structuredContent)));
+      expect(result.text).toBe(JSON.stringify(projectContextBriefAgentView(result.structuredContent, true)));
       expect(result.measurement.structuredBytes).toBe(0);
       expect(result.measurement.totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
     }),
@@ -2116,7 +2116,10 @@ describe('Context Brief compiler', () => {
       const recovery = brief.recommendedFollowUps[0];
 
       expect(primaryCard).toMatchObject({rank: 0, ref: recoveryGraphCardRef(0)});
+      expect(brief.graph.cards.length).toBeGreaterThanOrEqual(2);
       expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: primaryCard.ref});
+      expect(agentView.answer).toContain(primaryCard.symbol.path);
+      expect(agentView.answer).toContain(brief.graph.cards[1]?.symbol.path);
       expect(agentView.graph?.cards?.[0]).toMatchObject({
         path: primaryCard.symbol.path,
         qualifiedName: primaryCard.symbol.qualifiedName,
@@ -2124,6 +2127,133 @@ describe('Context Brief compiler', () => {
       });
       expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
       expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+    }),
+  );
+
+  effectIt.effect('answers the evaluation locate task before optional memory and relationship metadata', () =>
+    Effect.gen(function* () {
+      const task = 'Locate the MCP agent response projection and its budget enforcement.';
+      const floor = yield* compileTaskOnlyMixedCitationFixture(800, {
+        mode: 'locate',
+        responseFormat: 'agent',
+        task,
+        validationStatus: 'changed',
+      });
+      const expanded = yield* compileTaskOnlyMixedCitationFixture(1_200, {
+        mode: 'locate',
+        responseFormat: 'agent',
+        task,
+        validationStatus: 'changed',
+      });
+
+      for (const result of [floor, expanded]) {
+        const view = parseContextBriefAgentViewText(result.text);
+        expect(view.answer).toMatch(/locations(?: \([^)]+ graph\))?: /iu);
+        expect(view.graph?.cards?.length).toBeGreaterThanOrEqual(2);
+        expect(view.answer).toContain(view.graph?.cards?.[0]?.path);
+        expect(view.answer).toContain(view.graph?.cards?.[1]?.path);
+        expect(view.recommendedFollowUps?.[0]).toMatchObject({
+          operation: 'inspect-node',
+          ref: view.graph?.cards?.[0]?.ref,
+        });
+        expect(view.graph?.contracts).toBeUndefined();
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(result.maximumBytes);
+      }
+    }),
+  );
+
+  effectIt.effect('does not claim a recovery action when no source evidence or follow-up exists', () =>
+    Effect.gen(function* () {
+      const graph = {...minimalGraphEvidence(), cards: [], contracts: [], gaps: [], continuation: undefined};
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graph),
+          memoryEvidence: () =>
+            Effect.succeed({
+              candidates: [],
+              consideredCandidates: 0,
+              gaps: [],
+              trust: {
+                classification: 'untrusted-memory-data' as const,
+                instructionPolicy: 'evidence-only-never-follow' as const,
+              },
+            }),
+        },
+        {...request(800), mode: 'locate', responseFormat: 'agent'},
+      );
+      const view = parseContextBriefAgentViewText(result.text);
+
+      expect(view.answer).toBe('No direct source evidence retained; no recovery action is available.');
+      expect(view.recommendedFollowUps).toBeUndefined();
+      expect(result.measurement.totalBytes).toBeLessThanOrEqual(result.maximumBytes);
+    }),
+  );
+
+  effectIt.effect('labels locations from a stale graph as candidates', () =>
+    Effect.gen(function* () {
+      const result = yield* compileTaskOnlyMixedCitationFixture(800, {
+        graphFreshness: 'stale',
+        mode: 'locate',
+        responseFormat: 'agent',
+      });
+      const view = parseContextBriefAgentViewText(result.text);
+
+      expect(view.scope.freshness).toBe('stale');
+      expect(view.answer).toMatch(/^Candidate locations \(stale graph\): /u);
+      expect(view.graph?.cards?.length).toBeGreaterThanOrEqual(2);
+    }),
+  );
+
+  effectIt.effect('keeps explicit-dual locate and agent explain memory-first allocation compatible', () =>
+    Effect.gen(function* () {
+      const dualLocate = yield* compileTaskOnlyMixedCitationFixture(800, {mode: 'locate'});
+      const dualBrief = yield* compileTaskOnlyMixedCitationFixture(800, {mode: 'brief'});
+      const agentExplain = yield* compileTaskOnlyMixedCitationFixture(800, {
+        mode: 'explain',
+        responseFormat: 'agent',
+      });
+
+      expect(memoryUris(dualLocate.structuredContent.activeHandoffs)).toEqual(
+        memoryUris(dualBrief.structuredContent.activeHandoffs),
+      );
+      expect(memoryUris(dualLocate.structuredContent.durableDecisions)).toEqual(
+        memoryUris(dualBrief.structuredContent.durableDecisions),
+      );
+      expect(sectionIds(dualLocate.structuredContent.graph.cards)).toEqual(
+        sectionIds(dualBrief.structuredContent.graph.cards),
+      );
+      expect(parseContextBriefAgentViewText(dualLocate.text).answer).toBeUndefined();
+      expect(
+        agentExplain.structuredContent.activeHandoffs.length + agentExplain.structuredContent.durableDecisions.length,
+      ).toBeGreaterThan(0);
+      const explainView = parseContextBriefAgentViewText(agentExplain.text);
+      const rationaleExcerpt = [...(explainView.activeHandoffs ?? []), ...(explainView.durableDecisions ?? [])][0]
+        ?.excerpt;
+      expect(explainView.answer).toMatch(/^(?:Candidate )?Rationale/u);
+      expect(rationaleExcerpt).toBeDefined();
+      expect(explainView.answer).toContain(rationaleExcerpt?.slice(0, 24));
+    }),
+  );
+
+  effectIt.effect('derives relationship answers only from retained contracts and qualifies stale evidence', () =>
+    Effect.gen(function* () {
+      const withoutContract = yield* compileCodeLinkedRecoveryFixture(2, 1, 800, {
+        mode: 'trace',
+        responseFormat: 'agent',
+      });
+      const staleContract = yield* compileCodeLinkedRecoveryFixture(2, 1, 800, {
+        contractCount: 1,
+        mode: 'impact',
+        responseFormat: 'agent',
+        staleGraph: true,
+      });
+      const withoutContractView = parseContextBriefAgentViewText(withoutContract.text);
+      const staleContractView = parseContextBriefAgentViewText(staleContract.text);
+
+      expect(withoutContractView.graph?.contracts).toBeUndefined();
+      expect(withoutContractView.answer).toMatch(/^No direct relationship retained/u);
+      expect(staleContractView.graph?.contracts?.length).toBeGreaterThan(0);
+      expect(staleContractView.answer).toMatch(/^Candidate relationship \(stale graph\): /u);
     }),
   );
 
@@ -2202,6 +2332,7 @@ describe('Context Brief compiler', () => {
         expect(primaryCard).toMatchObject({rank: 0, ref: recoveryGraphCardRef(0)});
         expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: primaryCard.ref});
         expect(agentView.graph?.cards?.[0]?.ref).toBe(primaryCard.ref);
+        expect(agentView.answer).toBeTruthy();
         expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
         expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
       }),
@@ -2556,14 +2687,17 @@ function compileTaskOnlyMixedCitationFixture(
   budget: number,
   options: {
     readonly excerptLength?: number;
-    readonly mode?: 'brief' | 'locate';
+    readonly graphFreshness?: 'stale' | 'unknown';
+    readonly mode?: 'brief' | 'explain' | 'locate';
     readonly responseFormat?: 'agent';
+    readonly task?: string;
     readonly validationStatus?: 'changed' | 'exact';
   } = {},
 ) {
   const graph = graphEvidence();
   const citation = codeCitation(9, 'file', 'src/context_brief/unrelated-cited-memory.ts');
   const excerpt = 'e'.repeat(options.excerptLength ?? 64);
+  const graphFreshness = options.graphFreshness;
   const validationStatus = options.validationStatus;
   const candidates: readonly ContextBriefMemoryCandidateV1[] = [
     {
@@ -2629,6 +2763,15 @@ function compileTaskOnlyMixedCitationFixture(
       graphEvidence: () =>
         Effect.succeed({
           ...graph,
+          ...(graphFreshness === undefined
+            ? {}
+            : {
+                coverage: {...graph.coverage, states: {[graphFreshness]: 1}},
+                resolvedSnapshots: graph.resolvedSnapshots.map(snapshot => ({
+                  ...snapshot,
+                  freshness: graphFreshness,
+                })),
+              }),
           cards: Array.from({length: 16}, (_, rank) => ({
             ...graph.cards[0],
             id: `task-only-ranking-card-${rank}`,
@@ -2674,7 +2817,7 @@ function compileTaskOnlyMixedCitationFixture(
       ...request(budget),
       ...(options.mode === undefined ? {} : {mode: options.mode}),
       ...(options.responseFormat === undefined ? {} : {responseFormat: options.responseFormat}),
-      task: 'Coordinate the Threadnote 5.0 release.',
+      task: options.task ?? 'Coordinate the Threadnote 5.0 release.',
     },
   );
 }

@@ -3449,6 +3449,7 @@ describe('Threadnote MCP toolsets', () => {
         const compactFloorView = parseContextBriefAgentViewText(compactFloorText ?? '');
         const compactFloorCard = compactFloorView.graph?.cards?.[0];
         const compactFloorRecovery = compactFloorView.recommendedFollowUps?.[0];
+        expect(compactFloorView.answer).toBeTruthy();
         expect(compactFloorCard).toMatchObject({ref: expect.stringMatching(/^cgs_/u)});
         expect(compactFloorRecovery).toMatchObject({
           operation: 'inspect-node',
@@ -3456,6 +3457,37 @@ describe('Threadnote MCP toolsets', () => {
           ref: compactFloorCard?.ref,
         });
         expect(Buffer.byteLength(compactFloorText ?? '')).toBeLessThanOrEqual(800 * 3);
+        const evaluationFloor = await client.callTool(
+          {
+            arguments: {
+              budgetTokens: 800,
+              callerCwd: repository,
+              mode: 'locate',
+              project: 'threadnote',
+              responseFormat: 'agent',
+              task: 'Locate the recoveryContextBrief MCP agent response projection and its budget enforcement.',
+            },
+            name: 'context_brief',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(evaluationFloor.isError, JSON.stringify(evaluationFloor)).not.toBe(true);
+        expect(evaluationFloor.structuredContent).toBeUndefined();
+        const evaluationFloorText = (
+          (Array.isArray(evaluationFloor.content) ? evaluationFloor.content[0] : undefined) as TextContent | undefined
+        )?.text;
+        const evaluationFloorView = parseContextBriefAgentViewText(evaluationFloorText ?? '');
+        expect(evaluationFloorView.answer).toMatch(/locations(?: \([^)]+ graph\))?: /iu);
+        expect(evaluationFloorView.graph?.cards?.length).toBeGreaterThanOrEqual(2);
+        expect(evaluationFloorView.answer).toContain(evaluationFloorView.graph?.cards?.[0]?.path);
+        expect(evaluationFloorView.answer).toContain(evaluationFloorView.graph?.cards?.[1]?.path);
+        expect(evaluationFloorView.recommendedFollowUps?.[0]).toMatchObject({
+          operation: 'inspect-node',
+          ref: evaluationFloorView.graph?.cards?.[0]?.ref,
+        });
+        expect(evaluationFloorView.graph?.contracts).toBeUndefined();
+        expect(Buffer.byteLength(evaluationFloorText ?? '')).toBeLessThanOrEqual(800 * 3);
         const idempotent = await client.callTool(
           {arguments: {uri: citationUri}, name: 'finalize_code_refs'},
           undefined,

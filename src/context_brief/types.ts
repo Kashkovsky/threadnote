@@ -482,6 +482,8 @@ export interface ProjectedContextBriefV1 {
  */
 export interface ContextBriefAgentViewV1 {
   readonly activeHandoffs?: readonly ContextBriefAgentViewMemoryV1[];
+  /** Deterministic task-level synthesis over only the evidence retained in this agent view. */
+  readonly answer?: string;
   readonly briefVersion: ContextBriefResponseVersion;
   readonly coverage?: {
     readonly codeAnchors?: ContextBriefCodeAnchorCoverageV3;
