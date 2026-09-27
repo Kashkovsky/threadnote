@@ -288,12 +288,15 @@ describe('standalone lease reconciliation', () => {
   effectIt.effect('keeps orphaned repair temporaries outside lease discovery', () =>
     Effect.gen(function* () {
       const {fs, path, system, leasePath} = yield* fixture;
+      const repaired = yield* Deferred.make<void>();
       let temporary = '';
       const orphaning = FileSystem.FileSystem.of({
         ...fs,
         link: (from, to) => {
           temporary = from;
-          return fs.link(from, to);
+          return fs
+            .link(from, to)
+            .pipe(Effect.tap(() => (to === leasePath ? Deferred.succeed(repaired, undefined) : Effect.void)));
         },
         remove: (file, options) => Effect.suspend(() => (file === temporary ? Effect.void : fs.remove(file, options))),
       });
@@ -301,7 +304,7 @@ describe('standalone lease reconciliation', () => {
         Effect.gen(function* () {
           yield* fs.remove(leasePath);
           yield* TestClock.adjust(30_000);
-          yield* awaitLease(fs, leasePath);
+          yield* Deferred.await(repaired);
           expect(yield* fs.exists(temporary)).toBe(true);
           expect(yield* fs.readDirectory(path.dirname(leasePath))).toEqual([`${system.processId}.json`]);
           expect((yield* readStandaloneProcessLeaseVerification()).truncated).toBe(false);
