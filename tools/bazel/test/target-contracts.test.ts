@@ -24,6 +24,11 @@ const target = (label: string) => {
 };
 
 describe('generated Bazel test contracts', () => {
+  it('keeps the inventory byte-stable across filesystem enumeration orders', () => {
+    const labels = inventory.targets.map(candidate => candidate.label);
+    expect(labels).toEqual([...labels].sort());
+  });
+
   it('owns every PostgreSQL-gated suite in the localhost-enabled target', () => {
     const expected = [
       'apps/threadnote/test/integration/remote-memory-git-authority.test.ts',

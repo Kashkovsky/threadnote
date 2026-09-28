@@ -17,7 +17,9 @@ const testFilesBelow = directory =>
   filesBelow(directory)
     .filter(path => path.endsWith('.test.ts'))
     .sort();
-const packageDirectories = readdirSync(join(root, 'packages')).map(name => `packages/${name}`);
+const packageDirectories = readdirSync(join(root, 'packages'))
+  .sort()
+  .map(name => `packages/${name}`);
 const longRunningTests = new Set(Object.values(ciLongRunningTestGroups).flat());
 const applicationTests = testFilesBelow('apps/threadnote/test');
 const postgresTests = new Set(

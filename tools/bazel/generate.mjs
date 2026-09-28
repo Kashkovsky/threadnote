@@ -135,6 +135,7 @@ for (const target of staticTargets) {
     throw new Error(`Duplicate Bazel target inventory label: ${target.label}`);
   inventory.push({...target, inputs: [...new Set(target.inputs)].sort(), npm: []});
 }
+inventory.sort((left, right) => (left.label < right.label ? -1 : left.label > right.label ? 1 : 0));
 const write = (path, content) => {
   if (check) {
     if (!exists(path) || read(path) !== content)
