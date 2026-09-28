@@ -222,6 +222,7 @@ bun_test(
         "//apps/threadnote:test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json",
         "//apps/threadnote:test/evaluation/baselines/code-graph-v1/production-ratchet-linux-paired-wall-calibration-v1.json",
         "//apps/threadnote:test/evaluation/baselines/code-graph-v1/production-ratchet-linux-paired-wall-calibration-v1.md",
+        "//apps/threadnote:test/evaluation/baselines/code-graph-v1/production-ratchet-workspace-owner-pruning-v1.md",
         "//apps/threadnote:test/evaluation/baselines/code-graph-v1/threadnote-native.json",
         "//apps/threadnote:test/evaluation/baselines/code-graph-v1/threadnote-no-graph.json",
         "//apps/threadnote:test/evaluation/baselines/code-graph-v1/vector-100000-macos-calibration-v1.json",
