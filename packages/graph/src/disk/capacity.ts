@@ -84,7 +84,7 @@ export function isCodeGraphCapacityFailureOperation(value: unknown): value is Co
   return (
     value === 'observe code graph storage capacity' ||
     value === 'protect code graph storage' ||
-    CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS.some(operation => operation === value)
+    CODE_GRAPH_DISK_RESERVATION_OPERATIONS.some(operation => operation === value)
   );
 }
 

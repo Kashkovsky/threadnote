@@ -944,13 +944,19 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
   readonly protection: DirectPersistentCapacityProtection;
   readonly threadnoteHome: string;
 }) {
+  const temporaryDirectory = codeGraphCapacityTemporaryDirectory({
+    boundary: input.boundary,
+    environment: input.protection.system.environment(),
+    platform: input.protection.system.platform,
+    temporaryDirectory: input.protection.temporaryDirectory,
+  });
   const [durableFilesystem, temporaryFilesystem] = yield* Effect.all(
     [
       input.fs.stat(input.layout.repositoryRoot).pipe(
         Effect.map(info => info.dev),
         Effect.option,
       ),
-      input.fs.stat(input.protection.temporaryDirectory).pipe(
+      input.fs.stat(temporaryDirectory).pipe(
         Effect.map(info => info.dev),
         Effect.option,
       ),
@@ -968,7 +974,7 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
       ? Effect.succeed([undefined, undefined] as const)
       : filesystemsShared
         ? probe(input.layout.repositoryRoot).pipe(Effect.map(available => [available, available] as const))
-        : Effect.all([probe(input.layout.repositoryRoot), probe(input.protection.temporaryDirectory)] as const, {
+        : Effect.all([probe(input.layout.repositoryRoot), probe(temporaryDirectory)] as const, {
             concurrency: 2,
           });
   const [[durableAvailableBytes, temporaryAvailableBytes], storage] = yield* Effect.all(
@@ -1008,6 +1014,18 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
       : 'temporary-filesystem-unknown',
   };
 });
+
+/** SQLite checks SQLITE_TMPDIR before TMPDIR on Unix when it creates sorter spill files. */
+export function codeGraphCapacityTemporaryDirectory(input: {
+  readonly boundary: CodeGraphDirectPersistentCapacityBoundary;
+  readonly environment: Readonly<Record<string, string | undefined>>;
+  readonly platform: string;
+  readonly temporaryDirectory: string;
+}): string {
+  return input.boundary.transientFilesystem === 'temporary' && input.platform !== 'win32'
+    ? input.environment.SQLITE_TMPDIR?.trim() || input.temporaryDirectory
+    : input.temporaryDirectory;
+}
 
 export function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
