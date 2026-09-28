@@ -630,16 +630,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             );
                             // Completed-concurrent promotion changes the ready authority.
                             yield* beginDemandPublication();
-                            // An isolated builder exits as soon as it returns this shared result.
-                            // Drain superseded persistent rows before that scope closes so a
-                            // high-churn worktree cannot accumulate one full graph per request.
+                            // This result is already materialized. Make bounded cleanup progress;
+                            // another full drain is required only before creating new graph payload.
                             yield* store.retireIncompleteWorktreeSnapshots(
                               layout.databasePath,
                               identity.repositoryId,
                               identity.worktreeId,
                               new Set(),
                               retiredSnapshotCleanupReporter(options.onProgress),
-                              {cleanupMode: 'required', scopeId: scope?.scopeKey},
+                              {cleanupMode: 'deferred', scopeId: scope?.scopeKey},
                             );
                             yield* promoteReadySnapshotWithCapacity(
                               {
@@ -920,18 +919,19 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             : new Set([logicalSnapshotId]);
                       // Inventory is complete; every remaining route can promote or materialize.
                       yield* beginDemandPublication();
-                      // Apply storage backpressure before another repository-sized materialization.
-                      // Detached cleanup is cancelled with short-lived CLI graph builders and cannot
-                      // keep pace with repeated WorktreeChangedDuringIndex failures.
-                      yield* store.retireIncompleteWorktreeSnapshots(
-                        layout.databasePath,
-                        identity.repositoryId,
-                        identity.worktreeId,
-                        retainedSnapshotIds,
-                        retiredSnapshotCleanupReporter(options.onProgress),
-                        {cleanupMode: 'required', scopeId: scope?.scopeKey},
-                      );
+                      const reclaimSnapshots = (cleanupMode: 'deferred' | 'required') =>
+                        store
+                          .retireIncompleteWorktreeSnapshots(
+                            layout.databasePath,
+                            identity.repositoryId,
+                            identity.worktreeId,
+                            cleanupMode === 'deferred' ? new Set<string>() : retainedSnapshotIds,
+                            retiredSnapshotCleanupReporter(options.onProgress),
+                            {cleanupMode, scopeId: scope?.scopeKey},
+                          )
+                          .pipe(Effect.asVoid);
                       if (reusableReady) {
+                        yield* reclaimSnapshots('deferred');
                         if (existing?.id !== reusableReady.id) {
                           yield* promoteReadySnapshotWithCapacity(
                             {
@@ -983,12 +983,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                             options.persistentMaterializationTransactionBatchLimit,
                           preparationGate: buildResources.preparationGate,
                           preparedSpoolBudgetGate: buildResources.preparedSpoolBudgetGate,
+                          reclaimSnapshots,
                           requestedOverlay,
                           startedAt,
                           store,
                           threadnoteHome: options.threadnoteHome,
                         });
                       }
+                      // Short-lived builders cannot rely on detached cleanup before creating
+                      // another graph payload. Ready-only returns above make bounded progress.
+                      yield* reclaimSnapshots('required');
                       const scopeResolutionChanged =
                         scope !== undefined &&
                         [...inventoryOverlayObservation.changedPaths, ...inventoryOverlayObservation.deletedPaths].some(

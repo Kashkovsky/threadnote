@@ -32,7 +32,7 @@ import {lastStatementChangeCount} from './activation/core.js';
 import {pruneRetiredSnapshotRows} from './retirement.js';
 import {chunk, uniqueBy, upsertRepository} from './utilities.js';
 import {
-  reclaimRetiredSnapshotPage,
+  makeRetiredSnapshotReclamationPage,
   REEXPORT_CLOSURE_PAGE_MAXIMUM_ROWS,
   REEXPORT_CLOSURE_SEED_PAGE_ROWS,
   stageActivationMonikers,
@@ -283,8 +283,9 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
     let rowsDeleted = 0;
     let snapshotsCompleted = 0;
     for (const batch of chunk(targets, 100)) {
+      const reclaimPage = makeRetiredSnapshotReclamationPage(sql, batch);
       for (;;) {
-        const page = yield* runWrite(sql.withTransaction(reclaimRetiredSnapshotPage(sql, batch)));
+        const page = yield* runWrite(reclaimPage);
         pagesCompleted += 1;
         rowsDeleted += page.rowsDeleted;
         if (page.complete) snapshotsCompleted += batch.length;

@@ -301,7 +301,7 @@ export function createWorkspaceAttributor(
       references: file.references?.map(reference =>
         Option.match(findProject(file.path, reference.resolutionDomain), {
           onNone: () => reference,
-          onSome: project => attributeReference(reference, project, projectsById),
+          onSome: project => attributeReference(reference, project, projectsById, findProject),
         }),
       ),
       symbols: file.symbols.map(symbol =>
@@ -818,15 +818,26 @@ function attributeReference(
   reference: CodeGraphReference,
   project: CodeGraphWorkspaceProject,
   projectsById: ReadonlyMap<string, CodeGraphWorkspaceProject>,
+  findProject: ReturnType<typeof createWorkspaceProjectLookup>,
 ): CodeGraphReference {
   if (!projectSupportsResolutionDomain(project, reference.resolutionDomain)) return reference;
   const lookupTiers: Array<readonly string[]> = [];
   for (const tier of reference.lookupTiers) {
-    lookupTiers.push(tier.map(key => scopedLookupKey(key, project, reference.resolutionDomain)));
+    const owners = tier.map(key => {
+      const path = reference.resolutionDomain === 'typescript' ? typeScriptLookupPath(key) : undefined;
+      return path === undefined ? undefined : Option.getOrUndefined(findProject(path, 'typescript'))?.id;
+    });
+    const keysForProject = (target: CodeGraphWorkspaceProject) =>
+      tier.flatMap((key, index) =>
+        owners[index] === undefined || owners[index] === target.id
+          ? [scopedLookupKey(key, target, reference.resolutionDomain)]
+          : [],
+      );
+    lookupTiers.push(keysForProject(project));
     const dependencyKeys = project.dependencies.flatMap(dependencyId => {
       const dependency = projectsById.get(dependencyId);
       return dependency && projectSupportsResolutionDomain(dependency, reference.resolutionDomain)
-        ? tier.map(key => scopedLookupKey(key, dependency, reference.resolutionDomain))
+        ? keysForProject(dependency)
         : [];
     });
     if (dependencyKeys.length > 0) lookupTiers.push(unique(dependencyKeys));
@@ -836,6 +847,19 @@ function attributeReference(
     aliasLookupKeys: reference.aliasLookupKeys?.map(key => scopedLookupKey(key, project, reference.resolutionDomain)),
     lookupTiers,
   };
+}
+
+function typeScriptLookupPath(key: string): string | undefined {
+  const match =
+    /^typescript:(?:module:([^:]+)|path:([^:]+):(?:name|qualified):[^:]+(?::(?:arity:\d+|implementation|merge-canonical))?)$/u.exec(
+      key,
+    );
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1] ?? match[2]);
+  } catch {
+    return undefined;
+  }
 }
 
 function scopedLookupKey(key: string, project: CodeGraphWorkspaceProject, resolutionDomain: string): string {

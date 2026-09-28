@@ -83,6 +83,7 @@ describe('indexer build coordination wiring', () => {
             Ref.update(events, values => [...values, 'preparation']).pipe(Effect.andThen(effect)),
           preparedSpoolBudgetGate: (_bytes, _snapshotId, effect) =>
             Ref.update(events, values => [...values, 'budget']).pipe(Effect.andThen(effect)),
+          reclaimSnapshots: () => Effect.void,
           startedAt: 0,
           store,
           threadnoteHome: home,
