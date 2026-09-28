@@ -173,3 +173,19 @@ reachability and selection determinism/monotonicity.
 No remote cache is configured. If one is introduced later, restrict writes to
 trusted CI, give untrusted pull requests read-only access or no access, and measure
 the benefit before making it part of the required workflow.
+
+## Benchmark orchestration boundary
+
+`//:platform_benchmark_preflight` is a correctness target, not a performance
+capture. It declares the Platform benchmark workflow, harness, provenance,
+failure, sampler, and recall-runner contracts and runs their deterministic tests.
+The Platform benchmarks workflow executes this target as an independent job.
+Scheduled and manual benchmark runs own that job; pull requests execute the
+target once through affected-target Bazel CI.
+
+Measured jobs remain direct Bun commands on their selected GitHub-hosted runner.
+They do not depend on the Bazel preflight and must not be moved behind
+`bazel test` or a cached/sandboxed Bazel action without a focused experiment that
+proves cold/warm measurement parity. Bazel staging, HOME/TMPDIR isolation,
+caching, and process-launch overhead are valid for correctness tests but are not
+part of the benchmark measurement environment.

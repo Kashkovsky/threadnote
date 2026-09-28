@@ -1,5 +1,6 @@
 /* oxlint-disable effecttsgo/node-builtin-import -- Build graph generation runs before the dependency graph it declares. */
 import {existsSync, readFileSync, readdirSync, statSync, writeFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
 import {join, resolve} from 'node:path';
 import {bazelSourceLabel, packageExportPatterns, packageOwner} from './declaration-paths.mjs';
 import {collectSourceClosure} from './source-closure.mjs';
@@ -9,13 +10,21 @@ const root = resolve(import.meta.dir, '../..');
 const check = process.argv.includes('--check');
 const read = path => readFileSync(join(root, path), 'utf8');
 const exists = path => existsSync(join(root, path)) && statSync(join(root, path)).isFile();
+const repositoryFiles = new Set(
+  execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+    cwd: root,
+    encoding: 'utf8',
+  })
+    .split('\0')
+    .filter(Boolean),
+);
 const filesBelow = directory => {
   const absolute = join(root, directory);
   if (!existsSync(absolute) || !statSync(absolute).isDirectory()) return [];
   return readdirSync(absolute, {withFileTypes: true}).flatMap(entry => {
     if (['.git', '.DS_Store', '.bazel-inputs', 'BUILD', 'BUILD.bazel', 'node_modules'].includes(entry.name)) return [];
     const path = `${directory}/${entry.name}`;
-    return entry.isDirectory() ? filesBelow(path) : [path];
+    return entry.isDirectory() ? filesBelow(path) : repositoryFiles.has(path) ? [path] : [];
   });
 };
 const bazelPackagesBelow = directory => {

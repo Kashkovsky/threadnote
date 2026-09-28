@@ -8,6 +8,7 @@ interface TargetInventoryEntry {
   readonly entries: readonly string[];
   readonly env: Readonly<Record<string, string>>;
   readonly inputs: readonly string[];
+  readonly kind: string;
   readonly label: string;
   readonly requiresNetwork: boolean;
   readonly timeout: string | null;
@@ -28,6 +29,12 @@ describe('generated Bazel test contracts', () => {
   it('keeps the inventory byte-stable across filesystem enumeration orders', () => {
     const labels = inventory.targets.map(candidate => candidate.label);
     expect(labels).toEqual([...labels].sort());
+  });
+
+  it('excludes ignored install artifacts from generated inputs', () => {
+    const inputs = inventory.targets.flatMap(candidate => candidate.inputs);
+
+    expect(inputs.some(input => input.startsWith('.husky/_/'))).toBe(false);
   });
 
   it('owns every PostgreSQL-gated suite in the localhost-enabled target', () => {
@@ -91,6 +98,28 @@ describe('generated Bazel test contracts', () => {
     expect(target('//:release_matrix').dependsOn).toEqual(['//:release_check', '//:threadnote_build']);
     expect(target('//:recall_quality').dependsOn).toEqual(['//:recall_quality_inputs']);
     expect(target('//:windows_smoke').dependsOn).toEqual(['//:windows_smoke_inputs']);
+  });
+
+  it('declares the benchmark correctness preflight without treating it as measured execution', () => {
+    const preflight = target('//:platform_benchmark_preflight');
+
+    expect(preflight.kind).toBe('test');
+    expect(preflight.workspace).toBe(true);
+    expect(preflight.timeout).toBe('long');
+    expect(preflight.entries).toEqual([
+      'apps/threadnote/test/integration/code-graph.benchmark-failure.test.ts',
+      'apps/threadnote/test/integration/code-graph.benchmark-preflight.test.ts',
+      'apps/threadnote/test/unit/code-graph.benchmark-harness.test.ts',
+      'apps/threadnote/test/unit/evaluation.recall-benchmark-runners.test.ts',
+      'packages/graph/test/unit/code-graph.benchmark-sampler.test.ts',
+      'tools/ci/test/benchmark-workflow.test.ts',
+      'tools/ci/test/platform-benchmark-scope.test.ts',
+    ]);
+    expect(preflight.inputs).toContain('.github/workflows/benchmarks.yml');
+    expect(preflight.inputs).toContain('.github/workflows/production-large-evidence.yml');
+    expect(preflight.inputs).toContain('scripts/benchmark-code-graph.ts');
+    expect(preflight.inputs).toContain('scripts/code-graph-benchmark-sampler.ts');
+    expect(preflight.inputs.some(input => input.startsWith('artifacts/'))).toBe(false);
   });
 
   it('keeps application runtime closure out of ordinary package tests', () => {

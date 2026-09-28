@@ -90,6 +90,17 @@ Website builds consume prepared metadata produced before the sandbox. Cached act
 
 Run focused tests locally. Pull-request CI owns the complete selected suite and platform matrix.
 
+Platform performance workflows keep measurement execution outside Bazel. The
+`//:platform_benchmark_preflight` target declares and validates deterministic
+harness, workflow, provenance, and sampler contracts in an independent workflow
+job for scheduled and manual benchmark runs; pull requests run it once through
+affected-target Bazel CI. GitHub Actions still chooses runner/OS/service/model
+matrices and invokes every measured capture directly with Bun. Capture jobs do
+not depend on the Bazel preflight, so its cache state, isolated HOME/TMPDIR,
+staging layout, and process-launch overhead cannot enter cold or warm
+measurements. Moving a capture behind `bazel test` requires a focused experiment
+that proves measurement parity.
+
 Preview selection with `bun run bazel:affected`. The command writes the exact
 selection, changed paths, fallback reason, base/head graph evidence, and shard plan under
 `.context/bazel-selection/`, which is ignored by Git and suitable for attaching to

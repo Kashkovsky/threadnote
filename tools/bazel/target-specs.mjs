@@ -156,6 +156,16 @@ const toolingTests = [
   ...testFilesBelow('tools/workspace/test'),
 ];
 
+const platformBenchmarkPreflightTests = [
+  'apps/threadnote/test/integration/code-graph.benchmark-failure.test.ts',
+  'apps/threadnote/test/integration/code-graph.benchmark-preflight.test.ts',
+  'apps/threadnote/test/unit/code-graph.benchmark-harness.test.ts',
+  'apps/threadnote/test/unit/evaluation.recall-benchmark-runners.test.ts',
+  'packages/graph/test/unit/code-graph.benchmark-sampler.test.ts',
+  'tools/ci/test/benchmark-workflow.test.ts',
+  'tools/ci/test/platform-benchmark-scope.test.ts',
+];
+
 const packageTests = packageDirectories.flatMap(directory => {
   const entries = testFilesBelow(`${directory}/test`);
   if (entries.length === 0) return [];
@@ -276,8 +286,25 @@ export const targetSpecs = [
     name: 'tooling_test',
     kind: 'test',
     entries: toolingTests,
-    data: ['tools/bazel/runner.mjs', 'tools/bazel/targets.json', 'tools/ci/bazel-run-selected.mjs'],
+    data: [
+      'tools/bazel/runner.mjs',
+      'tools/bazel/targets.json',
+      'tools/ci/bazel-run-selected.mjs',
+      'tools/ci/bazel-select.mjs',
+    ],
     dataRoots: ['.github/workflows'],
+  },
+  {
+    package: '',
+    name: 'platform_benchmark_preflight',
+    kind: 'test',
+    workspace: true,
+    timeout: 'long',
+    entries: platformBenchmarkPreflightTests,
+    closureEntries: ['apps/threadnote/src/standalone.ts'],
+    data: ['bun.lock', 'package.json'],
+    dataRoots: ['.github/workflows', 'apps/threadnote/test/evaluation/baselines/code-graph-v1'],
+    npm: packageTestNpm['packages/graph'],
   },
   {
     package: '',

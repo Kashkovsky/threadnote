@@ -75,6 +75,28 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bun tools/ci/platform-benchmark-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"
 
+  benchmark-preflight:
+    name: Benchmark harness · Bazel preflight
+    needs: classify-platform-benchmark
+    # Pull requests run this target through the affected-target Bazel shards.
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Validate declared benchmark harness inputs and contracts
+        run: bun run bazel -- test //:platform_benchmark_preflight --test_output=errors --cache_test_results=no
+
   recall-pr-10k:
     name: Recall production 10k · Linux
     needs: classify-platform-benchmark
