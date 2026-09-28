@@ -1,7 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {BunRuntime} from '@effect/platform-bun';
 import {Effect, FileSystem, Path} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 
 export interface MixedNxBazelGateEvidence {
   readonly analysisMilliseconds: number;
@@ -54,7 +54,7 @@ export function validateMixedNxBazelGate(evidence: MixedNxBazelGateEvidence, bud
 
 const run = Effect.fn('mixedNxBazelGate.run')(function* (args: readonly string[] = process.argv.slice(2)) {
   let evidencePath: string | undefined;
-  let budgetsPath = 'test/evaluation/baselines/code-graph-v1/mixed-nx-bazel-budgets.json';
+  let budgetsPath = 'apps/threadnote/test/evaluation/baselines/code-graph-v1/mixed-nx-bazel-budgets.json';
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === '--evidence') evidencePath = args[++index];
     else if (args[index] === '--budgets') budgetsPath = args[++index]!;

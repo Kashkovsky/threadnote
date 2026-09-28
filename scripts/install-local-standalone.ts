@@ -1,3 +1,5 @@
+import {ScriptCommandExecutorLayer} from './effect/system-layer.js';
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
@@ -8,11 +10,11 @@ import {
   managedCommandLauncherKinds,
   primaryCommandLauncherKind,
   renderCommandShim,
-} from '../src/command-shim.js';
-import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
-import {captureConsole} from '../src/effect/console.js';
-import {sha256FileHex, sha256Hex} from '../src/effect/digest.js';
-import {SystemInfo, type SystemInfoShape} from '../src/effect/system.js';
+} from '@threadnote/threadnote/command-shim';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {captureConsole} from '@threadnote/threadnote/effect/console';
+import {sha256FileHex, sha256Hex} from '@threadnote/platform/digest';
+import {SystemInfo, type SystemInfoShape} from '@threadnote/platform/system';
 import {
   activateStandaloneRelease,
   activeInstalledVersion,
@@ -20,12 +22,12 @@ import {
   promoteStandaloneReleaseDirectory,
   pruneStandaloneReleases,
   withStandaloneInstallationLock,
-} from '../src/installations.js';
+} from '@threadnote/threadnote/installations';
 import {
   explicitlyPreservedStandaloneProcessIds,
   readStandaloneProcessLeaseVerification,
   terminateSupersededStandaloneProcesses,
-} from '../src/process/standalone_lease.js';
+} from '@threadnote/threadnote/process/standalone_lease';
 import {scriptArguments} from './effect/script.js';
 import {
   DEVELOPMENT_INSTALL_RECEIPT_VERSION,
@@ -1179,8 +1181,8 @@ function readReleaseMetadata(fs: FileSystem.FileSystem, file: string) {
   );
 }
 
-const systemLayer = SystemInfo.layer;
-const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const systemLayer = ScriptSystemInfoLayer;
+const commandLayer = ScriptCommandExecutorLayer.pipe(Layer.provide(systemLayer));
 const installerLayer = Layer.merge(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 const program = Effect.gen(function* () {
   const options = parseLocalStandaloneInstallArguments(yield* scriptArguments());

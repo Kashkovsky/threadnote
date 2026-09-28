@@ -14,4 +14,4 @@ COPY --chown=bun:bun package.json bun.lock ./
 COPY --chown=bun:bun src ./src
 USER bun
 EXPOSE 8787
-CMD ["bun", "src/standalone.ts", "remote-memory-service"]
+CMD ["bun", "apps/threadnote/src/standalone.ts", "remote-memory-service"]

@@ -28,8 +28,8 @@ run:
 ```sh
 bun scripts/telemetry-dashboard.ts render
 bun scripts/telemetry-dashboard.ts check
-bun --bun vitest run test/unit/telemetry-gateway-dashboard.test.ts \
-  test/unit/telemetry-dashboard-provisioning.test.ts
+bun --bun vitest run infra/telemetry-gateway/test/telemetry-gateway-dashboard.test.ts \
+  infra/telemetry-gateway/test/telemetry-dashboard-provisioning.test.ts
 ```
 
 ## Safety contract

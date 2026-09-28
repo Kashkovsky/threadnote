@@ -2,13 +2,13 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect, Path} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {evaluateContextBriefCitationRuntime} from '../src/evaluation/context-brief-citation-runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {evaluateContextBriefCitationRuntime} from '@threadnote/threadnote/evaluation/context-brief-citation-runtime';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
 const DEFAULT_FIXTURE = new URL(
-  '../test/evaluation/fixtures/context-brief-citations-runtime-v1/fixture.json',
+  '../apps/threadnote/test/evaluation/fixtures/context-brief-citations-runtime-v1/fixture.json',
   import.meta.url,
 );
 

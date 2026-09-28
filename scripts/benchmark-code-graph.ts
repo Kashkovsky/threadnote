@@ -2,35 +2,35 @@ import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
 import {Clock, DateTime, Deferred, Effect, Exit, FileSystem, Option, Path, PlatformError, Schema} from 'effect';
-import {succeedUndefined} from '../src/effect/optional.js';
-import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
-import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
-import {CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM} from '../src/code_graph/materialized_shard_cache_admission.js';
+import {succeedUndefined} from '@threadnote/platform/optional';
+import {readCodeGraphBuildStatuses} from '@threadnote/graph/build_status';
+import {CodeGraphIndexer} from '@threadnote/graph/indexer';
+import {CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM} from '@threadnote/graph/materialized_shard_cache_admission';
 import {
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphSymbolPathScoreMultiplier,
   CodeGraphStore,
   type CodeGraphSqliteWriterSettings,
   type CodeGraphSqliteWriterTuning,
-} from '../src/code_graph/store.js';
-import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
-import {codeGraphAnalysisLimitsForView} from '../src/code_graph/analysis/render.js';
-import {codeGraphLayout} from '../src/code_graph/layout.js';
-import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
+} from '@threadnote/graph/store';
+import {CodeGraphAnalysis, type CodeGraphAnalysisResult} from '@threadnote/graph/analysis';
+import {codeGraphAnalysisLimitsForView} from '@threadnote/graph/analysis/render';
+import {codeGraphLayout} from '@threadnote/graph/layout';
+import {parserWorkerCapacity} from '@threadnote/graph/parser_worker';
 import {
   CodeGraphQueryService,
   observationFromCodeGraphStatus,
   type CodeGraphInspectOptions,
   type CodeGraphStatusOptions,
-} from '../src/code_graph/query.js';
-import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
+} from '@threadnote/graph/query';
+import {resolveRepositoryIdentity} from '@threadnote/graph/repository';
 import type {
   CodeGraphActivationActivity,
   CodeGraphMaterializationSubphaseMilliseconds,
   CodeGraphProgress,
   CodeGraphQueryResult,
   CodeGraphStatus,
-} from '../src/code_graph/types.js';
+} from '@threadnote/graph/types';
 import {
   managerGraphCatalog,
   ManagerGraphBusyError,
@@ -38,31 +38,38 @@ import {
   managerGraphNodeDetail,
   managerGraphQuery,
   managerGraphVisualization,
-} from '../src/code_graph/visualization.js';
-import {runCommandEffect} from '../src/effect/command.js';
-import {sha256FileHex} from '../src/effect/digest.js';
-import {ApplicationLayer, type ApplicationServices} from '../src/effect/runtime.js';
-import {THREADNOTE_EMBEDDING_CONTEXTS_ENV, type EmbeddingContextPoolSize} from '../src/effect/ai/node-llama-cpp.js';
-import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
-import {processResourceUsageMaxRssBytes, SystemInfo, type ProcessResourceUsageRuntime} from '../src/effect/system.js';
-import {CORE_EMBEDDING_MODEL_ID} from '../src/models/builtin.js';
-import {LocalModelCatalog} from '../src/models/catalog.js';
-import {selectLocalModel} from '../src/models/selection.js';
-import {LocalModelStore} from '../src/models/store.js';
-import {codeGraphInspectionObservesWorktree, codeGraphMcpResponse} from '../src/mcp/server/index.js';
+} from '@threadnote/graph/visualization';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {sha256FileHex} from '@threadnote/platform/digest';
+import {ApplicationLayer, type ApplicationServices} from '@threadnote/threadnote/effect/runtime';
+import {
+  THREADNOTE_EMBEDDING_CONTEXTS_ENV,
+  type EmbeddingContextPoolSize,
+} from '@threadnote/inference/engine/node-llama-cpp';
+import {LocalModelRuntime} from '@threadnote/inference/engine/local-model-runtime';
+import {
+  processResourceUsageMaxRssBytes,
+  SystemInfo,
+  type ProcessResourceUsageRuntime,
+} from '@threadnote/platform/system';
+import {CORE_EMBEDDING_MODEL_ID} from '@threadnote/inference/models/builtin';
+import {LocalModelCatalog} from '@threadnote/inference/models/catalog';
+import {selectLocalModel} from '@threadnote/inference/models/selection';
+import {LocalModelStore} from '@threadnote/inference/models/store';
+import {codeGraphInspectionObservesWorktree, codeGraphMcpResponse} from '@threadnote/threadnote/mcp/server/index';
 import {
   createGraphQueryRequestGate,
   managerGraphClientRenderProxy,
   type GraphQueryVisualization,
   type GraphVisualization,
-} from '../src/manager/graph.js';
-import {MANAGER_GRAPH_MAX_EDGE_LIMIT, MANAGER_GRAPH_MAX_NODE_LIMIT} from '../src/manager/graph/limits.js';
+} from '@threadnote/manager/graph';
+import {MANAGER_GRAPH_MAX_EDGE_LIMIT, MANAGER_GRAPH_MAX_NODE_LIMIT} from '@threadnote/graph/visualization/limits';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   benchmarkMeasurement,
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
-} from '../src/evaluation/benchmark.js';
+} from '@threadnote/evidence/benchmark';
 import {
   EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS,
   INVENTORY_TIMING_REQUIRED_MEASUREMENTS,
@@ -73,9 +80,12 @@ import {
   releaseEvidenceVersionForRef,
   validateExternalRepositoryEvidence,
   type ExternalRepositoryPublicVerification,
-} from '../src/evaluation/external_evidence.js';
-import {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '../src/evaluation/public_controls.js';
-import {codeGraphEvaluationFixtureHash, parseCodeGraphEvaluationFixtureV1} from '../src/evaluation/code-graph.js';
+} from '@threadnote/evidence/external-evidence';
+import {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '@threadnote/evidence/public-controls';
+import {
+  codeGraphEvaluationFixtureHash,
+  parseCodeGraphEvaluationFixtureV1,
+} from '@threadnote/threadnote/evaluation/code-graph';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {
   GENERATED_VECTOR_CONTROL_PATH,
@@ -636,7 +646,7 @@ const benchmarkCodeGraph = Effect.scoped(
           )
         : undefined;
     const fixturePath = yield* path.fromFileUrl(
-      new URL(`../test/evaluation/fixtures/${options.fixture}/fixture.json`, import.meta.url),
+      new URL(`../apps/threadnote/test/evaluation/fixtures/${options.fixture}/fixture.json`, import.meta.url),
     );
     const fixture = parseCodeGraphEvaluationFixtureV1(yield* readJsonFile(fixturePath));
     const bootstrapRoot =
@@ -1201,7 +1211,9 @@ const benchmarkCodeGraph = Effect.scoped(
 
     yield* runCheckpoint?.mark('post-build-analysis') ?? Effect.void;
     const coldStatusStarted = yield* Clock.currentTimeNanos;
-    const analysisStatus = yield* query.status(prepared.home, prepared.repository);
+    // The measured overlay was restored above. Observe its retained snapshot without
+    // scheduling a refresh writer that would contend with the analysis lease.
+    const analysisStatus = yield* query.status(prepared.home, prepared.repository, {requestMaintenance: false});
     const coldStatusDuration =
       Number((yield* Clock.currentTimeNanos) - coldStatusStarted) / NANOSECONDS_PER_MILLISECOND;
     if (!analysisStatus.readySnapshot) {
@@ -1232,7 +1244,7 @@ const benchmarkCodeGraph = Effect.scoped(
     }
     const analysisDurations: number[] = [];
     const analysisCpuDurations: number[] = [];
-    let analysisComplete = false;
+    let incrementalAnalysis: CodeGraphAnalysisResult | undefined;
     for (let index = 0; index < Math.min(options.samples, 3); index += 1) {
       const started = yield* Clock.currentTimeNanos;
       const processStarted = processTelemetry();
@@ -1244,9 +1256,9 @@ const benchmarkCodeGraph = Effect.scoped(
           message: 'Code graph benchmark aggregate analysis unexpectedly executed a detail scan.',
         });
       }
-      analysisComplete = result.coverage.complete;
+      incrementalAnalysis = result;
     }
-    if (!analysisComplete) {
+    if (!incrementalAnalysis?.coverage.complete) {
       return yield* ScriptError.make({message: 'Code graph benchmark analysis returned partial coverage.'});
     }
     const sameOverlayReferenceAnalysis = yield* analysis.analyze({
@@ -1263,6 +1275,15 @@ const benchmarkCodeGraph = Effect.scoped(
         message: 'Code graph benchmark reference analysis unexpectedly required a detail scan.',
       });
     }
+    const incrementalAnalysisDigest = codeGraphAnalysisAggregateDigest(incrementalAnalysis);
+    const sameOverlayReferenceAnalysisDigest = codeGraphAnalysisAggregateDigest(sameOverlayReferenceAnalysis);
+    if (incrementalAnalysisDigest !== sameOverlayReferenceAnalysisDigest) {
+      return yield* ScriptError.make({
+        message:
+          `Computed analysis aggregate parity failed: incremental(sha256=${incrementalAnalysisDigest}) ` +
+          `same-overlay-full(sha256=${sameOverlayReferenceAnalysisDigest}).`,
+      });
+    }
 
     const statusSamples = Math.max(1, Math.min(options.samples, largeEvidenceRun ? 3 : 10));
     const repositoryStatusDurations: number[] = [];
@@ -1271,7 +1292,7 @@ const benchmarkCodeGraph = Effect.scoped(
     let observedStatusRecords = 0;
     for (let index = 0; index < statusSamples; index += 1) {
       const repositoryStatusStarted = yield* Clock.currentTimeNanos;
-      yield* query.status(prepared.home, prepared.repository);
+      yield* query.status(prepared.home, prepared.repository, {requestMaintenance: false});
       repositoryStatusDurations.push(
         Number((yield* Clock.currentTimeNanos) - repositoryStatusStarted) / NANOSECONDS_PER_MILLISECOND,
       );
@@ -1884,7 +1905,7 @@ const benchmarkCodeGraph = Effect.scoped(
     let budgetFailure: ScriptError | undefined;
     if (options.failOnBudget) {
       const budgetPath = yield* path.fromFileUrl(
-        new URL(`../test/evaluation/baselines/${options.fixture}/budgets.json`, import.meta.url),
+        new URL(`../apps/threadnote/test/evaluation/baselines/${options.fixture}/budgets.json`, import.meta.url),
       );
       const budget = yield* readJsonFile(budgetPath);
       budgetFailure = yield* Effect.try({
@@ -3513,6 +3534,14 @@ export interface CodeGraphStructuralDigestStreamEvidence {
   readonly rowCount: number;
 }
 
+function codeGraphAnalysisAggregateDigest(
+  analysis: Pick<CodeGraphAnalysisResult, 'confidenceAudit' | 'statistics'>,
+): string {
+  return new Bun.CryptoHasher('sha256')
+    .update(JSON.stringify({confidenceAudit: analysis.confidenceAudit, statistics: analysis.statistics}))
+    .digest('hex');
+}
+
 export interface CodeGraphStructuralGraphEvidence {
   readonly digest: string;
   readonly streams: readonly CodeGraphStructuralDigestStreamEvidence[];
@@ -3671,6 +3700,9 @@ const readCodeGraphStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.readS
     Option.isSome(readSnapshot.baseSnapshotId) ? readSnapshot.baseSnapshotId.value : undefined,
   );
   const symbolLookup = codeGraphStructuralDigestSymbolLookupStatement(snapshotId, baseSnapshotId);
+  // Persisted analysis summaries are optional derived caches. Their computed
+  // statistics are compared above; this digest covers the underlying graph facts
+  // so paged fallback and precomputed-summary snapshots remain comparable.
   const streams = [
     {
       name: 'snapshot',
@@ -3766,34 +3798,6 @@ const readCodeGraphStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.readS
         )
         SELECT source_path, local_name, target_path, imported_name
         FROM effective_rows ORDER BY source_path, local_name, target_path, imported_name`,
-    },
-    {
-      name: 'analysis-symbol-counts',
-      parameters: [snapshotId],
-      query: `SELECT language, kind, count FROM snapshot_analysis_symbol_counts
-          WHERE snapshot_id = ? ORDER BY language, kind`,
-    },
-    {
-      name: 'analysis-edge-histogram',
-      parameters: [snapshotId],
-      query: `SELECT provenance, relation, confidence, endpoint_state, count
-          FROM snapshot_analysis_edge_histogram WHERE snapshot_id = ?
-          ORDER BY provenance, relation, confidence, endpoint_state`,
-    },
-    {
-      name: 'analysis-edge-counts',
-      parameters: [snapshotId],
-      query: `SELECT provenance, relation, count, confidence_invalid, confidence_total,
-            lowest_confidence, confidence_high, confidence_medium, confidence_low,
-            unresolved_endpoint_count, self_loop_count, review_finding_count
-          FROM snapshot_analysis_edge_counts WHERE snapshot_id = ?
-          ORDER BY provenance, relation`,
-    },
-    {
-      name: 'analysis-summary-receipt',
-      parameters: [snapshotId],
-      query: `SELECT version, symbol_count, edge_count, digest
-          FROM snapshot_analysis_summary_receipts WHERE snapshot_id = ?`,
     },
   ] as const satisfies readonly CodeGraphStructuralDigestStream[];
   const evidence: CodeGraphStructuralDigestStreamEvidence[] = [];
@@ -5460,6 +5464,25 @@ export function resolvedReleaseEvidenceSource(
   };
 }
 
+export const releaseEvidenceSourcePathspecs = [
+  'src',
+  'scripts',
+  'manager',
+  'config',
+  'assets',
+  'apps/threadnote/src',
+  'apps/threadnote/package.json',
+  'apps/threadnote/embedded',
+  'apps/website/tools/site-performance-evidence.ts',
+  ':(glob)packages/*/src/**',
+  ':(glob)packages/*/package.json',
+  ':(glob)packages/*/assets/**',
+  ':(glob)packages/*/static/**',
+  'package.json',
+  'bun.lock',
+  'tsconfig.json',
+] as const;
+
 const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateReleaseEvidenceSource')(function* (
   sourceRoot: string,
   ref: string | undefined,
@@ -5497,14 +5520,7 @@ const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateRele
               '--diff-filter=ACDMRTUXB',
               `${sha}..${commit}`,
               '--',
-              'src',
-              'scripts',
-              'manager',
-              'config',
-              'assets',
-              'package.json',
-              'bun.lock',
-              'tsconfig.json',
+              ...releaseEvidenceSourcePathspecs,
             ]),
           ],
           {concurrency: 2},
@@ -5944,7 +5960,7 @@ export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepo
   return {name, url: `https://github.com/${name}`};
 }
 
-export {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '../src/evaluation/public_controls.js';
+export {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '@threadnote/evidence/public-controls';
 
 export function credentialsDisabledGitProofEnvironment(
   environment: Readonly<Record<string, string | undefined>>,

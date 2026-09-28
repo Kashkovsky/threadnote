@@ -2,8 +2,8 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Console, Effect} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {codeMemoryLinkClientImplementationDescriptorHash} from '../src/evaluation/code-memory-link-client-descriptor.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {codeMemoryLinkClientImplementationDescriptorHash} from '@threadnote/threadnote/evaluation/code-memory-link-client-descriptor';
 import {collectCodeMemoryLinkClientImplementation} from './code-memory-link-client-implementation.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, scriptArguments} from './effect/script.js';

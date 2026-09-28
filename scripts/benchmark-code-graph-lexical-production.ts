@@ -9,15 +9,15 @@ import {
   CodeGraphStore,
   type CodeGraphActivationProgress,
   type CodeGraphStagingProgress,
-} from '../src/code_graph/store.js';
+} from '@threadnote/graph/store';
 import type {
   CodeGraphInventoryFile,
   CodeGraphSnapshot,
   CodeGraphSymbol,
   RepositoryIdentity,
-} from '../src/code_graph/types.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
+} from '@threadnote/graph/types';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
 import {parseLexicalProductionBenchmarkArguments} from './benchmark-code-graph-lexical-production-arguments.js';
 import {atomicWrite, printJson, scriptArguments} from './effect/script.js';
 

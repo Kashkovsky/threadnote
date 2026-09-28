@@ -1,8 +1,8 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {BunRuntime} from '@effect/platform-bun';
 import {Effect, FileSystem, Path} from 'effect';
-import {runCommandEffect} from '../src/effect/command.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 
 export const MIXED_NX_BAZEL_FIXTURE_SOURCES = [
   {

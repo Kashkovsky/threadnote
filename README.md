@@ -96,7 +96,8 @@ bun --bun vitest run <focused-test-file>
 ```
 
 Read [CONTRIBUTION.md](./CONTRIBUTION.md) before a substantial change. It covers Effect conventions, focused testing,
-security boundaries, generated files, pull requests, and the exact-HEAD development runtime.
+security boundaries, generated files, pull requests, and the exact-HEAD development runtime. The
+[private workspace guide](./docs/monorepo.md) explains package ownership, dependency checks, and selective Bazel CI.
 
 ## License
 

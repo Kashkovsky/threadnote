@@ -6,9 +6,18 @@ Threadnote separates useful discovery from claims that require the exact current
 
 `query`, `node`, `neighbors`, and `explain` may return an immutable compatible ready snapshot while a durable refresh is
 active, queued, or deferred. Treat those cards as bounded discovery evidence: verify exact literals in the checkout
-before relying on details. `path`, `impact`, `analyze_code_graph`, and exact-current citation claims remain strict and
-must wait for current evidence. A cold checkout or a read with no usable card still follows the bounded current-refresh
-path.
+before relying on details. `path`, `impact`, and exact-current citation claims remain strict and must wait for current
+evidence. `analyze_code_graph` defaults to strict `freshness: current`; its explicit `ready` and `allow-stale` policies
+accept compatible ready evidence from the selected project and disclose its freshness.
+
+Use `freshness: ready` when a snapshot exists and exact-current refresh is blocked. It may start a bounded refresh on a
+cold project. Use `freshness: allow-stale` when the request must not start indexing: a cold project returns
+`unavailable` with `reason: no-ready-snapshot`. Historical `projectCoverage` does not establish that a project-ready
+snapshot is readable, and selecting a sibling project does not make its evidence applicable.
+
+Whole-graph reads use persisted analysis summaries or bounded paged reads without waiting for summary backfill.
+Snapshot protection still applies: writer contention during lease acquisition returns a bounded deferred state instead
+of authorizing an unleased read. Check the semantic result type before treating a successful MCP call as analysis.
 
 ## Continuity and recovery
 

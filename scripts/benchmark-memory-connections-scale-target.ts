@@ -2,20 +2,20 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {DateTime, Effect} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
 import {
   evaluateMemoryConnectionsScaleCapture,
   memoryConnectionsScaleCandidateBinding,
   MEMORY_CONNECTIONS_SCALE_APPROVED_BUDGET,
   parseMemoryConnectionsScaleArtifactV1,
   parseMemoryConnectionsScaleBudgetV1,
-} from '../src/evaluation/memory-connections-scale-contract.js';
-import {runMemoryConnectionsScaleWorkload} from '../src/evaluation/memory-connections-scale.js';
+} from '@threadnote/threadnote/evaluation/memory-connections-scale-contract';
+import {runMemoryConnectionsScaleWorkload} from '@threadnote/threadnote/evaluation/memory-connections-scale';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
-const DEFAULT_BUDGET = 'test/evaluation/baselines/memory-connections-scale-v1/budget.json';
+const DEFAULT_BUDGET = 'apps/threadnote/test/evaluation/baselines/memory-connections-scale-v1/budget.json';
 const GIT_STATUS_ARGS = [
   '-c',
   'core.fsmonitor=false',

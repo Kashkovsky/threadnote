@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["bun"],
+    "plugins": [{"name": "@effect/language-service", "diagnosticSeverity": {"floatingEffect": "error"}}]
+  },
+  "files": ["floating-effect.ts"]
+}

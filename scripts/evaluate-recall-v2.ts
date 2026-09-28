@@ -1,22 +1,22 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   baselineResult,
   CURRENT_RECALL_BASELINE_PATH,
   exceedsReviewedContractFailureLimit,
   parseRecallEvaluationBaselineV1,
-} from '../src/evaluation/recall-baseline.js';
+} from '@threadnote/threadnote/evaluation/recall-baseline';
 import {
   createRecallEvaluationFixtureV2,
   expandRecallEvaluationFixtureV2,
   recallEvaluationCategoryCounts,
   serializeRecallEvaluationFixtureV2Identity,
-} from '../src/evaluation/recall-fixture.js';
-import {evaluateRecallNonInferiority} from '../src/evaluation/recall-gate.js';
-import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluation/recall.js';
-import {getThreadnoteVersion} from '../src/release/runtime_version.js';
+} from '@threadnote/threadnote/evaluation/recall-fixture';
+import {evaluateRecallNonInferiority} from '@threadnote/threadnote/evaluation/recall-gate';
+import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '@threadnote/threadnote/evaluation/recall';
+import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 import {atomicWrite, fixtureHash, markFailure, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
 const evaluateRecall = Effect.gen(function* () {

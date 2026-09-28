@@ -1,7 +1,7 @@
 import {ScriptError} from './errors.js';
 import {Console, Effect, FileSystem, Path} from 'effect';
-import {sha256Hex} from '../../src/effect/digest.js';
-import {SystemInfo} from '../../src/effect/system.js';
+import {sha256Hex} from '@threadnote/platform/digest';
+import {SystemInfo} from '@threadnote/platform/system';
 
 export const scriptArguments = Effect.fn('script.arguments')(function* () {
   const system = yield* SystemInfo;

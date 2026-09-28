@@ -1,8 +1,8 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {parseBenchmarkArtifactV1, type BenchmarkArtifactV1} from '../src/evaluation/benchmark.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {parseBenchmarkArtifactV1, type BenchmarkArtifactV1} from '@threadnote/evidence/benchmark';
 import {createCodeGraphProductionRatchet} from './benchmark-code-graph.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 

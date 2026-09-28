@@ -1,5 +1,5 @@
 import {Clock, Effect, FileSystem, Option} from 'effect';
-import {SystemInfo} from '../src/effect/system.js';
+import {SystemInfo} from '@threadnote/platform/system';
 import {
   CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V3,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
@@ -7,7 +7,7 @@ import {
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
   contextBriefCitationRssSampleGapSummary,
   type ContextBriefCitationRssSampleGapSummaryV1,
-} from '../src/evaluation/context-brief-citation-scale-contract.js';
+} from '@threadnote/threadnote/evaluation/context-brief-citation-scale-contract';
 import {
   linuxClockTicksPerSecond,
   readProcessTreeSample,

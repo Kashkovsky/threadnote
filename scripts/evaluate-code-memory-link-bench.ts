@@ -2,12 +2,15 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect, Path} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {evaluateCodeMemoryLinkBenchRuntime} from '../src/evaluation/code-memory-link-bench.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {evaluateCodeMemoryLinkBenchRuntime} from '@threadnote/threadnote/evaluation/code-memory-link-bench';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
-const DEFAULT_FIXTURE = new URL('../test/evaluation/fixtures/code-memory-link-bench-v1/fixture.json', import.meta.url);
+const DEFAULT_FIXTURE = new URL(
+  '../apps/threadnote/test/evaluation/fixtures/code-memory-link-bench-v1/fixture.json',
+  import.meta.url,
+);
 
 const program = Effect.scoped(
   Effect.gen(function* () {

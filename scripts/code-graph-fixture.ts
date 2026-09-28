@@ -3,8 +3,8 @@ import {Effect, FileSystem, Path, Schedule} from 'effect';
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
-} from '../src/code_graph/inventory/policy.js';
-import {runCommandEffect} from '../src/effect/command.js';
+} from '@threadnote/graph/inventory/policy';
+import {runCommandEffect} from '@threadnote/platform/command';
 
 export interface PreparedCodeGraphFixture {
   readonly home: string;
@@ -137,7 +137,7 @@ export const prepareCodeGraphFixture = Effect.fn('codeGraphFixture.prepare')(fun
     return yield* ScriptError.make({message: `Invalid code graph fixture name: ${fixture}.`});
   }
   const source = yield* path.fromFileUrl(
-    new URL(`../test/evaluation/fixtures/${fixture}/repository/`, import.meta.url),
+    new URL(`../apps/threadnote/test/evaluation/fixtures/${fixture}/repository/`, import.meta.url),
   );
   const root = yield* makeOwnedTempDirectoryScoped('threadnote-code-graph-evaluation-');
   const repository = path.join(root, 'repository');

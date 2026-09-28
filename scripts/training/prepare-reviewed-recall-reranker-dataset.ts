@@ -1,8 +1,9 @@
+import {ScriptSystemInfoLayer} from '../effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from '../effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Path} from 'effect';
-import {SystemInfo} from '../../src/effect/system.js';
+
 import {atomicWrite, scriptArguments} from '../effect/script.js';
 import {serializeRecallRerankerGroupsV1} from './recall-reranker-contract.js';
 import {prepareReviewedRecallRerankerDatasetV1} from './recall-reranker-preparation.js';
@@ -80,5 +81,5 @@ function usage(): string {
   ].join('\n');
 }
 
-const scriptLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
+const scriptLayer = Layer.mergeAll(BunServices.layer, ScriptSystemInfoLayer);
 BunRuntime.runMain(provideScriptLayer(program, scriptLayer));

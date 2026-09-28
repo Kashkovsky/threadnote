@@ -2,32 +2,32 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Console, Effect, FileSystem, Option, Path} from 'effect';
-import {sha256HexSync} from '../src/crypto/sha256.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1,
   evaluateCodeMemoryLinkAgentAb,
   parseCodeMemoryLinkAgentAbManifestV1,
   parseCodeMemoryLinkAgentAbTrialsJsonl,
-} from '../src/evaluation/code-memory-link-agent-ab.js';
-import {parseCodeMemoryLinkAgentAttemptsJsonl} from '../src/evaluation/code-memory-link-agent-attempts.js';
-import {parseCodeMemoryLinkAgentEvidenceJsonl} from '../src/evaluation/code-memory-link-agent-evidence.js';
-import {parseCodeMemoryLinkSealedSuiteV1} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-ab';
+import {parseCodeMemoryLinkAgentAttemptsJsonl} from '@threadnote/threadnote/evaluation/code-memory-link-agent-attempts';
+import {parseCodeMemoryLinkAgentEvidenceJsonl} from '@threadnote/threadnote/evaluation/code-memory-link-agent-evidence';
+import {parseCodeMemoryLinkSealedSuiteV1} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import {
   codeMemoryLinkClientImplementationDescriptorHash,
   codeMemoryLinkClientProjectionHash,
   parseCodeMemoryLinkClientImplementationDescriptorV1,
-} from '../src/evaluation/code-memory-link-client-descriptor.js';
-import {evaluateCodeMemoryLinkDogfood} from '../src/evaluation/code-memory-link-dogfood.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-client-descriptor';
+import {evaluateCodeMemoryLinkDogfood} from '@threadnote/threadnote/evaluation/code-memory-link-dogfood';
 import {
   codeMemoryLinkRetentionBlockers,
   createCodeMemoryLinkRetainedResultV1,
-} from '../src/evaluation/code-memory-link-retained-result.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-retained-result';
 import {
   CODE_MEMORY_LINK_RETAINED_BUNDLE_ROOT,
   createCodeMemoryLinkRetainedBundleV1,
   type CodeMemoryLinkRetainedArtifactRole,
-} from '../src/evaluation/code-memory-link-retained-bundle.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-retained-bundle';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
 

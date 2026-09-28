@@ -1,6 +1,6 @@
 import {Context, Effect, FileSystem, Layer, Path, Predicate} from 'effect';
-import {sha256HexSync} from '../src/crypto/sha256.js';
-import {runCommandEffect, type CommandExecutor} from '../src/effect/command.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {runCommandEffect, type CommandExecutor} from '@threadnote/platform/command';
 import {
   CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
   CODE_MEMORY_LINK_SCALE_ATTEST_STEP,
@@ -16,7 +16,7 @@ import {
   type CodeMemoryLinkScaleCandidateBindingV1,
   type CodeMemoryLinkScaleIdentityV1,
   type CodeMemoryLinkScaleRunnerBindingV1,
-} from '../src/evaluation/code-memory-link-scale-contract.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-scale-contract';
 import {ScriptError} from './effect/errors.js';
 
 const REPOSITORY_URL = `https://github.com/${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}`;

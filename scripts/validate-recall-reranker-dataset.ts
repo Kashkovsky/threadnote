@@ -1,13 +1,14 @@
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Path} from 'effect';
-import {SystemInfo} from '../src/effect/system.js';
+
 import {
   createRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
-} from '../src/evaluation/recall-fixture.js';
-import {sha256HexSync} from '../src/crypto/sha256.js';
+} from '@threadnote/threadnote/evaluation/recall-fixture';
+import {sha256HexSync} from '@threadnote/platform/sha256';
 import {atomicWrite, scriptArguments} from './effect/script.js';
 import {
   createRecallRerankerValidationReceiptV1,
@@ -106,5 +107,5 @@ function required(value: string | undefined, option: string): string {
   return value;
 }
 
-const scriptLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
+const scriptLayer = Layer.mergeAll(BunServices.layer, ScriptSystemInfoLayer);
 BunRuntime.runMain(provideScriptLayer(program, scriptLayer));

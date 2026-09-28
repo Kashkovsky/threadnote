@@ -1,0 +1,61 @@
+{
+  "name": "@threadnote/recall",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./candidate_validation": "./src/candidate_validation.ts",
+    "./chunker": "./src/chunker.ts",
+    "./code_links": "./src/code_links.ts",
+    "./connection_confidence": "./src/connection_confidence.ts",
+    "./eligibility": "./src/eligibility.ts",
+    "./evaluate": "./src/evaluate.ts",
+    "./feedback": "./src/feedback.ts",
+    "./identifier": "./src/identifier.ts",
+    "./index": "./src/index.ts",
+    "./index/cleanup": "./src/index/cleanup.ts",
+    "./index/eligibility": "./src/index/eligibility.ts",
+    "./index/freshness": "./src/index/freshness.ts",
+    "./index/identity": "./src/index/identity.ts",
+    "./index/lexical": "./src/index/lexical.ts",
+    "./index/query": "./src/index/query.ts",
+    "./index/refresh": "./src/index/refresh.ts",
+    "./index/result": "./src/index/result.ts",
+    "./index/scope": "./src/index/scope.ts",
+    "./index/selection": "./src/index/selection.ts",
+    "./index/stale_marker": "./src/index/stale_marker.ts",
+    "./mcp/refresh": "./src/mcp/refresh.ts",
+    "./mcp/response": "./src/mcp/response.ts",
+    "./memory/connections": "./src/memory/connections.ts",
+    "./memory/identity": "./src/memory/identity.ts",
+    "./memory/links": "./src/memory/links.ts",
+    "./rank": "./src/rank.ts",
+    "./reranker-score": "./src/reranker-score.ts",
+    "./resource-invalidation": "./src/resource-invalidation.ts",
+    "./results": "./src/results.ts",
+    "./runtime": "./src/runtime.ts",
+    "./selection": "./src/selection.ts",
+    "./threshold": "./src/threshold.ts",
+    "./tokenize": "./src/tokenize.ts",
+    "./vector-index": "./src/vector-index.ts",
+    "./warning": "./src/warning.ts"
+  },
+  "dependencies": {
+    "@threadnote/platform": "workspace:*",
+    "@threadnote/store": "workspace:*",
+    "@threadnote/memory": "workspace:*",
+    "@threadnote/inference": "workspace:*",
+    "@threadnote/workspace": "workspace:*",
+    "@threadnote/protocol": "workspace:*",
+    "effect": "4.0.0-rc.115",
+    "@effect/sql-sqlite-bun": "4.0.0-rc.115"
+  },
+  "devDependencies": {
+    "@threadnote/testing": "workspace:*",
+    "@effect/vitest": "4.0.0-rc.115",
+    "vitest": "5.0.1",
+    "fast-check": "4.10.1"
+  },
+  "scripts": {
+    "test": "bun --bun vitest run --config ../../vitest.config.ts --root ../.. packages/recall/test"
+  }
+}

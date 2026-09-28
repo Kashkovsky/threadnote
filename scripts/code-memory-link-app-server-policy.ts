@@ -2,7 +2,7 @@ import {Schema} from 'effect';
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed adapter validates app-server actions before execution. */
 import {createHash} from 'node:crypto';
 import {isAbsolute, resolve, sep} from 'node:path';
-import {codeMemoryLinkAppServerOpaqueIdDigest} from '../src/evaluation/code-memory-link-agent-protocol.js';
+import {codeMemoryLinkAppServerOpaqueIdDigest} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 
 export interface CodeMemoryLinkAppServerApprovalReceiptV1 {
   readonly itemIdDigest: string;

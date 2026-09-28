@@ -18,7 +18,7 @@ on:
       - 'docs/operations/telemetry-production.md'
       - 'docs/telemetry.md'
       - 'infra/telemetry-gateway/**'
-      - 'test/unit/telemetry-gateway-*.test.ts'
+      - 'infra/telemetry-gateway/test/telemetry-gateway-*.test.ts'
   pull_request:
     branches: [main, codex/4.0.0, release/5.0.0]
     paths:
@@ -29,7 +29,7 @@ on:
       - 'docs/operations/telemetry-production.md'
       - 'docs/telemetry.md'
       - 'infra/telemetry-gateway/**'
-      - 'test/unit/telemetry-gateway-*.test.ts'
+      - 'infra/telemetry-gateway/test/telemetry-gateway-*.test.ts'
 
 permissions:
   contents: read

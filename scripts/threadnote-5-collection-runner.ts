@@ -2,7 +2,7 @@
 import {chmod, copyFile, lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile} from 'node:fs/promises';
 import {basename, dirname, isAbsolute, relative, resolve, sep} from 'node:path';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
-import {canonicalJson} from '../src/code_graph/checkpoint/canonical_json.js';
+import {canonicalJson} from '@threadnote/graph/checkpoint/canonical_json';
 import {
   collectionTrialIdentity,
   nativePointer,
@@ -13,18 +13,18 @@ import {
   type CollectionRecipe,
   type CollectionSurface,
   type Threadnote5CollectionPlan,
-} from '../src/evaluation/threadnote-5-release-collection.js';
+} from '@threadnote/threadnote/evaluation/threadnote-5-release-collection';
 import {
   captureThreadnote5ReleaseCandidateV1,
   type Threadnote5ScenarioRuntimeBoundaryV1,
-} from '../src/evaluation/threadnote-5-release-readiness-capture.js';
+} from '@threadnote/threadnote/evaluation/threadnote-5-release-readiness-capture';
 import {
   assertUniqueNativeIdentities,
   deriveThreadnote5PrivateCollection,
   verifyThreadnote5PrivateCollection,
   verifyThreadnote5CollectionAuthorityBinding,
   type PrivateCollection,
-} from '../src/evaluation/threadnote-5-release-collection-envelope.js';
+} from '@threadnote/threadnote/evaluation/threadnote-5-release-collection-envelope';
 import {
   CollectionMcpTransport,
   createCollectionVerifiedLaunch,

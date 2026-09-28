@@ -1,10 +1,10 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Clock, DateTime, Effect} from 'effect';
-import {runCommandEffect} from '../src/effect/command.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {benchmarkMeasurement} from '../src/evaluation/benchmark.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
+import {benchmarkMeasurement} from '@threadnote/evidence/benchmark';
 import {
   createMonorepoShareRecallStressFixture,
   MONOREPO_SHARE_RECALL_STRESS_MODES,
@@ -15,10 +15,10 @@ import {
   type MonorepoShareRecallStressMode,
   type MonorepoShareRecallStressOptions,
   type MonorepoShareRecallStressScenario,
-} from '../src/evaluation/recall-monorepo-stress.js';
-import {RECALL_RANKER_VERSION} from '../src/recall/rank.js';
-import {recallCrossScopeLaneBudgets} from '../src/recall/runtime.js';
-import {getThreadnoteVersion} from '../src/release/runtime_version.js';
+} from '@threadnote/threadnote/evaluation/recall-monorepo-stress';
+import {RECALL_RANKER_VERSION} from '@threadnote/recall/rank';
+import {recallCrossScopeLaneBudgets} from '@threadnote/recall/runtime';
+import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;

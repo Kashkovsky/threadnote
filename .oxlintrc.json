@@ -31,7 +31,7 @@
     "dist/**",
     "node_modules/**",
     "out/**",
-    "test/evaluation/fixtures/**/repository/**"
+    "apps/threadnote/test/evaluation/fixtures/**/repository/**"
   ],
   "rules": {
     "constructor-super": "error",
@@ -136,7 +136,7 @@
   },
   "overrides": [
     {
-      "files": ["src/code_graph/typescript_runtime.ts"],
+      "files": ["packages/graph/src/typescript_runtime.ts"],
       "globals": {
         "require": "readonly"
       },
@@ -170,7 +170,14 @@
       }
     },
     {
-      "files": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts"],
+      "files": [
+        "apps/**/*.ts",
+        "apps/**/*.tsx",
+        "packages/**/*.ts",
+        "packages/**/*.tsx",
+        "infra/**/*.ts",
+        "tools/**/*.ts"
+      ],
       "rules": {
         "no-unused-vars": [
           "error",
@@ -183,45 +190,77 @@
       }
     },
     {
-      "files": ["src/manager/ui.tsx"],
+      "files": ["packages/manager/src/ui.tsx"],
       "env": {
         "browser": true
       }
     },
     {
-      "files": ["src/**/*.ts", "src/**/*.tsx"],
+      "files": [
+        "apps/threadnote/src/**/*.ts",
+        "apps/threadnote/src/**/*.tsx",
+        "packages/*/src/**/*.ts",
+        "packages/*/src/**/*.tsx"
+      ],
       "rules": {
         "threadnote/no-effect-runtime": "warn",
         "threadnote/no-node-runtime": "warn"
       }
     },
     {
-      "files": ["scripts/**/*.ts", "website/**/*.ts", "website/**/*.tsx"],
+      "files": [
+        "scripts/**/*.ts",
+        "apps/website/src/**/*.ts",
+        "apps/website/src/**/*.tsx",
+        "apps/website/tools/**/*.ts",
+        "tools/**/*.ts"
+      ],
       "rules": {
         "threadnote/no-node-runtime": "warn"
       }
     },
     {
-      "files": ["src/standalone.ts"],
+      "files": ["apps/threadnote/src/standalone.ts"],
       "rules": {
         "effecttsgo/strict-effect-provide": "off",
         "threadnote/no-effect-runtime": "off"
       }
     },
     {
-      "files": ["test/helpers/node-*.ts"],
+      "files": [
+        "packages/testing/src/node-*.ts",
+        "apps/*/test/helpers/node-*.ts",
+        "packages/*/test/helpers/node-*.ts",
+        "infra/*/test/helpers/node-*.ts"
+      ],
       "rules": {
         "effecttsgo/node-builtin-import": "off"
       }
     },
     {
-      "files": ["test/**/*.ts", "scripts/**/*.ts"],
+      "files": [
+        "scripts/**/*.ts",
+        "tools/**/*.ts",
+        "apps/*/test/**/*.ts",
+        "packages/*/test/**/*.ts",
+        "infra/*/test/**/*.ts"
+      ],
       "rules": {
         "effecttsgo/new-promise": "off"
       }
     },
     {
-      "files": ["test/**/*.test.ts", "test/**/*.spec.ts", "test/e2e/**/*.e2e.ts"],
+      "files": [
+        "apps/**/*.test.ts",
+        "apps/**/*.spec.ts",
+        "apps/**/e2e/**/*.e2e.ts",
+        "packages/**/*.test.ts",
+        "packages/**/*.spec.ts",
+        "infra/**/*.test.ts",
+        "infra/**/*.spec.ts",
+        "tools/**/*.test.ts",
+        "tools/**/*.spec.ts"
+      ],
       "rules": {
         "threadnote/no-effect-runtime-in-tests": "warn"
       }

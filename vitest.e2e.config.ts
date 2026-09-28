@@ -5,7 +5,7 @@ export default defineConfig({
     environment: 'node',
     fileParallelism: false,
     hookTimeout: 600_000,
-    include: ['test/e2e/**/*.e2e.ts'],
+    include: ['apps/threadnote/test/e2e/**/*.e2e.ts'],
     testTimeout: 600_000,
   },
 });

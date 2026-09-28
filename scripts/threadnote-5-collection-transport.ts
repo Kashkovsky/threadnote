@@ -3,8 +3,8 @@ import type {Transport} from '@modelcontextprotocol/sdk/shared/transport.js';
 import {deserializeMessage, serializeMessage} from '@modelcontextprotocol/sdk/shared/stdio.js';
 import type {JSONRPCMessage} from '@modelcontextprotocol/sdk/types.js';
 import {lstat, realpath} from 'node:fs/promises';
-import {canonicalJson} from '../src/code_graph/checkpoint/canonical_json.js';
-import type {Threadnote5SourceV1} from '../src/evaluation/threadnote-5-release-readiness-contract.js';
+import {canonicalJson} from '@threadnote/graph/checkpoint/canonical_json';
+import type {Threadnote5SourceV1} from '@threadnote/threadnote/evaluation/threadnote-5-release-readiness-contract';
 import {
   COLLECTION_MAX_BYTES,
   ownCollectionProcess,

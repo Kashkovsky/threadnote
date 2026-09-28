@@ -9,8 +9,8 @@ import {
   type CodeMemoryLinkStaticArtifactInputV1,
   type CodeMemoryLinkStaticJudgmentV1,
   type CodeMemoryLinkStaticObservationV1,
-} from '../src/evaluation/code-memory-link-agent-protocol.js';
-import {codeMemoryLinkAgentSuiteGuardArtifactId} from '../src/evaluation/code-memory-link-agent-suite.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
+import {codeMemoryLinkAgentSuiteGuardArtifactId} from '@threadnote/threadnote/evaluation/code-memory-link-agent-suite';
 import type {CodeMemoryLinkCodexClientConfigV1} from './code-memory-link-codex-isolation.js';
 import type {
   CodeMemoryLinkCodexJudgeCommandV1,

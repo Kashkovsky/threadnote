@@ -2,27 +2,27 @@ import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
 import {Console, DateTime, Effect, Exit, FileSystem, Path, Schema} from 'effect';
-import {sha256HexSync} from '../src/crypto/sha256.js';
-import {canonicalJson} from '../src/code_graph/checkpoint/canonical_json.js';
-import {codeGraphLayout} from '../src/code_graph/layout.js';
-import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
-import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
-import {CodeGraphStore, type StoredCodeGraph} from '../src/code_graph/store.js';
-import type {CodeGraphProgress} from '../src/code_graph/types.js';
-import {runCommandEffect} from '../src/effect/command.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {canonicalJson} from '@threadnote/graph/checkpoint/canonical_json';
+import {codeGraphLayout} from '@threadnote/graph/layout';
+import {CodeGraphIndexer} from '@threadnote/graph/indexer';
+import {resolveRepositoryIdentity} from '@threadnote/graph/repository';
+import {CodeGraphStore, type StoredCodeGraph} from '@threadnote/graph/store';
+import type {CodeGraphProgress} from '@threadnote/graph/types';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   processResourceUsageMaxRssBytes,
   SystemInfo,
   type ProcessResourceUsageRuntime,
   type SystemInfoShape,
-} from '../src/effect/system.js';
+} from '@threadnote/platform/system';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   benchmarkMeasurement,
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
-} from '../src/evaluation/benchmark.js';
+} from '@threadnote/evidence/benchmark';
 import {atomicWrite, hasScriptHelpFlag, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {
   enforceCodeGraphBenchmarkRatchet,
@@ -224,7 +224,7 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (
   const sourceRoot = path.resolve(yield* path.fromFileUrl(new URL('..', import.meta.url)));
   const checkedHeavyTailRatchetPath = path.join(
     sourceRoot,
-    'test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json',
+    'apps/threadnote/test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json',
   );
   if (args.candidateCommit !== undefined && path.resolve(args.ratchetPath!) !== checkedHeavyTailRatchetPath) {
     return yield* ScriptError.make({

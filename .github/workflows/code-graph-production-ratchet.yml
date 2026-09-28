@@ -34,7 +34,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: bun test/ci/code-graph-production-ratchet-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: bun tools/ci/code-graph-production-ratchet-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"
 
   ratchet:
     name: Governed reduced production profile · Linux
@@ -83,9 +83,9 @@ jobs:
         if: needs.classify.result != 'success' || needs.classify.outputs.run_benchmark != 'false'
         continue-on-error: true
         run: >-
-          bun test/ci/code-graph-production-ratchet-gate.ts
+          bun tools/ci/code-graph-production-ratchet-gate.ts
           --artifact artifacts/code-graph-production-ratchet-Linux-${{ runner.arch }}.json
-          --ratchet test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json
+          --ratchet apps/threadnote/test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json
 
       - name: Measure the exact protected-base control on the same runner
         if: steps.static-ratchet.outcome == 'failure'
@@ -133,9 +133,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: >-
-          bun test/ci/code-graph-production-ratchet-gate.ts
+          bun tools/ci/code-graph-production-ratchet-gate.ts
           --artifact artifacts/code-graph-production-ratchet-paired-candidate-Linux-${{ runner.arch }}.json
-          --ratchet test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json
+          --ratchet apps/threadnote/test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json
           --control artifacts/code-graph-production-ratchet-control-Linux-${{ runner.arch }}.json
           --expected-candidate-commit "$GITHUB_SHA"
           --expected-control-commit "$BASE_SHA"

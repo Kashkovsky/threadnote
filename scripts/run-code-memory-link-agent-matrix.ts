@@ -15,34 +15,34 @@ import {
   parseCodeMemoryLinkAgentAbManifestV1,
   parseCodeMemoryLinkAgentAbTrialsJsonl,
   type CodeMemoryLinkAgentAbManifestV1,
-} from '../src/evaluation/code-memory-link-agent-ab.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-ab';
 import {
   assertCodeMemoryLinkAgentAttemptLedgerV1,
   parseCodeMemoryLinkAgentAttemptsJsonl,
-} from '../src/evaluation/code-memory-link-agent-attempts.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-attempts';
 import {
   assertCodeMemoryLinkAgentEvidenceLedgerV1,
   parseCodeMemoryLinkAgentEvidenceJsonl,
-} from '../src/evaluation/code-memory-link-agent-evidence.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-evidence';
 import {
   parseCodeMemoryLinkAgentPendingCommitJsonV1,
   reconcileCodeMemoryLinkAgentPendingCommitV1,
   type CodeMemoryLinkAgentPendingCommitV1,
-} from '../src/evaluation/code-memory-link-agent-pending.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-pending';
 import {
   parseCodeMemoryLinkContextBriefResponseReceiptV1,
   parseCodeMemoryLinkFixtureV1,
   parseCodeMemoryLinkRubricV1,
   parseCodeMemoryLinkSealedSuiteV1,
   parseCodeMemoryLinkTaskPacketV1,
-} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import {
   codeMemoryLinkClientArgumentVectorHash,
   codeMemoryLinkClientImplementationDescriptorHash,
   codeMemoryLinkClientPathDigest,
   parseCodeMemoryLinkClientImplementationDescriptorV1,
-} from '../src/evaluation/code-memory-link-client-descriptor.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-client-descriptor';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   CODE_MEMORY_LINK_CALIBRATION_KIND,
   CODE_MEMORY_LINK_CALIBRATION_PLAN_VERSION,

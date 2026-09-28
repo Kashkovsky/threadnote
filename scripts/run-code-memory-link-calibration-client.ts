@@ -5,17 +5,17 @@ import {Schema} from 'effect';
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed calibration adapter owns explicit process and filesystem boundaries. */
 import {lstat, mkdir, readFile, realpath, stat, writeFile} from 'node:fs/promises';
 import {dirname, join, resolve} from 'node:path';
-import {parseCodeMemoryLinkAgentAbManifestV1} from '../src/evaluation/code-memory-link-agent-ab.js';
+import {parseCodeMemoryLinkAgentAbManifestV1} from '@threadnote/threadnote/evaluation/code-memory-link-agent-ab';
 import {
   codeMemoryLinkArmPacketHashV1,
   deriveCodeMemoryLinkCodexAppServerProjectionV1,
-} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import {
   codeMemoryLinkCodexInvocationNonceDigestV1,
   codeMemoryLinkCodexRunBindingHashV1,
-} from '../src/evaluation/code-memory-link-codex-evidence.js';
-import {sha256HexSync} from '../src/crypto/sha256.js';
-import {CODE_MEMORY_LINK_AGENT_SUITE_PROJECT} from '../src/evaluation/code-memory-link-agent-suite.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-codex-evidence';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {CODE_MEMORY_LINK_AGENT_SUITE_PROJECT} from '@threadnote/threadnote/evaluation/code-memory-link-agent-suite';
 import {parseCodeMemoryLinkCodexClientConfigV1} from './code-memory-link-codex-isolation.js';
 import {
   classifyCodeMemoryLinkCodexTerminal,

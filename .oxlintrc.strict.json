@@ -129,39 +129,78 @@
   },
   "overrides": [
     {
-      "files": ["src/**/*.ts", "src/**/*.tsx"],
+      "files": [
+        "packages/*/src/**/*.ts",
+        "packages/*/src/**/*.tsx",
+        "apps/threadnote/src/**/*.ts",
+        "apps/threadnote/src/**/*.tsx"
+      ],
       "rules": {
         "threadnote/no-effect-runtime": "error",
         "threadnote/no-node-runtime": "error"
       }
     },
     {
-      "files": ["scripts/**/*.ts", "website/**/*.ts", "website/**/*.tsx"],
+      "files": [
+        "scripts/**/*.ts",
+        "apps/website/src/**/*.ts",
+        "apps/website/src/**/*.tsx",
+        "apps/website/tools/**/*.ts",
+        "apps/website/vite.config.ts"
+      ],
       "rules": {
         "threadnote/no-node-runtime": "error"
       }
     },
     {
-      "files": ["src/standalone.ts"],
+      "files": ["apps/threadnote/src/standalone.ts"],
       "rules": {
         "effecttsgo/strict-effect-provide": "off",
         "threadnote/no-effect-runtime": "off"
       }
     },
     {
-      "files": ["test/helpers/node-*.ts"],
+      "files": [
+        "packages/testing/src/**/*.ts",
+        "apps/*/test/helpers/node-*.ts",
+        "packages/*/test/helpers/node-*.ts",
+        "infra/*/test/helpers/node-*.ts"
+      ],
       "rules": {
-        "effecttsgo/node-builtin-import": "off"
+        "effecttsgo/node-builtin-import": "off",
+        "threadnote/no-node-runtime": "off"
       }
     },
     {
-      "files": ["test/**/*.ts", "scripts/**/*.ts"],
+      "files": ["tools/bazel/**/*.ts"],
+      "rules": {
+        "threadnote/no-node-runtime": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/**/*.ts",
+        "tools/**/*.ts",
+        "apps/*/test/**/*.ts",
+        "packages/*/test/**/*.ts",
+        "infra/*/test/**/*.ts"
+      ],
       "rules": {
         "effecttsgo/new-promise": "off"
       }
     },
     {
-      "files": ["test/**/*.test.ts", "test/**/*.spec.ts", "test/e2e/**/*.e2e.ts"],
+      "files": [
+        "apps/**/*.test.ts",
+        "apps/**/*.spec.ts",
+        "apps/**/e2e/**/*.e2e.ts",
+        "packages/**/*.test.ts",
+        "packages/**/*.spec.ts",
+        "infra/**/*.test.ts",
+        "infra/**/*.spec.ts",
+        "tools/**/*.test.ts",
+        "tools/**/*.spec.ts"
+      ],
       "rules": {
         "threadnote/no-effect-runtime-in-tests": "error"
       }

@@ -1,0 +1,44 @@
+module(name = "threadnote")
+
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_go", version = "0.63.0")
+bazel_dep(name = "gazelle", version = "0.54.0")
+
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.from_file(go_mod = "//infra/telemetry-gateway:go.mod")
+
+go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
+go_deps.from_file(go_mod = "//infra/telemetry-gateway:go.mod")
+use_repo(
+    go_deps,
+    "io_opentelemetry_go_proto_otlp",
+    "org_golang_google_protobuf",
+)
+
+bun = use_extension("//tools/bazel:repositories.bzl", "bun")
+bun.install(
+    name = "npm",
+    lock = "//:bun.lock",
+    package_json = "//:package.json",
+    workspace_manifests = [
+        "//apps/threadnote:package.json",
+        "//apps/website:package.json",
+        "//packages/context:package.json",
+        "//packages/evidence:package.json",
+        "//packages/graph:package.json",
+        "//packages/inference:package.json",
+        "//packages/integrations:package.json",
+        "//packages/manager:package.json",
+        "//packages/memory:package.json",
+        "//packages/platform:package.json",
+        "//packages/protocol:package.json",
+        "//packages/recall:package.json",
+        "//packages/remote-memory:package.json",
+        "//packages/store:package.json",
+        "//packages/testing:package.json",
+        "//packages/workspace:package.json",
+    ],
+)
+use_repo(bun, "bun_toolchain", "npm")
+
+register_toolchains("@bun_toolchain//:registered")

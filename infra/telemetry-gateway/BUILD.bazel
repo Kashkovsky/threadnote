@@ -1,0 +1,54 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load("//tools/bazel:package_files.bzl", "export_package_files")
+
+package(default_visibility = ["//visibility:public"])
+
+export_package_files(["**"])
+
+go_library(
+    name = "gateway_lib",
+    srcs = [
+        "gateway.go",
+        "schema.go",
+    ],
+    embedsrcs = glob(["telemetry-schema-v*.json"]),
+    importpath = "github.com/Kashkovsky/threadnote/infra/telemetry-gateway",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//infra/telemetry-gateway/internal/budget",
+        "@io_opentelemetry_go_proto_otlp//collector/trace/v1:trace",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//resource/v1:resource",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)
+
+go_binary(
+    name = "gateway",
+    embed = [":gateway_lib"],
+)
+
+go_test(
+    name = "gateway_test",
+    srcs = ["gateway_test.go"],
+    embed = [":gateway_lib"],
+)
+
+filegroup(
+    name = "deployment",
+    srcs = [
+        "Dockerfile",
+        "README.md",
+        "collector.yaml",
+        "go.mod",
+        "go.sum",
+        "threadnote-anonymous-telemetry-dashboard.json",
+    ] + glob([
+        "scripts/**",
+        "test/**",
+        "telemetry-schema-v*.json",
+    ]),
+)

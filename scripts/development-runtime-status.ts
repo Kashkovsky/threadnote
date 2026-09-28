@@ -1,11 +1,13 @@
+import {ScriptCommandExecutorLayer} from './effect/system-layer.js';
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {printJson, scriptArguments} from './effect/script.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Option, Path} from 'effect';
-import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {installationRoot} from '../src/installations.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {SystemInfo} from '@threadnote/platform/system';
+import {installationRoot} from '@threadnote/threadnote/installations';
 import {developmentBuildVersion} from './development-runtime.js';
 import {
   CLEAN_GIT_STATUS_ARGUMENTS,
@@ -160,8 +162,8 @@ export const inspectDevelopmentRuntimeStatus = Effect.fn('developmentRuntimeStat
   } satisfies DevelopmentRuntimeStatusReport;
 });
 
-const systemLayer = SystemInfo.layer;
-const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const systemLayer = ScriptSystemInfoLayer;
+const commandLayer = ScriptCommandExecutorLayer.pipe(Layer.provide(systemLayer));
 const statusLayer = Layer.merge(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 const program = Effect.gen(function* () {
   const options = parseDevelopmentRuntimeStatusArguments(yield* scriptArguments());

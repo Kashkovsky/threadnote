@@ -4,6 +4,21 @@ Threadnote must dogfood itself. Every agent doing non-trivial work in this repos
 installation as part of the task instead of treating Threadnote only as code being edited. Repository files and the
 nearest checked-in guidance remain authoritative.
 
+## Monorepo contributor path
+
+- Read `docs/monorepo.md` before placing new production code or tests. Product
+  composition belongs in `apps/threadnote`, website work in `apps/website`, and
+  reusable capabilities in the owning private package.
+- Colocate package tests under that package's `test/` directory. Keep only
+  cross-domain application tests under `apps/threadnote/test`.
+- Never hand-edit generated `BUILD.bazel` files or `tools/bazel/targets.json`.
+  Change source, manifests, or `tools/bazel/target-specs.mjs`, then run
+  `bun run bazel:generate`.
+- Run `bun run check:repo` for repository contracts and use
+  `bun run bazel -- test <label>` for the narrowest affected target. Use
+  `bun run bazel:affected` to inspect the base/head selection before a pull
+  request.
+
 ## Dogfood Threadnote on every task
 
 - At the start, call `recall_context` with `project: threadnote` and the absolute `callerCwd`, then read the relevant
@@ -69,7 +84,7 @@ pull request and use CI as the authoritative full-suite run. Investigate and fix
 
 ## Install logic changes globally
 
-After changing runtime or product logic, do not stop after tests. This includes behavior under `src/`, runtime-facing
+After changing runtime or product logic, do not stop after tests. This includes behavior under `apps/` or `packages/`, runtime-facing
 scripts, installer/updater behavior, MCP behavior, storage, indexing, plugin lifecycle, and release payload logic.
 
 1. Run the checks appropriate to the change.

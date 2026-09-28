@@ -172,7 +172,7 @@ export default {
   meta: {name: 'threadnote'},
   rules: {
     'no-effect-runtime': makeNoEffectRuntimeRule(
-      'Compose and return the Effect; only src/standalone.ts may execute or construct an Effect runtime.',
+      'Compose and return the Effect; only apps/threadnote/src/standalone.ts may execute or construct an Effect runtime.',
     ),
     'no-effect-runtime-in-tests': makeNoEffectRuntimeRule(
       'Return the Effect from @effect/vitest it.effect (already scoped) instead of converting it to a Promise or running it synchronously.',

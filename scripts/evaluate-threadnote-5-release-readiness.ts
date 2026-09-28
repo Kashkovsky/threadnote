@@ -2,16 +2,19 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Console, Effect, Path} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   THREADNOTE_5_BASELINE_COMMIT,
   THREADNOTE_5_BASELINE_VERSION,
-} from '../src/evaluation/threadnote-5-release-readiness-contract.js';
-import {evaluateThreadnote5ReleaseReadiness} from '../src/evaluation/threadnote-5-release-readiness.js';
+} from '@threadnote/threadnote/evaluation/threadnote-5-release-readiness-contract';
+import {evaluateThreadnote5ReleaseReadiness} from '@threadnote/threadnote/evaluation/threadnote-5-release-readiness';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
-const DEFAULT_FIXTURE = new URL('../test/evaluation/fixtures/threadnote-5-task-loop-v1/fixture.json', import.meta.url);
+const DEFAULT_FIXTURE = new URL(
+  '../apps/threadnote/test/evaluation/fixtures/threadnote-5-task-loop-v1/fixture.json',
+  import.meta.url,
+);
 
 const program = Effect.gen(function* () {
   const path = yield* Path.Path;

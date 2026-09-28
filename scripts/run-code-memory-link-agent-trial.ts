@@ -12,12 +12,12 @@ import {
   parseCodeMemoryLinkAgentAbAssignmentV1,
   parseCodeMemoryLinkAgentAbManifestV1,
   parseCodeMemoryLinkAgentAbTrialsJsonl,
-} from '../src/evaluation/code-memory-link-agent-ab.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-ab';
 import {
   assertCodeMemoryLinkClientImplementationBinding,
   parseCodeMemoryLinkClientImplementationDescriptorV1,
   type CodeMemoryLinkClientImplementationDescriptorV1,
-} from '../src/evaluation/code-memory-link-client-descriptor.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-client-descriptor';
 import {
   assertCodeMemoryLinkAgentAttemptLedgerV1,
   CODE_MEMORY_LINK_AGENT_RETRY_REASONS,
@@ -29,7 +29,7 @@ import {
   serializeCodeMemoryLinkAgentAttemptsJsonl,
   withCodeMemoryLinkAgentLedgerLock,
   type CodeMemoryLinkAgentRetryReason,
-} from '../src/evaluation/code-memory-link-agent-attempts.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-attempts';
 import {
   assertCodeMemoryLinkAgentEvidenceLedgerV1,
   codeMemoryLinkAgentEvidenceReceiptDigest,
@@ -37,28 +37,28 @@ import {
   parseCodeMemoryLinkAgentClientOutputV1,
   parseCodeMemoryLinkAgentEvidenceJsonl,
   serializeCodeMemoryLinkAgentEvidenceJsonl,
-} from '../src/evaluation/code-memory-link-agent-evidence.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-evidence';
 import {
   createCodeMemoryLinkAgentPendingCommitV1,
   parseCodeMemoryLinkAgentPendingCommitJsonV1,
   reconcileCodeMemoryLinkAgentPendingCommitV1,
   serializeCodeMemoryLinkAgentPendingCommitJsonV1,
-} from '../src/evaluation/code-memory-link-agent-pending.js';
-import {codeMemoryLinkArmPacketHashV1} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-pending';
+import {codeMemoryLinkArmPacketHashV1} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import {
   codeMemoryLinkCodexInvocationNonceDigestV1,
   codeMemoryLinkCodexRunBindingHashV1,
-} from '../src/evaluation/code-memory-link-codex-evidence.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-codex-evidence';
 import {
   durablyReplaceCodeMemoryLinkAgentLedger,
   persistCodeMemoryLinkAgentAttemptStartDurably,
   projectCodeMemoryLinkAgentPendingCommitDurably,
-} from '../src/evaluation/code-memory-link-agent-ledger-durability.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-ledger-durability';
 import {collectCodeMemoryLinkClientImplementation} from './code-memory-link-client-implementation.js';
 import {verifyCodeMemoryLinkEvaluatedSubject} from './code-memory-link-evaluated-subject.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {readJsonFile, scriptArguments} from './effect/script.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {verifyApprovalCheckout} from './verify-code-memory-link-release.js';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
 import {

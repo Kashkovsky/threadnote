@@ -1,21 +1,20 @@
 #!/usr/bin/env bun
+import {ScriptCommandExecutorLayer} from './effect/system-layer.js';
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Clock, Effect, FileSystem, Layer} from 'effect';
-import {CodeGraphEmbeddingIndex} from '../src/code_graph/embedding.js';
-import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
-import {
-  CodeGraphLanguagePackRegistry,
-  createCodeGraphLanguagePackRegistry,
-} from '../src/code_graph/languages/registry.js';
-import {CodeGraphMaintenanceCoordinator} from '../src/code_graph/maintenance/coordinator.js';
-import {CodeGraphQueryService} from '../src/code_graph/query.js';
-import {CodeGraphStore} from '../src/code_graph/store.js';
-import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
-import {sha256FileHex} from '../src/effect/digest.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {getThreadnoteVersion} from '../src/release/runtime_version.js';
+import {CodeGraphEmbeddingIndex} from '@threadnote/graph/embedding';
+import {CodeGraphIndexer} from '@threadnote/graph/indexer';
+import {CodeGraphLanguagePackRegistry, createCodeGraphLanguagePackRegistry} from '@threadnote/graph/languages/registry';
+import {CodeGraphMaintenanceCoordinator} from '@threadnote/graph/maintenance/coordinator';
+import {CodeGraphQueryService} from '@threadnote/graph/query';
+import {CodeGraphStore} from '@threadnote/graph/store';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {sha256FileHex} from '@threadnote/platform/digest';
+import {SystemInfo} from '@threadnote/platform/system';
+import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 import {
   CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
@@ -24,13 +23,13 @@ import {
   parseContextBriefCitationScaleArtifactV2,
   parseContextBriefCitationScaleBudgetV1,
   type ContextBriefCitationScaleProfileId,
-} from '../src/evaluation/context-brief-citation-scale-contract.js';
+} from '@threadnote/threadnote/evaluation/context-brief-citation-scale-contract';
 import {
   ContextBriefCitationScaleGraphInstrumentation,
   evaluateContextBriefCitationScale,
   makeContextBriefCitationScaleGraphInstrumentation,
   type ContextBriefCitationScaleRssObserver,
-} from '../src/evaluation/context-brief-citation-scale.js';
+} from '@threadnote/threadnote/evaluation/context-brief-citation-scale';
 import {
   contextBriefCitationRssObserverArguments,
   CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS,
@@ -48,7 +47,7 @@ import {
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
-const DEFAULT_BUDGET = 'test/evaluation/baselines/context-brief-citations-v1/scale-budgets.json';
+const DEFAULT_BUDGET = 'apps/threadnote/test/evaluation/baselines/context-brief-citations-v1/scale-budgets.json';
 const RSS_OBSERVER_BARRIER_TIMEOUT_MILLISECONDS = 30_000;
 const RSS_OBSERVER_EXIT_TIMEOUT_MILLISECONDS = 30_000;
 const RSS_OBSERVER_KILL_TIMEOUT_MILLISECONDS = 5_000;
@@ -574,8 +573,8 @@ const boundedObserverStderr = Effect.fn('contextBriefCitationScale.boundedRssObs
   return text.trim().slice(0, 4_096) || 'no diagnostic';
 });
 
-const systemLayer = SystemInfo.layer;
-const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const systemLayer = ScriptSystemInfoLayer;
+const commandLayer = ScriptCommandExecutorLayer.pipe(Layer.provide(systemLayer));
 const platformLayer = Layer.mergeAll(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 const graphInstrumentation = makeContextBriefCitationScaleGraphInstrumentation();
 const graphInstrumentationLayer = Layer.succeed(ContextBriefCitationScaleGraphInstrumentation, graphInstrumentation);

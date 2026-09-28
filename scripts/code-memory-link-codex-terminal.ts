@@ -1,5 +1,5 @@
 import {Schema} from 'effect';
-import {sha256HexSync} from '../src/crypto/sha256.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
 
 export const CODE_MEMORY_LINK_CODEX_TERMINAL_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_CODEX_TERMINAL_MARKER = 'THREADNOTE_CODE_MEMORY_LINK_TERMINAL ' as const;

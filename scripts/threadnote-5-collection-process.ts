@@ -4,7 +4,7 @@ import {spawn} from 'node:child_process';
 import {lstat, open, realpath} from 'node:fs/promises';
 import {constants, type BigIntStats} from 'node:fs';
 import {isAbsolute, resolve, sep} from 'node:path';
-import type {Threadnote5SourceV1} from '../src/evaluation/threadnote-5-release-readiness-contract.js';
+import type {Threadnote5SourceV1} from '@threadnote/threadnote/evaluation/threadnote-5-release-readiness-contract';
 
 export const COLLECTION_MAX_BYTES = 8 * 1024 * 1024;
 const unsafeCleanupErrors = new WeakSet<Error>();

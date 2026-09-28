@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import {evaluateContextBriefCitationFixture} from '../src/evaluation/context-brief-citations.js';
+import {evaluateContextBriefCitationFixture} from '@threadnote/threadnote/evaluation/context-brief-citations';
 
 interface Arguments {
   readonly fixturePath: string;

@@ -1,6 +1,9 @@
-import {createRecallEvaluationFixtureV2, expandRecallEvaluationFixtureV2} from '../src/evaluation/recall-fixture.js';
-import {deriveRecallEligibilityPolicy} from '../src/recall/eligibility.js';
-import {rankRecallCandidates} from '../src/recall/rank.js';
+import {
+  createRecallEvaluationFixtureV2,
+  expandRecallEvaluationFixtureV2,
+} from '@threadnote/threadnote/evaluation/recall-fixture';
+import {deriveRecallEligibilityPolicy} from '@threadnote/recall/eligibility';
+import {rankRecallCandidates} from '@threadnote/recall/rank';
 
 export function createBenchmarkFixture(documentCount: number) {
   return expandRecallEvaluationFixtureV2(createRecallEvaluationFixtureV2(), documentCount);
