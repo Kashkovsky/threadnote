@@ -2,6 +2,24 @@
 
 Threadnote is one product with one release version and one Bun lockfile. Internal packages are private source packages with explicit exports. Run `bun install --frozen-lockfile` at the repository root; Bun resolves `workspace:*` dependencies without publishing packages.
 
+## Start here
+
+Place a change with the code that owns it, colocate its tests, regenerate the
+Bazel declarations, and run the repository contracts plus the narrowest affected
+test:
+
+```bash
+bun run bazel:generate
+bun run check:repo
+bun run bazel -- test //packages/<owner>:test
+```
+
+Use `apps/threadnote` for product entrypoints and cross-domain composition,
+`apps/website` for the public site, an existing `packages/*` workspace for a
+reusable domain or infrastructure capability, `tools` for repository automation,
+`infra` for deployed operations sources, and `training` for offline model work.
+Avoid creating a new package until it has a clear owner and dependency direction.
+
 | Workspace                | Ownership                                                                                  |
 | ------------------------ | ------------------------------------------------------------------------------------------ |
 | `apps/threadnote`        | CLI, MCP server, runtime composition, provider adapters, telemetry, and release entrypoint |
@@ -22,6 +40,25 @@ Threadnote is one product with one release version and one Bun lockfile. Interna
 | `packages/testing`       | Reusable test helpers                                                                      |
 
 The repository has no root `src/` or `test/` tree. Production code belongs to an app or package. Tests are colocated under the same owner: `packages/graph/test` tests graph code, `packages/manager/test` tests Manager code, and cross-domain application tests live under `apps/threadnote/test`.
+
+### Adding or changing a workspace
+
+1. Keep the package private and expose explicit source entrypoints from its
+   `package.json`; wildcard exports are rejected.
+2. Declare internal dependencies with `workspace:*` and update the allowed
+   direction in `tools/workspace/boundaries.ts` only when the architecture calls
+   for that edge.
+3. Put package tests under its `test/` directory. Tests that exercise application
+   composition belong under `apps/threadnote/test`.
+4. Add non-imported runtime inputs such as fixtures, assets, migrations, or
+   executable entrypoints to `tools/bazel/target-specs.mjs`. Static imports and
+   package exports are followed automatically.
+5. Add the manifest to `MODULE.bazel`, run `bun install`, then run
+   `bun run bazel:generate` and `bun run check:repo`.
+
+Generated `BUILD.bazel` files and `tools/bazel/targets.json` are reviewable build
+artifacts, not editing surfaces. Resource and infrastructure BUILD files are
+hand-written because those trees have non-TypeScript ownership and native rules.
 
 ## Dependency boundaries
 
@@ -52,3 +89,10 @@ Pull-request CI compares base and head target hashes with pinned open-source `ba
 Website builds consume prepared metadata produced before the sandbox. Cached actions do not discover Git history or call release APIs. Article, release, performance, public, and prepared metadata are explicit website inputs. A website-only change selects website checks without selecting graph package tests; shared dependency changes select every dependent target.
 
 Run focused tests locally. Pull-request CI owns the complete selected suite and platform matrix.
+
+Preview selection with `bun run bazel:affected`. The command writes the exact
+selection, changed paths, fallback reason, and base/head graph evidence under
+`.context/bazel-selection/`, which is ignored by Git and suitable for attaching to
+a debugging handoff. Use `bun run bazel -- test <label>` for focused execution;
+`bun run bazel:check` validates generated declarations and target analysis without
+running every product test.

@@ -38,9 +38,10 @@ for (const path of new Bun.Glob('{scripts,tools,infra,apps,packages}/**/*.{ts,ts
   sources.push({path, imports: moduleSpecifiers(path, content), virtualModules: declaredVirtualModules(path, content)});
 }
 const errors = [...validateWorkspaceBoundaries(packages, sources)];
-for (const legacyRoot of ['src', 'test']) {
-  const migratedFiles = [...new Bun.Glob(`${legacyRoot}/**/*`).scanSync('.')];
-  if (migratedFiles.length > 0) errors.push(`${legacyRoot}/: root source trees must be owned by an app or package`);
+for (const retiredRoot of ['manager', 'public', 'src', 'test', 'website']) {
+  const migratedFiles = [...new Bun.Glob(`${retiredRoot}/**/*`).scanSync('.')];
+  if (migratedFiles.length > 0)
+    errors.push(`${retiredRoot}/: retired root must be owned by apps/, packages/, or another declared Bazel package`);
 }
 for (const pkg of packages) {
   for (const entry of Object.values(pkg.exports)) {

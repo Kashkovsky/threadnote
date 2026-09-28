@@ -1,5 +1,18 @@
 # Bun and Bazel compatibility gate
 
+The normal contributor entrypoints are:
+
+```sh
+bun run bazel:generate
+bun run bazel:check
+bun run bazel:affected
+bun run bazel -- test //packages/graph:test
+```
+
+These commands download the pinned tools when needed. Contributors and agents do
+not install Bazel, Bun toolchains, or bazel-diff globally. Generated BUILD files
+and `targets.json` must be regenerated rather than edited directly.
+
 Run the focused gate without installing Bazel globally:
 
 ```sh

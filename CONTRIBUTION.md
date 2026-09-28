@@ -12,15 +12,17 @@ You need:
 
 - The exact Bun version pinned by the `packageManager` field in [`package.json`](./package.json).
 
-Install dependencies and run the fast validation set:
+Install dependencies and run the repository contract checks:
 
 ```bash
 bun install --frozen-lockfile
-bun run lint
-bun run prettier:check
-bun run typecheck
-bun run test
+bun run check:repo
 ```
+
+`check:repo` verifies generated Bazel declarations, analyzes every target, runs the
+Bazel/tooling contract tests, and applies workspace, lint, formatting, and type
+checks. Run the narrowest Vitest or Bazel test target for the behavior you change.
+The pull request runs the complete affected suite and platform matrix.
 
 Run the source CLI or MCP server during development with:
 
@@ -93,6 +95,25 @@ that was already on this development line is not misclassified as new during the
 Pull-request CI computes the affected Bazel graph from the complete base/head diff. Colocated package tests are selected through their source closures, so `apps/website` changes do not run `packages/graph` tests. Shared dependency changes select all dependent checks. Missing baselines, unrecognized inputs, or failed graph analysis select the complete inventory.
 
 The same inventory selects Actionlint, recall quality, Windows smoke, and release matrices. `tools/ci/bazel-select.mjs` writes the selection artifact and `tools/ci/bazel-run-selected.mjs` executes the Bun, Vitest, build, and native Go targets. Selection determinism, monotonicity, file additions, deletions, renames, and dependency-edge changes are covered by focused property and real Bazel tests.
+
+Use the checked-in command aliases instead of installing Bazel or bazel-diff globally:
+
+```bash
+# Regenerate BUILD files after changing sources, tests, manifests, or target specs.
+bun run bazel:generate
+
+# Preview the targets and platform lanes affected relative to origin/main.
+bun run bazel:affected
+
+# Run one focused target. The `--` passes the Bazel command through Bun.
+bun run bazel -- test //packages/graph:test
+```
+
+Do not edit generated `BUILD.bazel` files or `tools/bazel/targets.json`. Edit
+`tools/bazel/target-specs.mjs`, a hand-written resource/infra BUILD file, or the
+shared rules and regenerate. A branch based on a commit without the Bazel graph
+will conservatively preview every target; after the migration lands, ordinary
+base/head comparisons are selective.
 
 ### Local distribution end-to-end tests
 
