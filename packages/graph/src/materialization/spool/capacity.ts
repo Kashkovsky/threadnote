@@ -16,6 +16,7 @@ export function codeGraphSpoolSortCapacityBoundary(
     finalFactBytes: loads.reduce((largest, load) => Math.max(largest, load.bytes), 0),
     operation: 'sort persistent code graph materialization spool',
     rowCount: loads.reduce((largest, load) => Math.max(largest, load.rows), 0),
+    transientFilesystem: 'temporary',
   };
 }
 

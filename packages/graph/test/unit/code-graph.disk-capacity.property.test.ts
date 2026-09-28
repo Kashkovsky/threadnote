@@ -101,6 +101,93 @@ describe('code graph disk capacity properties', () => {
     ).toBe('healthy');
   });
 
+  it('reserves sidecar pages and rollback journal on durable storage, and sorter spill on TEMP', () => {
+    const mib = 1024 ** 2;
+    const demand = codeGraphPersistentCapacityDemand({
+      boundary: {
+        finalFactBytes: 16 * mib,
+        operation: 'sort persistent code graph materialization spool',
+        rowCount: 1,
+        transientFilesystem: 'temporary',
+      },
+      lexicalFormatVersion: 1,
+      pageSize: 8192,
+      walAutoCheckpointPages: 1_000,
+    });
+    expect(demand.state).toBe('measured');
+    if (demand.state !== 'measured') return;
+    expect(demand).toMatchObject({
+      mainHighWaterBytes: 16 * mib,
+      recoveryFilesystem: 'durable',
+      recoveryFloorBytes: 16 * mib,
+      transientFilesystem: 'temporary',
+      transientHighWaterBytes: 16 * mib,
+    });
+    const capacity = (durableAvailableBytes: number, temporaryAvailableBytes: number) =>
+      evaluateCodeGraphDiskCapacity({
+        demand,
+        durableAvailableBytes,
+        filesystemsShared: false,
+        freelistBytes: 0,
+        reservedDurableBytes: 0,
+        reservedTemporaryBytes: 0,
+        temporaryAvailableBytes,
+      });
+    expect(capacity(32 * mib, 16 * mib)).toMatchObject({
+      filesystems: [
+        {availableBytes: 32 * mib, requiredBytes: 32 * mib, role: 'durable'},
+        {availableBytes: 16 * mib, requiredBytes: 16 * mib, role: 'temporary'},
+      ],
+      state: 'healthy',
+    });
+    expect(capacity(31 * mib, 16 * mib).state).toBe('pressure');
+    expect(capacity(32 * mib, 15 * mib).state).toBe('pressure');
+  });
+
+  fcProp(
+    it,
+    'keeps the shared sort reservation equal to the sum of split durable and TEMP reservations',
+    {bytes: fc.integer({min: 0, max: 2 ** 30}), rows: fc.integer({min: 0, max: 100_000})},
+    ({bytes, rows}) => {
+      const demand = codeGraphPersistentCapacityDemand({
+        boundary: {
+          finalFactBytes: bytes,
+          operation: 'sort persistent code graph materialization spool',
+          rowCount: rows,
+          transientFilesystem: 'temporary',
+        },
+        lexicalFormatVersion: 1,
+        pageSize: 8192,
+        walAutoCheckpointPages: 1_000,
+      });
+      expect(demand.state).toBe('measured');
+      if (demand.state !== 'measured') return;
+      const durableKey = 'd'.repeat(64);
+      const temporaryKey = 'e'.repeat(64);
+      const split = codeGraphDiskCapacityReservationProjection({
+        demand,
+        durableFilesystemKey: durableKey,
+        freelistBytes: 0,
+        temporaryFilesystemKey: temporaryKey,
+      });
+      const shared = codeGraphDiskCapacityReservationProjection({
+        demand,
+        durableFilesystemKey: durableKey,
+        freelistBytes: 0,
+        temporaryFilesystemKey: durableKey,
+      });
+      expect(split.state).toBe('measured');
+      expect(shared.state).toBe('measured');
+      if (split.state !== 'measured' || shared.state !== 'measured') return;
+      expect(split.filesystems).toEqual([
+        {bytes: demand.mainHighWaterBytes + demand.recoveryFloorBytes, key: durableKey},
+        {bytes: demand.transientHighWaterBytes, key: temporaryKey},
+      ]);
+      expect(shared.filesystems[0]?.bytes).toBe(split.filesystems[0].bytes + split.filesystems[1].bytes);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   fcProp(
     it,
     'keeps spool sort demand monotone in pending surface bytes and rows',

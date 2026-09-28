@@ -227,6 +227,8 @@ export interface CodeGraphMeasuredDiskCapacityDemand {
   readonly calibrationIdentity: string;
   readonly mainFilesystem?: 'durable' | 'temporary';
   readonly mainHighWaterBytes: number;
+  /** Defaults to the transient filesystem; spool rollback journals remain beside the durable sidecar. */
+  readonly recoveryFilesystem?: 'durable' | 'temporary';
   readonly recoveryFloorBytes: number;
   readonly state: 'measured';
   readonly transientFilesystem: 'durable' | 'temporary';
@@ -320,7 +322,7 @@ export function codeGraphPersistentCapacityDemand(
       : input.boundary.operation === 'sort persistent code graph materialization spool'
         ? CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION
         : CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION;
-  return codeGraphPersistentCapacityDemandForCalibration(
+  const demand = codeGraphPersistentCapacityDemandForCalibration(
     {
       ...input,
       finalFactBytes: input.boundary.finalFactBytes,
@@ -330,6 +332,9 @@ export function codeGraphPersistentCapacityDemand(
     },
     calibration,
   );
+  return input.boundary.operation === 'sort persistent code graph materialization spool' && demand.state === 'measured'
+    ? {...demand, recoveryFilesystem: 'durable'}
+    : demand;
 }
 
 export function codeGraphVectorRetirementCapacityDemand(
@@ -470,22 +475,23 @@ export function codeGraphDiskCapacityReservationProjection(
   }
 
   const transientOnDurable = input.demand.transientFilesystem === 'durable';
+  const recoveryOnDurable = (input.demand.recoveryFilesystem ?? input.demand.transientFilesystem) === 'durable';
   const filesystems = [
     {
       bytes: saturatingCapacityAdd(
         mainOnDurable ? externalMainBytes : 0,
         transientOnDurable ? transientHighWaterBytes : 0,
-        transientOnDurable ? recoveryFloorBytes : 0,
+        recoveryOnDurable ? recoveryFloorBytes : 0,
       ),
       key: input.durableFilesystemKey,
     },
-    ...(!mainOnDurable || !transientOnDurable
+    ...(!mainOnDurable || !transientOnDurable || !recoveryOnDurable
       ? [
           {
             bytes: saturatingCapacityAdd(
               mainOnDurable ? 0 : externalMainBytes,
               transientOnDurable ? 0 : transientHighWaterBytes,
-              transientOnDurable ? 0 : recoveryFloorBytes,
+              recoveryOnDurable ? 0 : recoveryFloorBytes,
             ),
             key: input.temporaryFilesystemKey,
           },

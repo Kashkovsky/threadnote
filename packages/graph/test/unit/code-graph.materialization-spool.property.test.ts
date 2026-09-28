@@ -72,6 +72,7 @@ describe('code graph materialization spool', () => {
         finalFactBytes: 26,
         operation: 'sort persistent code graph materialization spool',
         rowCount: 2,
+        transientFilesystem: 'temporary',
       });
       codeGraphSqliteRun(
         database,
