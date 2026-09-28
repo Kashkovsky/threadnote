@@ -6,7 +6,9 @@ import {formatStaleVersionNotice, trimTrailingSlash} from '../../utils.js';
 import {exactMemoryScopeUris, exactRecallScopeIntents} from '@threadnote/recall/results';
 import {activeInstalledVersion} from '../../installations.js';
 import {parseResourceId} from '@threadnote/store/resource-id';
+import {uriSegment} from '@threadnote/store/resource-segment';
 import {attachAnonymousTelemetryDiagnostic, attachAnonymousTelemetryError} from '../../telemetry/diagnostic.js';
+export {uriSegment};
 export interface RuntimeConfig {
   readonly account: string;
   readonly agentContextHome: string;
@@ -158,14 +160,6 @@ export function projectMemoryScopeUris(
 export function normalizeOptionalMetadata(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
-}
-
-export function uriSegment(value: string): string {
-  const normalized = value
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return normalized.length > 0 ? normalized : 'unknown';
 }
 
 export function requiredText(
