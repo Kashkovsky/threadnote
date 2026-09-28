@@ -1,6 +1,6 @@
 import {Cause, Clock, Console, Crypto, DateTime, Effect, Exit, FileSystem, Path, Result, Schema} from 'effect';
 import {runDetachedCommandEffect} from '@threadnote/platform/command';
-import {applicationError} from '@threadnote/platform/errors';
+import {applicationError, fromPromise} from '@threadnote/platform/errors';
 import {syncDirectoryBestEffort, syncWritableFile} from '@threadnote/platform/file/durability';
 import {FileLockTimeout, withExclusiveFileLock} from '@threadnote/platform/file/lock';
 import {SystemInfo} from '@threadnote/platform/system';
@@ -217,7 +217,9 @@ export function runThreadnoteUpdateCommand(config: RuntimeConfig, options: Updat
 }
 
 function runUpdateLazily(config: RuntimeConfig, options: UpdateOptions) {
-  return Effect.promise(() => import('./index.js')).pipe(Effect.flatMap(update => update.runUpdate(config, options)));
+  return fromPromise('load release updater', () => import('./index.js')).pipe(
+    Effect.flatMap(update => update.runUpdate(config, options)),
+  );
 }
 
 /** @internal Pure update-mode dispatcher used by CLI regression tests. */
