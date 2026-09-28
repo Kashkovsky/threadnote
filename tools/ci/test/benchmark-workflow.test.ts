@@ -62,7 +62,71 @@ function expectBroadPullRequestTrigger(workflow: BenchmarkWorkflow): void {
   expect(Object.prototype.hasOwnProperty.call(pullRequest ?? {}, 'paths-ignore')).toBe(false);
 }
 
+function captureSteps(workflow: BenchmarkWorkflow): readonly {readonly jobName: string; readonly run: string}[] {
+  return Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
+    (job.steps ?? []).flatMap(step =>
+      step.run?.split('\n').some(line => line.includes('bench:') || line.includes('scripts/benchmark-'))
+        ? [{jobName, run: step.run}]
+        : [],
+    ),
+  );
+}
+
 describe('platform benchmark workflow', () => {
+  it('runs a Bazel correctness preflight independently while keeping measured captures as direct Bun commands', () => {
+    const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const productionLarge = load(readFileSync('.github/workflows/production-large-evidence.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const preflight = workflow.jobs['benchmark-preflight'];
+    const preflightRun = preflight.steps?.find(
+      step => step.name === 'Validate declared benchmark harness inputs and contracts',
+    )?.run;
+
+    expect(preflight).toMatchObject({
+      if: "${{ always() && github.event_name != 'pull_request' }}",
+      name: 'Benchmark harness · Bazel preflight',
+      needs: 'classify-platform-benchmark',
+      'runs-on': 'ubuntu-latest',
+      'timeout-minutes': 10,
+    });
+    expect(preflight.steps?.find(step => step.uses === 'actions/checkout@v7')?.with?.['fetch-depth']).toBe(0);
+    expect(preflightRun).toBe(
+      'bun run bazel -- test //:platform_benchmark_preflight --test_output=errors --cache_test_results=no',
+    );
+    expect(
+      Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
+        (job.steps ?? []).flatMap(step => (step.run?.match(/\bbazel\b/u) ? [{jobName, run: step.run}] : [])),
+      ),
+    ).toEqual([{jobName: 'benchmark-preflight', run: preflightRun}]);
+
+    const captures = [...captureSteps(workflow), ...captureSteps(productionLarge)];
+    expect(captures.length).toBeGreaterThan(10);
+    for (const capture of captures) {
+      expect(capture.run).not.toMatch(/\bbazel\b/u);
+      const commandLines = capture.run
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.includes('bench:') || line.includes('scripts/benchmark-'));
+      expect(commandLines.length).toBeGreaterThan(0);
+      expect(commandLines.every(line => /^bun (?:run bench:|scripts\/benchmark-)/u.test(line))).toBe(true);
+      const needs = workflow.jobs[capture.jobName]?.needs;
+      expect(typeof needs === 'string' ? [needs] : (needs ?? [])).not.toContain('benchmark-preflight');
+    }
+    const productionLargeNeeds = workflow.jobs['code-graph-production-large'].needs;
+    expect(
+      typeof productionLargeNeeds === 'string' ? [productionLargeNeeds] : (productionLargeNeeds ?? []),
+    ).not.toContain('benchmark-preflight');
+
+    expect(preflight.if).toContain("github.event_name != 'pull_request'");
+
+    expect(
+      Object.entries(productionLarge.jobs).flatMap(([, job]) => job.steps?.map(step => step.run ?? '') ?? []),
+    ).not.toContainEqual(expect.stringMatching(/\bbazel\b/u));
+  });
+
   it('signs the inverse scale capture before independently verifying and retaining release evidence', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,

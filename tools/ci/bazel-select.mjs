@@ -21,6 +21,11 @@ const run = async (args, cwd = root) => {
   if (code !== 0) throw new Error(`${args[0]} ${args[1]} failed (${code}): ${stderr.slice(-1500)}`);
   return stdout.trim();
 };
+const prepare = async cwd => {
+  const script = join(cwd, 'apps/website/tools/site-prepared-metadata.ts');
+  if (existsSync(script))
+    await run([process.execPath, script, '--output', join(cwd, 'apps/website/.bazel-inputs/metadata.json')], cwd);
+};
 let changedFiles = [];
 let impacted = [];
 let failure;
@@ -37,19 +42,14 @@ try {
   await run(['git', 'worktree', 'add', '--detach', directory, revision]);
   if (!existsSync(join(directory, 'MODULE.bazel')) || !existsSync(join(directory, 'tools/bazel/targets.json')))
     throw new Error('Baseline has no modeled Bazel graph');
-  baseInventory = JSON.parse(readFileSync(join(directory, 'tools/bazel/targets.json'), 'utf8'));
+  await prepare(root);
   await run([process.execPath, 'tools/bazel/generate.mjs', '--check']);
   executable = await bazelPath(root);
   const diff = await bazelDiffPath(root);
-  const prepare = async cwd => {
-    const script = join(cwd, 'apps/website/tools/site-prepared-metadata.ts');
-    if (existsSync(script))
-      await run([process.execPath, script, '--output', join(cwd, 'apps/website/.bazel-inputs/metadata.json')], cwd);
-  };
   await run([process.execPath, 'install', '--frozen-lockfile', '--ignore-scripts'], directory);
-  await run([process.execPath, 'tools/bazel/generate.mjs', '--check'], directory);
   await prepare(directory);
-  await prepare(root);
+  await run([process.execPath, 'tools/bazel/generate.mjs'], directory);
+  baseInventory = JSON.parse(readFileSync(join(directory, 'tools/bazel/targets.json'), 'utf8'));
   for (const [name, cwd] of [
     ['base', directory],
     ['head', root],
