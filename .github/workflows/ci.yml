@@ -78,10 +78,12 @@ jobs:
         if: always()
         run: |
           if [ -f .context/bazel-selection/selection.json ]; then
-            echo '### Bazel CI selection' >> "$GITHUB_STEP_SUMMARY"
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat .context/bazel-selection/selection.json >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo '### Bazel CI selection'
+              echo '```json'
+              cat .context/bazel-selection/selection.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - uses: actions/upload-artifact@v4
