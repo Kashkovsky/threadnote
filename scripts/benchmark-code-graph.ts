@@ -13,7 +13,7 @@ import {
   type CodeGraphSqliteWriterSettings,
   type CodeGraphSqliteWriterTuning,
 } from '@threadnote/graph/store';
-import {CodeGraphAnalysis} from '@threadnote/graph/analysis';
+import {CodeGraphAnalysis, type CodeGraphAnalysisResult} from '@threadnote/graph/analysis';
 import {codeGraphAnalysisLimitsForView} from '@threadnote/graph/analysis/render';
 import {codeGraphLayout} from '@threadnote/graph/layout';
 import {parserWorkerCapacity} from '@threadnote/graph/parser_worker';
@@ -1211,7 +1211,9 @@ const benchmarkCodeGraph = Effect.scoped(
 
     yield* runCheckpoint?.mark('post-build-analysis') ?? Effect.void;
     const coldStatusStarted = yield* Clock.currentTimeNanos;
-    const analysisStatus = yield* query.status(prepared.home, prepared.repository);
+    // The measured overlay was restored above. Observe its retained snapshot without
+    // scheduling a refresh writer that would contend with the analysis lease.
+    const analysisStatus = yield* query.status(prepared.home, prepared.repository, {requestMaintenance: false});
     const coldStatusDuration =
       Number((yield* Clock.currentTimeNanos) - coldStatusStarted) / NANOSECONDS_PER_MILLISECOND;
     if (!analysisStatus.readySnapshot) {
@@ -1242,7 +1244,7 @@ const benchmarkCodeGraph = Effect.scoped(
     }
     const analysisDurations: number[] = [];
     const analysisCpuDurations: number[] = [];
-    let analysisComplete = false;
+    let incrementalAnalysis: CodeGraphAnalysisResult | undefined;
     for (let index = 0; index < Math.min(options.samples, 3); index += 1) {
       const started = yield* Clock.currentTimeNanos;
       const processStarted = processTelemetry();
@@ -1254,9 +1256,9 @@ const benchmarkCodeGraph = Effect.scoped(
           message: 'Code graph benchmark aggregate analysis unexpectedly executed a detail scan.',
         });
       }
-      analysisComplete = result.coverage.complete;
+      incrementalAnalysis = result;
     }
-    if (!analysisComplete) {
+    if (!incrementalAnalysis?.coverage.complete) {
       return yield* ScriptError.make({message: 'Code graph benchmark analysis returned partial coverage.'});
     }
     const sameOverlayReferenceAnalysis = yield* analysis.analyze({
@@ -1273,6 +1275,15 @@ const benchmarkCodeGraph = Effect.scoped(
         message: 'Code graph benchmark reference analysis unexpectedly required a detail scan.',
       });
     }
+    const incrementalAnalysisDigest = codeGraphAnalysisAggregateDigest(incrementalAnalysis);
+    const sameOverlayReferenceAnalysisDigest = codeGraphAnalysisAggregateDigest(sameOverlayReferenceAnalysis);
+    if (incrementalAnalysisDigest !== sameOverlayReferenceAnalysisDigest) {
+      return yield* ScriptError.make({
+        message:
+          `Computed analysis aggregate parity failed: incremental(sha256=${incrementalAnalysisDigest}) ` +
+          `same-overlay-full(sha256=${sameOverlayReferenceAnalysisDigest}).`,
+      });
+    }
 
     const statusSamples = Math.max(1, Math.min(options.samples, largeEvidenceRun ? 3 : 10));
     const repositoryStatusDurations: number[] = [];
@@ -1281,7 +1292,7 @@ const benchmarkCodeGraph = Effect.scoped(
     let observedStatusRecords = 0;
     for (let index = 0; index < statusSamples; index += 1) {
       const repositoryStatusStarted = yield* Clock.currentTimeNanos;
-      yield* query.status(prepared.home, prepared.repository);
+      yield* query.status(prepared.home, prepared.repository, {requestMaintenance: false});
       repositoryStatusDurations.push(
         Number((yield* Clock.currentTimeNanos) - repositoryStatusStarted) / NANOSECONDS_PER_MILLISECOND,
       );
@@ -3523,6 +3534,14 @@ export interface CodeGraphStructuralDigestStreamEvidence {
   readonly rowCount: number;
 }
 
+function codeGraphAnalysisAggregateDigest(
+  analysis: Pick<CodeGraphAnalysisResult, 'confidenceAudit' | 'statistics'>,
+): string {
+  return new Bun.CryptoHasher('sha256')
+    .update(JSON.stringify({confidenceAudit: analysis.confidenceAudit, statistics: analysis.statistics}))
+    .digest('hex');
+}
+
 export interface CodeGraphStructuralGraphEvidence {
   readonly digest: string;
   readonly streams: readonly CodeGraphStructuralDigestStreamEvidence[];
@@ -3681,6 +3700,9 @@ const readCodeGraphStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.readS
     Option.isSome(readSnapshot.baseSnapshotId) ? readSnapshot.baseSnapshotId.value : undefined,
   );
   const symbolLookup = codeGraphStructuralDigestSymbolLookupStatement(snapshotId, baseSnapshotId);
+  // Persisted analysis summaries are optional derived caches. Their computed
+  // statistics are compared above; this digest covers the underlying graph facts
+  // so paged fallback and precomputed-summary snapshots remain comparable.
   const streams = [
     {
       name: 'snapshot',
@@ -3776,34 +3798,6 @@ const readCodeGraphStructuralGraphEvidence = Effect.fn('benchmarkCodeGraph.readS
         )
         SELECT source_path, local_name, target_path, imported_name
         FROM effective_rows ORDER BY source_path, local_name, target_path, imported_name`,
-    },
-    {
-      name: 'analysis-symbol-counts',
-      parameters: [snapshotId],
-      query: `SELECT language, kind, count FROM snapshot_analysis_symbol_counts
-          WHERE snapshot_id = ? ORDER BY language, kind`,
-    },
-    {
-      name: 'analysis-edge-histogram',
-      parameters: [snapshotId],
-      query: `SELECT provenance, relation, confidence, endpoint_state, count
-          FROM snapshot_analysis_edge_histogram WHERE snapshot_id = ?
-          ORDER BY provenance, relation, confidence, endpoint_state`,
-    },
-    {
-      name: 'analysis-edge-counts',
-      parameters: [snapshotId],
-      query: `SELECT provenance, relation, count, confidence_invalid, confidence_total,
-            lowest_confidence, confidence_high, confidence_medium, confidence_low,
-            unresolved_endpoint_count, self_loop_count, review_finding_count
-          FROM snapshot_analysis_edge_counts WHERE snapshot_id = ?
-          ORDER BY provenance, relation`,
-    },
-    {
-      name: 'analysis-summary-receipt',
-      parameters: [snapshotId],
-      query: `SELECT version, symbol_count, edge_count, digest
-          FROM snapshot_analysis_summary_receipts WHERE snapshot_id = ?`,
     },
   ] as const satisfies readonly CodeGraphStructuralDigestStream[];
   const evidence: CodeGraphStructuralDigestStreamEvidence[] = [];

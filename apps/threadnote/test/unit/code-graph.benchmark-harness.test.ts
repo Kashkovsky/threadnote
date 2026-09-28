@@ -3,7 +3,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {readFileSync} from '@threadnote/testing/node-fs';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, FileSystem, Path, PlatformError, Schedule, Schema} from 'effect';
+import {Clock, DateTime, Effect, FileSystem, Path, PlatformError, Schedule, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -165,7 +165,7 @@ describe('code graph external benchmark harness', () => {
     expect(vectorSemanticControlMinimumScore('test/architecture.test.ts')).toBeLessThan(0.64);
   });
 
-  it('keeps whole-graph performance analysis on the persisted summary path', () => {
+  it('keeps whole-graph performance analysis on the aggregate-only path', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
     expect(source).toContain("limits: codeGraphAnalysisLimitsForView('stats')");
     expect(source).toContain("result.coverage.topology.state !== 'not-requested'");
@@ -408,7 +408,11 @@ describe('code graph external benchmark harness', () => {
 
   it('retains privacy-safe structural parity evidence before a failed external run exits', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
-    const analysisParity = sourceSlice(source, 'if (!analysisComplete)', 'const structuralGraphParityEvidence');
+    const analysisParity = sourceSlice(
+      source,
+      'if (!incrementalAnalysis?.coverage.complete)',
+      'const structuralGraphParityEvidence',
+    );
     const parity = sourceSlice(
       source,
       'const structuralGraphParityEvidence = codeGraphStructuralParityEvidence(',
@@ -1201,6 +1205,84 @@ describe('code graph external benchmark harness', () => {
       // retaining the overlay also retains its physical base.
       expect(result.protectedSnapshotRows).toBe(2);
       expect(result.leaseRows).toBe(0);
+    }).pipe(TestClock.withLive),
+  );
+
+  effectIt.effect('keeps structural graph evidence independent of optional analysis summaries', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-structural-digest-summary-'});
+          const databasePath = path.join(root, 'graph-v3.sqlite');
+          const identity: RepositoryIdentity = {
+            caseMode: 'sensitive',
+            checkoutId: 'c'.repeat(64),
+            displayName: 'structural-digest-summary-fixture',
+            gitCommonDirectory: root,
+            headCommit: '1'.repeat(40),
+            objectFormat: 'sha1',
+            repoRoot: root,
+            repositoryId: 'r'.repeat(64),
+            worktreeId: 'w'.repeat(64),
+          };
+          const baseSnapshotId = `cgsn_${'0'.repeat(40)}`;
+          const snapshotId = `cgsn_${'1'.repeat(40)}`;
+          const replacementSnapshotId = `cgsn_${'2'.repeat(40)}`;
+
+          yield* store.initialize(databasePath);
+          seedStructuralDigestInterlockDatabase(
+            databasePath,
+            identity,
+            baseSnapshotId,
+            snapshotId,
+            replacementSnapshotId,
+            'src/index.ts',
+          );
+          const withoutSummary = yield* sqliteStructuralGraphEvidence(databasePath, snapshotId);
+          const writer = new Database(databasePath, {strict: true});
+          try {
+            const now = DateTime.formatIso(yield* DateTime.now);
+            writer
+              .query(
+                `INSERT INTO snapshot_analysis_symbol_counts (snapshot_id, language, kind, count)
+                 VALUES (?, 'typescript', 'function', 1)`,
+              )
+              .run(snapshotId);
+            writer
+              .query(
+                `INSERT INTO snapshot_analysis_edge_histogram (
+                   snapshot_id, provenance, relation, confidence, endpoint_state, count
+                 ) VALUES (?, 'resolved', 'calls', 1, 0, 1)`,
+              )
+              .run(snapshotId);
+            writer
+              .query(
+                `INSERT INTO snapshot_analysis_edge_counts (
+                   snapshot_id, provenance, relation, count, confidence_invalid, confidence_total,
+                   lowest_confidence, confidence_high, confidence_medium, confidence_low,
+                   unresolved_endpoint_count, self_loop_count, review_finding_count
+                 ) VALUES (?, 'resolved', 'calls', 1, 0, 1, 1, 1, 0, 0, 0, 0, 0)`,
+              )
+              .run(snapshotId);
+            writer
+              .query(
+                `INSERT INTO snapshot_analysis_summary_receipts (
+                   snapshot_id, version, symbol_count, edge_count, digest, created_at
+                 ) VALUES (?, 1, 1, 1, ?, ?)`,
+              )
+              .run(snapshotId, 'd'.repeat(64), now);
+          } finally {
+            writer.close(false);
+          }
+          const withSummary = yield* sqliteStructuralGraphEvidence(databasePath, snapshotId);
+          return {withSummary, withoutSummary};
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result.withSummary).toEqual(result.withoutSummary);
     }).pipe(TestClock.withLive),
   );
 });

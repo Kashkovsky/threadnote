@@ -1083,24 +1083,33 @@ describe('built self-contained distribution', () => {
         repository: {displayName: 'code-graph-repository'},
       });
       expect(JSON.stringify(graph.structuredContent)).toContain('withExclusiveFileLock');
-      const graphAnalysis = await client.callTool(
-        {
-          arguments: {callerCwd: graphRepository, operation: 'stats', responseFormat: 'dual'},
-          name: 'analyze_code_graph',
-        },
-        undefined,
-        {timeout: realModelTimeoutMs},
-      );
-      expect(graphAnalysis.isError).not.toBe(true);
-      expect(graphAnalysis.structuredContent).toMatchObject({
-        operation: 'stats',
-        result: {
-          statistics: {
-            analyzedEdgeCount: expect.any(Number),
-            analyzedNodeCount: expect.any(Number),
+      await expect
+        .poll(
+          async () => {
+            const graphAnalysis = await client.callTool(
+              {
+                arguments: {callerCwd: graphRepository, operation: 'stats', responseFormat: 'dual'},
+                name: 'analyze_code_graph',
+              },
+              undefined,
+              {timeout: 30_000},
+            );
+            expect(graphAnalysis.isError, JSON.stringify(graphAnalysis)).not.toBe(true);
+            return graphAnalysis.structuredContent;
           },
-        },
-      });
+          {interval: 250, timeout: 30_000},
+        )
+        .toMatchObject({
+          freshness: 'current',
+          operation: 'stats',
+          type: 'code-graph-analysis',
+          result: {
+            statistics: {
+              analyzedEdgeCount: expect.any(Number),
+              analyzedNodeCount: expect.any(Number),
+            },
+          },
+        });
       const preview = await client.callTool({
         arguments: {projection: projectionId, uri: memoryUri},
         name: 'obsidian_publish',

@@ -4832,61 +4832,99 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect(
-    'fails a direct persistent build at planning time when the heuristic estimate already cannot fit',
-    () =>
-      Effect.gen(function* () {
-        const root = createManySourceRepository(130);
-        const home = join(root, '.threadnote-test-home');
-        const system = yield* SystemInfo;
-        const progress: CodeGraphProgress[] = [];
-        const indexerLayer = Layer.fresh(CodeGraphIndexer.layer).pipe(
-          Layer.provide(
-            Layer.succeed(SystemInfo, SystemInfo.of({...system, availableDiskBytes: () => Effect.succeed(0)})),
-          ),
-        );
+  effectIt.effect('continues past an advisory whole-build heuristic and fails a measured reservation shortfall', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(130);
+      const home = join(root, '.threadnote-test-home');
+      const system = yield* SystemInfo;
+      const progress: CodeGraphProgress[] = [];
+      const measuredOperations: string[] = [];
+      const indexerLayer = Layer.fresh(CodeGraphIndexer.layer).pipe(
+        Layer.provide(
+          Layer.succeed(SystemInfo, SystemInfo.of({...system, availableDiskBytes: () => Effect.succeed(0)})),
+        ),
+      );
 
-        const failure = yield* Effect.scoped(
-          Effect.gen(function* () {
-            const context = yield* Layer.build(indexerLayer);
-            const indexer = Context.get(context, CodeGraphIndexer);
-            return yield* indexer
-              .index({
-                cwd: root,
-                diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
-                incrementalOverlay: false,
-                onProgress: update =>
-                  Effect.sync(() => {
-                    progress.push(update);
-                  }),
-                threadnoteHome: home,
-              })
-              .pipe(Effect.flip);
-          }),
-        );
+      const {failure, indexed} = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(indexerLayer);
+          const indexer = Context.get(context, CodeGraphIndexer);
+          const indexed = yield* indexer.index({
+            cwd: root,
+            diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
+            incrementalOverlay: false,
+            onProgress: update =>
+              Effect.sync(() => {
+                progress.push(update);
+              }),
+            threadnoteHome: home,
+          });
 
-        expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
-        expect(progress.some(update => update.phase === 'materializing')).toBe(false);
+          updateManySourceRepository(root, 130, 'measuredCapacityPressure');
+          const failure = yield* indexer
+            .index({
+              cwd: root,
+              diskCapacityAvailableBytes: (_target, boundary) =>
+                Effect.sync(() => {
+                  measuredOperations.push(boundary.operation);
+                  return boundary.operation === 'stage persistent code graph facts' ? 0 : Number.MAX_SAFE_INTEGER;
+                }),
+              incrementalOverlay: false,
+              threadnoteHome: home,
+            })
+            .pipe(Effect.flip);
+          return {failure, indexed};
+        }),
+      );
 
-        const identity = yield* resolveRepositoryIdentity(root);
-        const database = new Database(codeGraphDatabasePath(home, {identity}), {readonly: true});
-        try {
-          expect(
-            database
-              .query<{readonly count: number}, [string]>(
-                "SELECT COUNT(*) AS count FROM snapshots WHERE worktree_id = ? AND state IN ('building', 'failed', 'retired')",
-              )
-              .get(identity.worktreeId)?.count,
-          ).toBe(0);
-          expect(
-            database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners').get()
-              ?.count,
-          ).toBe(0);
-          expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
-        } finally {
-          database.close();
-        }
-      }).pipe(provideTestLayer(ApplicationLayer)),
+      expect(indexed.snapshot.state).toBe('ready');
+      expect(
+        indexed.diagnostics.some(
+          diagnostic =>
+            diagnostic.includes('below the advisory whole-build materialization estimate') &&
+            diagnostic.includes('continue under measured bounded-write reservations'),
+        ),
+      ).toBe(true);
+      expect(progress.some(update => update.phase === 'materializing')).toBe(true);
+      expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
+      expect(failure).toMatchObject({
+        evidence: {
+          decisionLayer: 'bounded-write-reservation',
+          estimateBasis: 'final-fact-bytes-and-row-count',
+          filesystems: [{availableBytes: 0, requiredBytes: expect.any(Number)}],
+          recovery: 'free-space',
+          retryable: false,
+        },
+        operation: 'stage persistent code graph facts',
+      });
+      expect(measuredOperations).toContain('stage persistent code graph facts');
+
+      const identity = yield* resolveRepositoryIdentity(root);
+      const database = new Database(codeGraphDatabasePath(home, {identity}), {readonly: true});
+      try {
+        expect(
+          database
+            .query<{readonly count: number}, [string]>(
+              "SELECT COUNT(*) AS count FROM snapshots WHERE worktree_id = ? AND state IN ('building', 'failed', 'retired')",
+            )
+            .get(identity.worktreeId)?.count,
+        ).toBe(0);
+        expect(
+          database
+            .query<{readonly snapshot_id: string}, [string]>(
+              'SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ?',
+            )
+            .get(identity.worktreeId),
+        ).toEqual({snapshot_id: indexed.snapshot.id});
+        expect(
+          database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners').get()
+            ?.count,
+        ).toBe(0);
+        expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+      } finally {
+        database.close();
+      }
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('reprotects the exact ready snapshot when a paused promotion resumes', () =>

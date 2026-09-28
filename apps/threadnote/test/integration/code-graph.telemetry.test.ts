@@ -12,6 +12,8 @@ import {TestClock} from 'effect/testing';
 import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {describe, expect} from 'vitest';
 import {CodeGraphAnalysis, analyzeCodeGraph} from '@threadnote/graph/analysis';
+import {serveCodeGraphAnalysisRead, type CodeGraphAnalysisReadInput} from '@threadnote/graph/isolated/analysis';
+import {codeGraphIsolatedQueryTelemetryRecorder} from '@threadnote/graph/isolated/impact_query';
 import {CodeGraphIndexer} from '@threadnote/graph/indexer';
 import {CodeGraphQueryService} from '@threadnote/graph/query';
 import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentity} from '@threadnote/graph/types';
@@ -104,15 +106,15 @@ describe('code graph terminal telemetry wiring', () => {
         'graph.query.status',
         'graph.query.status',
         'graph.query.status',
-        'graph.query.snapshot',
+        'graph.query.status',
         'graph.query.execute',
         'graph.query.execute',
       ]);
       expect(analyzeSpans.slice(0, 6).map(attributes => attributes['threadnote.stage'])).toEqual([
         'query-repository-identity',
         'query-worktree-observation',
-        undefined,
-        undefined,
+        'query-repository-identity',
+        'query-worktree-observation',
         undefined,
         'query-serialization',
       ]);
@@ -122,16 +124,15 @@ describe('code graph terminal telemetry wiring', () => {
           'threadnote.graph.request_scope': 'local',
         });
       }
-      for (const attributes of [analyzeSpans[0], analyzeSpans[1], analyzeSpans[2], analyzeSpans[5]]) {
+      for (const attributes of [...analyzeSpans.slice(0, 4), analyzeSpans[5]]) {
         expect(attributes).not.toHaveProperty('threadnote.graph.snapshot_selection');
       }
-      for (const attributes of [analyzeSpans[3], analyzeSpans[4], analyzeSpans[6]]) {
-        expect(attributes).toMatchObject({
-          'threadnote.graph.snapshot_selection': 'active',
-        });
-      }
+      expect(analyzeSpans[4]).toMatchObject({
+        'threadnote.graph.snapshot_selection': 'active',
+      });
       expect(analyzeSpans[6]).toMatchObject({
         'threadnote.event': 'completion',
+        'threadnote.graph.snapshot_selection': 'active',
         'threadnote.outcome': 'success',
       });
       expect(JSON.stringify(analyzeSpans)).not.toContain(TELEMETRY_REPOSITORY_ROOT);
@@ -429,40 +430,55 @@ function registeredTelemetryHarness(tracer: Tracer.Tracer, onWatcherEnsure: () =
   const store = pagedAnalysisStore([], []);
   const analysis = CodeGraphAnalysis.of({analyze: options => analyzeCodeGraph(store, options)});
   const command = CommandExecutor.of({
-    execute: (_executable, _arguments, options) =>
-      Effect.sync(() => {
-        if (options?.input === undefined) throw new Error('Missing isolated graph inspection request.');
-        const request = JSON.parse(new TextDecoder().decode(options.input)) as {
-          readonly operation: CodeGraphQueryResult['operation'];
-        };
-        return commandResult(
-          JSON.stringify({
-            ok: true,
-            protocol: 1,
-            result: {...telemetryQueryResult(status(false)), operation: request.operation},
-            status: {
-              stale: false,
-              readySnapshotId: snapshot.id,
-              surface: {
-                freshness: 'deferred',
-                selection: 'active',
-                snapshot: {edgeCount: 0, fileCount: 0, symbolCount: 0},
-              },
-              worktreeId: identity.worktreeId,
-              repoRoot: identity.repoRoot,
-            },
-            telemetry: [
-              {
-                disposition: 'skipped',
-                durationMilliseconds: 0,
-                outcome: 'success',
-                phase: 'graph.query.execute',
-                stage: 'query-strict-reobservation',
-              },
-            ],
+    execute: (_executable, arguments_, options) =>
+      arguments_.at(-1) === '--threadnote-code-graph-analysis-worker'
+        ? Effect.gen(function* () {
+            if (options?.input === undefined) throw new Error('Missing isolated graph analysis request.');
+            const request = JSON.parse(new TextDecoder().decode(options.input)) as CodeGraphAnalysisReadInput;
+            const telemetry: Parameters<typeof codeGraphIsolatedQueryTelemetryRecorder>[0] = [];
+            const result = yield* serveCodeGraphAnalysisRead(request, {
+              telemetry: codeGraphIsolatedQueryTelemetryRecorder(telemetry),
+            }).pipe(
+              Effect.provideService(CodeGraphQueryService, query),
+              Effect.provideService(CodeGraphAnalysis, analysis),
+              Effect.provideService(CodeGraphIndexer, {} as import('@threadnote/graph/indexer').CodeGraphIndexerShape),
+              Effect.orDie,
+            );
+            return commandResult(JSON.stringify({protocol: 1, ok: true, result, telemetry}));
+          })
+        : Effect.sync(() => {
+            if (options?.input === undefined) throw new Error('Missing isolated graph inspection request.');
+            const request = JSON.parse(new TextDecoder().decode(options.input)) as {
+              readonly operation: CodeGraphQueryResult['operation'];
+            };
+            return commandResult(
+              JSON.stringify({
+                ok: true,
+                protocol: 1,
+                result: {...telemetryQueryResult(status(false)), operation: request.operation},
+                status: {
+                  stale: false,
+                  readySnapshotId: snapshot.id,
+                  surface: {
+                    freshness: 'deferred',
+                    selection: 'active',
+                    snapshot: {edgeCount: 0, fileCount: 0, symbolCount: 0},
+                  },
+                  worktreeId: identity.worktreeId,
+                  repoRoot: identity.repoRoot,
+                },
+                telemetry: [
+                  {
+                    disposition: 'skipped',
+                    durationMilliseconds: 0,
+                    outcome: 'success',
+                    phase: 'graph.query.execute',
+                    stage: 'query-strict-reobservation',
+                  },
+                ],
+              }),
+            );
           }),
-        );
-      }),
     executeStreaming: () => Effect.die('Unexpected streaming command.'),
   });
   const server = new EffectMcpServerAdapter('threadnote-graph-telemetry-test', '1.0.0', 'Test server.');

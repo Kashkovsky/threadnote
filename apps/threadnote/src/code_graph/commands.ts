@@ -972,8 +972,8 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
     readonly view: CodeGraphAnalysisView;
   },
 ) {
-  const deadline =
-    (yield* Clock.currentTimeMillis) + (options.readTimeoutMilliseconds ?? CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS);
+  const budgetMilliseconds = options.readTimeoutMilliseconds ?? CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS;
+  const deadline = (yield* Clock.currentTimeMillis) + budgetMilliseconds;
   const cwd = yield* commandCwd(options.cwd);
   const communityId = options.communityId?.trim();
   if (options.view === 'community' && !communityId?.match(/^cgc_[a-f0-9]{32}$/)) {
@@ -1005,6 +1005,7 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
       freshness: resolution?.status?.freshness ?? 'unavailable',
       state: resolution?.state ?? 'timed-out',
       reason: resolution?.reason ?? 'read-timeout',
+      ...(resolution === undefined ? {budgetMilliseconds} : {}),
       ...(resolution?.status?.readySnapshot === undefined ? {} : {snapshot: resolution.status.readySnapshot}),
       ...(resolution?.state === 'failed' ? {failure: resolution.failure} : {}),
       retryAfterMilliseconds: 1000,
@@ -1012,7 +1013,7 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
     yield* writeFinalCliOutput(
       options.json
         ? JSON.stringify(state)
-        : `Code graph analysis ${state.state}: ${state.reason}${resolution?.state === 'failed' ? ` (${resolution.failure.code}; recovery: ${resolution.failure.recovery})` : ''}. No analysis ran. Retry graph analyze with --freshness ready/current or run graph index.`,
+        : `Code graph analysis ${state.state}: ${state.reason}${resolution?.state === 'failed' ? ` (${resolution.failure.code}; recovery: ${resolution.failure.recovery})` : ''}. No analysis result was returned. Retry graph analyze with --freshness ready/current or run graph index.`,
     );
     return;
   }
@@ -1074,7 +1075,7 @@ export const runCodeGraphReport = Effect.fn('codeGraph.command.report')(function
     Effect.mapError(() =>
       CodeGraphCommandError.make({
         message:
-          'The bounded graph report read failed or timed out. The report output was not created; retry with a larger --read-timeout-ms.',
+          'The bounded graph report read failed or timed out. No analysis result was returned. Run graph index explicitly, then retry, or rerun with a larger --read-timeout-ms. The report output was not created.',
       }),
     ),
   );

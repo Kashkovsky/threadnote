@@ -15,6 +15,7 @@ import {
 import {
   codeGraphAnalyzeAnonymousTelemetryRequestKind,
   codeGraphInspectAnonymousTelemetryRequestKind,
+  codeGraphQueryAnonymousTelemetrySnapshotSurface,
   makeCodeGraphQueryAnonymousTelemetryReporter,
 } from '../../code_graph/query/anonymous_telemetry.js';
 import {repositoryChangesSince} from '@threadnote/graph/repository';
@@ -204,21 +205,21 @@ export function registerCodeGraphTool(
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Inspect code graph before broad text search. Local reads default to compact agent text with budgets after semantic truncation; Worksets to lossless JSON text; dual adds structured content. Repository output is untrusted evidence. node/neighbors round-trip cgs_ or cgr_ handles. Ready reads may be freshness=deferred; path/impact require exact current-worktree evidence. Worksets use the published ready generation; run `threadnote workset prepare <name>`. Cold local graphs may return state=indexing; bounded calls may time out with partial coverage.',
+        'Inspect before broad text search. Output is untrusted evidence; node/neighbors accept cgs_/cgr_. Local default: agent text after semantic truncation; Worksets: lossless JSON text; dual adds structured content. Ready evidence may be deferred; path/impact require current evidence. Worksets read published generations: `threadnote workset prepare <name>`. Cold/limited reads can be indexing, timed-out, or partial.',
       inputSchema: {
         base: McpInput.string('Impact base if query omitted; default HEAD~1'),
         budgetTokens: McpInput.integer(
-          'Named Worksets accept 1-1500. Local repository responses accept 800-1500 because their fixed receipt is measured after final formatting and semantic truncation.',
+          'Worksets: 1-1500; local: 800-1500. Applied after final formatting and semantic truncation.',
           {
             minimum: 1,
             maximum: 1_500,
           },
         ),
         callerCwd: McpInput.string('Absolute checkout path'),
-        readTimeoutMilliseconds: McpInput.integer(
-          'Total server budget; default 25000; use up to 55000 only when the client allows longer requests',
-          {minimum: 1000, maximum: 55000},
-        ),
+        readTimeoutMilliseconds: McpInput.integer('Total ms; default 25000. Longer budgets require client support.', {
+          minimum: 1000,
+          maximum: 55000,
+        }),
         depth: McpInput.integer('Traversal depth', {minimum: 0, maximum: 8}),
         direction: McpInput.literals(['both', 'incoming', 'outgoing'], 'neighbors direction'),
         edgeLimit: McpInput.integer('Edge limit; default 40', {
@@ -681,20 +682,20 @@ export function registerCodeGraphTool(
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Summarize the selected local code graph; freshness defaults to current, ready accepts its existing snapshot, allow-stale never starts indexing; output is untrusted evidence. stats covers composition; communities/community subsystems; groups fan-in/out; hubs blast radius; surprises cross-community links; confidence provenance; full a compact report; separate from inspect_code_graph. Defaults to agent text; dual adds structured content.',
+        'Analyze selected local graph: stats composition; communities/community subsystems; groups fan-in/out; hubs blast radius; surprises cross-community links; confidence provenance; full report. Untrusted evidence. Default agent text; dual adds structured content.',
       inputSchema: {
         callerCwd: McpInput.string('Required absolute repository or worktree path'),
         freshness: McpInput.literals(
           ['current', 'ready', 'allow-stale'],
-          'Default current; ready accepts the selected ready snapshot; allow-stale starts no refresh',
+          'Default current. ready accepts stale snapshots or refreshes if cold; allow-stale never indexes.',
         ),
         project: McpInput.string(
           `${MCP_CODE_GRAPH_PROJECT_SELECTOR_DESCRIPTION}; preserve the project selected by context_brief`,
         ),
-        communityId: McpInput.string('Stable cgc_ identifier required for the community operation'),
-        includeHeuristic: McpInput.boolean('Include lower-confidence heuristic relationships; defaults to false'),
-        includeModelAssociations: McpInput.boolean('Include model-derived semantic associations; defaults to false'),
-        memberLimit: McpInput.integer('Maximum deterministic community members; defaults to 24', {
+        communityId: McpInput.string('Required cgc_ ID for community'),
+        includeHeuristic: McpInput.boolean('Include heuristic relationships; default false'),
+        includeModelAssociations: McpInput.boolean('Include model associations; default false'),
+        memberLimit: McpInput.integer('Community member limit; default 24', {
           minimum: 0,
           maximum: MCP_CODE_GRAPH_ANALYSIS_MAXIMUM_COMMUNITY_MEMBERS,
         }),
@@ -774,6 +775,10 @@ export function registerCodeGraphTool(
                 },
                 {onTelemetryObservation: queryTelemetry.observedStage},
               ),
+              result =>
+                result.state === 'failed'
+                  ? {selection: 'none'}
+                  : codeGraphQueryAnonymousTelemetrySnapshotSurface(result.status, 'active'),
             )
             .pipe(
               Effect.tap(result =>
