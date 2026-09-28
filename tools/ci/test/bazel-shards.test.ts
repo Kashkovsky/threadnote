@@ -25,8 +25,8 @@ const targetArbitrary = fc
 describe('Bazel CI sharding', () => {
   it('isolates PostgreSQL targets and greedily balances the remaining work', () => {
     const inventory = [
-      target('//apps/threadnote:test_1', 63),
-      target('//apps/threadnote:test_2', 62),
+      target('//apps/threadnote:test_standard_graph_01_of_04', 16),
+      target('//apps/threadnote:test_standard_memory', 12),
       target('//packages/graph:test', 140),
       target('//packages/store:test', 2),
       {...target('//apps/threadnote:test_postgres', 11), requiresNetwork: true},
@@ -74,6 +74,14 @@ describe('Bazel CI sharding', () => {
         shardFor('//packages/graph:test_runtime'),
       ]).size,
     ).toBe(4);
+  });
+
+  it('accounts for the process startup cost of generated test targets', () => {
+    const inventory = [target('//apps/threadnote:test_standard_pooled_1_of_8', 1)];
+
+    const [shard] = planBazelShards({inventory, selected: inventory.map(candidate => candidate.label), maxShards: 1});
+
+    expect(shard.estimatedWeight).toBe(16);
   });
 
   it('is deterministic, bounded, complete, and duplicate-free for generated inventories', () => {

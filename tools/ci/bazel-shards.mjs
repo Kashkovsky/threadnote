@@ -16,14 +16,6 @@
 const DURATION_HINTS = new Map([
   ['//:format', 30],
   ['//:lint', 45],
-  ['//apps/threadnote:test_1', 110],
-  ['//apps/threadnote:test_2', 125],
-  ['//apps/threadnote:test_3', 60],
-  ['//apps/threadnote:test_4', 95],
-  ['//apps/threadnote:test_5', 70],
-  ['//apps/threadnote:test_6', 120],
-  ['//apps/threadnote:test_7', 90],
-  ['//apps/threadnote:test_8', 135],
   ['//apps/threadnote:test_long_heavy_integration_graph', 190],
   ['//apps/threadnote:test_long_heavy_integration_runtime', 290],
   ['//apps/threadnote:test_long_heavy_state', 170],
@@ -45,9 +37,10 @@ function targetWeight(target) {
   if (durationHint !== undefined) return durationHint;
   const entryWeight = Math.max(target.entries?.length ?? 0, 1);
   const inputWeight = Math.max(Math.ceil((target.inputs?.length ?? 0) / 80), 1);
+  const processWeight = target.kind === 'test' ? 15 : 0;
   const timeoutWeight = target.timeout === 'long' ? 20 : 0;
   const actionWeight = target.kind === 'action' ? 10 : 0;
-  return Math.max(entryWeight, inputWeight) + timeoutWeight + actionWeight;
+  return processWeight + Math.max(entryWeight, inputWeight) + timeoutWeight + actionWeight;
 }
 
 /**
@@ -56,7 +49,7 @@ function targetWeight(target) {
 function targetName(label) {
   if (label.startsWith('//apps/threadnote:test_long_')) return label.slice('//apps/threadnote:test_long_'.length);
   if (label === '//apps/threadnote:test_postgres') return 'postgres tests';
-  if (/^\/\/apps\/threadnote:test_\d+$/.test(label)) return 'threadnote tests';
+  if (label.startsWith('//apps/threadnote:test_standard_')) return 'threadnote tests';
   if (label.startsWith('//packages/graph:')) return 'graph tests';
   if (label.startsWith('//apps/website:')) return 'website';
   if (label.startsWith('//packages/')) return 'package tests';

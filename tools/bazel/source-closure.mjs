@@ -11,7 +11,10 @@ export function sourceImports(path, content) {
   return [...new Set(ts.preProcessFile(content, true, true).importedFiles.map(item => item.fileName))].sort();
 }
 
-export function collectSourceClosure(entries, {read, exists, workspaces, virtualModules = []}) {
+export function collectSourceClosure(
+  entries,
+  {read, exists, workspaces, virtualModules = [], imports = sourceImports},
+) {
   const files = new Set();
   const npm = new Set();
   const pending = [...entries];
@@ -34,7 +37,7 @@ export function collectSourceClosure(entries, {read, exists, workspaces, virtual
     const path = resolveFile(pending.pop());
     if (files.has(path)) continue;
     files.add(path);
-    for (const specifier of sourceExtensions.test(path) ? sourceImports(path, read(path)) : []) {
+    for (const specifier of sourceExtensions.test(path) ? imports(path, read(path)) : []) {
       if (
         specifier.startsWith('node:') ||
         specifier.startsWith('bun:') ||

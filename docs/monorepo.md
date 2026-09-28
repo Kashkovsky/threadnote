@@ -50,9 +50,11 @@ The repository has no root `src/` or `test/` tree. Production code belongs to an
    for that edge.
 3. Put package tests under its `test/` directory. Tests that exercise application
    composition belong under `apps/threadnote/test`.
-4. Add non-imported runtime inputs such as fixtures, assets, migrations, or
-   executable entrypoints to `tools/bazel/target-specs.mjs`. Static imports and
-   package exports are followed automatically.
+4. Keep non-imported runtime inputs as repository-relative literals in the test
+   or a shared test helper whenever possible. Target generation follows static
+   imports and discovers referenced scripts, fixtures, assets, documentation,
+   and executable entrypoints automatically. Add an explicit target-spec input
+   only for a genuinely dynamic path that cannot be inferred.
 5. Add the manifest to `MODULE.bazel`, run `bun install`, then run
    `bun run bazel:generate` and `bun run check:repo`.
 
@@ -84,7 +86,7 @@ See [the Bazel development guide](../tools/bazel/README.md) for pinned toolchain
 
 `tools/bazel/target-specs.mjs` discovers every colocated test suite and declares its source and data closure. Generation emits checked-in BUILD files and `targets.json`. The package export helper uses package-local globs for visibility while test and action targets retain exact generated inputs for `bazel-diff`.
 
-Pull-request CI compares base and head target hashes with pinned open-source `bazel-diff`. A short planning job records the authoritative selection, then balances executable targets across at most eight parallel Bazel shards. Expensive selector regression checks run in a validation job alongside the shards instead of delaying fanout. The large Threadnote application suite is represented by eight stable Bazel targets, while `//apps/threadnote:test` remains an aggregate for focused contributor use. PostgreSQL tests stay in one service-enabled shard, which may also carry ordinary targets to keep the runner busy. Each shard runs one Bazel test target at a time, leaving target-internal Vitest workers free to use that runner without process-level oversubscription. Platform and quality jobs that require a particular GitHub runner are selected from the same Bazel inventory and start after planning, in parallel with those shards. Unknown inputs, absent baselines, or failed analysis fail safe by selecting the complete inventory. The stable aggregate check requires the planner, selector validation, every selected shard, and every selected platform lane. The previous path classifier and shadow workflow are removed.
+Pull-request CI compares base and head target hashes with pinned open-source `bazel-diff`. A short planning job records the authoritative selection, then balances executable targets across at most eight parallel Bazel shards. Expensive selector regression checks run in a validation job alongside the shards instead of delaying fanout. The Threadnote application suite is generated into bounded feature groups from test filenames and their actual source and repository-input closures; adding a normal test requires no Bazel edit. Large feature families split into deterministic hash buckets, and `//apps/threadnote:test` remains the aggregate for focused contributor use. PostgreSQL tests stay in one service-enabled shard, which may also carry ordinary targets to keep the runner busy. Each shard runs one Bazel test target at a time, leaving target-internal Vitest workers free to use that runner without process-level oversubscription. Platform and quality jobs that require a particular GitHub runner are selected from the same Bazel inventory and start after planning, in parallel with those shards. Unknown inputs, absent baselines, or failed analysis fail safe by selecting the complete inventory. The stable aggregate check requires the planner, selector validation, every selected shard, and every selected platform lane. The previous path classifier and shadow workflow are removed.
 
 Website builds consume prepared metadata produced before the sandbox. Cached actions do not discover Git history or call release APIs. Article, release, performance, public, and prepared metadata are explicit website inputs. A website-only change selects website checks without selecting graph package tests; shared dependency changes select every dependent target.
 
