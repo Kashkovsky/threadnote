@@ -111,8 +111,9 @@ describe('code graph disk capacity properties', () => {
     expect(demand.state).toBe('measured');
     expect(demand.calibrationIdentity).toContain(':spool-sort:capacity-v2:');
     if (demand.state !== 'measured') return;
-    expect(demand.mainHighWaterBytes).toBe(rawSurfaceBytes);
-    expect(demand.transientHighWaterBytes).toBe(rawSurfaceBytes);
+    expect(demand.mainHighWaterBytes).toBe((rawSurfaceBytes * 5) / 4);
+    expect(demand.transientHighWaterBytes).toBe((rawSurfaceBytes * 5) / 4);
+    expect(demand.recoveryFloorBytes).toBe(demand.mainHighWaterBytes / 4);
     expect(
       evaluateCodeGraphDiskCapacity({
         demand,
@@ -142,12 +143,12 @@ describe('code graph disk capacity properties', () => {
     expect(demand.state).toBe('measured');
     if (demand.state !== 'measured') return;
     expect(demand).toMatchObject({
-      mainHighWaterBytes: 16 * mib,
+      mainHighWaterBytes: 20 * mib,
       recoveryFilesystem: 'durable',
-      recoveryFloorBytes: 16 * mib,
       transientFilesystem: 'temporary',
-      transientHighWaterBytes: 16 * mib,
+      transientHighWaterBytes: 20 * mib,
     });
+    expect(demand.recoveryFloorBytes).toBe(sqliteWalCapacityBytes(8192, 1_000));
     const capacity = (durableAvailableBytes: number, temporaryAvailableBytes: number) =>
       evaluateCodeGraphDiskCapacity({
         demand,
@@ -158,15 +159,17 @@ describe('code graph disk capacity properties', () => {
         reservedTemporaryBytes: 0,
         temporaryAvailableBytes,
       });
-    expect(capacity(32 * mib, 16 * mib)).toMatchObject({
+    const durableRequired = demand.mainHighWaterBytes + demand.recoveryFloorBytes;
+    const temporaryRequired = demand.transientHighWaterBytes;
+    expect(capacity(durableRequired, temporaryRequired)).toMatchObject({
       filesystems: [
-        {availableBytes: 32 * mib, requiredBytes: 32 * mib, role: 'durable'},
-        {availableBytes: 16 * mib, requiredBytes: 16 * mib, role: 'temporary'},
+        {availableBytes: durableRequired, requiredBytes: durableRequired, role: 'durable'},
+        {availableBytes: temporaryRequired, requiredBytes: temporaryRequired, role: 'temporary'},
       ],
       state: 'healthy',
     });
-    expect(capacity(31 * mib, 16 * mib).state).toBe('pressure');
-    expect(capacity(32 * mib, 15 * mib).state).toBe('pressure');
+    expect(capacity(durableRequired - 1, temporaryRequired).state).toBe('pressure');
+    expect(capacity(durableRequired, temporaryRequired - 1).state).toBe('pressure');
   });
 
   fcProp(
@@ -220,18 +223,29 @@ describe('code graph disk capacity properties', () => {
       bytes: fc.integer({min: 0, max: 2 ** 40}),
       extraBytes: fc.integer({min: 0, max: 2 ** 40}),
       extraRows: fc.integer({min: 0, max: 100_000_000}),
+      extraTermBytes: fc.integer({min: 0, max: 2 ** 40}),
       rows: fc.integer({min: 0, max: 100_000_000}),
+      termBytes: fc.integer({min: 0, max: 2 ** 40}),
     },
-    ({bytes, extraBytes, extraRows, rows}) => {
-      const demandFor = (finalFactBytes: number, rowCount: number) =>
+    ({bytes, extraBytes, extraRows, extraTermBytes, rows, termBytes}) => {
+      const demandFor = (finalFactBytes: number, mainSortPayloadBytes: number, rowCount: number) =>
         codeGraphPersistentCapacityDemand({
-          boundary: {finalFactBytes, operation: 'sort persistent code graph materialization spool', rowCount},
+          boundary: {
+            finalFactBytes,
+            mainSortPayloadBytes,
+            operation: 'sort persistent code graph materialization spool',
+            rowCount,
+          },
           lexicalFormatVersion: 1,
           pageSize: 8192,
           walAutoCheckpointPages: 1_000,
         });
-      const base = demandFor(bytes, rows);
-      const increased = demandFor(bytes + extraBytes, rows + extraRows);
+      const base = demandFor(bytes, bytes + termBytes, rows);
+      const increased = demandFor(
+        bytes + extraBytes,
+        bytes + extraBytes + termBytes + extraTermBytes,
+        rows + extraRows,
+      );
       expect(base.state).toBe('measured');
       expect(increased.state).toBe('measured');
       if (base.state !== 'measured' || increased.state !== 'measured') return;

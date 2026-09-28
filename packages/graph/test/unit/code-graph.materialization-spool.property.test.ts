@@ -31,13 +31,20 @@ describe('code graph materialization spool', () => {
     'bounds sequential sorting by the largest surface regardless of order',
     {
       loads: FC.array(
-        FC.record({bytes: FC.integer({max: 1_000_000, min: 0}), rows: FC.integer({max: 10_000, min: 0})}),
+        FC.record({
+          bytes: FC.integer({max: 1_000_000, min: 0}),
+          lexicalTermBytesUpperBound: FC.integer({max: 1_000_000, min: 0}),
+          rows: FC.integer({max: 10_000, min: 0}),
+        }),
         {maxLength: CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length},
       ),
     },
     ({loads}) => {
       const boundary = codeGraphSpoolSortCapacityBoundary(loads);
       expect(boundary.finalFactBytes).toBe(loads.reduce((maximum, load) => Math.max(maximum, load.bytes), 0));
+      expect(boundary.mainSortPayloadBytes).toBe(
+        loads.reduce((maximum, load) => Math.max(maximum, load.bytes + load.lexicalTermBytesUpperBound), 0),
+      );
       expect(boundary.rowCount).toBe(loads.reduce((maximum, load) => Math.max(maximum, load.rows), 0));
       expect(codeGraphSpoolSortCapacityBoundary([...loads].reverse())).toEqual(boundary);
       for (const load of loads) {
@@ -70,6 +77,7 @@ describe('code graph materialization spool', () => {
       const boundary = observeCodeGraphSpoolSortCapacity(database);
       expect(boundary).toEqual({
         finalFactBytes: 26,
+        mainSortPayloadBytes: 30,
         operation: 'sort persistent code graph materialization spool',
         rowCount: 2,
         transientFilesystem: 'temporary',
@@ -91,7 +99,12 @@ describe('code graph materialization spool', () => {
       ).toEqual({count: 1});
       sealCodeGraphMaterializationSpool(database, 0);
       sortCodeGraphMaterializationSpoolSurfaces(database);
-      expect(observeCodeGraphSpoolSortCapacity(database)).toEqual({...boundary, finalFactBytes: 0, rowCount: 0});
+      expect(observeCodeGraphSpoolSortCapacity(database)).toEqual({
+        ...boundary,
+        finalFactBytes: 0,
+        mainSortPayloadBytes: 0,
+        rowCount: 0,
+      });
     } finally {
       database.close();
     }
@@ -103,7 +116,11 @@ describe('code graph materialization spool', () => {
     const capacity = (finalFactBytes: number) =>
       evaluateCodeGraphDiskCapacity({
         demand: codeGraphPersistentCapacityDemand({
-          boundary: {...codeGraphSpoolSortCapacityBoundary(loads), finalFactBytes},
+          boundary: {
+            ...codeGraphSpoolSortCapacityBoundary(loads),
+            finalFactBytes,
+            mainSortPayloadBytes: finalFactBytes,
+          },
           lexicalFormatVersion: 1,
           pageSize: 8192,
           walAutoCheckpointPages: 1000,

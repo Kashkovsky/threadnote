@@ -91,6 +91,8 @@ export function isCodeGraphCapacityFailureOperation(value: unknown): value is Co
 export interface CodeGraphDirectPersistentCapacityBoundary {
   /** Exact UTF-8 bytes of the bounded logical payload when that evidence is available. */
   readonly finalFactBytes: number;
+  /** Spool only: raw payload plus a bound for the additional ordered term dictionary. */
+  readonly mainSortPayloadBytes?: number;
   readonly operation: CodeGraphDirectPersistentCapacityOperation;
   /** Main pager allocation target; omitted for the durable graph database. */
   readonly mainFilesystem?: 'durable' | 'temporary';
@@ -137,17 +139,20 @@ export const CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION = {
 } as const;
 
 /**
- * A spool sort writes an ordered table beside its existing raw table. SQLite
- * may also spill the ORDER BY sorter to TEMP. Reserve one payload-sized copy
- * for each allocation and another for rollback/recovery headroom. The final
- * graph's normalized-row amplification does not describe this sidecar write.
+ * SQLite physical spool-sort fixtures measured ordered pages and sorter spill
+ * above raw column bytes. The operation-specific 5/4 margin is applied below
+ * to ordered payload (including a term-dictionary upper bound) and TEMP spill.
+ * A separate quarter of ordered pages protects the DELETE-mode journal.
  */
 export const CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION = {
   identityBase:
     `graph-v${CODE_GRAPH_SCHEMA_VERSION}:${CODE_GRAPH_EXTRACTOR_SET_VERSION}:spool-sort:` +
-    `capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}:extension-r${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}`,
+    `capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}:extension-r${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}:physical-r1`,
   mainFactAmplification: 1,
   mainRowBytes: 256,
+  physicalMarginDenominator: 4,
+  physicalMarginNumerator: 5,
+  recoveryFractionDenominator: 4,
   transientFactAmplification: 1,
   transientRowBytes: 256,
 } as const;
@@ -332,9 +337,43 @@ export function codeGraphPersistentCapacityDemand(
     },
     calibration,
   );
-  return input.boundary.operation === 'sort persistent code graph materialization spool' && demand.state === 'measured'
-    ? {...demand, recoveryFilesystem: 'durable'}
-    : demand;
+  if (input.boundary.operation !== 'sort persistent code graph materialization spool' || demand.state !== 'measured') {
+    return demand;
+  }
+  const mainSortPayloadBytes = input.boundary.mainSortPayloadBytes ?? input.boundary.finalFactBytes;
+  if (!nonNegativeSafeInteger(mainSortPayloadBytes)) {
+    return {
+      calibrationIdentity: `${CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION.identityBase}:unmeasured`,
+      reason: 'calibration-input-unknown',
+      state: 'unknown',
+    };
+  }
+  const spoolCalibration = CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION;
+  const mainHighWaterBytes = Math.max(
+    demand.mainHighWaterBytes,
+    saturatingCapacityRatioCeiling(
+      Math.max(input.boundary.finalFactBytes, mainSortPayloadBytes),
+      spoolCalibration.physicalMarginNumerator,
+      spoolCalibration.physicalMarginDenominator,
+    ),
+  );
+  return {
+    ...demand,
+    mainHighWaterBytes,
+    recoveryFilesystem: 'durable',
+    recoveryFloorBytes: Math.max(
+      sqliteWalCapacityBytes(input.pageSize, input.walAutoCheckpointPages),
+      saturatingCapacityRatioCeiling(mainHighWaterBytes, 1, spoolCalibration.recoveryFractionDenominator),
+    ),
+    transientHighWaterBytes: Math.max(
+      demand.transientHighWaterBytes,
+      saturatingCapacityRatioCeiling(
+        input.boundary.finalFactBytes,
+        spoolCalibration.physicalMarginNumerator,
+        spoolCalibration.physicalMarginDenominator,
+      ),
+    ),
+  };
 }
 
 export function codeGraphVectorRetirementCapacityDemand(
@@ -648,6 +687,11 @@ export function saturatingCapacityMultiply(value: number, multiplier: number): n
   if (left === 0 || right === 0) return 0;
   if (left > Number.MAX_SAFE_INTEGER / right) return Number.MAX_SAFE_INTEGER;
   return left * right;
+}
+
+function saturatingCapacityRatioCeiling(value: number, numerator: number, denominator: number): number {
+  const scaled = (BigInt(value) * BigInt(numerator) + BigInt(denominator) - 1n) / BigInt(denominator);
+  return Number(scaled > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : scaled);
 }
 
 /** Allocation-free UTF-8 byte count with TextEncoder-compatible lone-surrogate handling. */
