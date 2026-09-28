@@ -1,6 +1,7 @@
 import {fcProp} from '@threadnote/testing/fast-check-property';
 import fc from 'fast-check';
-import {describe, expect, it} from '@effect/vitest';
+import {describe, expect, it, it as effectIt} from '@effect/vitest';
+import {Effect} from 'effect';
 import {
   CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
   CODE_GRAPH_DISK_RESERVATION_OPERATIONS,
@@ -21,7 +22,7 @@ import {
   sqliteWalCapacityBytes,
   type CodeGraphDiskCapacityInput,
 } from '@threadnote/graph/disk/capacity';
-import {codeGraphCapacityTemporaryDirectory} from '@threadnote/graph/indexer/materialization';
+import {codeGraphCapacityTemporaryDirectory} from '@threadnote/graph/disk/reservation';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CodeGraphStoreNoSpaceError,
@@ -38,29 +39,47 @@ const capacityMagnitude = fc.oneof(
 );
 
 describe('code graph disk capacity properties', () => {
-  it('probes the SQLite sorter directory when it differs from the process TEMP directory', () => {
-    const sortBoundary = {
-      finalFactBytes: 1,
-      operation: 'sort persistent code graph materialization spool' as const,
-      rowCount: 1,
-      transientFilesystem: 'temporary' as const,
-    };
-    const input = {
-      boundary: sortBoundary,
-      environment: {SQLITE_TMPDIR: '/sqlite-volume', TMPDIR: '/process-volume'},
-      platform: 'darwin',
-      temporaryDirectory: '/process-volume',
-    };
-    expect(codeGraphCapacityTemporaryDirectory(input)).toBe('/sqlite-volume');
-    expect(codeGraphCapacityTemporaryDirectory({...input, environment: {SQLITE_TMPDIR: '  '}})).toBe('/process-volume');
-    expect(codeGraphCapacityTemporaryDirectory({...input, platform: 'win32'})).toBe('/process-volume');
-    expect(
-      codeGraphCapacityTemporaryDirectory({
-        ...input,
-        boundary: {...sortBoundary, transientFilesystem: 'durable'},
-      }),
-    ).toBe('/process-volume');
-  });
+  effectIt.effect('probes the SQLite sorter directory when it differs from the process TEMP directory', () =>
+    Effect.gen(function* () {
+      const sortBoundary = {
+        finalFactBytes: 1,
+        operation: 'sort persistent code graph materialization spool' as const,
+        rowCount: 1,
+        transientFilesystem: 'temporary' as const,
+      };
+      const input = {
+        boundary: sortBoundary,
+        environment: {SQLITE_TMPDIR: '/sqlite-volume', TMPDIR: '/process-volume'},
+        platform: 'darwin',
+        temporaryDirectory: '/process-volume',
+      };
+      const usable = (directories: readonly string[]) => (directory: string) =>
+        Effect.succeed(directories.includes(directory));
+      expect(yield* codeGraphCapacityTemporaryDirectory(input, usable(['/sqlite-volume', '/process-volume']))).toBe(
+        '/sqlite-volume',
+      );
+      expect(yield* codeGraphCapacityTemporaryDirectory(input, usable(['/process-volume']))).toBe('/process-volume');
+      expect(
+        yield* codeGraphCapacityTemporaryDirectory({...input, environment: {}}, usable(['/var/tmp', '/tmp'])),
+      ).toBe('/var/tmp');
+      expect(yield* codeGraphCapacityTemporaryDirectory(input, usable([]))).toBeUndefined();
+      expect(yield* codeGraphCapacityTemporaryDirectory({...input, platform: 'win32'}, usable([]))).toBe(
+        '/process-volume',
+      );
+      expect(
+        yield* codeGraphCapacityTemporaryDirectory(
+          {...input, boundary: {...sortBoundary, transientFilesystem: 'durable'}},
+          usable([]),
+        ),
+      ).toBe('/process-volume');
+      expect(
+        yield* codeGraphCapacityTemporaryDirectory(
+          {...input, boundary: {...sortBoundary, operation: 'stage temporary code graph facts'}},
+          usable(['/sqlite-volume']),
+        ),
+      ).toBe('/process-volume');
+    }),
+  );
 
   it('binds the current persistent-extension revision into both calibration identities', () => {
     for (const calibration of [
