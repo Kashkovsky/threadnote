@@ -9,10 +9,40 @@
  * }} BazelTarget
  */
 
+// Coarse wall-clock seconds from full-fallback GitHub Actions runs. Bazel's
+// target shape is a useful fallback for new targets, but entry and input counts
+// do not predict integration-test runtime well. Keep these values rounded so
+// ordinary run-to-run noise does not reshuffle the matrix.
+const DURATION_HINTS = new Map([
+  ['//:format', 30],
+  ['//:lint', 45],
+  ['//apps/threadnote:test_1', 110],
+  ['//apps/threadnote:test_2', 125],
+  ['//apps/threadnote:test_3', 60],
+  ['//apps/threadnote:test_4', 95],
+  ['//apps/threadnote:test_5', 70],
+  ['//apps/threadnote:test_6', 120],
+  ['//apps/threadnote:test_7', 90],
+  ['//apps/threadnote:test_8', 135],
+  ['//apps/threadnote:test_long_heavy_integration_graph', 190],
+  ['//apps/threadnote:test_long_heavy_integration_runtime', 290],
+  ['//apps/threadnote:test_long_heavy_state', 170],
+  ['//apps/threadnote:test_long_incremental_property', 170],
+  ['//apps/threadnote:test_long_lifecycle_delta', 270],
+  ['//apps/threadnote:test_long_os_contention', 30],
+  ['//apps/threadnote:test_long_project_closure', 150],
+  ['//apps/threadnote:test_postgres', 35],
+  ['//packages/graph:test', 80],
+  ['//packages/graph:test_runtime', 120],
+  ['//packages/memory:test_runtime', 60],
+]);
+
 /**
  * @param {BazelTarget} target
  */
 function targetWeight(target) {
+  const durationHint = DURATION_HINTS.get(target.label);
+  if (durationHint !== undefined) return durationHint;
   const entryWeight = Math.max(target.entries?.length ?? 0, 1);
   const inputWeight = Math.max(Math.ceil((target.inputs?.length ?? 0) / 80), 1);
   const timeoutWeight = target.timeout === 'long' ? 20 : 0;

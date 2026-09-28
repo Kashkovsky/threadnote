@@ -45,6 +45,37 @@ describe('Bazel CI sharding', () => {
     expect(shards.find(shard => shard.postgres)?.targets).toContain('//apps/threadnote:test_postgres');
   });
 
+  it('uses measured duration hints to separate the known slow CI targets', () => {
+    const inventory = [
+      target('//apps/threadnote:test_long_heavy_integration_runtime', 1),
+      target('//apps/threadnote:test_long_lifecycle_delta', 1),
+      target('//apps/threadnote:test_long_heavy_integration_graph', 1),
+      target('//apps/threadnote:test_long_incremental_property', 1),
+      target('//apps/threadnote:test_long_project_closure', 1),
+      target('//packages/graph:test_runtime', 1),
+      {...target('//apps/threadnote:test_postgres', 1), requiresNetwork: true},
+    ];
+
+    const shards = planBazelShards({inventory, selected: inventory.map(candidate => candidate.label), maxShards: 6});
+    const shardFor = (label: string) => shards.find(shard => shard.targets.includes(label))?.id;
+    const runtimeShard = shards.find(shard =>
+      shard.targets.includes('//apps/threadnote:test_long_heavy_integration_runtime'),
+    );
+
+    expect(runtimeShard?.estimatedWeight).toBe(290);
+    expect(shardFor('//apps/threadnote:test_long_heavy_integration_runtime')).not.toBe(
+      shardFor('//apps/threadnote:test_long_lifecycle_delta'),
+    );
+    expect(
+      new Set([
+        shardFor('//apps/threadnote:test_long_heavy_integration_graph'),
+        shardFor('//apps/threadnote:test_long_incremental_property'),
+        shardFor('//apps/threadnote:test_long_project_closure'),
+        shardFor('//packages/graph:test_runtime'),
+      ]).size,
+    ).toBe(4);
+  });
+
   it('is deterministic, bounded, complete, and duplicate-free for generated inventories', () => {
     fc.assert(
       fc.property(targetArbitrary, fc.integer({max: 8, min: 1}), (inventory, maxShards) => {
