@@ -464,13 +464,13 @@ async function codeGraphParserWorkerProgram(arguments_: readonly string[]) {
 }
 
 async function applicationProgram(arguments_: readonly string[], isMcpServer: boolean, isMcpBroker: boolean) {
-  const [runtime, processDiagnostics, processLease] = await Promise.all([
-    import('./effect/runtime.js'),
-    import('./process/diagnostics.js'),
-    import('./process/standalone_lease.js'),
-  ]);
   if (isMcpBroker) {
-    const {mcpBrokerEffect} = await import('./effect/mcp_broker_process.js');
+    const [runtime, {mcpBrokerEffect}, processDiagnostics, processLease] = await Promise.all([
+      import('./effect/runtime-bootstrap.js'),
+      import('./effect/mcp_broker_process.js'),
+      import('./process/diagnostics.js'),
+      import('./process/standalone_lease.js'),
+    ]);
     const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
     return processHome.pipe(
       Effect.flatMap(home =>
@@ -489,6 +489,11 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
       Effect.provide(runtime.StandaloneBrokerLayer),
     );
   }
+  const [runtime, processDiagnostics, processLease] = await Promise.all([
+    import('./effect/runtime.js'),
+    import('./process/diagnostics.js'),
+    import('./process/standalone_lease.js'),
+  ]);
   if (isMcpServer) {
     const {mcpServerEffect} = await import('./mcp/server/index.js');
     const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);

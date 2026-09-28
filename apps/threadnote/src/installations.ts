@@ -11,7 +11,7 @@ import {
   withStandaloneProcessLease,
   type StandaloneActiveRelease as ActiveRelease,
 } from './process/standalone_lease.js';
-import {compareVersions} from './utils.js';
+import {compareVersions} from './release/version/compare.js';
 
 class InstallationOperationError extends Schema.TaggedError<InstallationOperationError>()(
   'InstallationOperationError',

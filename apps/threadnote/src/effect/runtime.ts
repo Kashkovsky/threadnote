@@ -1,15 +1,11 @@
-import {runtimeEntrypointLayer} from './runtime-entrypoint.js';
 import {codeGraphRuntimeAdapters} from '../code_graph/runtime_adapters.js';
 import * as BunHttpClient from '@effect/platform-bun/BunHttpClient';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {Crypto, Effect, Layer} from 'effect';
-import {succeedUndefined} from '@threadnote/platform/optional';
-import {CommandExecutor} from '@threadnote/platform/command';
+import {Effect, Layer} from 'effect';
 import {threadnoteCliFormatterLayer} from './cli/help.js';
 import {CliOutput} from './cli/output.js';
 import {HttpService} from '@threadnote/platform/http';
 import {ResourceStore} from '@threadnote/store/resource-store';
-import {SystemInfo} from '@threadnote/platform/system';
 import {LocalModelStore} from '@threadnote/inference/models/store';
 import {LocalModelCatalog} from '@threadnote/inference/models/catalog';
 import {BUILTIN_MODEL_MANIFESTS} from '@threadnote/inference/models/builtin';
@@ -29,31 +25,16 @@ import {
   withDeferredCodeAnchorIndexHeal,
 } from '../memory/deferred/code_anchor_index_heal.js';
 import {deferredCodeAnchorRefreshSchedulerLayer} from '../memory/deferred/code_anchor_refresh.js';
-import {resolveTelemetryConfiguration} from '../telemetry/config.js';
-import {
-  resolveAgentSession,
-  retainCurrentAgentSessionEnvironment,
-  takeTelemetrySessionEnvironment,
-} from '../telemetry/session.js';
-import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
-import {anonymousTelemetryLayer} from './telemetry.js';
 import {recallResourceInvalidationLayer} from '@threadnote/recall/resource-invalidation';
-import {telemetryChildEnvironmentPolicyLayer} from '../telemetry/session.js';
-
-const systemLayer = SystemInfo.layer.pipe(
-  Layer.provide(telemetryChildEnvironmentPolicyLayer),
-  Layer.provide(runtimeEntrypointLayer),
-);
-const commandLayer = CommandExecutor.layer.pipe(
-  Layer.provide(telemetryChildEnvironmentPolicyLayer),
-  Layer.provide(systemLayer),
-);
-const cliOutputLayer = CliOutput.layer.pipe(Layer.provide(systemLayer));
-export const StandaloneBrokerLayer = Layer.mergeAll(
+import {
+  commandLayer,
+  standaloneBrokerLayerForHome,
+  StandaloneBrokerLayer,
   systemLayer,
-  BunServices.layer,
-  commandLayer.pipe(Layer.provide(BunServices.layer)),
-);
+  telemetryLayerForHome,
+} from './runtime-bootstrap.js';
+
+const cliOutputLayer = CliOutput.layer.pipe(Layer.provide(systemLayer));
 const resourceStoreLayer = ResourceStore.layer.pipe(
   Layer.provide(recallResourceInvalidationLayer),
   Layer.provide(systemLayer),
@@ -139,79 +120,7 @@ export function applicationLayerForHome(home: string, entrypoint: 'cli' | 'mcp')
   );
 }
 
-export function standaloneBrokerLayerForHome(home: string) {
-  return telemetryLayerForHome(home, 'broker', true).pipe(Layer.provideMerge(StandaloneBrokerLayer));
-}
-
-function telemetryLayerForHome(home: string, fallbackScope: 'broker' | 'invocation', bridgeToBrokerProgram = false) {
-  return Layer.unwrap(
-    Effect.gen(function* () {
-      const system = yield* SystemInfo;
-      const environment = system.environment();
-      const sessionEnvironment = takeTelemetrySessionEnvironment(environment);
-      if (fallbackScope === 'broker' && !bridgeToBrokerProgram) {
-        environment.THREADNOTE_MCP_BROKER_CHILD = '1';
-      }
-      const crypto = yield* Crypto.Crypto;
-      const configuration = yield* boundedTelemetryConfiguration(home);
-      if (configuration === undefined) return anonymousTelemetryLayer();
-      const randomBytes = yield* crypto.randomBytes(16).pipe(
-        Effect.map(bytes => bytes as Uint8Array | undefined),
-        Effect.catchCause(() => succeedUndefined),
-      );
-      if (randomBytes === undefined) return anonymousTelemetryLayer();
-      const session = resolveAgentSession({
-        configuration,
-        environment: sessionEnvironment,
-        fallbackScope,
-        randomBytes,
-      });
-      // Provider inputs and inherited child markers were consumed above even
-      // when consent is absent. Retain only an opaque current-process alias;
-      // generic subprocess launchers scrub it, while declared Threadnote child
-      // plans attach a fresh child-kind marker explicitly.
-      retainCurrentAgentSessionEnvironment(
-        environment,
-        session,
-        bridgeToBrokerProgram && configuration !== undefined ? 'mcp-broker-runtime' : undefined,
-      );
-      const serviceVersion = yield* getThreadnoteVersion().pipe(Effect.orElseSucceed(() => 'unknown'));
-      const consentIdentity = `${configuration.endpoint}\0${configuration.sessionSalt}`;
-      const runtimeContext = yield* Effect.context<Layer.Success<typeof StandaloneBrokerLayer>>();
-      const isEnabled = boundedTelemetryConfiguration(home).pipe(
-        Effect.map(current =>
-          current === undefined ? false : `${current.endpoint}\0${current.sessionSalt}` === consentIdentity,
-        ),
-        Effect.provideContext(runtimeContext),
-      );
-      return anonymousTelemetryLayer({
-        correlationScope: session.correlationScope,
-        endpoint: configuration.endpoint,
-        isEnabled,
-        serviceVersion,
-        sessionId: session.id,
-        // A fresh public TLS connection routinely needs more than 250ms. Keep
-        // the opt-in CLI budget below the MCP-oriented three-second window,
-        // while allowing short invocations to finish one anonymous export.
-        shutdownTimeout: fallbackScope === 'invocation' ? '2 seconds' : '3 seconds',
-      });
-    }).pipe(Effect.catchCause(() => Effect.succeed(anonymousTelemetryLayer()))),
-  ).pipe(Layer.catchCause(() => anonymousTelemetryLayer()));
-}
-
-const TELEMETRY_CONFIGURATION_READ_TIMEOUT = '250 millis';
-
-function boundedTelemetryConfiguration(home: string) {
-  return resolveTelemetryConfiguration({agentContextHome: home}).pipe(
-    Effect.timeoutOrElse({
-      duration: TELEMETRY_CONFIGURATION_READ_TIMEOUT,
-      orElse: () => succeedUndefined,
-    }),
-    Effect.catchCause(() => succeedUndefined),
-  );
-}
-
-/** @internal Runtime-boundary regression coverage. */
-export const telemetryLayerForHomeForTest = telemetryLayerForHome;
+export {standaloneBrokerLayerForHome, StandaloneBrokerLayer};
+export {telemetryLayerForHomeForTest} from './runtime-bootstrap.js';
 
 export type ApplicationServices = Layer.Success<typeof ApplicationLayer>;
