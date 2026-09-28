@@ -1,6 +1,7 @@
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, FileSystem, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
+import {makeIdempotentFixtureTempDirectoryScoped} from '@threadnote/testing/fixture-temp-directory';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {CodeGraphIndexer} from '@threadnote/graph/indexer';
 import {resolveRepositoryIdentity} from '@threadnote/graph/repository';
@@ -25,7 +26,7 @@ describe('graph share publisher freeze cycle', () => {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-freeze-'});
+          const root = yield* makeIdempotentFixtureTempDirectoryScoped(fs, 'threadnote-graph-share-freeze-');
           const repository = path.join(root, 'repository');
           const cas = path.join(root, 'cas');
           const publisherHome = path.join(root, 'publisher-home');
@@ -138,7 +139,7 @@ describe('graph share publisher freeze cycle', () => {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-unrelated-'});
+          const root = yield* makeIdempotentFixtureTempDirectoryScoped(fs, 'threadnote-graph-share-unrelated-');
           const repository = path.join(root, 'repository');
           const cas = path.join(root, 'cas');
           const publisherHome = path.join(root, 'publisher-home');
@@ -214,7 +215,7 @@ describe('graph share publisher freeze cycle', () => {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-clean-export-'});
+          const root = yield* makeIdempotentFixtureTempDirectoryScoped(fs, 'threadnote-graph-share-clean-export-');
           const repository = path.join(root, 'repository');
           const cas = path.join(root, 'cas');
           const publisherHome = path.join(root, 'publisher-home');
@@ -293,7 +294,7 @@ describe('graph share publisher freeze cycle', () => {
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-share-export-fail-'});
+          const root = yield* makeIdempotentFixtureTempDirectoryScoped(fs, 'threadnote-graph-share-export-fail-');
           const repository = path.join(root, 'repository');
           const cas = path.join(root, 'cas');
           const publisherHome = path.join(root, 'publisher-home');
