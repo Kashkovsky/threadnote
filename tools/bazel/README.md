@@ -138,13 +138,12 @@ test suite has a package-owned target. Application tests are split into the
 ordinary suite, PostgreSQL integration, and the existing long-running groups.
 Telemetry infrastructure also has native `rules_go` targets.
 
-The `CI` workflow first checks generated declarations, exercises selection regressions,
-and computes base/head graph hashes with SHA-pinned
+The `CI` workflow first checks generated declarations and computes base/head graph hashes with SHA-pinned
 [bazel-diff 49.1.0](https://github.com/Tinder/bazel-diff/releases/tag/v49.1.0), and
 then greedily balances executable targets across at most eight parallel Bazel
-jobs. PostgreSQL tests receive their own service-enabled shard; ordinary shards
-do not start that service. Platform and evaluation jobs consume outputs from the
-same authoritative plan and run alongside the Bazel shards. The selector uses a disposable detached baseline
+jobs. Each job runs one Bazel test target at a time so target-internal Vitest
+workers do not compete with another test process. PostgreSQL tests share one service-enabled shard, which may also carry ordinary targets. Platform and evaluation jobs consume outputs from the
+same authoritative plan and run alongside the Bazel shards. Selector regression validation runs alongside them instead of delaying matrix fanout. The selector uses a disposable detached baseline
 worktree; the caller's checkout and HEAD are unchanged. Selection JSON and graph
 hashes, plus the exact shard plan, are retained as workflow artifacts.
 

@@ -194,7 +194,7 @@ async function connectMcpClient(fixture: McpFixture, options: McpClientOptions =
     environment.THREADNOTE_MCP_TOOLSET = options.toolset ?? 'full';
   }
   const transport = new StdioClientTransport({
-    args: [join(repoRoot, 'src', 'standalone.ts'), 'mcp-server'],
+    args: [join(repoRoot, 'apps', 'threadnote', 'src', 'standalone.ts'), 'mcp-server'],
     command: process.execPath,
     cwd: repoRoot,
     env: environment,

@@ -17,7 +17,8 @@ for (const kind of ['test', 'action']) {
     inventory.targets.some(target => target.label === label && target.kind === kind),
   );
   if (!targets.length) continue;
-  const child = Bun.spawn([executable, kind === 'test' ? 'test' : 'build', ...targets], {
+  const command = kind === 'test' ? ['test', '--local_test_jobs=1', ...targets] : ['build', ...targets];
+  const child = Bun.spawn([executable, ...command], {
     cwd: root,
     stdin: 'inherit',
     stdout: 'inherit',

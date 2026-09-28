@@ -1,3 +1,4 @@
+import {readFileSync} from '@threadnote/testing/node-fs';
 import {describe, expect, it} from 'vitest';
 
 describe('Bazel test runner environment', () => {
@@ -6,5 +7,11 @@ describe('Bazel test runner environment', () => {
 
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     expect(result.stdout.toString()).toMatch(/^git version /u);
+  });
+
+  it('does not inject product telemetry kill switches into the test process', () => {
+    const source = readFileSync('tools/bazel/runner.mjs', 'utf8');
+
+    expect(source).not.toContain('DO_NOT_TRACK:');
   });
 });

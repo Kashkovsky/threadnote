@@ -18,10 +18,17 @@ export interface SourceModule {
 export function validateRelocatedTestPaths(
   files: readonly {readonly content: string; readonly path: string}[],
 ): readonly string[] {
-  return files
-    .filter(file => /^(?:apps|packages)\/[^/]+\/test\//.test(file.path) && file.content.includes('../../../test'))
-    .map(file => `${file.path}: contains a corrupted parent segment from the test-root migration`)
-    .sort();
+  const errors: string[] = [];
+  for (const file of files) {
+    if (!/^(?:apps|packages)\/[^/]+\/test\//.test(file.path)) continue;
+    if (file.content.includes('../../../test')) {
+      errors.push(`${file.path}: contains a corrupted parent segment from the test-root migration`);
+    }
+    if (/join\((?:process\.cwd\(\)|repoRoot),\s*['"]src['"],\s*['"]standalone\.ts['"]\)/u.test(file.content)) {
+      errors.push(`${file.path}: launches the retired root src/standalone.ts entrypoint`);
+    }
+  }
+  return errors.sort();
 }
 
 export function validateSourceVisibility(

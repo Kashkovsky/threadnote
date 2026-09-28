@@ -136,14 +136,16 @@ for (const target of targetSpecs) {
 }
 for (const suite of testSuites) {
   if (!suites.has(suite.package)) suites.set(suite.package, []);
-  suites.get(suite.package).push(
-    [
-      'test_suite(',
-      `    name = ${JSON.stringify(suite.name)},`,
-      `    tests = ${stringList(suite.tests, '    ')},`,
-      ')',
-    ].join('\n'),
-  );
+  suites
+    .get(suite.package)
+    .push(
+      [
+        'test_suite(',
+        `    name = ${JSON.stringify(suite.name)},`,
+        `    tests = ${stringList(suite.tests, '    ')},`,
+        ')',
+      ].join('\n'),
+    );
 }
 for (const target of staticTargets) {
   if (inventory.some(candidate => candidate.label === target.label))

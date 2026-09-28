@@ -33,6 +33,7 @@ function step(job: Job | undefined, name: string): Step | undefined {
 it('uses one authoritative Bazel plan and parallel execution matrix', async () => {
   expect(await Bun.file('.github/workflows/bazel.yml').exists()).toBe(false);
   expect(Object.keys(jobs)).toContain('bazel-plan');
+  expect(Object.keys(jobs)).toContain('bazel-plan-validation');
   expect(Object.keys(jobs)).toContain('bazel-shards');
   expect(step(jobs['bazel-plan'], 'Verify generated Bazel declarations')?.run).toBe(
     'bun tools/bazel/generate.mjs --check',
@@ -46,6 +47,11 @@ it('uses one authoritative Bazel plan and parallel execution matrix', async () =
     run: 'bun tools/ci/bazel-plan-shards.mjs',
   });
   expect(step(jobs['bazel-shards'], 'Execute Bazel shard')?.run).toContain('bazel-run-selected.mjs');
+  expect(readFileSync('tools/ci/bazel-run-selected.mjs', 'utf8')).toContain("['test', '--local_test_jobs=1'");
+  expect(step(jobs['bazel-plan'], 'Verify Bazel selection edge cases')).toBeUndefined();
+  expect(step(jobs['bazel-plan-validation'], 'Verify Bazel selection edge cases')?.run).toBe(
+    'bun tools/bazel/verify-selection.mjs',
+  );
   expect(jobs['bazel-plan']?.services).toBeUndefined();
   expect(jobs['bazel-shards']?.services).toHaveProperty('postgres');
 
@@ -57,10 +63,12 @@ it('uses one authoritative Bazel plan and parallel execution matrix', async () =
 
 it('routes platform and quality lanes from Bazel outputs', () => {
   expect(jobs['bazel-plan']?.outputs).toEqual({
+    bazel_validation: '${{ steps.selection.outputs.bazel_validation }}',
     execute_bazel: '${{ steps.shards.outputs.execute_bazel }}',
     recall_quality: '${{ steps.selection.outputs.recall_quality }}',
     release_matrix: '${{ steps.selection.outputs.release_matrix }}',
     shard_matrix: '${{ steps.shards.outputs.matrix }}',
+    workflow_validation: '${{ steps.selection.outputs.workflow_validation }}',
     windows_smoke: '${{ steps.selection.outputs.windows_smoke }}',
   });
   expect(jobs['recall-quality']?.if).toBe("needs.bazel-plan.outputs.recall_quality == 'true'");
@@ -73,6 +81,7 @@ it('keeps the stable aggregate check and requires the planner plus every selecte
   expect(jobs.test?.if).toBe('always()');
   expect(jobs.test?.needs).toEqual([
     'bazel-plan',
+    'bazel-plan-validation',
     'bazel-shards',
     'recall-quality',
     'windows-smoke',
@@ -80,5 +89,8 @@ it('keeps the stable aggregate check and requires the planner plus every selecte
     'self-contained-distribution',
   ]);
   expect(step(jobs.test, 'Require every selected lane')?.run).toContain('test "$BAZEL_PLAN_RESULT" = success');
+  expect(step(jobs.test, 'Require every selected lane')?.run).toContain(
+    'test "$BAZEL_PLAN_VALIDATION_RESULT" = success',
+  );
   expect(step(jobs.test, 'Require every selected lane')?.run).toContain('test "$BAZEL_SHARDS_RESULT" = success');
 });

@@ -76,7 +76,7 @@ describe('Code Memory Link sealed preparation', () => {
 
   it('normalizes the module-derived source root before canonical validation', () => {
     const sourceRoot = codeMemoryLinkAgentPreparationSourceRoot();
-    const moduleDerivedRoot = fileURLToPath(new URL('../../../../packages/', import.meta.url));
+    const moduleDerivedRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 
     expect(sourceRoot).toBe(moduleDerivedRoot.replace(/[\\/]+$/u, ''));
     expect(sourceRoot).not.toMatch(/[\\/]$/u);

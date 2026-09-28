@@ -694,7 +694,13 @@ function fixtureRepository(
     const approvalsLoaderPath = path.join(root, 'apps/threadnote/src/evaluation/code-memory-link-approvals.ts');
     const packagePath = path.join(root, 'package.json');
     const productPath = path.join(root, 'src/product.ts');
-    yield* fs.makeDirectory(path.dirname(approvalsPath), {recursive: true});
+    yield* Effect.all(
+      [
+        fs.makeDirectory(path.dirname(approvalsPath), {recursive: true}),
+        fs.makeDirectory(path.dirname(productPath), {recursive: true}),
+      ],
+      {concurrency: 'unbounded'},
+    );
     const initialExternalEvidence = options.preexistingEvidence ? [EXTERNAL_HASH] : [];
     yield* fs.writeFileString(approvalsPath, approvalJson({externalEvidence: initialExternalEvidence}));
     yield* fs.writeFileString(approvalsLoaderPath, 'export const APPROVALS_LOADER_VERSION = 1;\n');

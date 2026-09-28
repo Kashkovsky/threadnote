@@ -18,10 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
+      bazel_validation: ${{ steps.selection.outputs.bazel_validation }}
       execute_bazel: ${{ steps.shards.outputs.execute_bazel }}
       recall_quality: ${{ steps.selection.outputs.recall_quality }}
       release_matrix: ${{ steps.selection.outputs.release_matrix }}
       shard_matrix: ${{ steps.shards.outputs.matrix }}
+      workflow_validation: ${{ steps.selection.outputs.workflow_validation }}
       windows_smoke: ${{ steps.selection.outputs.windows_smoke }}
 
     steps:
@@ -48,16 +50,6 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: bun tools/ci/bazel-select.mjs --base "$BASE_SHA"
-
-      - name: Validate GitHub Actions workflows
-        if: steps.selection.outputs.workflow_validation == 'true'
-        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
-        with:
-          args: -color
-
-      - name: Verify Bazel selection edge cases
-        if: steps.selection.outputs.bazel_validation == 'true'
-        run: bun tools/bazel/verify-selection.mjs
 
       - id: shards
         name: Plan parallel Bazel shards
@@ -87,6 +79,41 @@ jobs:
           name: bazel-selection
           path: .context/bazel-selection/
           include-hidden-files: true
+
+  bazel-plan-validation:
+    name: Validate Bazel selection
+    needs: bazel-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Validate GitHub Actions workflows
+        if: needs.bazel-plan.outputs.workflow_validation == 'true'
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color
+
+      - uses: oven-sh/setup-bun@v2
+        if: needs.bazel-plan.outputs.bazel_validation == 'true'
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install frozen workspace dependencies
+        if: needs.bazel-plan.outputs.bazel_validation == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Prepare explicit website metadata
+        if: needs.bazel-plan.outputs.bazel_validation == 'true'
+        run: bun apps/website/tools/site-prepared-metadata.ts --output apps/website/.bazel-inputs/metadata.json
+
+      - name: Verify Bazel selection edge cases
+        if: needs.bazel-plan.outputs.bazel_validation == 'true'
+        run: bun tools/bazel/verify-selection.mjs
 
   bazel-shards:
     name: Bazel shard · ${{ matrix.name }}
@@ -252,7 +279,16 @@ jobs:
   test:
     name: Unit and integration tests
     if: always()
-    needs: [bazel-plan, bazel-shards, recall-quality, windows-smoke, standalone-targets, self-contained-distribution]
+    needs:
+      [
+        bazel-plan,
+        bazel-plan-validation,
+        bazel-shards,
+        recall-quality,
+        windows-smoke,
+        standalone-targets,
+        self-contained-distribution,
+      ]
     runs-on: ubuntu-latest
 
     steps:
@@ -260,6 +296,7 @@ jobs:
         env:
           BAZEL_EXECUTE: ${{ needs.bazel-plan.outputs.execute_bazel }}
           BAZEL_PLAN_RESULT: ${{ needs.bazel-plan.result }}
+          BAZEL_PLAN_VALIDATION_RESULT: ${{ needs.bazel-plan-validation.result }}
           BAZEL_SHARDS_RESULT: ${{ needs.bazel-shards.result }}
           RECALL_SELECTED: ${{ needs.bazel-plan.outputs.recall_quality }}
           RELEASE_SELECTED: ${{ needs.bazel-plan.outputs.release_matrix }}
@@ -270,6 +307,7 @@ jobs:
           SELF_CONTAINED_RESULT: ${{ needs.self-contained-distribution.result }}
         run: |
           test "$BAZEL_PLAN_RESULT" = success
+          test "$BAZEL_PLAN_VALIDATION_RESULT" = success
           if [ "$BAZEL_EXECUTE" = true ]; then
             test "$BAZEL_SHARDS_RESULT" = success
           else

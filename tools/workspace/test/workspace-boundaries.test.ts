@@ -27,9 +27,14 @@ describe('private workspace boundaries', () => {
     expect(
       validateRelocatedTestPaths([
         {path: 'apps/threadnote/test/unit/example.test.ts', content: `join(path, '../../../test')`},
+        {
+          path: 'apps/threadnote/test/integration/runtime.test.ts',
+          content: `join(repoRoot, 'src', 'standalone.ts')`,
+        },
         {path: 'packages/graph/test/example.test.ts', content: `join(path, '../../../test')`},
       ]),
     ).toEqual([
+      'apps/threadnote/test/integration/runtime.test.ts: launches the retired root src/standalone.ts entrypoint',
       'apps/threadnote/test/unit/example.test.ts: contains a corrupted parent segment from the test-root migration',
       'packages/graph/test/example.test.ts: contains a corrupted parent segment from the test-root migration',
     ]);

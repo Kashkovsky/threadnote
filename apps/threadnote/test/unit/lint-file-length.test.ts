@@ -33,8 +33,8 @@ describe('production file length lint', () => {
 
   it('includes production JavaScript and TypeScript while excluding tests and tooling', () => {
     for (const path of [
-      'src/index.ts',
-      'src/feature/view.tsx',
+      'packages/example/src/index.ts',
+      'packages/example/src/feature/view.tsx',
       'apps/website/src/client.js',
       'apps/website/src/app.mts',
     ]) {
@@ -42,11 +42,11 @@ describe('production file length lint', () => {
     }
     for (const path of [
       'test/unit/index.test.ts',
-      'src/index.test.ts',
-      'src/__tests__/index.ts',
+      'packages/example/src/index.test.ts',
+      'packages/example/src/__tests__/index.ts',
       'apps/website/src/view.spec.tsx',
       'scripts/build.ts',
-      'src/styles.css',
+      'packages/example/src/styles.css',
     ]) {
       expect(isProductionCodePath(path)).toBe(false);
     }
@@ -57,7 +57,7 @@ describe('production file length lint', () => {
     'selects every production path deterministically regardless iteration order',
     {indexes: FC.uniqueArray(FC.integer({max: 30, min: 0}), {maxLength: 30})},
     ({indexes}) => {
-      const files = indexes.map(index => `src/module-${index}.ts`);
+      const files = indexes.map(index => `packages/example/src/module-${index}.ts`);
       const expected = productionCodeFiles(files);
 
       expect(productionCodeFiles([...files].reverse())).toEqual(expected);
@@ -72,15 +72,15 @@ describe('production file length lint', () => {
     try {
       await Promise.all([
         mkdir(join(repositoryRoot, 'scripts'), {recursive: true}),
-        mkdir(join(repositoryRoot, 'src'), {recursive: true}),
+        mkdir(join(repositoryRoot, 'packages/example/src'), {recursive: true}),
         mkdir(join(repositoryRoot, 'test'), {recursive: true}),
         mkdir(join(repositoryRoot, 'apps/website/src'), {recursive: true}),
       ]);
       await Promise.all([
         writeFile(join(repositoryRoot, 'scripts/tool.ts'), 'export {};\n'),
-        writeFile(join(repositoryRoot, 'src/committed.ts'), 'export const value = 1;\n'),
-        writeFile(join(repositoryRoot, 'src/legacy.ts'), 'export {};\n'),
-        writeFile(join(repositoryRoot, 'src/working-tree.ts'), 'export const value = 1;\n'),
+        writeFile(join(repositoryRoot, 'packages/example/src/committed.ts'), 'export const value = 1;\n'),
+        writeFile(join(repositoryRoot, 'packages/example/src/legacy.ts'), 'export {};\n'),
+        writeFile(join(repositoryRoot, 'packages/example/src/working-tree.ts'), 'export const value = 1;\n'),
         writeFile(join(repositoryRoot, 'test/large.test.ts'), 'export {};\n'),
         writeFile(join(repositoryRoot, 'apps/website/src/site.ts'), 'export {};\n'),
       ]);
@@ -95,8 +95,8 @@ describe('production file length lint', () => {
         '-m',
         'fixture',
       ]);
-      await writeFile(join(repositoryRoot, 'src/committed.ts'), 'export const value = 2;\n');
-      runGit(repositoryRoot, ['add', 'src/committed.ts']);
+      await writeFile(join(repositoryRoot, 'packages/example/src/committed.ts'), 'export const value = 2;\n');
+      runGit(repositoryRoot, ['add', 'packages/example/src/committed.ts']);
       runGit(repositoryRoot, [
         '-c',
         'user.name=Threadnote Test',
@@ -107,17 +107,17 @@ describe('production file length lint', () => {
         'committed change',
       ]);
       await Promise.all([
-        writeFile(join(repositoryRoot, 'src/new.ts'), 'export {};\n'),
-        writeFile(join(repositoryRoot, 'src/working-tree.ts'), 'export const value = 2;\n'),
+        writeFile(join(repositoryRoot, 'packages/example/src/new.ts'), 'export {};\n'),
+        writeFile(join(repositoryRoot, 'packages/example/src/working-tree.ts'), 'export const value = 2;\n'),
         writeFile(join(repositoryRoot, 'test/large.test.ts'), 'export const changed = true;\n'),
       ]);
 
       expect(collectProductionCodeFiles(repositoryRoot)).toEqual([
         'apps/website/src/site.ts',
-        'src/committed.ts',
-        'src/legacy.ts',
-        'src/new.ts',
-        'src/working-tree.ts',
+        'packages/example/src/committed.ts',
+        'packages/example/src/legacy.ts',
+        'packages/example/src/new.ts',
+        'packages/example/src/working-tree.ts',
       ]);
 
       const requests: OxlintFileLengthRequest[] = [];
@@ -133,10 +133,10 @@ describe('production file length lint', () => {
       expect(requests).toHaveLength(1);
       expect(requests[0]?.files).toEqual([
         'apps/website/src/site.ts',
-        'src/committed.ts',
-        'src/legacy.ts',
-        'src/new.ts',
-        'src/working-tree.ts',
+        'packages/example/src/committed.ts',
+        'packages/example/src/legacy.ts',
+        'packages/example/src/new.ts',
+        'packages/example/src/working-tree.ts',
       ]);
     } finally {
       await rm(repositoryRoot, {force: true, recursive: true});

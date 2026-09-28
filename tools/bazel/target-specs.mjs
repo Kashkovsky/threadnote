@@ -276,7 +276,7 @@ export const targetSpecs = [
     name: 'tooling_test',
     kind: 'test',
     entries: toolingTests,
-    data: ['tools/bazel/targets.json'],
+    data: ['tools/bazel/runner.mjs', 'tools/bazel/targets.json', 'tools/ci/bazel-run-selected.mjs'],
     dataRoots: ['.github/workflows'],
   },
   {
@@ -516,12 +516,7 @@ export const targetSpecs = [
     entries: [...postgresTests],
     closureEntries: ['apps/threadnote/src/standalone.ts'],
     data: applicationTestData,
-    dataRoots: [
-      'config',
-      'deploy/remote-memory',
-      'packages/remote-memory/src/migrations',
-      ...applicationTestDataRoots,
-    ],
+    dataRoots: ['config', 'deploy/remote-memory', 'packages/remote-memory/src/migrations', ...applicationTestDataRoots],
     env: {THREADNOTE_TEST_POSTGRES_URL: 'postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci'},
     requiresNetwork: true,
   },

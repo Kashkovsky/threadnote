@@ -41,7 +41,7 @@ describe('standalone release workflows', () => {
       };
 
       expect(manifest.scripts?.['test:smoke:release']).toBe(
-        'bun --bun vitest run packages/inference/test/unit/bun-package-contract.test.ts apps/threadnote/test/unit/publish-workflow.test.ts',
+        'bun --bun vitest run apps/threadnote/test/unit/bun-package-contract.test.ts apps/threadnote/test/unit/publish-workflow.test.ts',
       );
       expect(workflow).toContain('name: Run release contract smokes');
       expect(workflow).toContain('run: bun run test:smoke:release');
