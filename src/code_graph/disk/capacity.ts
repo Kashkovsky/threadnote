@@ -127,6 +127,23 @@ export const CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION = {
 } as const;
 
 /**
+ * A spool sort writes an ordered table beside its existing raw table. SQLite
+ * may also spill the ORDER BY sorter to TEMP. Reserve one payload-sized copy
+ * for each of those allocations and another for rollback/recovery headroom.
+ * The final graph's normalized-row amplification does not describe this
+ * sidecar operation.
+ */
+export const CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION = {
+  identityBase:
+    `graph-v${CODE_GRAPH_SCHEMA_VERSION}:${CODE_GRAPH_EXTRACTOR_SET_VERSION}:spool-sort:` +
+    `capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}:extension-r${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}`,
+  mainFactAmplification: 1,
+  mainRowBytes: 256,
+  transientFactAmplification: 1,
+  transientRowBytes: 256,
+} as const;
+
+/**
  * Vector-v2 retirement mutates a separate SQLite database with a different
  * row and index shape from the repository graph. Keep its conservative
  * envelope independently versioned so vector cleanup cannot silently inherit
@@ -285,7 +302,9 @@ export function codeGraphPersistentCapacityDemand(
     input.boundary.operation === 'cache code graph file facts' ||
     input.boundary.operation === 'cache materialized code graph file shards'
       ? CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION
-      : CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION;
+      : input.boundary.operation === 'sort persistent code graph materialization spool'
+        ? CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION
+        : CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION;
   return codeGraphPersistentCapacityDemandForCalibration(
     {
       ...input,
@@ -327,6 +346,7 @@ function codeGraphPersistentCapacityDemandForCalibration(
   calibration:
     | typeof CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION
     | typeof CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION
+    | typeof CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION
     | typeof CODE_GRAPH_VECTOR_RETIREMENT_ADMISSION_CAPACITY_CALIBRATION
     | typeof CODE_GRAPH_VECTOR_RETIREMENT_ORDINARY_UNIT_CAPACITY_CALIBRATION
     | typeof CODE_GRAPH_VECTOR_RETIREMENT_POINTER_CAPACITY_CALIBRATION
@@ -627,20 +647,24 @@ function availableCapacityBytes(value: number | undefined): number | undefined {
 function capacityOperation(operation: string): CodeGraphCapacityFailureOperation {
   switch (operation) {
     case 'admit code graph vector retirement':
+    case 'apply persistent code graph materialization spool':
     case 'cache code graph file facts':
     case 'cache materialized code graph file shards':
     case 'maintain code graph vector retirement':
     case 'prepare code graph vector retirement schema':
     case 'publish persistent code graph snapshot':
+    case 'publish persistent code graph materialization spool receipts':
     case 'promote ready code graph snapshot':
     case 'register persistent code graph materialization plan':
     case 'resolve persistent code graph reexport aliases':
     case 'resolve persistent code graph references':
+    case 'restore persistent code graph query indexes':
     case 'retire code graph vector generation':
     case 'retire code graph vector pointer':
     case 'stage persistent code graph facts':
     case 'stage persistent code graph inventory':
     case 'stage persistent code graph workspace':
+    case 'sort persistent code graph materialization spool':
     case 'prepare temporary incremental code graph activation':
     case 'publish temporary code graph snapshot':
     case 'resolve temporary code graph reexport aliases':

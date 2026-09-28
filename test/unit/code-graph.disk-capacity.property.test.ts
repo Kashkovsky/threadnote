@@ -3,7 +3,9 @@ import fc from 'fast-check';
 import {describe, expect, it} from '@effect/vitest';
 import {
   CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
+  CODE_GRAPH_DISK_RESERVATION_OPERATIONS,
   CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION,
+  CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION,
   codeGraphDirectPersistentCapacityDemand,
   codeGraphDiskCapacityReservationProjection,
   codeGraphPersistentCapacityDemand,
@@ -39,6 +41,7 @@ describe('code graph disk capacity properties', () => {
     for (const calibration of [
       CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION,
       CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
+      CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION,
     ]) {
       const revisionIdentity = `extension-r${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}`;
       expect(calibration.identityBase).toContain(`:${revisionIdentity}`);
@@ -65,6 +68,66 @@ describe('code graph disk capacity properties', () => {
       }
     }
   });
+
+  it('uses sidecar sort demand for a large-repository-shaped capacity boundary', () => {
+    const rawSurfaceBytes = 15 * 1024 ** 3;
+    const availableBytes = 50_206_851_072;
+    const demand = codeGraphPersistentCapacityDemand({
+      boundary: {
+        finalFactBytes: rawSurfaceBytes,
+        operation: 'sort persistent code graph materialization spool',
+        rowCount: 27_747_990,
+      },
+      lexicalFormatVersion: 1,
+      pageSize: 8192,
+      walAutoCheckpointPages: 1_000,
+    });
+    expect(demand.state).toBe('measured');
+    expect(demand.calibrationIdentity).toContain(':spool-sort:capacity-v2:');
+    if (demand.state !== 'measured') return;
+    expect(demand.mainHighWaterBytes).toBe(rawSurfaceBytes);
+    expect(demand.transientHighWaterBytes).toBe(rawSurfaceBytes);
+    expect(
+      evaluateCodeGraphDiskCapacity({
+        demand,
+        durableAvailableBytes: availableBytes,
+        filesystemsShared: true,
+        freelistBytes: 0,
+        reservedDurableBytes: 0,
+        reservedTemporaryBytes: 0,
+        temporaryAvailableBytes: availableBytes,
+      }).state,
+    ).toBe('healthy');
+  });
+
+  fcProp(
+    it,
+    'keeps spool sort demand monotone in pending surface bytes and rows',
+    {
+      bytes: fc.integer({min: 0, max: 2 ** 40}),
+      extraBytes: fc.integer({min: 0, max: 2 ** 40}),
+      extraRows: fc.integer({min: 0, max: 100_000_000}),
+      rows: fc.integer({min: 0, max: 100_000_000}),
+    },
+    ({bytes, extraBytes, extraRows, rows}) => {
+      const demandFor = (finalFactBytes: number, rowCount: number) =>
+        codeGraphPersistentCapacityDemand({
+          boundary: {finalFactBytes, operation: 'sort persistent code graph materialization spool', rowCount},
+          lexicalFormatVersion: 1,
+          pageSize: 8192,
+          walAutoCheckpointPages: 1_000,
+        });
+      const base = demandFor(bytes, rows);
+      const increased = demandFor(bytes + extraBytes, rows + extraRows);
+      expect(base.state).toBe('measured');
+      expect(increased.state).toBe('measured');
+      if (base.state !== 'measured' || increased.state !== 'measured') return;
+      expect(increased.mainHighWaterBytes).toBeGreaterThanOrEqual(base.mainHighWaterBytes);
+      expect(increased.transientHighWaterBytes).toBeGreaterThanOrEqual(base.transientHighWaterBytes);
+      expect(increased.recoveryFloorBytes).toBeGreaterThanOrEqual(base.recoveryFloorBytes);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
 
   it('routes temporary staging main, journal, and recovery demand only to the temporary filesystem', () => {
     const demand = codeGraphPersistentCapacityDemand({
@@ -372,22 +435,7 @@ describe('code graph disk capacity properties', () => {
     expect(isNonResumableCodeGraphBuildFailure(failure)).toBe(true);
     expect(isCodeGraphCapacityPause(failure)).toBe(true);
 
-    for (const operation of [
-      'cache code graph file facts',
-      'cache materialized code graph file shards',
-      'publish persistent code graph snapshot',
-      'register persistent code graph materialization plan',
-      'stage persistent code graph facts',
-      'stage persistent code graph inventory',
-      'stage persistent code graph workspace',
-      'prepare temporary incremental code graph activation',
-      'publish temporary code graph snapshot',
-      'resolve temporary code graph reexport aliases',
-      'resolve temporary code graph references',
-      'stage temporary code graph facts',
-      'stage temporary code graph inventory',
-      'stage temporary code graph workspace',
-    ] as const) {
+    for (const operation of CODE_GRAPH_DISK_RESERVATION_OPERATIONS) {
       const bounded = codeGraphDiskCapacityFailure(decision, operation);
       expect(bounded.operation).toBe(operation);
       expect(bounded.message).not.toMatch(/[\\/]/u);

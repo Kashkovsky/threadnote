@@ -98,7 +98,7 @@ describe('code graph materialization spool', () => {
 
   it('admits a sequential sidecar sort when aggregate facts would falsely exceed available space', () => {
     const gib = 1024 ** 3;
-    const loads = Array.from({length: 4}, () => ({bytes: 2 * gib, rows: 1_000_000}));
+    const loads = Array.from({length: 4}, () => ({bytes: 5 * gib, rows: 1_000_000}));
     const capacity = (finalFactBytes: number) =>
       evaluateCodeGraphDiskCapacity({
         demand: codeGraphPersistentCapacityDemand({
