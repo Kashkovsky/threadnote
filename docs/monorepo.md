@@ -84,14 +84,14 @@ See [the Bazel development guide](../tools/bazel/README.md) for pinned toolchain
 
 `tools/bazel/target-specs.mjs` discovers every colocated test suite and declares its source and data closure. Generation emits checked-in BUILD files and `targets.json`. The package export helper uses package-local globs for visibility while test and action targets retain exact generated inputs for `bazel-diff`.
 
-Pull-request CI compares base and head target hashes with pinned open-source `bazel-diff` and executes the selected targets. Platform and quality jobs that require a particular GitHub runner are selected from the same Bazel inventory. Unknown inputs, absent baselines, or failed analysis fail safe by selecting the complete inventory. The previous path classifier and shadow workflow are removed.
+Pull-request CI compares base and head target hashes with pinned open-source `bazel-diff`. A planning job records the authoritative selection, then balances executable targets across at most eight parallel Bazel shards. PostgreSQL targets are isolated in a service-enabled shard. Platform and quality jobs that require a particular GitHub runner are selected from the same Bazel inventory and start after planning, in parallel with those shards. Unknown inputs, absent baselines, or failed analysis fail safe by selecting the complete inventory. The stable aggregate check requires the planner, every selected shard, and every selected platform lane. The previous path classifier and shadow workflow are removed.
 
 Website builds consume prepared metadata produced before the sandbox. Cached actions do not discover Git history or call release APIs. Article, release, performance, public, and prepared metadata are explicit website inputs. A website-only change selects website checks without selecting graph package tests; shared dependency changes select every dependent target.
 
 Run focused tests locally. Pull-request CI owns the complete selected suite and platform matrix.
 
 Preview selection with `bun run bazel:affected`. The command writes the exact
-selection, changed paths, fallback reason, and base/head graph evidence under
+selection, changed paths, fallback reason, base/head graph evidence, and shard plan under
 `.context/bazel-selection/`, which is ignored by Git and suitable for attaching to
 a debugging handoff. Use `bun run bazel -- test <label>` for focused execution;
 `bun run bazel:check` validates generated declarations and target analysis without

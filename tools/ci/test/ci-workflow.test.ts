@@ -30,16 +30,24 @@ function step(job: Job | undefined, name: string): Step | undefined {
   return job?.steps?.find(candidate => candidate.name === name);
 }
 
-it('uses one authoritative Bazel selection and execution lane', async () => {
+it('uses one authoritative Bazel plan and parallel execution matrix', async () => {
   expect(await Bun.file('.github/workflows/bazel.yml').exists()).toBe(false);
-  expect(Object.keys(jobs)).toContain('bazel');
-  expect(step(jobs.bazel, 'Verify generated Bazel declarations')?.run).toBe('bun tools/bazel/generate.mjs --check');
-  expect(step(jobs.bazel, 'Select affected Bazel targets')).toMatchObject({
+  expect(Object.keys(jobs)).toContain('bazel-plan');
+  expect(Object.keys(jobs)).toContain('bazel-shards');
+  expect(step(jobs['bazel-plan'], 'Verify generated Bazel declarations')?.run).toBe(
+    'bun tools/bazel/generate.mjs --check',
+  );
+  expect(step(jobs['bazel-plan'], 'Select affected Bazel targets')).toMatchObject({
     id: 'selection',
     run: 'bun tools/ci/bazel-select.mjs --base "$BASE_SHA"',
   });
-  expect(step(jobs.bazel, 'Execute selected Bazel targets')?.run).toBe('bun tools/ci/bazel-run-selected.mjs');
-  expect(jobs.bazel?.services).toHaveProperty('postgres');
+  expect(step(jobs['bazel-plan'], 'Plan parallel Bazel shards')).toMatchObject({
+    id: 'shards',
+    run: 'bun tools/ci/bazel-plan-shards.mjs',
+  });
+  expect(step(jobs['bazel-shards'], 'Execute Bazel shard')?.run).toContain('bazel-run-selected.mjs');
+  expect(jobs['bazel-plan']?.services).toBeUndefined();
+  expect(jobs['bazel-shards']?.services).toHaveProperty('postgres');
 
   const source = readFileSync(workflowPath, 'utf8');
   expect(source).not.toContain('ci-scopes.ts');
@@ -48,25 +56,29 @@ it('uses one authoritative Bazel selection and execution lane', async () => {
 });
 
 it('routes platform and quality lanes from Bazel outputs', () => {
-  expect(jobs.bazel?.outputs).toEqual({
+  expect(jobs['bazel-plan']?.outputs).toEqual({
+    execute_bazel: '${{ steps.shards.outputs.execute_bazel }}',
     recall_quality: '${{ steps.selection.outputs.recall_quality }}',
     release_matrix: '${{ steps.selection.outputs.release_matrix }}',
+    shard_matrix: '${{ steps.shards.outputs.matrix }}',
     windows_smoke: '${{ steps.selection.outputs.windows_smoke }}',
   });
-  expect(jobs['recall-quality']?.if).toBe("needs.bazel.outputs.recall_quality == 'true'");
-  expect(jobs['windows-smoke']?.if).toBe("needs.bazel.outputs.windows_smoke == 'true'");
-  expect(jobs['standalone-targets']?.if).toBe("needs.bazel.outputs.release_matrix == 'true'");
-  expect(jobs['self-contained-distribution']?.if).toBe("needs.bazel.outputs.release_matrix == 'true'");
+  expect(jobs['recall-quality']?.if).toBe("needs.bazel-plan.outputs.recall_quality == 'true'");
+  expect(jobs['windows-smoke']?.if).toBe("needs.bazel-plan.outputs.windows_smoke == 'true'");
+  expect(jobs['standalone-targets']?.if).toBe("needs.bazel-plan.outputs.release_matrix == 'true'");
+  expect(jobs['self-contained-distribution']?.if).toBe("needs.bazel-plan.outputs.release_matrix == 'true'");
 });
 
-it('keeps the stable aggregate check and requires the Bazel lane', () => {
+it('keeps the stable aggregate check and requires the planner plus every selected shard', () => {
   expect(jobs.test?.if).toBe('always()');
   expect(jobs.test?.needs).toEqual([
-    'bazel',
+    'bazel-plan',
+    'bazel-shards',
     'recall-quality',
     'windows-smoke',
     'standalone-targets',
     'self-contained-distribution',
   ]);
-  expect(step(jobs.test, 'Require every selected lane')?.run).toContain('test "$BAZEL_RESULT" = success');
+  expect(step(jobs.test, 'Require every selected lane')?.run).toContain('test "$BAZEL_PLAN_RESULT" = success');
+  expect(step(jobs.test, 'Require every selected lane')?.run).toContain('test "$BAZEL_SHARDS_RESULT" = success');
 });

@@ -138,16 +138,19 @@ test suite has a package-owned target. Application tests are split into the
 ordinary suite, PostgreSQL integration, and the existing long-running groups.
 Telemetry infrastructure also has native `rules_go` targets.
 
-The `CI` workflow checks generated declarations, exercises selection regressions,
-computes base/head graph hashes with SHA-pinned
+The `CI` workflow first checks generated declarations, exercises selection regressions,
+and computes base/head graph hashes with SHA-pinned
 [bazel-diff 49.1.0](https://github.com/Tinder/bazel-diff/releases/tag/v49.1.0), and
-executes the impacted targets as the authoritative pull-request suite. Platform
-and evaluation jobs consume outputs from the same inventory. The selector uses a disposable detached baseline
+then greedily balances executable targets across at most eight parallel Bazel
+jobs. PostgreSQL tests receive their own service-enabled shard; ordinary shards
+do not start that service. Platform and evaluation jobs consume outputs from the
+same authoritative plan and run alongside the Bazel shards. The selector uses a disposable detached baseline
 worktree; the caller's checkout and HEAD are unchanged. Selection JSON and graph
-hashes are retained as workflow artifacts.
+hashes, plus the exact shard plan, are retained as workflow artifacts.
 
 ```sh
 bun tools/ci/bazel-select.mjs --base origin/main
+bun tools/ci/bazel-plan-shards.mjs
 bun tools/ci/bazel-run-selected.mjs
 bun tools/bazel/verify-selection.mjs
 ```
