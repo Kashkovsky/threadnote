@@ -9,10 +9,9 @@ import {activeInstalledVersion, installationRoot} from '../installations.js';
 import {redactSensitiveText} from '@threadnote/platform/scrubber';
 import {sendSystemNotification, type SystemNotificationDelivery} from '../system_notification.js';
 import {withAgentSessionEnvironment, type PreparedAgentSession} from '../telemetry/session.js';
+import {isJsonObject} from '@threadnote/platform/json';
 import type {RuntimeConfig} from '@threadnote/workspace/config';
 import type {UpdateOptions} from '../types.js';
-import {runUpdate} from './index.js';
-import {isJsonObject} from '../utils.js';
 import {isStandaloneThreadnoteBuild} from '@threadnote/workspace/runtime-version';
 import {isDevelopmentBuildVersion} from './version/compare.js';
 
@@ -214,7 +213,11 @@ export function runThreadnoteUpdateCommand(config: RuntimeConfig, options: Updat
     return runAutoUpdatePolicyCommand(options.auto === 'on' ? 'automatic' : 'notify', options.dryRun);
   }
   if (mode === 'status') return runAutoUpdateStatusCommand(options.json === true);
-  return runUpdate(config, options);
+  return runUpdateLazily(config, options);
+}
+
+function runUpdateLazily(config: RuntimeConfig, options: UpdateOptions) {
+  return Effect.promise(() => import('./index.js')).pipe(Effect.flatMap(update => update.runUpdate(config, options)));
 }
 
 /** @internal Pure update-mode dispatcher used by CLI regression tests. */
@@ -403,7 +406,7 @@ function runOwnedAutoUpdate(config: RuntimeConfig) {
       running: {attempt, fromVersion, startedAt},
     });
 
-    const update = yield* Effect.exit(runUpdate(config, {yes: true}));
+    const update = yield* Effect.exit(runUpdateLazily(config, {yes: true}));
     const toVersion = (yield* activeInstalledVersion()) ?? fromVersion;
     if (Exit.isSuccess(update) && toVersion === fromVersion) {
       yield* writeAutoUpdateState(

@@ -23,6 +23,7 @@ bun_test(
         "//apps/threadnote:src/effect/cli/help.ts",
         "//apps/threadnote:src/effect/cli/output.ts",
         "//apps/threadnote:src/effect/production_log.ts",
+        "//apps/threadnote:src/effect/runtime-bootstrap.ts",
         "//apps/threadnote:src/effect/runtime-entrypoint.ts",
         "//apps/threadnote:src/effect/runtime.ts",
         "//apps/threadnote:src/effect/telemetry.ts",
