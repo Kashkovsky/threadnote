@@ -117,7 +117,7 @@ describe('shared agent artifacts', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const sourcePath = join(config.agentContextHome, '.codex', 'skills', 'reviewer', 'SKILL.md');
-    await mkdir(join(sourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(sourcePath, '..'), {recursive: true});
     await writeFile(sourcePath, '# Reviewer\n\nReview local diffs.\n');
     mockPublishCommands();
 
@@ -188,7 +188,7 @@ describe('shared agent artifacts', () => {
       homes.push(installHome);
       inheritedProcessEnvironment().HOME = installHome;
       const sourcePath = join(config.agentContextHome, '.cursor', 'skills', 'reviewer', 'SKILL.md');
-      yield* Effect.promise(() => mkdir(join(sourcePath, '../../../test'), {recursive: true}));
+      yield* Effect.promise(() => mkdir(join(sourcePath, '..'), {recursive: true}));
       yield* Effect.promise(() => writeFile(sourcePath, '# Cursor Reviewer\n'));
       mockPublishCommands();
 
@@ -247,7 +247,7 @@ describe('shared agent artifacts', () => {
     homes.push(config.agentContextHome);
     const sourcePath = join(config.agentContextHome, '.claude', 'commands', 'review.md');
     const sharedPath = join(config.agentContextHome, 'shared', 'default', 'agent-artifacts', 'commands', 'claude');
-    await mkdir(join(sourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(sourcePath, '..'), {recursive: true});
     await mkdir(sharedPath, {recursive: true});
     await writeFile(sourcePath, 'new command\n');
     await writeFile(join(sharedPath, 'review.md'), 'old command\n');
@@ -263,7 +263,7 @@ describe('shared agent artifacts', () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
     const sourcePath = join(config.agentContextHome, '.codex', 'skills', 'reviewer', 'SKILL.md');
-    await mkdir(join(sourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(sourcePath, '..'), {recursive: true});
     await writeFile(sourcePath, '# Reviewer\n');
     await blockNativeArtifactWrites(config);
 
@@ -304,7 +304,7 @@ describe('shared agent artifacts', () => {
       'triage',
       'SKILL.md',
     );
-    await mkdir(join(sharedSkill, '../../../test'), {recursive: true});
+    await mkdir(join(sharedSkill, '..'), {recursive: true});
     await writeFile(sharedSkill, '# Triage\n');
 
     await runShareInstallArtifacts(config, {apply: true, sync: false});
@@ -330,7 +330,7 @@ describe('shared agent artifacts', () => {
       'reviewer',
       'SKILL.md',
     );
-    await mkdir(join(sharedSkill, '../../../test'), {recursive: true});
+    await mkdir(join(sharedSkill, '..'), {recursive: true});
     await writeFile(sharedSkill, '# Reviewer\n');
 
     const result = await listSharedAgentArtifacts(config, {sync: false});
@@ -370,8 +370,8 @@ describe('shared agent artifacts', () => {
       'reviewer',
       'SKILL.md',
     );
-    await mkdir(join(codexSkill, '../../../test'), {recursive: true});
-    await mkdir(join(claudeSkill, '../../../test'), {recursive: true});
+    await mkdir(join(codexSkill, '..'), {recursive: true});
+    await mkdir(join(claudeSkill, '..'), {recursive: true});
     await writeFile(codexSkill, '# Codex Reviewer\n');
     await writeFile(claudeSkill, '# Claude Reviewer\n');
 
@@ -408,7 +408,7 @@ describe('shared agent artifacts', () => {
       'reviewer',
       'SKILL.md',
     );
-    await mkdir(join(sharedSkill, '../../../test'), {recursive: true});
+    await mkdir(join(sharedSkill, '..'), {recursive: true});
     await writeFile(sharedSkill, '# Reviewer v1\n');
 
     await installSharedAgentArtifacts(config, {
@@ -459,7 +459,7 @@ describe('shared agent artifacts', () => {
       'SKILL.md',
     );
     const installPath = join(installHome, '.codex', 'skills', 'threadnote', 'default', 'reviewer', 'SKILL.md');
-    await mkdir(join(sharedSkill, '../../../test'), {recursive: true});
+    await mkdir(join(sharedSkill, '..'), {recursive: true});
     await writeFile(sharedSkill, '# Reviewer v1\n');
 
     await installSharedAgentArtifacts(config, {
@@ -646,7 +646,7 @@ describe('shared agent artifacts', () => {
     const body =
       '# Reviewer\n\nRun `bun scripts/digest-stats.ts > /tmp/digest-prompt.md`.\n\n' +
       "Normalize with `str.replace(/\\\\/g, '\\\\\\\\')`.\n";
-    await mkdir(join(sourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(sourcePath, '..'), {recursive: true});
     await writeFile(sourcePath, body);
     mockPublishCommands();
 
@@ -1219,7 +1219,7 @@ describe('shared agent artifacts', () => {
       'triage',
       'SKILL.md',
     );
-    await mkdir(join(skill, '../../../test'), {recursive: true});
+    await mkdir(join(skill, '..'), {recursive: true});
     await writeFile(skill, '# Triage\n');
     const ghost = join(config.agentContextHome, 'shared', 'default', 'agent-artifacts', 'packs', 'claude', 'ghost');
     await mkdir(ghost, {recursive: true});
@@ -1333,7 +1333,7 @@ describe('shared agent artifacts', () => {
         homes.push(config.agentContextHome);
         const sourcePath = join(config.agentContextHome, '.codex', 'skills', 'reviewer', 'SKILL.md');
         const body = `# Reviewer\n\nSee ${value}\n`;
-        await mkdir(join(sourcePath, '../../../test'), {recursive: true});
+        await mkdir(join(sourcePath, '..'), {recursive: true});
         await writeFile(sourcePath, body);
         mockPublishCommands();
         await runEffect(shareAgentArtifact(config, sourcePath, {}));

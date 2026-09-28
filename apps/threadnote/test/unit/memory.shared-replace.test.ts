@@ -79,8 +79,8 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     'dependency.md',
   );
   const worktreeDependencyPath = join(worktree, 'durable', 'projects', 'orion-worker', 'dependency.md');
-  await mkdir(join(canonicalSharedPath, '../../../test'), {recursive: true});
-  await mkdir(join(worktreeSharedPath, '../../../test'), {recursive: true});
+  await mkdir(join(canonicalSharedPath, '..'), {recursive: true});
+  await mkdir(join(worktreeSharedPath, '..'), {recursive: true});
   await writeFile(canonicalSharedPath, sharedContent);
   await writeFile(worktreeSharedPath, sharedContent);
   await writeFile(canonicalDependencyPath, dependencyContent);

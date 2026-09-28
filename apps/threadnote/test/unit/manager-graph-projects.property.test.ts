@@ -13,7 +13,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const pathSegment = fc
   .string({minLength: 1, maxLength: 24, unit: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789-_')})
-  .filter(value => value !== '../../../test');
+  .filter(value => value !== '..');
 
 fcEffectProp(
   effectIt,

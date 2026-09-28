@@ -36,7 +36,7 @@ describe('Knowledge Delta Git proposal CLI', () => {
     await git(worktree, ['remote', 'add', 'origin', 'https://example.com/threadnote/shared.git']);
 
     const targetPath = join(worktree, 'durable', 'projects', 'threadnote', 'git-proposal.md');
-    await mkdir(join(targetPath, '../../../test'), {recursive: true});
+    await mkdir(join(targetPath, '..'), {recursive: true});
     await writeFile(
       targetPath,
       formatMemoryDocument(
@@ -88,7 +88,7 @@ describe('Knowledge Delta Git proposal CLI', () => {
       'threadnote',
       'git-proposal.md',
     );
-    await mkdir(join(sourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(sourcePath, '..'), {recursive: true});
     const sourceContent = formatMemoryDocument(
       'MEMORY',
       {

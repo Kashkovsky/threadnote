@@ -427,7 +427,7 @@ describe('recall runtime orchestration', () => {
       homes.push(home);
       const resource = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'runtime.md');
       yield* Effect.promise(() =>
-        mkdir(join(resource, '../../../test'), {
+        mkdir(join(resource, '..'), {
           recursive: true,
         }),
       );
@@ -465,7 +465,7 @@ describe('recall runtime orchestration', () => {
       homes.push(home);
       const resource = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'generation.md');
       yield* Effect.promise(() =>
-        mkdir(join(resource, '../../../test'), {
+        mkdir(join(resource, '..'), {
           recursive: true,
         }),
       );
@@ -512,7 +512,7 @@ describe('recall runtime orchestration', () => {
       homes.push(home);
       const resource = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'fallback.md');
       yield* Effect.promise(() =>
-        mkdir(join(resource, '../../../test'), {
+        mkdir(join(resource, '..'), {
           recursive: true,
         }),
       );
@@ -875,7 +875,7 @@ describe('recall runtime orchestration', () => {
         'hidden-memory.md',
       );
       yield* Effect.promise(() =>
-        mkdir(join(hiddenMemory, '../../../test'), {
+        mkdir(join(hiddenMemory, '..'), {
           recursive: true,
         }),
       );

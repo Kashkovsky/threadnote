@@ -675,7 +675,7 @@ async function storedMemoryAt(
     topic: 'context-value-cli',
     ...overrides,
   };
-  await mkdir(join(path, '../../../test'), {recursive: true});
+  await mkdir(join(path, '..'), {recursive: true});
   await writeFile(path, formatMemoryDocument(kind === 'handoff' ? 'HANDOFF' : 'MEMORY', metadata, body), 'utf8');
   return path;
 }

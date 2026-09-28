@@ -192,7 +192,7 @@ describe('private Threadnote 5 collection', () => {
       expect(() => assertIsolatedCollectionArguments([value], root)).toThrow('isolated trial');
     fc.assert(
       fc.property(fc.integer({min: 1, max: 12}), fc.boolean(), (depth, encoded) => {
-        const parent = encoded ? '%2e%2e%2f' : '../../../test/';
+        const parent = encoded ? '%2e%2e%2f' : '../';
         expect(() => assertIsolatedCollectionArguments([`prefix/${parent.repeat(depth)}outside`], root)).toThrow(
           'isolated trial',
         );
@@ -597,7 +597,7 @@ async function buildProbeCandidate(path: string, replacement: boolean): Promise<
 
 async function buildNativeSource(path: string, source: string): Promise<void> {
   await writeFile(`${path}.c`, source);
-  const root = resolve(path, '../../../test');
+  const root = resolve(path, '..');
   await mkdir(resolve(root, 'compiler-home', 'tmp'), {recursive: true});
   const compile = await runCollectionProcess(
     '/usr/bin/cc',

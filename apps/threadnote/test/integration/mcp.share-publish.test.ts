@@ -59,9 +59,9 @@ async function makeHome(root: string): Promise<string> {
   );
   const worktreeDependencyPath = join(worktree, 'durable', 'projects', 'foo', 'dependency.md');
   await mkdir(worktree, {recursive: true});
-  await mkdir(join(sourcePath, '../../../test'), {recursive: true});
-  await mkdir(join(canonicalDependencyPath, '../../../test'), {recursive: true});
-  await mkdir(join(worktreeDependencyPath, '../../../test'), {recursive: true});
+  await mkdir(join(sourcePath, '..'), {recursive: true});
+  await mkdir(join(canonicalDependencyPath, '..'), {recursive: true});
+  await mkdir(join(worktreeDependencyPath, '..'), {recursive: true});
   await writeFile(canonicalDependencyPath, dependencyContent);
   await writeFile(worktreeDependencyPath, dependencyContent);
   await writeFile(

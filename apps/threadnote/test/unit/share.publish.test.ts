@@ -48,7 +48,7 @@ async function makeRuntime(): Promise<ShareRuntime> {
     'foo',
     'bar.md',
   );
-  await mkdir(join(sourcePath, '../../../test'), {recursive: true});
+  await mkdir(join(sourcePath, '..'), {recursive: true});
   await writeFile(
     sourcePath,
     'MEMORY\nkind: durable\nstatus: active\nproject: foo\ntopic: bar\nmemory_id: tn_share_publish\n\nBody\n',
@@ -264,7 +264,7 @@ describe('runSharePublish transaction ordering', () => {
       'v1',
       `${createHash('sha256').update(sourceUri).digest('hex')}.json`,
     );
-    await mkdir(join(pendingPath, '../../../test'), {recursive: true, mode: 0o700});
+    await mkdir(join(pendingPath, '..'), {recursive: true, mode: 0o700});
     await writeFile(pendingPath, '{}\n', {mode: 0o600});
     mockPublishCommands(sourcePath, ok('pushed'), []);
 
@@ -307,7 +307,7 @@ describe('runSharePublish transaction ordering', () => {
       'foo',
       'bar.md',
     );
-    await mkdir(join(canonicalTargetPath, '../../../test'), {recursive: true});
+    await mkdir(join(canonicalTargetPath, '..'), {recursive: true});
     await writeFile(canonicalTargetPath, await readFile(sourcePath, 'utf8'));
     mockPublishCommands(sourcePath, ok('pushed'), []);
 
@@ -358,7 +358,7 @@ describe('runSharePublish transaction ordering', () => {
       'foo',
       'bar.md',
     );
-    await mkdir(join(worktreeTargetPath, '../../../test'), {recursive: true});
+    await mkdir(join(worktreeTargetPath, '..'), {recursive: true});
     await writeFile(worktreeTargetPath, 'MEMORY\nkind: durable\nstatus: active\n\nNewer teammate content\n');
     mockPublishCommands(sourcePath, ok('pushed'), []);
 

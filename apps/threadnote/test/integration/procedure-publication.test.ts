@@ -112,7 +112,7 @@ describe('verified procedure Git publication', () => {
         const fs = yield* FileSystem.FileSystem;
         const preview = yield* publishVerifiedProcedure(fixture.config, fixture.options);
         const target = join(fixture.worktree, preview.paths[0]);
-        yield* fs.makeDirectory(join(target, '../../../test'), {recursive: true});
+        yield* fs.makeDirectory(join(target, '..'), {recursive: true});
         yield* fs.writeFileString(target, 'conflicting manifest');
 
         const error = yield* Effect.flip(
@@ -193,7 +193,7 @@ describe('verified procedure Git publication', () => {
         const fs = yield* FileSystem.FileSystem;
         const preview = yield* publishVerifiedProcedure(fixture.config, fixture.options);
         const refLock = join(fixture.worktree, '.git', `${preview.repository.branchRef}.lock`);
-        yield* fs.makeDirectory(join(refLock, '../../../test'), {recursive: true});
+        yield* fs.makeDirectory(join(refLock, '..'), {recursive: true});
         yield* fs.writeFileString(refLock, 'external ref transaction\n');
 
         yield* Effect.flip(

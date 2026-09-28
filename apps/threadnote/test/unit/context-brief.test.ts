@@ -879,7 +879,7 @@ describe('Context Brief compiler', () => {
       'src//catalog/store.ts',
       'src/catalog/store.ts/',
       '.',
-      '../../../test',
+      '..',
       'cgs_symbol',
       `cgs_${'8'.repeat(31)}`,
       `cgs_${'8'.repeat(40)}`,

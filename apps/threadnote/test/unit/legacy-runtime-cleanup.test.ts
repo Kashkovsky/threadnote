@@ -136,7 +136,7 @@ function testServices(
     Effect.map(system => {
       const testSystem = SystemInfo.of({
         ...system,
-        homeDirectory: join(legacyHome, '../../../test'),
+        homeDirectory: join(legacyHome, '..'),
         isProcessRunning: processOverrides.isProcessRunning,
         signalProcess: processOverrides.signalProcess,
       });

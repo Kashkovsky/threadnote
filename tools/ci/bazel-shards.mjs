@@ -24,9 +24,9 @@ function targetWeight(target) {
  * @param {string} label
  */
 function targetName(label) {
-  if (label === '//apps/threadnote:test') return 'threadnote tests';
   if (label.startsWith('//apps/threadnote:test_long_')) return label.slice('//apps/threadnote:test_long_'.length);
   if (label === '//apps/threadnote:test_postgres') return 'postgres tests';
+  if (/^\/\/apps\/threadnote:test_\d+$/.test(label)) return 'threadnote tests';
   if (label.startsWith('//packages/graph:')) return 'graph tests';
   if (label.startsWith('//apps/website:')) return 'website';
   if (label.startsWith('//packages/')) return 'package tests';
@@ -36,8 +36,8 @@ function targetName(label) {
 
 /**
  * Deterministically balances executable Bazel targets across independent CI
- * runners. Network targets stay together so ordinary shards do not pay for a
- * PostgreSQL service they cannot use.
+ * runners. Network targets stay together in one PostgreSQL-enabled shard;
+ * ordinary targets may share that shard so the service lane does useful work.
  *
  * @param {{inventory: readonly BazelTarget[]; selected: readonly string[]; maxShards?: number}} input
  */
@@ -52,28 +52,20 @@ export function planBazelShards({inventory, selected, maxShards = 8}) {
   const ordinary = executable.filter(target => !target.requiresNetwork);
   const ordinaryShardCount = Math.min(ordinary.length, Math.max(maxShards - (network.length > 0 ? 1 : 0), 0));
   const bins = Array.from({length: ordinaryShardCount}, () => ({postgres: false, targets: [], weight: 0}));
-
-  if (ordinary.length > 0 && ordinaryShardCount === 0) {
+  if (network.length > 0) {
     bins.push({
       postgres: true,
-      targets: [...executable].sort((left, right) => left.label.localeCompare(right.label)),
-      weight: executable.reduce((sum, target) => sum + target.weight, 0),
+      targets: [...network].sort((left, right) => left.label.localeCompare(right.label)),
+      weight: network.reduce((sum, target) => sum + target.weight, 0),
     });
-  } else {
-    for (const target of [...ordinary].sort(
-      (left, right) => right.weight - left.weight || left.label.localeCompare(right.label),
-    )) {
-      const bin = bins.reduce((best, candidate) => (candidate.weight < best.weight ? candidate : best));
-      bin.targets.push(target);
-      bin.weight += target.weight;
-    }
-    if (network.length > 0) {
-      bins.push({
-        postgres: true,
-        targets: [...network].sort((left, right) => left.label.localeCompare(right.label)),
-        weight: network.reduce((sum, target) => sum + target.weight, 0),
-      });
-    }
+  }
+  if (ordinary.length > 0 && bins.length === 0) bins.push({postgres: false, targets: [], weight: 0});
+  for (const target of [...ordinary].sort(
+    (left, right) => right.weight - left.weight || left.label.localeCompare(right.label),
+  )) {
+    const bin = bins.reduce((best, candidate) => (candidate.weight < best.weight ? candidate : best));
+    bin.targets.push(target);
+    bin.weight += target.weight;
   }
 
   return bins

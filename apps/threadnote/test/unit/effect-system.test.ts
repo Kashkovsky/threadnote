@@ -204,7 +204,7 @@ describe('SystemInfo structural path adapter', () => {
       child: FC.stringMatching(/^[A-Za-z0-9._-]{0,12}$/),
       platform: FC.constantFrom('linux' as const, 'win32' as const),
       prefix: FC.constantFrom('', '/', '//', '\\', 'C:\\', 'c:/', '\\\\server\\share\\', '//server/share/'),
-      segments: FC.array(FC.constantFrom('.', '../../../test', 'a', 'B', 'space name', 'é', '_'), {
+      segments: FC.array(FC.constantFrom('.', '..', 'a', 'B', 'space name', 'é', '_'), {
         maxLength: 8,
       }),
       separator: FC.constantFrom('/', '\\', '//', '\\\\'),
@@ -1098,9 +1098,7 @@ describe('Linux cgroup effective memory', () => {
 
       expect(files).toEqual(expected);
       expect(new Set(files.map(file => file.path)).size).toBe(files.length);
-      expect(files.every(file => file.path.startsWith('/sys/fs/cgroup/') && !file.path.includes('../../../test'))).toBe(
-        true,
-      );
+      expect(files.every(file => file.path.startsWith('/sys/fs/cgroup/') && !file.path.includes('..'))).toBe(true);
     },
     {fastCheck: {numRuns: 100}},
   );

@@ -370,7 +370,7 @@ async function storedReplacementReview(topic: string) {
     `${topic}.md`,
   );
   const targetUri = `threadnote://user/local/memories/handoffs/active/threadnote/${topic}.md`;
-  await mkdir(join(targetPath, '../../../test'), {recursive: true});
+  await mkdir(join(targetPath, '..'), {recursive: true});
   await writeFile(
     targetPath,
     [

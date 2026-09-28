@@ -502,7 +502,10 @@ describe('website and standalone release boundary', () => {
         recursive: true,
       });
       const manifest = JSON.parse(await readFile(join(repository, 'package.json'), 'utf8')) as Record<string, unknown>;
-      await writeFile(join(repository, 'src', 'later-runtime.ts'), 'export const laterRuntime = true;\n');
+      await writeFile(
+        join(repository, 'apps', 'threadnote', 'src', 'later-runtime.ts'),
+        'export const laterRuntime = true;\n',
+      );
       await writeFile(join(repository, 'bun.lock'), 'later dependency lock\n');
       await writeFile(
         join(repository, 'package.json'),

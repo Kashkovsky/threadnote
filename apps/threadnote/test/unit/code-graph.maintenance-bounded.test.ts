@@ -594,7 +594,7 @@ describe('bounded code graph maintenance', () => {
         return codeGraphRepositoryLockPath(path, home, checkoutId);
       }),
     );
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(
       lockPath,
       `${JSON.stringify({

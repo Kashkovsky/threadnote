@@ -90,8 +90,8 @@ async function makeSharedRuntime(): Promise<RuntimeConfig> {
     'lease.md',
   );
   const worktreeSharedPath = join(worktree, 'durable', 'projects', 'orion-worker', 'lease.md');
-  await mkdir(join(canonicalSharedPath, '../../../test'), {recursive: true});
-  await mkdir(join(worktreeSharedPath, '../../../test'), {recursive: true});
+  await mkdir(join(canonicalSharedPath, '..'), {recursive: true});
+  await mkdir(join(worktreeSharedPath, '..'), {recursive: true});
   await writeFile(canonicalSharedPath, sharedContent);
   await writeFile(worktreeSharedPath, sharedContent);
   await writeFile(

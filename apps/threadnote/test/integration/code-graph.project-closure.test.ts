@@ -4,7 +4,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync} from '@threadnote/testing/node-child-process';
 import {mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync} from '@threadnote/testing/node-fs';
 import {tmpdir} from '@threadnote/testing/node-os';
-import {join} from '@threadnote/testing/node-path';
+import {dirname, join} from '@threadnote/testing/node-path';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {TestClock} from 'effect/testing';
@@ -1365,7 +1365,7 @@ function createProjectClosureRepository(
   if (options.overlappingTypeScriptConfigs) {
     write(root, 'tsconfig.json', {compilerOptions: {rootDir: 'packages'}, include: ['packages/**/*.ts']});
     write(root, 'apps/threadnote/test/tsconfig.json', {
-      compilerOptions: {rootDir: '../../../test'},
+      compilerOptions: {rootDir: '..'},
       include: ['../packages/**/*.ts'],
     });
   }
@@ -1499,7 +1499,7 @@ function workspaceCatalogRows(databasePath: string, snapshotId: string): readonl
 
 function writeFile(root: string, path: string, content: string): void {
   const target = join(root, path);
-  mkdirSync(join(target, '../../../test'), {recursive: true});
+  mkdirSync(dirname(target), {recursive: true});
   writeFileSync(target, content);
 }
 

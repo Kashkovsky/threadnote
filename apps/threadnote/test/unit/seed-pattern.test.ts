@@ -7,7 +7,7 @@ import {
   validateProjectSeedPatterns,
 } from '@threadnote/threadnote/seed_pattern';
 
-const segment = FC.stringMatching(/^[a-z][a-z0-9._-]{0,20}$/u).filter(value => value !== '../../../test');
+const segment = FC.stringMatching(/^[a-z][a-z0-9._-]{0,20}$/u).filter(value => value !== '..');
 
 describe('project seed pattern safety', () => {
   fcProp(
@@ -32,7 +32,7 @@ describe('project seed pattern safety', () => {
       suffix: FC.array(segment, {maxLength: 5}),
     },
     ({prefix, suffix}) => {
-      const pattern = [...prefix, '../../../test', ...suffix].join('/');
+      const pattern = [...prefix, '..', ...suffix].join('/');
       expect(() => validateProjectSeedPattern(pattern)).toThrow(InvalidProjectSeedPattern);
       expect(() => validateProjectSeedPattern(pattern.replaceAll('/', '\\'))).toThrow(InvalidProjectSeedPattern);
     },

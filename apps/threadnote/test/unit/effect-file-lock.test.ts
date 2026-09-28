@@ -190,7 +190,7 @@ describe('Effect file lock', () => {
   );
 
   it('reports lock contention with a typed timeout', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(lockPath, `${process.pid}:live-owner\n`, {mode: 0o600});
 
     await expect(
@@ -209,7 +209,7 @@ describe('Effect file lock', () => {
   });
 
   it('recovers a stale lock only when its recorded owner is not alive', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(lockPath, '2147483647:dead-owner\n', {mode: 0o600});
     const old = new Date(Date.now() - 60_000);
     await utimes(lockPath, old, old);
@@ -225,7 +225,7 @@ describe('Effect file lock', () => {
   });
 
   it('recovers a fresh lock immediately when its recorded owner is no longer alive', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(lockPath, '2147483647:dead-owner\n', {mode: 0o600});
 
     await expect(
@@ -239,7 +239,7 @@ describe('Effect file lock', () => {
   });
 
   it('recovers a lock when the owner PID was reused by a different process instance', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(
       lockPath,
       `${JSON.stringify({
@@ -274,7 +274,7 @@ describe('Effect file lock', () => {
   });
 
   it('can recover a fresh PID-reused lock immediately only for an opted-in reconciler', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(
       lockPath,
       `${JSON.stringify({
@@ -315,7 +315,7 @@ describe('Effect file lock', () => {
     TestClock.withLive(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        yield* fs.makeDirectory(join(lockPath, '../../../test'), {recursive: true});
+        yield* fs.makeDirectory(join(lockPath, '..'), {recursive: true});
         yield* fs.writeFileString(
           lockPath,
           `${JSON.stringify({
@@ -372,7 +372,7 @@ describe('Effect file lock', () => {
     TestClock.withLive(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        yield* fs.makeDirectory(join(lockPath, '../../../test'), {recursive: true});
+        yield* fs.makeDirectory(join(lockPath, '..'), {recursive: true});
         yield* fs.writeFileString(
           lockPath,
           `${JSON.stringify({
@@ -427,7 +427,7 @@ describe('Effect file lock', () => {
   );
 
   it('refuses immediate PID-reuse recovery when the current process start is unknown', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(
       lockPath,
       `${JSON.stringify({
@@ -469,7 +469,7 @@ describe('Effect file lock', () => {
   });
 
   it('does not inspect process identity while a live lock lease is fresh', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(
       lockPath,
       `${JSON.stringify({
@@ -513,7 +513,7 @@ describe('Effect file lock', () => {
   });
 
   it('recovers a stale lock even when an old recovery guard was orphaned', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(lockPath, '2147483647:dead-owner\n', {mode: 0o600});
     await writeFile(`${lockPath}.recovery`, '2147483647:orphaned-recovery\n', {mode: 0o600});
     const old = new Date(Date.now() - 60_000);
@@ -531,7 +531,7 @@ describe('Effect file lock', () => {
   });
 
   it('waits behind a live recovery lease before taking over a stale lock', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(lockPath, '2147483647:dead-owner\n', {mode: 0o600});
     await writeFile(`${lockPath}.recovery`, `${process.pid}:live-recovery\n`, {mode: 0o600});
     const old = new Date(Date.now() - 60_000);
@@ -563,7 +563,7 @@ describe('Effect file lock', () => {
   });
 
   it('serializes simultaneous contenders during stale-lock takeover', async () => {
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(lockPath, '2147483647:dead-owner\n', {mode: 0o600});
     const old = new Date(Date.now() - 60_000);
     await utimes(lockPath, old, old);

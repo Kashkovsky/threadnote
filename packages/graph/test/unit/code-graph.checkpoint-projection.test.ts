@@ -14,7 +14,7 @@ const safePathSegment = FC.string({
   maxLength: 64,
   minLength: 1,
   unit: FC.constantFrom(...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-'),
-}).filter(segment => segment !== '.' && segment !== '../../../test');
+}).filter(segment => segment !== '.' && segment !== '..');
 
 const safePath = FC.array(safePathSegment, {maxLength: 8, minLength: 1}).map(segments => segments.join('/'));
 

@@ -858,7 +858,7 @@ async function pushRemoteMemory(root: string, remote: string, relativePath: stri
   const source = await mkdtemp(join(root, 'remote-memory-update-'));
   await execFilePromise('git', ['clone', remote, source], {env: {...process.env, ...gitIdentityEnvironment}});
   const target = join(source, relativePath);
-  await mkdir(join(target, '../../../test'), {recursive: true});
+  await mkdir(join(target, '..'), {recursive: true});
   await writeFile(target, content, 'utf8');
   await execFilePromise('git', ['-C', source, 'add', relativePath], {
     env: {...process.env, ...gitIdentityEnvironment},

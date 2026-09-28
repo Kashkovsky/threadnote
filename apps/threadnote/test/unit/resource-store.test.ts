@@ -74,7 +74,7 @@ describe('ResourceId', () => {
           !/[<>:"|?*\\/#%]/.test(value) &&
           !/[ .]$/.test(value) &&
           !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(value) &&
-          !['.', '../../../test'].includes(value.toLowerCase()) &&
+          !['.', '..'].includes(value.toLowerCase()) &&
           [...value].every(character => character.codePointAt(0)! > 0x1f),
       ),
     },

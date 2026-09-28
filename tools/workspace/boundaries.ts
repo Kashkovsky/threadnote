@@ -15,6 +15,15 @@ export interface SourceModule {
   readonly virtualModules?: readonly string[];
 }
 
+export function validateRelocatedTestPaths(
+  files: readonly {readonly content: string; readonly path: string}[],
+): readonly string[] {
+  return files
+    .filter(file => /^(?:apps|packages)\/[^/]+\/test\//.test(file.path) && file.content.includes('../../../test'))
+    .map(file => `${file.path}: contains a corrupted parent segment from the test-root migration`)
+    .sort();
+}
+
 export function validateSourceVisibility(
   sources: readonly SourceModule[],
   gitVisiblePaths: ReadonlySet<string>,

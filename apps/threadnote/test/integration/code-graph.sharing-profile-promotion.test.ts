@@ -159,7 +159,7 @@ effectIt.effect('migrates a previously trusted v1 client to a cold v2 OCI profil
   TestClock.withLive(
     Effect.gen(function* () {
       const f = yield* fixture();
-      const clientConfig = {...f.config, agentContextHome: f.path.join(f.repository, '../../../test', 'client-home')};
+      const clientConfig = {...f.config, agentContextHome: f.path.join(f.repository, '..', 'client-home')};
       const joined = yield* runGraphShareJoin(clientConfig, {cas: f.cas, cwd: f.repository, readOnly: true});
       expect(joined.accessMode).toBe('read-only');
       const promoted = yield* f.promote();
@@ -181,7 +181,7 @@ effectIt.effect('migrates a previously trusted v1 client to a cold v2 OCI profil
       );
       expect(trust?.registryCanonical).toBe(canonicalRegistry);
       expect(trust?.accessMode).toBe('read-only');
-      const freshConfig = {...clientConfig, agentContextHome: f.path.join(f.repository, '../../../test', 'fresh-home')};
+      const freshConfig = {...clientConfig, agentContextHome: f.path.join(f.repository, '..', 'fresh-home')};
       const requestsAfterMigration = f.registry.requests.length;
       expect(
         yield* rejected(f.registry.provide(runGraphShareJoin(freshConfig, {cas: f.cas, cwd: f.repository}))),
@@ -202,7 +202,7 @@ effectIt.effect('fresh managed approval pins the OCI root and verified profile b
       const profile = parseGraphShareProfile(
         yield* decodeJsonBytes(yield* readVerifiedCasBlob(f.cas, pointer.bodyDigest)),
       );
-      const approvalPath = yield* f.fs.realPath(f.path.join(f.repository, '../../../test'));
+      const approvalPath = yield* f.fs.realPath(f.path.join(f.repository, '..'));
       const approvalFile = f.path.join(approvalPath, 'managed-approval.json');
       const approval = {
         accessMode: 'read-only' as const,
@@ -218,9 +218,9 @@ effectIt.effect('fresh managed approval pins the OCI root and verified profile b
       };
       const clientConfig = {
         ...f.config,
-        agentContextHome: f.path.join(f.repository, '../../../test', 'fresh-approved-home'),
+        agentContextHome: f.path.join(f.repository, '..', 'fresh-approved-home'),
       };
-      const clientCas = f.path.join(f.repository, '../../../test', 'fresh-approved-cas');
+      const clientCas = f.path.join(f.repository, '..', 'fresh-approved-cas');
       const manifestPath = graphSharingCasBlobPath(f.path, clientCas, promoted.manifestDigest.slice('sha256:'.length));
       yield* writePrivateJsonFile(approvalFile, {...approval, profileDigest: sha256Digest('wrong')});
       const beforeWrongRoot = f.registry.requests.length;
@@ -294,10 +294,7 @@ effectIt.effect('ordinary graph use auto-consumes managed approval without an ex
       const profile = parseGraphShareProfile(
         yield* decodeJsonBytes(yield* readVerifiedCasBlob(f.cas, pointer.bodyDigest)),
       );
-      const approvalPath = f.path.join(
-        yield* f.fs.realPath(f.path.join(f.repository, '../../../test')),
-        'auto-approval.json',
-      );
+      const approvalPath = f.path.join(yield* f.fs.realPath(f.path.join(f.repository, '..')), 'auto-approval.json');
       yield* writePrivateJsonFile(approvalPath, {
         accessMode: 'join',
         contribution: {declared: profile.contribution, effectiveMode: 'passive-on-index'},
@@ -311,7 +308,7 @@ effectIt.effect('ordinary graph use auto-consumes managed approval without an ex
         source: profile.source,
       });
       const identity = yield* resolveRepositoryIdentity(f.repository);
-      const home = f.path.join(f.repository, '../../../test', 'auto-client-home');
+      const home = f.path.join(f.repository, '..', 'auto-client-home');
       const clientConfig = {...f.config, agentContextHome: home};
       const system = yield* SystemInfo;
       const ordinaryUse = () =>

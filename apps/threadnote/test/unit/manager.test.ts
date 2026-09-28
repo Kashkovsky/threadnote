@@ -159,8 +159,8 @@ async function makeSharedManagerRuntime(): Promise<{
   );
   const worktreePath = join(worktree, relativePath);
   const content = managerCitedMemory('Shared Manager original.', false, 'remote');
-  await mkdir(join(canonicalPath, '../../../test'), {recursive: true});
-  await mkdir(join(worktreePath, '../../../test'), {recursive: true});
+  await mkdir(join(canonicalPath, '..'), {recursive: true});
+  await mkdir(join(worktreePath, '..'), {recursive: true});
   await writeFile(canonicalPath, content);
   await writeFile(worktreePath, content);
   await mkdir(join(config.agentContextHome, 'share', 'teams'), {recursive: true});
@@ -1265,8 +1265,8 @@ describe('manager http API', () => {
       {...source.metadata, project: 'threadnote', topic: 'recovered-move', visibility: 'shared'},
       source.body,
     );
-    await mkdir(join(targetCanonicalPath, '../../../test'), {recursive: true});
-    await mkdir(join(targetWorktreePath, '../../../test'), {recursive: true});
+    await mkdir(join(targetCanonicalPath, '..'), {recursive: true});
+    await mkdir(join(targetWorktreePath, '..'), {recursive: true});
     await writeFile(targetCanonicalPath, targetContent);
     await writeFile(targetWorktreePath, targetContent);
     await rm(fixture.worktreePath);
@@ -3107,7 +3107,7 @@ describe('manager http API', () => {
       'threadnote',
       'manager-ui.md',
     );
-    await mkdir(join(sharedPath, '../../../test'), {recursive: true});
+    await mkdir(join(sharedPath, '..'), {recursive: true});
     await writeFile(
       sharedPath,
       [

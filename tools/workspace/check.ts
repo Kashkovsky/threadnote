@@ -2,6 +2,7 @@ import {Schema} from 'effect';
 import {
   declaredVirtualModules,
   moduleSpecifiers,
+  validateRelocatedTestPaths,
   validateSourceVisibility,
   validateWorkspaceBoundaries,
   type SourceModule,
@@ -27,6 +28,7 @@ for (const path of new Bun.Glob('{apps,packages}/*/package.json').scanSync('.'))
   });
 }
 const sources: SourceModule[] = [];
+const sourceFiles: {content: string; path: string}[] = [];
 for (const path of new Bun.Glob('{scripts,tools,infra,apps,packages}/**/*.{ts,tsx,mts}').scanSync('.')) {
   if (
     path.includes('/node_modules/') ||
@@ -36,9 +38,10 @@ for (const path of new Bun.Glob('{scripts,tools,infra,apps,packages}/**/*.{ts,ts
   )
     continue;
   const content = await Bun.file(path).text();
+  sourceFiles.push({content, path});
   sources.push({path, imports: moduleSpecifiers(path, content), virtualModules: declaredVirtualModules(path, content)});
 }
-const errors = [...validateWorkspaceBoundaries(packages, sources)];
+const errors = [...validateWorkspaceBoundaries(packages, sources), ...validateRelocatedTestPaths(sourceFiles)];
 const gitFiles = Bun.spawnSync({
   cmd: [
     'git',

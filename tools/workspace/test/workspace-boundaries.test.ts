@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest';
 import {
   moduleSpecifiers,
+  validateRelocatedTestPaths,
   validateSourceVisibility,
   validateWorkspaceBoundaries,
   type WorkspacePackage,
@@ -22,6 +23,18 @@ const memory: WorkspacePackage = {
 };
 
 describe('private workspace boundaries', () => {
+  it('rejects parent segments corrupted while relocating the legacy test root', () => {
+    expect(
+      validateRelocatedTestPaths([
+        {path: 'apps/threadnote/test/unit/example.test.ts', content: `join(path, '../../../test')`},
+        {path: 'packages/graph/test/example.test.ts', content: `join(path, '../../../test')`},
+      ]),
+    ).toEqual([
+      'apps/threadnote/test/unit/example.test.ts: contains a corrupted parent segment from the test-root migration',
+      'packages/graph/test/example.test.ts: contains a corrupted parent segment from the test-root migration',
+    ]);
+  });
+
   it('rejects source modules hidden by Git ignore rules', () => {
     const sources = [
       {path: 'packages/graph/src/build/owner.ts', imports: []},

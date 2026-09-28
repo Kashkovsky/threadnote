@@ -88,9 +88,9 @@ describe('local recall index', () => {
       'threadnote',
       'old.md',
     );
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
-    await mkdir(join(activePath, '../../../test'), {recursive: true});
-    await mkdir(join(archivedPath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await mkdir(join(activePath, '..'), {recursive: true});
+    await mkdir(join(archivedPath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Alpha-42\n\nUse bounded retryPolicy.', 'utf8');
     await writeFile(
       activePath,
@@ -160,7 +160,7 @@ describe('local recall index', () => {
       const globalPath = join(memoryRoot, 'global-guidance.md');
       yield* Effect.promise(async () => {
         await mkdir(distractorRoot, {recursive: true});
-        await mkdir(join(targetPath, '../../../test'), {recursive: true});
+        await mkdir(join(targetPath, '..'), {recursive: true});
         await Promise.all(
           Array.from({length: 525}, async (_, index) =>
             writeFile(
@@ -240,7 +240,7 @@ describe('local recall index', () => {
   it('collapses identical shared-memory aliases after scope authorization and before result limits', async () => {
     const sharedRoot = join(directory, 'data', 'local', 'user', 'me', 'memories', 'shared');
     const uniquePath = join(sharedRoot, 'alpha', 'durable', 'projects', 'threadnote', 'unique.md');
-    await mkdir(join(uniquePath, '../../../test'), {recursive: true});
+    await mkdir(join(uniquePath, '..'), {recursive: true});
     await writeFile(
       uniquePath,
       [
@@ -274,7 +274,7 @@ describe('local recall index', () => {
       join(sharedRoot, team, 'durable', 'projects', 'threadnote', 'package-scope.md');
     for (const team of ['alpha', 'beta']) {
       const path = pathForTeam(team);
-      await mkdir(join(path, '../../../test'), {recursive: true});
+      await mkdir(join(path, '..'), {recursive: true});
       await writeFile(path, body, 'utf8');
     }
 
@@ -360,7 +360,7 @@ describe('local recall index', () => {
             'threadnote',
             `alias-latest-release-${aliasIndex}.md`,
           );
-          await mkdir(join(path, '../../../test'), {recursive: true});
+          await mkdir(join(path, '..'), {recursive: true});
           await writeFile(path, aliasBody, 'utf8');
           await utimes(path, new Date('2026-08-21T00:00:00.000Z'), new Date('2026-08-21T00:00:00.000Z'));
         }),
@@ -486,8 +486,8 @@ describe('local recall index', () => {
         '',
         memoryBody,
       ].join('\n');
-    await mkdir(join(personalPath, '../../../test'), {recursive: true});
-    await mkdir(join(sharedPath, '../../../test'), {recursive: true});
+    await mkdir(join(personalPath, '..'), {recursive: true});
+    await mkdir(join(sharedPath, '..'), {recursive: true});
     await writeFile(
       personalPath,
       memory(
@@ -512,8 +512,8 @@ describe('local recall index', () => {
     const oldFixed = join(lexicalRoot, 'active-v7.sqlite');
     const oldPointer = join(lexicalRoot, 'active-v7.pointer.json');
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'current.md');
-    await mkdir(join(oldGeneration, '../../../test'), {recursive: true});
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(oldGeneration, '..'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(oldGeneration, 'old generation', 'utf8');
     await writeFile(oldFixed, 'old fixed database', 'utf8');
     await writeFile(`${oldFixed}-wal`, 'old wal', 'utf8');
@@ -538,7 +538,7 @@ describe('local recall index', () => {
       ['beta', 'second-secret'],
     ] as const) {
       const path = pathForTeam(team);
-      await mkdir(join(path, '../../../test'), {recursive: true});
+      await mkdir(join(path, '..'), {recursive: true});
       await writeFile(
         path,
         [
@@ -819,7 +819,7 @@ describe('local recall index', () => {
       'monorepo',
       'current.md',
     );
-    await mkdir(join(memoryPath, '../../../test'), {recursive: true});
+    await mkdir(join(memoryPath, '..'), {recursive: true});
     await writeFile(
       memoryPath,
       [
@@ -895,7 +895,7 @@ describe('local recall index', () => {
       'engineering',
       'Release bridge.md',
     );
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Release bridge\n\nZOBSIDIAN-74291 bounded external recall anchor.', 'utf8');
 
     const candidates = await run(
@@ -916,7 +916,7 @@ describe('local recall index', () => {
 
   it('rebuilds after source changes and degrades safely from a corrupt cache', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
     expect((await run(loadRecallIndex(config(), {includeInactive: false})))[0]?.text).toContain('alpha-42');
 
@@ -935,7 +935,7 @@ describe('local recall index', () => {
 
   it('rebuilds an earlier beta lexical schema from canonical documents', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'schema.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Schema recovery\n\nearlier-beta-lexical-anchor', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
 
@@ -954,7 +954,7 @@ describe('local recall index', () => {
 
   it('keeps a legacy current index ready when no canonical mutation generation exists yet', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'legacy.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Legacy\n\npre-generation-index-anchor', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
 
@@ -965,7 +965,7 @@ describe('local recall index', () => {
 
   it('supports concurrent first opens without racing schema initialization', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Concurrent\n\nfirst-open-anchor', 'utf8');
 
     const results = await Promise.all(
@@ -979,7 +979,7 @@ describe('local recall index', () => {
 
   it('force-refreshes a same-size source even when its modification time is preserved', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
     const original = await stat(resourcePath);
@@ -994,7 +994,7 @@ describe('local recall index', () => {
 
   it('fully refreshes an explicitly stale generation when size and modification time are preserved', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
     const original = await stat(resourcePath);
@@ -1010,7 +1010,7 @@ describe('local recall index', () => {
 
   it('bounds URI-aware invalidation growth and falls back to a conservative refresh', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
     const original = await stat(resourcePath);
@@ -1032,7 +1032,7 @@ describe('local recall index', () => {
 
   it('rejects structurally invalid candidate rows and rebuilds them from canonical sources', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Valid\n\ncache-shape-anchor', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
     executeDatabase(`UPDATE documents SET candidate_json = '{"text":42,"uri":"invalid"}'`);
@@ -1046,7 +1046,7 @@ describe('local recall index', () => {
 
   it('repairs incomplete posting relationships from canonical sources', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Valid\n\nreferential-cache-anchor', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
     executeDatabase('DELETE FROM postings');
@@ -1063,8 +1063,8 @@ describe('local recall index', () => {
   it('loads one corpus snapshot for multiple query and scope selections', async () => {
     const alpha = join(directory, 'data', 'local', 'resources', 'repos', 'alpha', 'doc.md');
     const beta = join(directory, 'data', 'local', 'resources', 'repos', 'beta', 'doc.md');
-    await mkdir(join(alpha, '../../../test'), {recursive: true});
-    await mkdir(join(beta, '../../../test'), {recursive: true});
+    await mkdir(join(alpha, '..'), {recursive: true});
+    await mkdir(join(beta, '..'), {recursive: true});
     await writeFile(alpha, '# Alpha\n\nshared batch anchor', 'utf8');
     await writeFile(beta, '# Beta\n\nshared batch anchor', 'utf8');
 
@@ -1104,7 +1104,7 @@ describe('local recall index', () => {
   it('removes legacy JSON caches only after activating the SQLite index', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     const cacheDirectory = join(directory, 'cache');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await mkdir(cacheDirectory, {recursive: true});
     await writeFile(resourcePath, '# Current\n\nmanaged-field-safe', 'utf8');
     await writeFile(
@@ -1124,7 +1124,7 @@ describe('local recall index', () => {
 
   it('uses a recently validated cache without walking the source tree again', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# Cached\n\nbounded-validation', 'utf8');
     expect(await run(loadRecallIndex(config(), {includeInactive: false}))).toHaveLength(1);
 
@@ -1179,7 +1179,7 @@ describe('local recall index', () => {
       'orion-worker',
       'lease-renewal.md',
     );
-    await mkdir(join(memoryPath, '../../../test'), {recursive: true});
+    await mkdir(join(memoryPath, '..'), {recursive: true});
     await writeFile(
       memoryPath,
       [
@@ -1303,7 +1303,7 @@ describe('local recall index', () => {
 
   it('uses the URI index for exact-or-prefix scope ranges', async () => {
     const resource = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'target.md');
-    await mkdir(join(resource, '../../../test'), {recursive: true});
+    await mkdir(join(resource, '..'), {recursive: true});
     await writeFile(resource, '# Target\n\nscope-plan-anchor', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
 
@@ -1466,7 +1466,7 @@ describe('local recall index', () => {
       'threadnote',
       'unreviewed.md',
     );
-    await mkdir(join(personalPath, '../../../test'), {recursive: true});
+    await mkdir(join(personalPath, '..'), {recursive: true});
     await writeFile(
       personalPath,
       [
@@ -1502,8 +1502,8 @@ describe('local recall index', () => {
     const importedPath = join(directory, 'data', 'local', 'resources', 'imports', 'external.md');
     const manifestPath = join(directory, 'seed-manifest.yaml');
     await mkdir(repoRoot, {recursive: true});
-    await mkdir(join(canonicalPath, '../../../test'), {recursive: true});
-    await mkdir(join(importedPath, '../../../test'), {recursive: true});
+    await mkdir(join(canonicalPath, '..'), {recursive: true});
+    await mkdir(join(importedPath, '..'), {recursive: true});
     const canonicalContent = '# Canonical\n\nauthority-provenance-anchor';
     await writeFile(repoSourcePath, canonicalContent, 'utf8');
     await writeFile(mismatchedRepoSourcePath, '# Original\n\nauthority-provenance-anchor', 'utf8');
@@ -1635,7 +1635,7 @@ describe('local recall index', () => {
 
   it('persists a fresh corpus generation after explicit invalidation', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
-    await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
     await writeFile(resourcePath, '# First\n\nalpha-42', 'utf8');
     await run(loadRecallIndex(config(), {includeInactive: false}));
     const persisted = queryDatabase<{value: string}>(`SELECT value FROM metadata WHERE key = 'validated_at'`)[0]?.value;

@@ -328,7 +328,7 @@ describe('active code graph storage', () => {
         return codeGraphWorktreeLockPath(path, fixture.home, fixture.checkoutId, 'e'.repeat(64));
       }),
     );
-    await mkdir(join(lockPath, '../../../test'), {recursive: true});
+    await mkdir(join(lockPath, '..'), {recursive: true});
     await writeFile(lockPath, '2147483647:abandoned-builder\n');
 
     const inspected = await runEffect(inspectCodeGraphStorage(fixture.home, fixture.checkoutId));

@@ -1036,7 +1036,7 @@ describe('MCP agent executable resolution', () => {
         agent,
         `if [ "$1" = "--version" ]; then printf '%s\\n' '${agent} 1'; exit 0; fi\nprintf '%s\\n' "$*" >> ${shellLiteral(callsPath)}\nprintf '%s\\n' ${shellLiteral(output)}`,
       );
-      process.env.PATH = [join(launcher, '../../../test'), '/usr/bin', '/bin'].join(delimiter);
+      process.env.PATH = [join(launcher, '..'), '/usr/bin', '/bin'].join(delimiter);
 
       await runEffect(
         runMcpInstall(testRuntime, agent, {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem)),
@@ -1098,7 +1098,7 @@ describe('MCP agent executable resolution', () => {
         agent,
         `if [ "$1" = "--version" ]; then printf '%s\\n' '${agent} 1'; exit 0; fi\nprintf '%s\\n' "$*" >> ${shellLiteral(callsPath)}\ncase "$*" in\n  "mcp get threadnote"*) printf '%s\\n' ${shellLiteral(output)} ;;\nesac`,
       );
-      process.env.PATH = [join(launcher, '../../../test'), '/usr/bin', '/bin'].join(delimiter);
+      process.env.PATH = [join(launcher, '..'), '/usr/bin', '/bin'].join(delimiter);
 
       await runEffect(
         runMcpInstall(testRuntime, agent, {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem)),
@@ -1131,7 +1131,7 @@ describe('MCP agent executable resolution', () => {
       ].join('\n'),
     );
     const system = await runEffect(SystemInfo);
-    const pathValue = [join(launcher, '../../../test'), '/usr/bin', '/bin'].join(delimiter);
+    const pathValue = [join(launcher, '..'), '/usr/bin', '/bin'].join(delimiter);
     const environment = {
       ...system.environment(),
       PATH: pathValue,
@@ -1196,7 +1196,7 @@ describe('MCP agent executable resolution', () => {
     const healthy = await codexLauncher(
       `if [ "$1" = "--version" ]; then printf '%s\\n' 'codex-cli 1.0.0'; exit 0; fi\nprintf '%s\\n' "$*" >> "${callsPath}"`,
     );
-    process.env.PATH = [join(broken, '../../../test'), join(healthy, '../../../test')].join(delimiter);
+    process.env.PATH = [join(broken, '..'), join(healthy, '..')].join(delimiter);
 
     await runEffect(
       runMcpInstall(testRuntime, 'codex', {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem)),
@@ -1210,7 +1210,7 @@ describe('MCP agent executable resolution', () => {
 
   posixIt('skips a broken Codex launcher during repair and gives explicit installs an actionable error', async () => {
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
-    process.env.PATH = [join(broken, '../../../test'), '/usr/bin', '/bin'].join(delimiter);
+    process.env.PATH = [join(broken, '..'), '/usr/bin', '/bin'].join(delimiter);
 
     const resolution = await resolveMcpClients('codex', 'repair').pipe(captureConsole, runEffect);
     expect(resolution.value).toEqual([]);

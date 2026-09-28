@@ -1350,11 +1350,7 @@ describe('OpenViking home migration', () => {
         const migratedWorktree = path.join(targetHome, 'share', 'worktrees', 'default');
         const migratedGitdir = path.join(targetHome, 'share', 'teams', 'default.gitdir');
         expect(yield* fs.readFileString(canonicalMemory)).toContain('Shared storage contract');
-        expect(
-          yield* fs.exists(
-            path.join(path.dirname(canonicalMemory), '../../../test', '../../../test', '../../../test', '.git'),
-          ),
-        ).toBe(false);
+        expect(yield* fs.exists(path.join(path.dirname(canonicalMemory), '..', '..', '..', '.git'))).toBe(false);
         expect(yield* fs.readFileString(path.join(migratedWorktree, memoryRelative))).toContain(
           'Shared storage contract',
         );

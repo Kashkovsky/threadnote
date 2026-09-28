@@ -107,7 +107,7 @@ describe('external performance evidence', () => {
     fc.assert(
       fc.property(
         fc.array(
-          segment.filter(value => value !== '.' && value !== '../../../test'),
+          segment.filter(value => value !== '.' && value !== '..'),
           {minLength: 1, maxLength: 8},
         ),
         segments => {

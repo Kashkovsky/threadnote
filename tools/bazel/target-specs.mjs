@@ -63,6 +63,7 @@ const packageDataRoots = {
     'packages/graph/src',
   ],
   'packages/recall': ['training/recall-reranker'],
+  'packages/manager': ['packages/manager/static'],
   'packages/remote-memory': [
     'deploy/remote-memory',
     'deploy/threadnote-org',
@@ -99,10 +100,32 @@ const packageTestNpm = {
   ],
 };
 const applicationTestDataRoots = [
+  '.cursor-plugin',
+  '.github',
+  '.husky',
   'apps/threadnote/test/evaluation',
   'apps/threadnote/test/fixtures',
   'apps/threadnote/test/helpers',
   'scripts',
+];
+const applicationTestData = [
+  '.dockerignore',
+  '.gitignore',
+  '.oxlintrc.json',
+  '.oxlintrc.strict.json',
+  '.prettierignore',
+  '.prettierrc.json',
+  '.threadnoteignore',
+  'AGENTS.md',
+  'CONTRIBUTION.md',
+  'LICENSE',
+  'README.md',
+  'THIRD_PARTY.md',
+  'bun.lock',
+  'package.json',
+  'tsconfig.json',
+  'tsconfig.test.json',
+  'vitest.config.ts',
 ];
 const packageTestClosureEntries = {
   'packages/graph': [
@@ -112,6 +135,7 @@ const packageTestClosureEntries = {
 };
 const packageRuntimeTestEntries = {
   'packages/graph': ['apps/threadnote/src/standalone.ts'],
+  'packages/manager': ['apps/threadnote/src/standalone.ts'],
   'packages/memory': ['apps/threadnote/src/standalone.ts'],
   'packages/platform': ['apps/threadnote/src/standalone.ts', 'scripts/remote-memory-canary.ts'],
 };
@@ -187,6 +211,7 @@ const longRunningTargets = ciRequiredLongRunningTestGroupNames.map(group => ({
   name: `test_long_${group.replaceAll('-', '_')}`,
   kind: 'test',
   closureEntries: ['apps/threadnote/src/standalone.ts'],
+  data: applicationTestData,
   dataRoots: [
     'assets',
     'config',
@@ -197,8 +222,23 @@ const longRunningTargets = ciRequiredLongRunningTestGroupNames.map(group => ({
     ...applicationTestDataRoots,
   ],
   env: {THREADNOTE_VITEST_LONG_GROUP: group},
+  npm: packageTestNpm['packages/graph'],
   timeout: 'long',
+  workspace: true,
 }));
+const applicationStandardTests = applicationTests.filter(
+  path => !longRunningTests.has(path) && !postgresTests.has(path),
+);
+const applicationPartitionCount = 8;
+const applicationTestPartitions = Array.from({length: applicationPartitionCount}, () => []);
+for (const path of applicationStandardTests) {
+  let hash = 2166136261;
+  for (const character of path) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  applicationTestPartitions[(hash >>> 0) % applicationPartitionCount].push(path);
+}
 
 const threadnoteBuild = {
   entries: [
@@ -243,6 +283,7 @@ export const targetSpecs = [
     package: '',
     name: 'workspace_check',
     kind: 'test',
+    workspace: true,
     entries: ['tools/workspace/check.ts'],
     dataRoots: ['apps', 'packages', 'scripts', 'tools', 'infra'],
     args: ['tools/workspace/check.ts'],
@@ -448,12 +489,13 @@ export const targetSpecs = [
     args: ['tools/bazel/website-build.ts', '{output}'],
     env: {THREADNOTE_SITE_PREPARED_METADATA: 'apps/website/.bazel-inputs/metadata.json', THREADNOTE_SITE_BASE: '/'},
   },
-  {
+  ...applicationTestPartitions.map((entries, index) => ({
     package: 'apps/threadnote',
-    name: 'test',
+    name: `test_${index + 1}`,
     kind: 'test',
-    entries: applicationTests.filter(path => !longRunningTests.has(path) && !postgresTests.has(path)),
+    entries,
     closureEntries: ['apps/threadnote/src/standalone.ts'],
+    data: applicationTestData,
     dataRoots: [
       'assets',
       'config',
@@ -463,15 +505,23 @@ export const targetSpecs = [
       'training/recall-reranker',
       ...applicationTestDataRoots,
     ],
+    npm: packageTestNpm['packages/graph'],
     timeout: 'long',
-  },
+    workspace: true,
+  })),
   {
     package: 'apps/threadnote',
     name: 'test_postgres',
     kind: 'test',
     entries: [...postgresTests],
     closureEntries: ['apps/threadnote/src/standalone.ts'],
-    dataRoots: ['config', 'deploy/remote-memory', ...applicationTestDataRoots],
+    data: applicationTestData,
+    dataRoots: [
+      'config',
+      'deploy/remote-memory',
+      'packages/remote-memory/src/migrations',
+      ...applicationTestDataRoots,
+    ],
     env: {THREADNOTE_TEST_POSTGRES_URL: 'postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci'},
     requiresNetwork: true,
   },
@@ -497,6 +547,14 @@ export const targetSpecs = [
       'fly.toml',
       'packages/graph/src/disk/capacity.ts',
     ],
+  },
+];
+
+export const testSuites = [
+  {
+    package: 'apps/threadnote',
+    name: 'test',
+    tests: applicationTestPartitions.map((_, index) => `:test_${index + 1}`),
   },
 ];
 

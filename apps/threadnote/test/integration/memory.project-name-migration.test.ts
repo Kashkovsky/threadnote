@@ -257,6 +257,6 @@ async function writeMemory(config: RuntimeConfig, relativePath: string, content:
     'memories',
     ...relativePath.split('/'),
   );
-  await mkdir(join(path, '../../../test'), {recursive: true});
+  await mkdir(join(path, '..'), {recursive: true});
   await writeFile(path, content, 'utf8');
 }

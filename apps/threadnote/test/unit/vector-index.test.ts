@@ -213,7 +213,7 @@ describe('vector index generations', () => {
     const home = await mkdtemp(`threadnote-vector-malformed-v${userVersion}-`);
     const candidates = [{text: '# Alpha\n\nSchema recovery.', uri: 'threadnote://resources/repos/a.md'}];
     try {
-      await mkdir(join(vectorDatabasePath(home), '../../../test'), {recursive: true});
+      await mkdir(join(vectorDatabasePath(home), '..'), {recursive: true});
       const malformed = new Database(vectorDatabasePath(home));
       malformed.exec(`CREATE TABLE vector_values (broken TEXT); PRAGMA user_version = ${userVersion}`);
       malformed.close();
@@ -335,7 +335,7 @@ describe('vector index generations', () => {
       inputs => embeddedBatches.push(inputs.length),
     );
     try {
-      await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+      await mkdir(join(resourcePath, '..'), {recursive: true});
       await writeFile(resourcePath, '# Alpha\n\nSemantic repair content.', 'utf8');
       await runEffect(
         Effect.gen(function* () {
@@ -381,7 +381,7 @@ describe('vector index generations', () => {
       inputs => embeddedBatches.push(inputs.length),
     );
     try {
-      await mkdir(join(resourcePath, '../../../test'), {recursive: true});
+      await mkdir(join(resourcePath, '..'), {recursive: true});
       await writeFile(resourcePath, '# Alpha\n\nRead-only semantic fallback content.', 'utf8');
       await runEffect(
         Effect.gen(function* () {

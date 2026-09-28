@@ -854,7 +854,7 @@ describe('Threadnote MCP toolsets', () => {
           'threadnote',
           'identity-conflict-alias.md',
         );
-        await mkdir(join(sharedPath, '../../../test'), {recursive: true});
+        await mkdir(join(sharedPath, '..'), {recursive: true});
         await writeFile(sharedPath, memory('identity-conflict-alias', 'A divergent body.'), 'utf8');
 
         const result = await client.callTool(
@@ -1532,7 +1532,7 @@ describe('Threadnote MCP toolsets', () => {
           'my-product',
           'legacy-published-pointer.md',
         );
-        await mkdir(join(sharedPath, '../../../test'), {recursive: true});
+        await mkdir(join(sharedPath, '..'), {recursive: true});
         await writeFile(sharedPath, content, 'utf8');
         const result = await client.callTool({arguments: {uri: requestedUri}, name: 'read_context'}, undefined, {
           timeout: 30_000,
@@ -1874,7 +1874,7 @@ describe('Threadnote MCP toolsets', () => {
           'threadnote',
           'shared-legacy-target.md',
         );
-        await mkdir(join(targetPath, '../../../test'), {recursive: true});
+        await mkdir(join(targetPath, '..'), {recursive: true});
         await writeFile(targetPath, canonicalMemoryContent('shared-legacy-target', 'Shared legacy target.'), 'utf8');
 
         const stored = await client.callTool(
@@ -2884,7 +2884,7 @@ describe('Threadnote MCP toolsets', () => {
           checkoutId,
           `${worktreeId}.lock`,
         );
-        await mkdir(join(graphLock, '../../../test'), {recursive: true});
+        await mkdir(join(graphLock, '..'), {recursive: true});
         await writeFile(graphLock, `${process.pid}:cold-build-test\n`, {encoding: 'utf8', mode: 0o600});
 
         const startedAt = Date.now();
@@ -3083,7 +3083,7 @@ describe('Threadnote MCP toolsets', () => {
           checkoutId,
           `${worktreeId}.lock`,
         );
-        await mkdir(join(graphLock, '../../../test'), {recursive: true});
+        await mkdir(join(graphLock, '..'), {recursive: true});
         await writeFile(graphLock, `${process.pid}:stale-ready-test\n`, {encoding: 'utf8', mode: 0o600});
 
         try {
@@ -3573,7 +3573,7 @@ describe('Threadnote MCP toolsets', () => {
           checkoutId,
           `${worktreeId}.lock`,
         );
-        await mkdir(join(graphLock, '../../../test'), {recursive: true});
+        await mkdir(join(graphLock, '..'), {recursive: true});
         await writeFile(graphLock, `${process.pid}:divergent-worktree-test\n`, {encoding: 'utf8', mode: 0o600});
 
         try {
@@ -3649,7 +3649,7 @@ describe('Threadnote MCP toolsets', () => {
           const repository = join(fixture.root, `${repositoryFixture.name}-repository`);
           for (const [relativePath, content] of Object.entries(repositoryFixture.files)) {
             const path = join(repository, relativePath);
-            await mkdir(join(path, '../../../test'), {recursive: true});
+            await mkdir(join(path, '..'), {recursive: true});
             await writeFile(path, content, 'utf8');
           }
           execFileSync('git', ['init', '-q'], {cwd: repository});
@@ -4197,7 +4197,7 @@ describe('Threadnote MCP toolsets', () => {
           'threadnote',
           `${topic}.md`,
         );
-        await mkdir(join(destinationPath, '../../../test'), {recursive: true});
+        await mkdir(join(destinationPath, '..'), {recursive: true});
         await writeFile(
           destinationPath,
           [
@@ -4255,7 +4255,7 @@ describe('Threadnote MCP toolsets', () => {
           {length: 12},
           (_unused, index) => `- Continuity detail ${index} remains required for release recovery.`,
         ).join('\n');
-        await mkdir(join(replacementPath, '../../../test'), {recursive: true});
+        await mkdir(join(replacementPath, '..'), {recursive: true});
         await writeFile(
           replacementPath,
           formatMemoryDocument(
@@ -4394,7 +4394,7 @@ describe('Threadnote MCP toolsets', () => {
           'threadnote',
           `${topic}.md`,
         );
-        await mkdir(join(sharedPath, '../../../test'), {recursive: true});
+        await mkdir(join(sharedPath, '..'), {recursive: true});
         await writeFile(
           sharedPath,
           [
@@ -5054,7 +5054,7 @@ describe('Threadnote MCP toolsets', () => {
           'threadnote',
           `${topic}.md`,
         );
-        await mkdir(join(personalPath, '../../../test'), {recursive: true});
+        await mkdir(join(personalPath, '..'), {recursive: true});
         await writeFile(
           personalPath,
           [
@@ -5085,7 +5085,7 @@ describe('Threadnote MCP toolsets', () => {
           `${topic}.md`,
         );
         const sharedContent = canonicalMemoryContent(topic, 'Reviewed shared notes.');
-        await mkdir(join(sharedPath, '../../../test'), {recursive: true});
+        await mkdir(join(sharedPath, '..'), {recursive: true});
         await writeFile(sharedPath, sharedContent, 'utf8');
 
         const output = await callText(client, 'compact_context', {

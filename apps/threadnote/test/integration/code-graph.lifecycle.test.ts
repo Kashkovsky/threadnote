@@ -82,10 +82,7 @@ import type {DoctorCheck} from '@threadnote/threadnote/types';
 import type {RuntimeConfig} from '@threadnote/workspace/config';
 import {runEffect} from '../helpers/effect-runtime.js';
 
-const FIXTURE_REPOSITORY = join(
-  import.meta.dirname,
-  '../../../apps/threadnote/test/evaluation/fixtures/code-graph-v1/repository',
-);
+const FIXTURE_REPOSITORY = join(import.meta.dirname, '../evaluation/fixtures/code-graph-v1/repository');
 const temporaryRoots: string[] = [];
 
 afterEach(() => {
@@ -4302,7 +4299,7 @@ describe('native code graph lifecycle', () => {
         return codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId).lockPath;
       }),
     );
-    mkdirSync(join(lock, '../../../test'), {recursive: true});
+    mkdirSync(join(lock, '..'), {recursive: true});
     writeFileSync(lock, `${process.pid}:active-code-graph-build\n`, {mode: 0o600});
 
     const summary = await runEffect(
@@ -4336,7 +4333,7 @@ describe('native code graph lifecycle', () => {
         return codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId).lockPath;
       }),
     );
-    mkdirSync(join(lock, '../../../test'), {recursive: true});
+    mkdirSync(join(lock, '..'), {recursive: true});
     writeFileSync(lock, `${process.pid}:active-code-graph-build\n`, {mode: 0o600});
 
     await expect(
@@ -5285,7 +5282,7 @@ describe('native code graph lifecycle', () => {
       });
 
       writerLock = join(home, 'locks', 'indexes', 'code-graph', 'database-writes', `${checkoutId}.lock`);
-      mkdirSync(join(writerLock, '../../../test'), {recursive: true});
+      mkdirSync(join(writerLock, '..'), {recursive: true});
       writeFileSync(writerLock, `${process.pid}:held-beyond-sqlite-busy-timeout\n`, {mode: 0o600});
       writeFileSync(gateA, 'release\n');
       writeFileSync(gateB, 'release\n');

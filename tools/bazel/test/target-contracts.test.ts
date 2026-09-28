@@ -15,6 +15,7 @@ interface TargetInventoryEntry {
 }
 
 const inventory = (await Bun.file('tools/bazel/targets.json').json()) as {
+  readonly testSuites: readonly {readonly name: string; readonly package: string; readonly tests: readonly string[]}[];
   readonly targets: readonly TargetInventoryEntry[];
 };
 const target = (label: string) => {
@@ -44,13 +45,32 @@ describe('generated Bazel test contracts', () => {
       'apps/threadnote/test/integration/remote-memory-runtime-privileges.test.ts',
     ];
     const postgres = target('//apps/threadnote:test_postgres');
-    const standard = target('//apps/threadnote:test');
+    const standardEntries = inventory.targets
+      .filter(candidate => /^\/\/apps\/threadnote:test_\d+$/.test(candidate.label))
+      .flatMap(candidate => candidate.entries);
 
     expect(postgres.entries).toEqual(expected);
     expect(postgres.workspace).toBe(false);
     expect(postgres.requiresNetwork).toBe(true);
     expect(postgres.env.THREADNOTE_TEST_POSTGRES_URL).toContain('127.0.0.1:5432');
-    expect(expected.every(entry => !standard.entries.includes(entry))).toBe(true);
+    expect(postgres.inputs).toContain('packages/remote-memory/src/migrations/001_initial.sql');
+    expect(expected.every(entry => !standardEntries.includes(entry))).toBe(true);
+  });
+
+  it('keeps the application suite contributor-friendly while exposing stable CI partitions', () => {
+    const partitions = inventory.targets.filter(candidate => /^\/\/apps\/threadnote:test_\d+$/.test(candidate.label));
+    const entries = partitions.flatMap(candidate => candidate.entries);
+    const suite = inventory.testSuites.find(candidate => candidate.package === 'apps/threadnote');
+
+    expect(partitions).toHaveLength(8);
+    expect(partitions.every(candidate => candidate.workspace)).toBe(true);
+    expect(partitions.every(candidate => candidate.entries.length > 0)).toBe(true);
+    expect(new Set(entries).size).toBe(entries.length);
+    expect(suite).toEqual({
+      name: 'test',
+      package: 'apps/threadnote',
+      tests: partitions.map(candidate => `:${candidate.label.split(':')[1]}`),
+    });
   });
 
   it('models required long groups while leaving scheduled load evidence to its dedicated workflow', () => {
@@ -61,8 +81,10 @@ describe('generated Bazel test contracts', () => {
 
     expect(generatedGroups).toEqual([...ciRequiredLongRunningTestGroupNames].sort());
     expect(generatedGroups).not.toContain('load-evidence');
-    for (const group of generatedGroups)
+    for (const group of generatedGroups) {
       expect(target(`//apps/threadnote:test_long_${group.replaceAll('-', '_')}`).timeout).toBe('long');
+      expect(target(`//apps/threadnote:test_long_${group.replaceAll('-', '_')}`).workspace).toBe(true);
+    }
   });
 
   it('propagates modeled build and package impacts into platform CI lanes', () => {
@@ -72,7 +94,7 @@ describe('generated Bazel test contracts', () => {
   });
 
   it('keeps application runtime closure out of ordinary package tests', () => {
-    for (const packageName of ['graph', 'memory', 'platform']) {
+    for (const packageName of ['graph', 'manager', 'memory', 'platform']) {
       const ordinary = target(`//packages/${packageName}:test`);
       const runtime = target(`//packages/${packageName}:test_runtime`);
       expect(ordinary.inputs).not.toContain('apps/threadnote/src/standalone.ts');

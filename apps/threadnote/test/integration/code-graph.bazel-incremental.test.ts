@@ -164,7 +164,7 @@ function write(root: string, path: string, value: unknown): void {
 
 function writeFile(root: string, path: string, content: string): void {
   const target = join(root, path);
-  mkdirSync(join(target, '../../../test'), {recursive: true});
+  mkdirSync(join(target, '..'), {recursive: true});
   writeFileSync(target, content);
 }
 

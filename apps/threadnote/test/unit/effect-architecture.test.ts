@@ -4,9 +4,9 @@ import {dirname, join, relative} from '@threadnote/testing/node-path';
 import {fileURLToPath} from '@threadnote/testing/node-url';
 import {describe, expect, it} from 'vitest';
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../test', '../../../test');
-const sourceRoot = join(repoRoot, 'src');
-const codeRoots = ['scripts', 'src', 'test', 'packages', 'apps'].map(path => join(repoRoot, path));
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+const sourceRoot = join(repoRoot, 'apps', 'threadnote', 'src');
+const codeRoots = ['scripts', 'tools', 'infra', 'packages', 'apps'].map(path => join(repoRoot, path));
 
 async function codeFiles(path: string): Promise<readonly string[]> {
   const files: string[] = [];
@@ -205,7 +205,9 @@ describe('Effect architecture boundaries', () => {
       if (!source.includes('effect/unstable/ai')) {
         continue;
       }
-      expect(relative(repoRoot, path)).toMatch(/^(?:src\/effect\/ai|packages\/inference\/src\/engine)\//);
+      expect(relative(repoRoot, path)).toMatch(
+        /^(?:apps\/threadnote\/src\/effect\/ai|packages\/inference\/src\/engine)\//,
+      );
     }
   });
 

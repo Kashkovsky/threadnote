@@ -77,7 +77,7 @@ const sharingLayer = CodeGraphMaintenanceCoordinator.layer.pipe(
   Layer.provideMerge(BunHttpClient.layer),
 );
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../test', '../../../test');
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const REPOSITORY_ID = 'b'.repeat(64);
 const CHECKOUT_ID = 'c'.repeat(64);
 const CHECKPOINT_BYTES = new TextEncoder().encode('not-a-checkpoint');

@@ -273,7 +273,7 @@ describe('share sync git handling', () => {
     const dirtyContent =
       'MEMORY\nkind: durable\nstatus: active\nproject: threadnote\ntopic: publish-conflict\n\nDirty teammate edit.\n';
     await writeCanonicalResource(home, sourceUri, sourceContent);
-    await mkdir(join(worktree, relativePath, '../../../test'), {recursive: true});
+    await mkdir(dirname(join(worktree, relativePath)), {recursive: true});
     await writeFile(join(worktree, relativePath), trackedContent, 'utf8');
     await git(['add', relativePath], worktree);
     await git(['commit', '-m', 'add tracked conflict target'], worktree);

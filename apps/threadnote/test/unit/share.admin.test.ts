@@ -353,7 +353,7 @@ describe('share administration', () => {
       'threadnote',
       'manager.md',
     );
-    await mkdir(join(personalPath, '../../../test'), {recursive: true});
+    await mkdir(join(personalPath, '..'), {recursive: true});
     await writeFile(personalPath, 'MEMORY\nkind: durable\nstatus: active\nvisibility: personal\n\nNewer body\n');
 
     await expect(runShareRemove(config, {dryRun: true, preserveLocal: true, team: 'default'})).rejects.toThrow(

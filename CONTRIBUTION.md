@@ -92,7 +92,7 @@ that was already on this development line is not misclassified as new during the
 
 ### Bazel CI selection
 
-Pull-request CI computes the affected Bazel graph from the complete base/head diff. Colocated package tests are selected through their source closures, so `apps/website` changes do not run `packages/graph` tests. Shared dependency changes select all dependent checks. Missing baselines, unrecognized inputs, or failed graph analysis select the complete inventory.
+Pull-request CI computes the affected Bazel graph from the complete base/head diff. Colocated package tests are selected through their source closures, so `apps/website` changes do not run `packages/graph` tests. Shared dependency changes select all dependent checks. The Threadnote application suite has eight stable CI targets for balanced fanout; `//apps/threadnote:test` expands to all eight when a contributor explicitly runs the aggregate. Missing baselines, unrecognized inputs, or failed graph analysis select the complete inventory.
 
 The same inventory selects Actionlint, recall quality, Windows smoke, and release matrices. `tools/ci/bazel-select.mjs` writes the selection artifact and `tools/ci/bazel-run-selected.mjs` executes the Bun, Vitest, build, and native Go targets. Selection determinism, monotonicity, file additions, deletions, renames, and dependency-edge changes are covered by focused property and real Bazel tests.
 
