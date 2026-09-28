@@ -3,13 +3,19 @@ import {existsSync, readFileSync, readdirSync, statSync, writeFileSync} from 'no
 import {execFileSync} from 'node:child_process';
 import {join, resolve} from 'node:path';
 import {bazelSourceLabel, packageExportPatterns, packageOwner} from './declaration-paths.mjs';
-import {collectSourceClosure} from './source-closure.mjs';
+import {allowedRepositoryPath, sourceRepositoryPathCandidates} from './repository-inputs.mjs';
+import {collectSourceClosure, sourceImports} from './source-closure.mjs';
 import {staticTargets, targetSpecs, testSuites, virtualModules} from './target-specs.mjs';
 
 const root = resolve(import.meta.dir, '../..');
 const check = process.argv.includes('--check');
-const read = path => readFileSync(join(root, path), 'utf8');
+const readCache = new Map();
+const read = path => {
+  if (!readCache.has(path)) readCache.set(path, readFileSync(join(root, path), 'utf8'));
+  return readCache.get(path);
+};
 const exists = path => existsSync(join(root, path)) && statSync(join(root, path)).isFile();
+const isDirectory = path => existsSync(join(root, path)) && statSync(join(root, path)).isDirectory();
 const repositoryFiles = new Set(
   execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
     cwd: root,
@@ -63,6 +69,61 @@ const suites = new Map();
 const inventory = [];
 const stringList = (values, indent = '') =>
   '[\n' + values.map(value => `${indent}    ${JSON.stringify(value)},`).join('\n') + `\n${indent}]`;
+const sourceExtensions = /\.(?:[cm]?[jt]sx?)$/u;
+const sourceImportCache = new Map();
+const imports = (path, content) => {
+  if (!sourceImportCache.has(path)) sourceImportCache.set(path, sourceImports(path, content));
+  return sourceImportCache.get(path);
+};
+const repositoryPathCandidateCache = new Map();
+const repositoryPathCandidates = path => {
+  if (!repositoryPathCandidateCache.has(path))
+    repositoryPathCandidateCache.set(path, sourceRepositoryPathCandidates(path, read(path)));
+  return repositoryPathCandidateCache.get(path);
+};
+const referencedFile = path => {
+  const candidates = [path];
+  if (/\.[cm]?jsx?$/u.test(path))
+    candidates.push(path.replace(/\.[cm]?jsx?$/u, '.ts'), path.replace(/\.jsx?$/u, '.tsx'));
+  return candidates.find(candidate => repositoryFiles.has(candidate) && exists(candidate));
+};
+const collectTargetClosure = (target, config, directoryFiles) => {
+  const entries = [...target.entries, ...(target.closureEntries ?? []), ...config, ...directoryFiles];
+  const discoveryEntries = new Set(target.entries);
+  const discoveredSources = new Set();
+  const discoveredData = new Set();
+  const scanned = new Set();
+  let closure;
+  while (true) {
+    closure = collectSourceClosure([...entries, ...discoveredSources], {
+      read,
+      exists,
+      workspaces,
+      virtualModules,
+      imports,
+    });
+    const closureFiles = new Set(closure.files);
+    let expanded = false;
+    for (const path of closure.files) {
+      const testSupport = path.includes('/test/') || path.startsWith('packages/testing/');
+      if (!sourceExtensions.test(path) || scanned.has(path) || (!discoveryEntries.has(path) && !testSupport)) continue;
+      scanned.add(path);
+      for (const candidate of repositoryPathCandidates(path)) {
+        if (!allowedRepositoryPath(candidate, target.referencedInputRoots ?? [])) continue;
+        const source = referencedFile(candidate);
+        if (source) {
+          if (sourceExtensions.test(source) && !closureFiles.has(source) && !discoveredSources.has(source)) {
+            discoveredSources.add(source);
+            expanded = true;
+          } else if (!sourceExtensions.test(source)) discoveredData.add(source);
+          continue;
+        }
+        if (isDirectory(candidate)) for (const file of filesBelow(candidate)) discoveredData.add(file);
+      }
+    }
+    if (!expanded) return {closure, discoveredData: [...discoveredData]};
+  }
+};
 for (const workspace of workspaces.values()) exports.set(workspace.path, new Set(['package.json']));
 for (const target of targetSpecs) {
   const config = target.kind === 'test' ? ['package.json', 'tools/bazel/project-vitest.config.ts'] : [];
@@ -71,18 +132,15 @@ for (const target of targetSpecs) {
   if (missingData.length > 0)
     throw new Error(`${target.package || '//'}:${target.name} declares missing data: ${missingData.join(', ')}`);
   const directoryFiles = (target.sourceRoots ?? []).flatMap(filesBelow).filter(included);
-  const closure = collectSourceClosure(
-    [...target.entries, ...(target.closureEntries ?? []), ...config, ...directoryFiles],
-    {
-      read,
-      exists,
-      workspaces,
-      virtualModules,
-    },
-  );
+  const {closure, discoveredData} = collectTargetClosure(target, config, directoryFiles);
   const files = [
     ...new Set(
-      [...closure.files, ...(target.data ?? []), ...(target.dataRoots ?? []).flatMap(filesBelow)].filter(included),
+      [
+        ...closure.files,
+        ...discoveredData,
+        ...(target.data ?? []),
+        ...(target.dataRoots ?? []).flatMap(filesBelow),
+      ].filter(included),
     ),
   ].sort();
   for (const file of files) {

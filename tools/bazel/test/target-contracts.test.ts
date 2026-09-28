@@ -19,9 +19,17 @@ const inventory = (await Bun.file('tools/bazel/targets.json').json()) as {
   readonly testSuites: readonly {readonly name: string; readonly package: string; readonly tests: readonly string[]}[];
   readonly targets: readonly TargetInventoryEntry[];
 };
+const rootManifest = (await Bun.file('package.json').json()) as {readonly version: string};
 const target = (label: string) => {
   const found = inventory.targets.find(candidate => candidate.label === label);
   if (!found) throw new Error(`Missing generated target ${label}`);
+  return found;
+};
+const applicationTargets = () =>
+  inventory.targets.filter(candidate => candidate.label.startsWith('//apps/threadnote:test_standard_'));
+const applicationTargetForEntry = (entry: string) => {
+  const found = applicationTargets().find(candidate => candidate.entries.includes(entry));
+  if (!found) throw new Error(`Missing generated application target for ${entry}`);
   return found;
 };
 
@@ -52,9 +60,7 @@ describe('generated Bazel test contracts', () => {
       'apps/threadnote/test/integration/remote-memory-runtime-privileges.test.ts',
     ];
     const postgres = target('//apps/threadnote:test_postgres');
-    const standardEntries = inventory.targets
-      .filter(candidate => /^\/\/apps\/threadnote:test_\d+$/.test(candidate.label))
-      .flatMap(candidate => candidate.entries);
+    const standardEntries = applicationTargets().flatMap(candidate => candidate.entries);
 
     expect(postgres.entries).toEqual(expected);
     expect(postgres.workspace).toBe(false);
@@ -64,20 +70,79 @@ describe('generated Bazel test contracts', () => {
     expect(expected.every(entry => !standardEntries.includes(entry))).toBe(true);
   });
 
-  it('keeps the application suite contributor-friendly while exposing stable CI partitions', () => {
-    const partitions = inventory.targets.filter(candidate => /^\/\/apps\/threadnote:test_\d+$/.test(candidate.label));
-    const entries = partitions.flatMap(candidate => candidate.entries);
+  it('keeps the application suite contributor-friendly while generating bounded feature targets', () => {
+    const targets = applicationTargets();
+    const entries = targets.flatMap(candidate => candidate.entries);
     const suite = inventory.testSuites.find(candidate => candidate.package === 'apps/threadnote');
 
-    expect(partitions).toHaveLength(8);
-    expect(partitions.every(candidate => candidate.workspace)).toBe(true);
-    expect(partitions.every(candidate => candidate.entries.length > 0)).toBe(true);
+    expect(targets.length).toBeGreaterThan(8);
+    expect(targets.length).toBeLessThan(40);
+    expect(targets.every(candidate => candidate.workspace)).toBe(true);
+    expect(targets.every(candidate => candidate.entries.length > 0 && candidate.entries.length <= 40)).toBe(true);
     expect(new Set(entries).size).toBe(entries.length);
     expect(suite).toEqual({
       name: 'test',
       package: 'apps/threadnote',
-      tests: partitions.map(candidate => `:${candidate.label.split(':')[1]}`),
+      tests: targets.map(candidate => `:${candidate.label.split(':')[1]}`),
     });
+  });
+
+  it('infers runtime and repository inputs without coupling every application target to them', () => {
+    const runtime = applicationTargetForEntry('apps/threadnote/test/unit/command-shim.test.ts');
+    const runtimeOwners = applicationTargets().filter(candidate =>
+      candidate.inputs.includes('apps/threadnote/src/standalone.ts'),
+    );
+    const graphFeatureOwners = applicationTargets().filter(candidate =>
+      candidate.inputs.includes('packages/graph/src/git/worktree/registration_worker.ts'),
+    );
+
+    expect(runtime.inputs).toContain('apps/threadnote/src/standalone.ts');
+    expect(runtimeOwners.length).toBeLessThan(applicationTargets().length);
+    expect(graphFeatureOwners.length).toBeGreaterThan(0);
+    expect(graphFeatureOwners.length).toBeLessThan(applicationTargets().length);
+  });
+
+  it.each([
+    ['apps/threadnote/test/unit/publish-workflow.test.ts', `.github/release-notes/v${rootManifest.version}.md`],
+    ['apps/threadnote/test/unit/update.test.ts', 'assets/code-graph/runtime/web-tree-sitter.wasm'],
+    ['apps/threadnote/test/unit/update.test.ts', 'cursor-plugin/README.md'],
+  ])('selects the owning generated target when the dynamic input %s reads changes', (entry, changedFile) => {
+    const owner = applicationTargetForEntry(entry);
+    const result = selectTargets({
+      inventory: inventory.targets.map(candidate => candidate.label),
+      impacted: [],
+      changedFiles: [changedFile],
+      knownInputs: inventory.targets.flatMap(candidate => candidate.inputs),
+      targetDependencies: Object.fromEntries(
+        inventory.targets.map(candidate => [candidate.label, candidate.dependsOn ?? []]),
+      ),
+      targetInputs: Object.fromEntries(inventory.targets.map(candidate => [candidate.label, candidate.inputs])),
+    });
+
+    expect(owner.inputs).toContain(changedFile);
+    expect(result.mode).toBe('selective');
+    expect(result.targets).toContain(owner.label);
+  });
+
+  it('does not select telemetry or graph suites for a website source change', () => {
+    const changedFile = 'apps/website/src/main.tsx';
+    const result = selectTargets({
+      inventory: inventory.targets.map(candidate => candidate.label),
+      impacted: [],
+      changedFiles: [changedFile],
+      knownInputs: inventory.targets.flatMap(candidate => candidate.inputs),
+      targetDependencies: Object.fromEntries(
+        inventory.targets.map(candidate => [candidate.label, candidate.dependsOn ?? []]),
+      ),
+      targetInputs: Object.fromEntries(inventory.targets.map(candidate => [candidate.label, candidate.inputs])),
+    });
+    const selectedEntries = inventory.targets
+      .filter(candidate => result.targets.includes(candidate.label))
+      .flatMap(candidate => candidate.entries);
+
+    expect(result.mode).toBe('selective');
+    expect(result.targets).not.toContain('//packages/graph:test');
+    expect(selectedEntries).not.toContain('apps/threadnote/test/integration/code-graph.telemetry.test.ts');
   });
 
   it('models required long groups while leaving scheduled load evidence to its dedicated workflow', () => {

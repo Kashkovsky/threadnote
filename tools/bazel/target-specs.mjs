@@ -2,6 +2,7 @@
 import {existsSync, readFileSync, readdirSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {ciLongRunningTestGroups, ciRequiredLongRunningTestGroupNames} from '../ci/vitest-plan.ts';
+import {groupApplicationTests} from './application-test-groups.mjs';
 
 const root = resolve(import.meta.dir, '../..');
 const filesBelow = directory => {
@@ -99,16 +100,20 @@ const packageTestNpm = {
     'web-tree-sitter',
   ],
 };
-const applicationTestDataRoots = [
+const applicationReferencedInputRoots = [
   '.cursor-plugin',
   '.github',
   '.husky',
-  'apps/threadnote/test/evaluation',
-  'apps/threadnote/test/fixtures',
-  'apps/threadnote/test/helpers',
+  'apps',
+  'assets',
+  'config',
+  'cursor-plugin',
+  'deploy',
+  'docs',
+  'packages',
   'scripts',
-];
-const applicationTestData = [
+  'tools',
+  'training',
   '.dockerignore',
   '.gitignore',
   '.oxlintrc.json',
@@ -121,12 +126,8 @@ const applicationTestData = [
   'LICENSE',
   'README.md',
   'THIRD_PARTY.md',
-  'bun.lock',
-  'package.json',
-  'tsconfig.json',
-  'tsconfig.test.json',
-  'vitest.config.ts',
 ];
+const applicationTestData = ['bun.lock', 'package.json', 'tsconfig.json', 'tsconfig.test.json', 'vitest.config.ts'];
 const packageTestClosureEntries = {
   'packages/graph': [
     'apps/threadnote/test/fixtures/code-graph-lazy-extractor.ts',
@@ -220,17 +221,8 @@ const longRunningTargets = ciRequiredLongRunningTestGroupNames.map(group => ({
   package: 'apps/threadnote',
   name: `test_long_${group.replaceAll('-', '_')}`,
   kind: 'test',
-  closureEntries: ['apps/threadnote/src/standalone.ts'],
   data: applicationTestData,
-  dataRoots: [
-    'assets',
-    'config',
-    'cursor-plugin',
-    'deploy',
-    'docs',
-    'training/recall-reranker',
-    ...applicationTestDataRoots,
-  ],
+  referencedInputRoots: applicationReferencedInputRoots,
   env: {THREADNOTE_VITEST_LONG_GROUP: group},
   npm: packageTestNpm['packages/graph'],
   timeout: 'long',
@@ -239,16 +231,7 @@ const longRunningTargets = ciRequiredLongRunningTestGroupNames.map(group => ({
 const applicationStandardTests = applicationTests.filter(
   path => !longRunningTests.has(path) && !postgresTests.has(path),
 );
-const applicationPartitionCount = 8;
-const applicationTestPartitions = Array.from({length: applicationPartitionCount}, () => []);
-for (const path of applicationStandardTests) {
-  let hash = 2166136261;
-  for (const character of path) {
-    hash ^= character.codePointAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  applicationTestPartitions[(hash >>> 0) % applicationPartitionCount].push(path);
-}
+const applicationTestGroups = groupApplicationTests(applicationStandardTests);
 
 const threadnoteBuild = {
   entries: [
@@ -516,22 +499,13 @@ export const targetSpecs = [
     args: ['tools/bazel/website-build.ts', '{output}'],
     env: {THREADNOTE_SITE_PREPARED_METADATA: 'apps/website/.bazel-inputs/metadata.json', THREADNOTE_SITE_BASE: '/'},
   },
-  ...applicationTestPartitions.map((entries, index) => ({
+  ...applicationTestGroups.map(({entries, name}) => ({
     package: 'apps/threadnote',
-    name: `test_${index + 1}`,
+    name,
     kind: 'test',
     entries,
-    closureEntries: ['apps/threadnote/src/standalone.ts'],
     data: applicationTestData,
-    dataRoots: [
-      'assets',
-      'config',
-      'cursor-plugin',
-      'deploy',
-      'docs',
-      'training/recall-reranker',
-      ...applicationTestDataRoots,
-    ],
+    referencedInputRoots: applicationReferencedInputRoots,
     npm: packageTestNpm['packages/graph'],
     timeout: 'long',
     workspace: true,
@@ -541,9 +515,9 @@ export const targetSpecs = [
     name: 'test_postgres',
     kind: 'test',
     entries: [...postgresTests],
-    closureEntries: ['apps/threadnote/src/standalone.ts'],
     data: applicationTestData,
-    dataRoots: ['config', 'deploy/remote-memory', 'packages/remote-memory/src/migrations', ...applicationTestDataRoots],
+    dataRoots: ['packages/remote-memory/src/migrations'],
+    referencedInputRoots: applicationReferencedInputRoots,
     env: {THREADNOTE_TEST_POSTGRES_URL: 'postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci'},
     requiresNetwork: true,
   },
@@ -576,7 +550,7 @@ export const testSuites = [
   {
     package: 'apps/threadnote',
     name: 'test',
-    tests: applicationTestPartitions.map((_, index) => `:test_${index + 1}`),
+    tests: applicationTestGroups.map(({name}) => `:${name}`),
   },
 ];
 
