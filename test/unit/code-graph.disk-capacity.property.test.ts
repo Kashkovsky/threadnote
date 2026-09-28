@@ -70,13 +70,14 @@ describe('code graph disk capacity properties', () => {
   });
 
   it('uses sidecar sort demand for a large-repository-shaped capacity boundary', () => {
-    const rawSurfaceBytes = 15 * 1024 ** 3;
-    const availableBytes = 50_206_851_072;
+    const gib = 1024 ** 3;
+    const rawSurfaceBytes = 15 * gib;
+    const availableBytes = 47 * gib;
     const demand = codeGraphPersistentCapacityDemand({
       boundary: {
         finalFactBytes: rawSurfaceBytes,
         operation: 'sort persistent code graph materialization spool',
-        rowCount: 27_747_990,
+        rowCount: 28_000_000,
       },
       lexicalFormatVersion: 1,
       pageSize: 8192,
