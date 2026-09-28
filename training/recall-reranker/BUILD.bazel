@@ -1,0 +1,17 @@
+load("//tools/bazel:package_files.bzl", "export_package_files")
+
+package(default_visibility = ["//visibility:public"])
+
+export_package_files(["**"])
+
+filegroup(
+    name = "toolchain",
+    srcs = glob(
+        ["**"],
+        exclude = [
+            "BUILD",
+            "BUILD.bazel",
+            ".venv/**",
+        ],
+    ),
+)

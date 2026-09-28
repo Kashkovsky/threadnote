@@ -1,16 +1,18 @@
+import {ScriptCommandExecutorLayer} from './effect/system-layer.js';
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Clock, Console, DateTime, Effect, FileSystem, Layer, Path} from 'effect';
-import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
-import {sha256HexSync} from '../src/crypto/sha256.js';
-import {runtimeHostHardwareInfo, runtimeOperatingSystemRelease, SystemInfo} from '../src/effect/system.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {runtimeHostHardwareInfo, runtimeOperatingSystemRelease, SystemInfo} from '@threadnote/platform/system';
 
 const DEFAULT_CANDIDATE_REF = 'v4.0.1';
 const DEFAULT_SAMPLES = 5;
 const DEFAULT_WARMUPS = 1;
 const FIXTURE_QUERY = 'compareVersions';
-const FIXTURE_QUERY_PATH = 'src/release/version/compare.ts';
+const FIXTURE_QUERY_PATH = 'apps/threadnote/src/release/version/compare.ts';
 const INDEX_TIMEOUT_MILLISECONDS = 15 * 60 * 1_000;
 const MAX_COMMAND_OUTPUT_BYTES = 128 * 1_024 * 1_024;
 const PARSER_WORKERS = 4;
@@ -394,7 +396,7 @@ const runThreadnote = Effect.fn('worktreeReadiness.runThreadnote')(function* (
   const system = yield* SystemInfo;
   const result = yield* runCommandEffect(
     system.executablePath,
-    [path.join(runtime.root, 'src/standalone.ts'), ...arguments_],
+    [path.join(runtime.root, 'apps/threadnote/src/standalone.ts'), ...arguments_],
     {
       cwd: runtime.root,
       env: {
@@ -647,8 +649,8 @@ function progress(message: string): Effect.Effect<void> {
   return Console.error(`[worktree-readiness] ${message}`);
 }
 
-const systemLayer = SystemInfo.layer;
-const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const systemLayer = ScriptSystemInfoLayer;
+const commandLayer = ScriptCommandExecutorLayer.pipe(Layer.provide(systemLayer));
 const WorktreeBenchmarkLayer = Layer.merge(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 
 if (import.meta.main) BunRuntime.runMain(provideScriptLayer(benchmarkWorktreeReadiness, WorktreeBenchmarkLayer));

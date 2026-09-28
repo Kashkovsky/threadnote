@@ -11,8 +11,8 @@ on:
       - 'infra/telemetry-dashboard/**'
       - 'infra/telemetry-gateway/threadnote-anonymous-telemetry-dashboard.json'
       - 'scripts/telemetry-dashboard.ts'
-      - 'test/unit/telemetry-dashboard-provisioning.test.ts'
-      - 'test/unit/telemetry-gateway-dashboard.test.ts'
+      - 'infra/telemetry-gateway/test/telemetry-dashboard-provisioning.test.ts'
+      - 'infra/telemetry-gateway/test/telemetry-gateway-dashboard.test.ts'
   pull_request:
     branches: [main]
     paths:
@@ -20,8 +20,8 @@ on:
       - 'infra/telemetry-dashboard/**'
       - 'infra/telemetry-gateway/threadnote-anonymous-telemetry-dashboard.json'
       - 'scripts/telemetry-dashboard.ts'
-      - 'test/unit/telemetry-dashboard-provisioning.test.ts'
-      - 'test/unit/telemetry-gateway-dashboard.test.ts'
+      - 'infra/telemetry-gateway/test/telemetry-dashboard-provisioning.test.ts'
+      - 'infra/telemetry-gateway/test/telemetry-gateway-dashboard.test.ts'
 
 permissions:
   contents: read
@@ -52,8 +52,8 @@ jobs:
       - name: Validate dashboard privacy, drift, query, rendering, and workflow contracts
         run: >-
           bun --bun vitest run
-          test/unit/telemetry-gateway-dashboard.test.ts
-          test/unit/telemetry-dashboard-provisioning.test.ts
+          infra/telemetry-gateway/test/telemetry-gateway-dashboard.test.ts
+          infra/telemetry-gateway/test/telemetry-dashboard-provisioning.test.ts
 
       - name: Report intentionally disabled live reconciliation
         if: >-

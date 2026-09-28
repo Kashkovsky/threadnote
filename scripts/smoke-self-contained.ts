@@ -1,12 +1,14 @@
+import {ScriptCommandExecutorLayer} from './effect/system-layer.js';
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {Console, Effect, FileSystem, Layer, Option, Path} from 'effect';
-import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {recallIndexDatabaseFilename} from '../src/recall/index.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {SystemInfo} from '@threadnote/platform/system';
+import {recallIndexDatabaseFilename} from '@threadnote/recall/index';
 
 const ROOT_URL = new URL('..', import.meta.url);
 const COMMAND_TIMEOUT_MILLISECONDS = 300_000;
@@ -108,7 +110,7 @@ const smokeSelfContained = Effect.scoped(
       `${storedMemory.trimEnd()}\n\n${LARGE_OUTPUT_START}\n${'x'.repeat(96 * 1024)}\n${LARGE_OUTPUT_END}\n`,
     );
     const largeRead = yield* readLargeOutputThroughPlatformPipe({
-      consumer: path.join(root, 'test', 'fixtures', 'cli-output-consumer.ts'),
+      consumer: path.join(root, 'apps', 'threadnote', 'test', 'fixtures', 'cli-output-consumer.ts'),
       cwd: invocationDirectory,
       environment,
       executable,
@@ -340,8 +342,8 @@ const verifyMcp = Effect.fn('smokeSelfContained.verifyMcp')(function* (
   );
 });
 
-const systemLayer = SystemInfo.layer;
-const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const systemLayer = ScriptSystemInfoLayer;
+const commandLayer = ScriptCommandExecutorLayer.pipe(Layer.provide(systemLayer));
 const smokeLayer = Layer.merge(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 
 BunRuntime.runMain(provideScriptLayer(smokeSelfContained, smokeLayer));

@@ -2,35 +2,35 @@ import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
 import {Clock, DateTime, Deferred, Effect, Exit, FileSystem, Option, Path, PlatformError, Schema} from 'effect';
-import {succeedUndefined} from '../src/effect/optional.js';
-import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
-import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
-import {CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM} from '../src/code_graph/materialized_shard_cache_admission.js';
+import {succeedUndefined} from '@threadnote/platform/optional';
+import {readCodeGraphBuildStatuses} from '@threadnote/graph/build_status';
+import {CodeGraphIndexer} from '@threadnote/graph/indexer';
+import {CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM} from '@threadnote/graph/materialized_shard_cache_admission';
 import {
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphSymbolPathScoreMultiplier,
   CodeGraphStore,
   type CodeGraphSqliteWriterSettings,
   type CodeGraphSqliteWriterTuning,
-} from '../src/code_graph/store.js';
-import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
-import {codeGraphAnalysisLimitsForView} from '../src/code_graph/analysis/render.js';
-import {codeGraphLayout} from '../src/code_graph/layout.js';
-import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
+} from '@threadnote/graph/store';
+import {CodeGraphAnalysis} from '@threadnote/graph/analysis';
+import {codeGraphAnalysisLimitsForView} from '@threadnote/graph/analysis/render';
+import {codeGraphLayout} from '@threadnote/graph/layout';
+import {parserWorkerCapacity} from '@threadnote/graph/parser_worker';
 import {
   CodeGraphQueryService,
   observationFromCodeGraphStatus,
   type CodeGraphInspectOptions,
   type CodeGraphStatusOptions,
-} from '../src/code_graph/query.js';
-import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
+} from '@threadnote/graph/query';
+import {resolveRepositoryIdentity} from '@threadnote/graph/repository';
 import type {
   CodeGraphActivationActivity,
   CodeGraphMaterializationSubphaseMilliseconds,
   CodeGraphProgress,
   CodeGraphQueryResult,
   CodeGraphStatus,
-} from '../src/code_graph/types.js';
+} from '@threadnote/graph/types';
 import {
   managerGraphCatalog,
   ManagerGraphBusyError,
@@ -38,31 +38,38 @@ import {
   managerGraphNodeDetail,
   managerGraphQuery,
   managerGraphVisualization,
-} from '../src/code_graph/visualization.js';
-import {runCommandEffect} from '../src/effect/command.js';
-import {sha256FileHex} from '../src/effect/digest.js';
-import {ApplicationLayer, type ApplicationServices} from '../src/effect/runtime.js';
-import {THREADNOTE_EMBEDDING_CONTEXTS_ENV, type EmbeddingContextPoolSize} from '../src/effect/ai/node-llama-cpp.js';
-import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
-import {processResourceUsageMaxRssBytes, SystemInfo, type ProcessResourceUsageRuntime} from '../src/effect/system.js';
-import {CORE_EMBEDDING_MODEL_ID} from '../src/models/builtin.js';
-import {LocalModelCatalog} from '../src/models/catalog.js';
-import {selectLocalModel} from '../src/models/selection.js';
-import {LocalModelStore} from '../src/models/store.js';
-import {codeGraphInspectionObservesWorktree, codeGraphMcpResponse} from '../src/mcp/server/index.js';
+} from '@threadnote/graph/visualization';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {sha256FileHex} from '@threadnote/platform/digest';
+import {ApplicationLayer, type ApplicationServices} from '@threadnote/threadnote/effect/runtime';
+import {
+  THREADNOTE_EMBEDDING_CONTEXTS_ENV,
+  type EmbeddingContextPoolSize,
+} from '@threadnote/inference/engine/node-llama-cpp';
+import {LocalModelRuntime} from '@threadnote/inference/engine/local-model-runtime';
+import {
+  processResourceUsageMaxRssBytes,
+  SystemInfo,
+  type ProcessResourceUsageRuntime,
+} from '@threadnote/platform/system';
+import {CORE_EMBEDDING_MODEL_ID} from '@threadnote/inference/models/builtin';
+import {LocalModelCatalog} from '@threadnote/inference/models/catalog';
+import {selectLocalModel} from '@threadnote/inference/models/selection';
+import {LocalModelStore} from '@threadnote/inference/models/store';
+import {codeGraphInspectionObservesWorktree, codeGraphMcpResponse} from '@threadnote/threadnote/mcp/server/index';
 import {
   createGraphQueryRequestGate,
   managerGraphClientRenderProxy,
   type GraphQueryVisualization,
   type GraphVisualization,
-} from '../src/manager/graph.js';
-import {MANAGER_GRAPH_MAX_EDGE_LIMIT, MANAGER_GRAPH_MAX_NODE_LIMIT} from '../src/manager/graph/limits.js';
+} from '@threadnote/manager/graph';
+import {MANAGER_GRAPH_MAX_EDGE_LIMIT, MANAGER_GRAPH_MAX_NODE_LIMIT} from '@threadnote/graph/visualization/limits';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   benchmarkMeasurement,
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
-} from '../src/evaluation/benchmark.js';
+} from '@threadnote/evidence/benchmark';
 import {
   EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS,
   INVENTORY_TIMING_REQUIRED_MEASUREMENTS,
@@ -73,9 +80,12 @@ import {
   releaseEvidenceVersionForRef,
   validateExternalRepositoryEvidence,
   type ExternalRepositoryPublicVerification,
-} from '../src/evaluation/external_evidence.js';
-import {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '../src/evaluation/public_controls.js';
-import {codeGraphEvaluationFixtureHash, parseCodeGraphEvaluationFixtureV1} from '../src/evaluation/code-graph.js';
+} from '@threadnote/evidence/external-evidence';
+import {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '@threadnote/evidence/public-controls';
+import {
+  codeGraphEvaluationFixtureHash,
+  parseCodeGraphEvaluationFixtureV1,
+} from '@threadnote/threadnote/evaluation/code-graph';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {
   GENERATED_VECTOR_CONTROL_PATH,
@@ -636,7 +646,7 @@ const benchmarkCodeGraph = Effect.scoped(
           )
         : undefined;
     const fixturePath = yield* path.fromFileUrl(
-      new URL(`../test/evaluation/fixtures/${options.fixture}/fixture.json`, import.meta.url),
+      new URL(`../apps/threadnote/test/evaluation/fixtures/${options.fixture}/fixture.json`, import.meta.url),
     );
     const fixture = parseCodeGraphEvaluationFixtureV1(yield* readJsonFile(fixturePath));
     const bootstrapRoot =
@@ -1884,7 +1894,7 @@ const benchmarkCodeGraph = Effect.scoped(
     let budgetFailure: ScriptError | undefined;
     if (options.failOnBudget) {
       const budgetPath = yield* path.fromFileUrl(
-        new URL(`../test/evaluation/baselines/${options.fixture}/budgets.json`, import.meta.url),
+        new URL(`../apps/threadnote/test/evaluation/baselines/${options.fixture}/budgets.json`, import.meta.url),
       );
       const budget = yield* readJsonFile(budgetPath);
       budgetFailure = yield* Effect.try({
@@ -5460,6 +5470,25 @@ export function resolvedReleaseEvidenceSource(
   };
 }
 
+export const releaseEvidenceSourcePathspecs = [
+  'src',
+  'scripts',
+  'manager',
+  'config',
+  'assets',
+  'apps/threadnote/src',
+  'apps/threadnote/package.json',
+  'apps/threadnote/embedded',
+  'apps/website/tools/site-performance-evidence.ts',
+  ':(glob)packages/*/src/**',
+  ':(glob)packages/*/package.json',
+  ':(glob)packages/*/assets/**',
+  ':(glob)packages/*/static/**',
+  'package.json',
+  'bun.lock',
+  'tsconfig.json',
+] as const;
+
 const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateReleaseEvidenceSource')(function* (
   sourceRoot: string,
   ref: string | undefined,
@@ -5497,14 +5526,7 @@ const validateReleaseEvidenceSource = Effect.fn('benchmarkCodeGraph.validateRele
               '--diff-filter=ACDMRTUXB',
               `${sha}..${commit}`,
               '--',
-              'src',
-              'scripts',
-              'manager',
-              'config',
-              'assets',
-              'package.json',
-              'bun.lock',
-              'tsconfig.json',
+              ...releaseEvidenceSourcePathspecs,
             ]),
           ],
           {concurrency: 2},
@@ -5944,7 +5966,7 @@ export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepo
   return {name, url: `https://github.com/${name}`};
 }
 
-export {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '../src/evaluation/public_controls.js';
+export {privacySafeExternalControlPath, privacySafeExternalControlQuery} from '@threadnote/evidence/public-controls';
 
 export function credentialsDisabledGitProofEnvironment(
   environment: Readonly<Record<string, string | undefined>>,

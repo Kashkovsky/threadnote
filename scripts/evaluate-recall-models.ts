@@ -1,31 +1,31 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {DateTime, Effect, FileSystem, Path} from 'effect';
-import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
-import {sha256FileHex} from '../src/effect/digest.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {LocalModelRuntime} from '@threadnote/inference/engine/local-model-runtime';
+import {sha256FileHex} from '@threadnote/platform/digest';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   baselineResult,
   CURRENT_RECALL_BASELINE_PATH,
   parseRecallEvaluationBaselineV1,
-} from '../src/evaluation/recall-baseline.js';
+} from '@threadnote/threadnote/evaluation/recall-baseline';
 import {
   createRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
-} from '../src/evaluation/recall-fixture.js';
-import {evaluateRecallNonInferiority} from '../src/evaluation/recall-gate.js';
+} from '@threadnote/threadnote/evaluation/recall-fixture';
+import {evaluateRecallNonInferiority} from '@threadnote/threadnote/evaluation/recall-gate';
 import {
   evaluateRecallRunV2,
   runScoredRecallEvaluationV2,
   type RecallEvaluationQueryScores,
-} from '../src/evaluation/recall.js';
-import {BUILTIN_MODEL_MANIFESTS} from '../src/models/builtin.js';
-import {parseLocalModelManifest, type LocalModelManifest} from '../src/models/catalog.js';
-import {LocalModelStore} from '../src/models/store.js';
-import {deriveRecallEligibilityPolicy} from '../src/recall/eligibility.js';
-import {rankRecallCandidates} from '../src/recall/rank.js';
-import {normalizeRecallRerankerScore} from '../src/recall/reranker-score.js';
-import {normalizeVector} from '../src/search/vector-search.js';
+} from '@threadnote/threadnote/evaluation/recall';
+import {BUILTIN_MODEL_MANIFESTS} from '@threadnote/inference/models/builtin';
+import {parseLocalModelManifest, type LocalModelManifest} from '@threadnote/inference/models/catalog';
+import {LocalModelStore} from '@threadnote/inference/models/store';
+import {deriveRecallEligibilityPolicy} from '@threadnote/recall/eligibility';
+import {rankRecallCandidates} from '@threadnote/recall/rank';
+import {normalizeRecallRerankerScore} from '@threadnote/recall/reranker-score';
+import {normalizeVector} from '@threadnote/inference/vector-search';
 import {atomicWrite, fixtureHash, markFailure, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
 const evaluateModels = Effect.gen(function* () {

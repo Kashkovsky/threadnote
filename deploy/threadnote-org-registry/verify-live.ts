@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {parseGraphShareRegistryChallenge} from '../../src/code_graph/sharing/registry/auth.js';
-import {parseGraphShareRegistryTarget} from '../../src/code_graph/sharing/registry/reference.js';
+import {parseGraphShareRegistryChallenge} from '@threadnote/graph/sharing/registry/auth';
+import {parseGraphShareRegistryTarget} from '@threadnote/graph/sharing/registry/reference';
 import {assertProfileMatches, buildZotConfig} from './render-config.js';
 
 const CANARY = Buffer.from('threadnote-org-registry-authz-canary-v1\n');

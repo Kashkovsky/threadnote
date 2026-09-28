@@ -7,6 +7,11 @@ dist/
 /.*.bun-build
 site-dist/
 build/
+# These are source namespaces, not generated build output.
+!packages/graph/src/build/
+!packages/graph/src/build/**
+!packages/graph/src/store/build/
+!packages/graph/src/store/build/**
 out/
 coverage/
 artifacts/
@@ -30,3 +35,9 @@ docs/**/*-architecture.md
 docs/effect.md
 docs/**/*-implementation-plan.md
 docs/**/adr/
+
+# Bazel output symlinks; action state lives outside source.
+/bazel-*
+
+# Explicit Git-aware website metadata input, regenerated per checkout.
+/apps/website/.bazel-inputs/

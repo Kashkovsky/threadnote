@@ -1,17 +1,17 @@
 import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import {BunRuntime} from '@effect/platform-bun';
 import {Clock, Console, DateTime, Effect, FileSystem, Option, Path} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {evaluateRecallFixture, parseRecallEvaluationFixture} from '../src/recall/evaluate.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {evaluateRecallFixture, parseRecallEvaluationFixture} from '@threadnote/recall/evaluate';
 import {
   clearRecallIndexMemoryCache,
   expireRecallIndexValidation,
   loadRecallExactMatches,
   loadRecallIndex,
-} from '../src/recall/index.js';
-import {prepareRecallSections} from '../src/recall/runtime.js';
+} from '@threadnote/recall/index';
+import {prepareRecallSections} from '@threadnote/recall/runtime';
 
-const FIXTURE_PATH = 'test/evaluation/fixtures/recall-v1/fixture.json';
+const FIXTURE_PATH = 'apps/threadnote/test/evaluation/fixtures/recall-v1/fixture.json';
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 const PRODUCTION_BENCHMARK_DOCUMENT_COUNT = 10_000;
 const PRODUCTION_BENCHMARK_WARMUP_COUNT = 5;

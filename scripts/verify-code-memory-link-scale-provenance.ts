@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect, Layer, Path} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {rebuildCodeMemoryLinkScaleTargetDigest} from './benchmark-code-memory-link-scale.js';
 import {
   CodeMemoryLinkScaleProvenanceLive,

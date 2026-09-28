@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "rootDir": ".",
+    "noEmit": true,
+    "types": ["bun"]
+  },
+  "include": [
+    "apps/threadnote/src/**/*.ts",
+    "apps/threadnote/test/**/*.ts",
+    "infra/*/test/**/*.ts",
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "tools/bazel/test/**/*.ts",
+    "tools/ci/**/*.ts",
+    "vitest.config.ts",
+    "tools/workspace/**/*.ts"
+  ],
+  "exclude": ["apps/threadnote/test/evaluation/fixtures/**/repository/**"]
+}

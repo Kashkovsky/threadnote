@@ -1,0 +1,35 @@
+{
+  "name": "@threadnote/inference",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./engine/embedding": "./src/engine/embedding.ts",
+    "./engine/errors": "./src/engine/errors.ts",
+    "./engine/llama-cpp-engine": "./src/engine/llama-cpp-engine.ts",
+    "./engine/local-model-runtime": "./src/engine/local-model-runtime.ts",
+    "./engine/node-llama-cpp": "./src/engine/node-llama-cpp.ts",
+    "./engine/reranker": "./src/engine/reranker.ts",
+    "./engine/structured-generator": "./src/engine/structured-generator.ts",
+    "./models/builtin": "./src/models/builtin.ts",
+    "./models/bundled-model-source": "./src/models/bundled-model-source.ts",
+    "./models/catalog": "./src/models/catalog.ts",
+    "./models/inference": "./src/models/inference.ts",
+    "./models/selection": "./src/models/selection.ts",
+    "./models/store": "./src/models/store.ts",
+    "./vector-search": "./src/vector-search.ts"
+  },
+  "dependencies": {
+    "@threadnote/platform": "workspace:*",
+    "effect": "4.0.0-rc.115",
+    "node-llama-cpp": "3.21.1"
+  },
+  "devDependencies": {
+    "@threadnote/testing": "workspace:*",
+    "@effect/vitest": "4.0.0-rc.115",
+    "vitest": "5.0.1",
+    "fast-check": "4.10.1"
+  },
+  "scripts": {
+    "test": "bun --bun vitest run --config ../../vitest.config.ts --root ../.. packages/inference/test"
+  }
+}

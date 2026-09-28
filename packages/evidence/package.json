@@ -1,0 +1,21 @@
+{
+  "name": "@threadnote/evidence",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./performance": "./src/performance.ts",
+    "./benchmark": "./src/benchmark.ts",
+    "./external-evidence": "./src/external-evidence.ts",
+    "./public-controls": "./src/public-controls.ts"
+  },
+  "dependencies": {
+    "@threadnote/platform": "workspace:*",
+    "effect": "4.0.0-rc.115"
+  },
+  "devDependencies": {
+    "@threadnote/testing": "workspace:*",
+    "fast-check": "4.10.1",
+    "js-yaml": "^5.4.2",
+    "vitest": "5.0.1"
+  }
+}

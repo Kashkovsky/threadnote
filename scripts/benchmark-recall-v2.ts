@@ -1,23 +1,23 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Clock, DateTime, Effect} from 'effect';
-import {runCommandEffect} from '../src/effect/command.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   benchmarkMeasurement,
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
-} from '../src/evaluation/benchmark.js';
+} from '@threadnote/evidence/benchmark';
 import {
   createRecallEvaluationFixtureV2,
   expandRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
-} from '../src/evaluation/recall-fixture.js';
-import {deriveRecallEligibilityPolicy} from '../src/recall/eligibility.js';
-import {rankRecallCandidates, RECALL_RANKER_VERSION} from '../src/recall/rank.js';
-import {getThreadnoteVersion} from '../src/release/runtime_version.js';
+} from '@threadnote/threadnote/evaluation/recall-fixture';
+import {deriveRecallEligibilityPolicy} from '@threadnote/recall/eligibility';
+import {rankRecallCandidates, RECALL_RANKER_VERSION} from '@threadnote/recall/rank';
+import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;

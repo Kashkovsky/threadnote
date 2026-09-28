@@ -1,22 +1,18 @@
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {Effect, FileSystem, ManagedRuntime, Path, PlatformError, Schema} from 'effect';
-import {readCodeGraphBuildStatuses, type ObservedCodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
-import {
-  codeGraphLayout,
-  codeGraphRefreshDemandPath,
-  codeGraphWorktreeSpawnLockPath,
-} from '../../src/code_graph/layout.js';
-import {validCodeGraphRefreshDemand} from '../../src/code_graph/refresh/demand_scheduler.js';
-import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
-import {StandaloneBrokerLayer} from '../../src/effect/runtime.js';
-import {SystemInfo} from '../../src/effect/system.js';
-import {sha256HexSync} from '../../src/crypto/sha256.js';
+import {readCodeGraphBuildStatuses, type ObservedCodeGraphBuildStatus} from '@threadnote/graph/build_status';
+import {codeGraphLayout, codeGraphRefreshDemandPath, codeGraphWorktreeSpawnLockPath} from '@threadnote/graph/layout';
+import {validCodeGraphRefreshDemand} from '@threadnote/graph/refresh/demand_scheduler';
+import {resolveRepositoryIdentity} from '@threadnote/graph/repository';
+import {StandaloneBrokerLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
+import {sha256HexSync} from '@threadnote/platform/sha256';
 import {
   resolveManagedDevelopmentExecutableForSource,
   verifyManagedDevelopmentRuntimeForSourceCheckout,
 } from '../development-runtime.js';
-import {processInstanceIdentityMatches} from '../../src/process/process_identity.js';
+import {processInstanceIdentityMatches} from '@threadnote/threadnote/process/process_identity';
 import {assertStage3, stage3Record, type Stage3ExecuteOptions} from './code-graph-stage3-contract.js';
 
 export const stage3SourceRoot = Bun.fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/u, '');

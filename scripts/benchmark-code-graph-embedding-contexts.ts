@@ -1,15 +1,20 @@
+import {ScriptCommandExecutorLayer} from './effect/system-layer.js';
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, DateTime, Effect, FileSystem, Layer, Path} from 'effect';
-import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+
 import {
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
   type BenchmarkMeasurementV1,
-} from '../src/evaluation/benchmark.js';
-import {THREADNOTE_EMBEDDING_CONTEXTS_ENV, type EmbeddingContextPoolSize} from '../src/effect/ai/node-llama-cpp.js';
+} from '@threadnote/evidence/benchmark';
+import {
+  THREADNOTE_EMBEDDING_CONTEXTS_ENV,
+  type EmbeddingContextPoolSize,
+} from '@threadnote/inference/engine/node-llama-cpp';
 import {atomicWrite, readJsonFile, scriptArguments} from './effect/script.js';
 
 const DEFAULT_ROUNDS = 4;
@@ -589,8 +594,8 @@ function validateRunManifest(
   }
 }
 
-const systemLayer = SystemInfo.layer;
-const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const systemLayer = ScriptSystemInfoLayer;
+const commandLayer = ScriptCommandExecutorLayer.pipe(Layer.provide(systemLayer));
 const scriptLayer = Layer.merge(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 
 if (import.meta.main) BunRuntime.runMain(provideScriptLayer(benchmark, scriptLayer));

@@ -1,6 +1,6 @@
 # Threadnote website
 
-The public Threadnote 4 website is a separate React, TypeScript, and Three.js application under `website/`. It is not a
+The public Threadnote 4 website is a separate React, TypeScript, and Three.js application under `apps/website/`. It is not a
 Manager asset and is never copied into a standalone CLI release.
 
 ## Local development
@@ -44,8 +44,8 @@ Java/Kotlin/TypeScript/Bazel controls, query and Manager measurements from that 
 high-water, and incremental-versus-independent-rebuild digest parity, every result value remains explicitly pending.
 Do not combine observations copied from separate runs.
 
-Verified values require both `website/public/performance-evidence.json` and
-`website/performance/evidence.binding.json`. The Vite build hashes the exact public JSON bytes, checks the sidecar
+Verified values require both `apps/website/public/performance-evidence.json` and
+`apps/website/performance/evidence.binding.json`. The Vite build hashes the exact public JSON bytes, checks the sidecar
 SHA-256 and harness timestamp, verifies the benchmarked Threadnote commit is an ancestor of the website build, rejects
 tracked, staged, or untracked changes in bound sources, cross-checks the exact lockfile and package-manifest hashes,
 and compares a deterministic source-tree digest before exposing a verified virtual module to React. The artifact link
@@ -57,12 +57,12 @@ change must get a chance to fail closed rather than leave previously verified cl
 After producing and reviewing the complete payload, install and bind it with:
 
 ```bash
-cp /absolute/path/to/complete-reviewed-harness-artifact.json website/public/performance-evidence.json
+cp /absolute/path/to/complete-reviewed-harness-artifact.json apps/website/public/performance-evidence.json
 bun run site:bind-performance-evidence
 ```
 
 The binding command validates the exact payload, verifies its Threadnote source commit against the current runtime
-tree, computes both SHA-256 digests, and writes `website/performance/evidence.binding.json`. Commit the public payload
+tree, computes both SHA-256 digests, and writes `apps/website/performance/evidence.binding.json`. Commit the public payload
 and generated sidecar together; never hand-edit the binding.
 
 The focused v4.0.1 worktree-readiness comparison is intentionally a separate same-machine engineering artifact, not a
@@ -74,7 +74,7 @@ Reproduce it with:
 ```bash
 bun run bench:worktree-readiness -- \
   --candidate-ref v4.0.1 --samples 5 --warmups 1 \
-  --output test/evaluation/candidates/threadnote-4.0.1/benchmarks/darwin-arm64-m1-max/code-graph-worktree-readiness-2026-08-04.json
+  --output apps/threadnote/test/evaluation/candidates/threadnote-4.0.1/benchmarks/darwin-arm64-m1-max/code-graph-worktree-readiness-2026-08-04.json
 ```
 
 The Performance page derives its rounded worktree values from that checked-in JSON. The Vite build also emits the
@@ -135,5 +135,6 @@ After cutover, set the repository About homepage to `https://threadnote.io/` and
 `https://threadnote.io/sitemap.xml` to the search-engine webmaster consoles in use. The default project Pages URL and
 the configured `www` variant should redirect to the canonical apex.
 
-The CLI release pipeline copies only `assets/`, `config/`, and `manager/`. `bun run check:self-contained` rejects
-`docs/`, `website/`, or `site-dist/` inside a compiled release.
+The CLI release build copies only `assets/`, `config/`, `cursor-plugin/`, and `packages/manager/static/` into the npm
+artifact. `bun run check:self-contained` rejects source-only trees such as `docs/`, `training/`, `apps/`, `packages/`,
+and `site-dist/` inside a compiled release.

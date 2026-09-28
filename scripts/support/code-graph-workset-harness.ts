@@ -1,28 +1,25 @@
 import {scriptError, ScriptError} from '../effect/errors.js';
 import {Clock, Effect} from 'effect';
-import {succeedUndefined} from '../../src/effect/optional.js';
-import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../../src/code_graph/indexer.js';
+import {succeedUndefined} from '@threadnote/platform/optional';
+import {CodeGraphIndexer, type CodeGraphIndexerShape} from '@threadnote/graph/indexer';
 import {
   publishCodeGraphWorksetCatalogGeneration,
   stageCodeGraphWorksetCatalogGenerationFromReceipts,
-} from '../../src/code_graph/workset_catalog/store.js';
-import {stageCodeGraphWorksetRoutingProjectionScoped} from '../../src/code_graph/workset_catalog/projection/builder.js';
+} from '@threadnote/graph/workset_catalog/store';
+import {stageCodeGraphWorksetRoutingProjectionScoped} from '@threadnote/graph/workset_catalog/projection/builder';
 import {
   codeGraphWorksetManifestDigest,
   prepareCodeGraphWorksetBridgesForGeneration,
-} from '../../src/code_graph/workset_catalog/workset.js';
-import {
-  executeCodeGraphWorksetV2,
-  type CodeGraphWorksetQueryV2ExecutionV1,
-} from '../../src/code_graph/workset/query_v2.js';
+} from '@threadnote/graph/workset_catalog/workset';
+import {executeCodeGraphWorksetV2, type CodeGraphWorksetQueryV2ExecutionV1} from '@threadnote/graph/workset/query_v2';
 import type {
   CodeGraphEvidenceCardV1,
   CodeGraphWorksetQueryResultV2,
   ProjectedCodeGraphWorksetEvidenceV1,
-} from '../../src/code_graph/workset/evidence.js';
-import {CodeGraphQueryService} from '../../src/code_graph/query.js';
-import {requireWorkset} from '../../src/manifest.js';
-import type {RuntimeConfig} from '../../src/types.js';
+} from '@threadnote/graph/workset/evidence';
+import {CodeGraphQueryService} from '@threadnote/graph/query';
+import {requireWorkset} from '@threadnote/workspace/manifest';
+import type {RuntimeConfig} from '@threadnote/workspace/config';
 import {
   CODE_GRAPH_WORKSET_EVALUATION_VERSION,
   codeGraphWorksetEdgeKey,
@@ -34,9 +31,9 @@ import {
   type CodeGraphWorksetExpectedEdgeV1,
   type CodeGraphWorksetMemberState,
   type CodeGraphWorksetSymbolRefV1,
-} from '../../src/evaluation/code-graph-workset.js';
-import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
-import {benchmarkMeasurement, type BenchmarkMeasurementV1} from '../../src/evaluation/benchmark.js';
+} from '@threadnote/threadnote/evaluation/code-graph-workset';
+import {measureAgentToolResponse} from '@threadnote/protocol/agent-response';
+import {benchmarkMeasurement, type BenchmarkMeasurementV1} from '@threadnote/evidence/benchmark';
 import {
   CODE_GRAPH_WORKSET_FIXTURE_ARCHETYPES,
   CODE_GRAPH_WORKSET_FIXTURE_GENERATOR_VERSION,

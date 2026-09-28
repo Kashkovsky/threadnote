@@ -4,7 +4,7 @@ import {spawn} from 'node:child_process';
 import {lstat, mkdtemp, readFile, realpath, rm} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {tmpdir} from 'node:os';
-import type {CodeMemoryLinkRuntimeIdentityV1} from '../src/evaluation/code-memory-link-attestation.js';
+import type {CodeMemoryLinkRuntimeIdentityV1} from '@threadnote/threadnote/evaluation/code-memory-link-attestation';
 
 const COMMIT = /^[0-9a-f]{40}$/u;
 const HASH = /^[0-9a-f]{64}$/u;

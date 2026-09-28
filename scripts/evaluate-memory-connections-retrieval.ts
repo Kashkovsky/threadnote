@@ -2,8 +2,8 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Console, Effect} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {runMemoryConnectionsRetrievalBench} from '../src/evaluation/memory-connections-retrieval-bench.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {runMemoryConnectionsRetrievalBench} from '@threadnote/threadnote/evaluation/memory-connections-retrieval-bench';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 
 const program = Effect.gen(function* () {

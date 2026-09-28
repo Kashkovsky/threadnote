@@ -2,8 +2,8 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Clock, Console, Effect, FileSystem, Path} from 'effect';
-import {runCommandEffect} from '../src/effect/command.js';
-import {measureAgentToolResponse} from '../src/evaluation/agent-response.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {measureAgentToolResponse} from '@threadnote/protocol/agent-response';
 import {
   codeMemoryLinkDogfoodArtifactHash,
   createCodeMemoryLinkDeferredAnchorObservationV2,
@@ -13,23 +13,23 @@ import {
   type CodeMemoryLinkDogfoodCaseId,
   type CodeMemoryLinkDogfoodGraphStatusV1,
   type CodeMemoryLinkDogfoodObservationSummaryV1,
-} from '../src/evaluation/code-memory-link-dogfood.js';
-import {parseContextBriefV1, renderContextBriefText} from '../src/context_brief/projector.js';
-import {isDeferredCodeAnchorIntentFilename} from '../src/memory/deferred/code_anchor.js';
-import {parseMemoryDocument, type MemoryRecord} from '../src/memory/document.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-dogfood';
+import {parseContextBriefV1, renderContextBriefText} from '@threadnote/context/projector';
+import {isDeferredCodeAnchorIntentFilename} from '@threadnote/threadnote/memory/deferred/code_anchor';
+import {parseMemoryDocument, type MemoryRecord} from '@threadnote/memory/document';
 import {
   resolveManagedDevelopmentExecutableForSource,
   verifyManagedDevelopmentRuntimeForSource,
 } from './development-runtime.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, scriptArguments} from './effect/script.js';
 import {CODE_MEMORY_LINK_EVALUATION_USER, candidateEnvironment} from './code-memory-link-codex-preflight.js';
 import {verifyApprovalCheckout} from './verify-code-memory-link-release.js';
 
 const BUDGET_TOKENS = 1_250;
-const CITED_FILE = 'src/recall/code_links.ts';
-const UNRELATED_FILE = 'src/release/runtime_version.ts';
+const CITED_FILE = 'packages/recall/src/code_links.ts';
+const UNRELATED_FILE = 'packages/workspace/src/runtime-version.ts';
 const REVIEWED_POSIX_EXECUTABLE_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 
 const program = Effect.scoped(

@@ -42,6 +42,6 @@ assert_classification "$validation_only" .github/workflows/telemetry-gateway.yml
 assert_classification "$validation_only" docs/operations/telemetry-production.md
 assert_classification "$validation_only" infra/telemetry-gateway/scripts/classify-changes.sh
 
-assert_classification "$irrelevant" README.md src/code_graph/indexer.ts
+assert_classification "$irrelevant" README.md packages/graph/src/indexer.ts
 
 printf 'telemetry gateway change classification verified\n'

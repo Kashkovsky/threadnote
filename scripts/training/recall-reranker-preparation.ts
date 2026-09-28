@@ -1,9 +1,9 @@
 import {ScriptError} from '../effect/errors.js';
-import {sha256HexSync} from '../../src/crypto/sha256.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
 import {
   createRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
-} from '../../src/evaluation/recall-fixture.js';
+} from '@threadnote/threadnote/evaluation/recall-fixture';
 import {
   createRecallRerankerDatasetV1,
   parseRecallRerankerDatasetDraftV1,

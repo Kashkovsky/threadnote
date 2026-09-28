@@ -1,12 +1,13 @@
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Clock, DateTime, Effect, FileSystem, Layer, Path} from 'effect';
-import {isolatedLocalModelRuntimeLayer} from '../src/effect/ai/isolated-local-model-runtime.js';
-import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
-import {sha256FileHex} from '../src/effect/digest.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {parseLocalModelManifest, type LocalModelManifest} from '../src/models/catalog.js';
+import {isolatedLocalModelRuntimeLayer} from '@threadnote/threadnote/effect/ai/isolated-local-model-runtime';
+import {LocalModelRuntime} from '@threadnote/inference/engine/local-model-runtime';
+import {sha256FileHex} from '@threadnote/platform/digest';
+
+import {parseLocalModelManifest, type LocalModelManifest} from '@threadnote/inference/models/catalog';
 import {atomicWrite, markFailure, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {
   DEFAULT_RERANKER_PARITY_MAXIMUM_ABSOLUTE_ERROR,
@@ -175,7 +176,7 @@ function numberValue(value: string | undefined, option: string): number {
   return parsed;
 }
 
-const systemLayer = SystemInfo.layer;
+const systemLayer = ScriptSystemInfoLayer;
 const runtimeLayer = isolatedLocalModelRuntimeLayer().pipe(Layer.provideMerge(systemLayer));
 const ParityLayer = Layer.mergeAll(runtimeLayer, systemLayer).pipe(Layer.provideMerge(BunServices.layer));
 

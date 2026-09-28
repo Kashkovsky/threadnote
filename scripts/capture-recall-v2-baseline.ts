@@ -1,20 +1,20 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
-import {runCommandEffect} from '../src/effect/command.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   RECALL_BASELINE_VERSION,
   parseRecallEvaluationBaselineV1,
   type RecallEvaluationBaselineV1,
-} from '../src/evaluation/recall-baseline.js';
+} from '@threadnote/threadnote/evaluation/recall-baseline';
 import {
   createRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
-} from '../src/evaluation/recall-fixture.js';
-import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluation/recall.js';
-import {RECALL_RANKER_VERSION} from '../src/recall/rank.js';
-import {getThreadnoteVersion} from '../src/release/runtime_version.js';
+} from '@threadnote/threadnote/evaluation/recall-fixture';
+import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '@threadnote/threadnote/evaluation/recall';
+import {RECALL_RANKER_VERSION} from '@threadnote/recall/rank';
+import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const captureBaseline = Effect.gen(function* () {
@@ -98,7 +98,7 @@ function sourceDate(committedAt: string): string {
 }
 
 function baselinePath(threadnoteVersion: string): string {
-  return `test/evaluation/baselines/threadnote-${threadnoteVersion}-${RECALL_RANKER_VERSION}/recall-v2-lexical.json`;
+  return `apps/threadnote/test/evaluation/baselines/threadnote-${threadnoteVersion}-${RECALL_RANKER_VERSION}/recall-v2-lexical.json`;
 }
 
 const git = Effect.fn('captureRecallBaseline.git')((arguments_: readonly string[]) =>

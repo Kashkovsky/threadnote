@@ -12,7 +12,7 @@ import {
   type CodeMemoryLinkRubricV1,
   type CodeMemoryLinkSealedSuiteV1,
   type CodeMemoryLinkTaskPacketV1,
-} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 
 export const CODE_MEMORY_LINK_CODEX_SUITE_LAYOUT_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_CODEX_JUDGE_COMMAND_VERSION = 1 as const;

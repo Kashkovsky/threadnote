@@ -2,16 +2,16 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   memoryConnectionsScaleCandidateBinding,
   parseMemoryConnectionsScaleArtifactV1,
   parseMemoryConnectionsScaleBudgetV1,
-} from '../src/evaluation/memory-connections-scale-contract.js';
+} from '@threadnote/threadnote/evaluation/memory-connections-scale-contract';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
-const DEFAULT_BUDGET = 'test/evaluation/baselines/memory-connections-scale-v1/budget.json';
+const DEFAULT_BUDGET = 'apps/threadnote/test/evaluation/baselines/memory-connections-scale-v1/budget.json';
 export const MAX_MEMORY_CONNECTIONS_SCALE_ARTIFACT_BYTES = 32 * 1024 * 1024;
 
 export interface VerifyMemoryConnectionsScaleArtifactOptions {

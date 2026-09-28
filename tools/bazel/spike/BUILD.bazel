@@ -1,0 +1,52 @@
+load("//tools/bazel:bun.bzl", "bun_action", "bun_library", "bun_test")
+load("//tools/bazel:package_files.bzl", "export_package_files")
+
+export_package_files(["**"])
+
+bun_library(
+    name = "workspace_library",
+    srcs = ["workspace-library/index.ts", "workspace-library/package.json"],
+)
+
+bun_test(
+    name = "dependency_closure_test",
+    srcs = ["dependency-closure.test.ts", "vitest.config.ts", "package.json"],
+    data = ["//tools/bazel:dependency-closure.mjs"],
+    deps = ["@npm//:vitest", "@npm//:fast-check"],
+    runner_args = ["--bun", "node_modules/vitest/vitest.mjs", "run", "--config", "tools/bazel/spike/vitest.config.ts", "tools/bazel/spike/dependency-closure.test.ts"],
+)
+
+bun_test(
+    name = "effect_sqlite_test",
+    srcs = ["effect-sqlite.test.ts", "vitest.config.ts", "package.json"],
+    deps = [":workspace_library", "@npm//:@effect/vitest", "@npm//:vitest"],
+    runner_args = ["--bun", "node_modules/vitest/vitest.mjs", "run", "--config", "tools/bazel/spike/vitest.config.ts", "tools/bazel/spike/effect-sqlite.test.ts"],
+)
+
+bun_test(
+    name = "parser_native_test",
+    srcs = ["parser-native.test.ts", "parser-worker.ts", "vitest.config.ts", "package.json"],
+    deps = ["@npm//:vitest", "@npm//:web-tree-sitter", "@npm//:@repomix/tree-sitter-wasms", "@npm//:@resvg/resvg-js"],
+    runner_args = ["--bun", "node_modules/vitest/vitest.mjs", "run", "--config", "tools/bazel/spike/vitest.config.ts", "tools/bazel/spike/parser-native.test.ts"],
+)
+
+bun_test(
+    name = "typecheck_patch_test",
+    srcs = ["check-tooling.ts", "floating-effect.ts", "tsconfig.json", "package.json"],
+    deps = ["@npm//:@effect/tsgo", "@npm//:typescript", "@npm//:oxlint", "@npm//:oxlint-tsgolint", "@npm//:effect", "@npm//:@types/bun"],
+    runner_args = ["tools/bazel/spike/check-tooling.ts"],
+)
+
+bun_action(
+    name = "standalone",
+    srcs = ["standalone.ts"],
+    deps = ["@npm//:effect"],
+    args = ["build", "--compile", "tools/bazel/spike/standalone.ts", "--outfile", "{output}/threadnote-spike"],
+)
+
+bun_test(
+    name = "standalone_test",
+    srcs = ["check-standalone.ts"],
+    data = [":standalone"],
+    runner_args = ["tools/bazel/spike/check-standalone.ts"],
+)

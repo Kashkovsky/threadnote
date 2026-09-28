@@ -1,10 +1,11 @@
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import {BunRuntime} from '@effect/platform-bun';
 import {Console, Effect, Result} from 'effect';
-import {SystemInfo} from '../src/effect/system.js';
+import {SystemInfo} from '@threadnote/platform/system';
 
 export const PRODUCTION_FILE_LINE_LIMIT = 2_000;
-export const PRODUCTION_CODE_ROOTS = ['src', 'website/src'] as const;
+export const PRODUCTION_CODE_ROOTS = ['packages', 'apps/website/src', 'apps/threadnote/src'] as const;
 export const FILE_LENGTH_OXLINT_CONFIG = Bun.fileURLToPath(new URL('../.oxlintrc.max-lines.json', import.meta.url));
 
 const CODE_FILE_PATTERN = /\.(?:c|m)?(?:js|jsx|ts|tsx)$/u;
@@ -171,7 +172,7 @@ if (import.meta.main) {
         }
         system.setExitCode(outcome.success);
       }),
-      SystemInfo.layer,
+      ScriptSystemInfoLayer,
     ),
   );
 }

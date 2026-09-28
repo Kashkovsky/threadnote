@@ -1,12 +1,16 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Clock, DateTime, Effect, FileSystem, Path} from 'effect';
-import {sha256HexSync} from '../src/crypto/sha256.js';
-import {runCommandEffect} from '../src/effect/command.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {benchmarkMeasurement} from '../src/evaluation/benchmark.js';
-import {loadRecallIndexData, loadRecallIndexDataBatch, type RecallIndexQueryDiagnostics} from '../src/recall/index.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
+import {benchmarkMeasurement} from '@threadnote/evidence/benchmark';
+import {
+  loadRecallIndexData,
+  loadRecallIndexDataBatch,
+  type RecallIndexQueryDiagnostics,
+} from '@threadnote/recall/index';
 import {
   mergeRecallCandidateLanes,
   mergeRecallIndexCandidates,
@@ -14,9 +18,9 @@ import {
   prioritizeWorkspaceRecallCandidates,
   recallCrossScopeFallbackRequired,
   recallCrossScopeLaneBudgets,
-} from '../src/recall/runtime.js';
-import {recallIndexPreselectionLimit} from '../src/utils.js';
-import {getThreadnoteVersion} from '../src/release/runtime_version.js';
+} from '@threadnote/recall/runtime';
+import {recallIndexPreselectionLimit} from '@threadnote/recall/results';
+import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const FIXED_NOW = new Date('2026-08-20T00:00:00.000Z');

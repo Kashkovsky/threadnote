@@ -8,6 +8,19 @@
         "@effect/platform-bun": "4.0.0-rc.115",
         "@effect/sql-sqlite-bun": "4.0.0-rc.115",
         "@modelcontextprotocol/sdk": "1.30.0",
+        "@threadnote/context": "workspace:*",
+        "@threadnote/evidence": "workspace:*",
+        "@threadnote/graph": "workspace:*",
+        "@threadnote/inference": "workspace:*",
+        "@threadnote/integrations": "workspace:*",
+        "@threadnote/manager": "workspace:*",
+        "@threadnote/memory": "workspace:*",
+        "@threadnote/platform": "workspace:*",
+        "@threadnote/protocol": "workspace:*",
+        "@threadnote/recall": "workspace:*",
+        "@threadnote/remote-memory": "workspace:*",
+        "@threadnote/store": "workspace:*",
+        "@threadnote/workspace": "workspace:*",
         "effect": "4.0.0-rc.115",
         "fflate": "0.8.3",
         "jose": "6.2.12",
@@ -34,6 +47,8 @@
         "@fontsource-variable/spline-sans": "5.3.0",
         "@repomix/tree-sitter-wasms": "0.1.17",
         "@resvg/resvg-js": "2.6.2",
+        "@threadnote/testing": "workspace:*",
+        "@threadnote/website": "workspace:*",
         "@tree-sitter-grammars/tree-sitter-hcl": "1.2.0",
         "@tree-sitter-grammars/tree-sitter-lua": "0.4.1",
         "@tree-sitter-grammars/tree-sitter-svelte": "1.0.2",
@@ -63,6 +78,249 @@
         "typescript": "7.0.2",
         "vite": "8.3.0",
         "vitest": "5.0.1",
+      },
+    },
+    "apps/threadnote": {
+      "name": "@threadnote/threadnote",
+      "dependencies": {
+        "@effect/ai-openai-compat": "4.0.0-rc.115",
+        "@effect/platform-bun": "4.0.0-rc.115",
+        "@modelcontextprotocol/sdk": "1.30.0",
+        "@threadnote/context": "workspace:*",
+        "@threadnote/evidence": "workspace:*",
+        "@threadnote/graph": "workspace:*",
+        "@threadnote/inference": "workspace:*",
+        "@threadnote/integrations": "workspace:*",
+        "@threadnote/manager": "workspace:*",
+        "@threadnote/memory": "workspace:*",
+        "@threadnote/platform": "workspace:*",
+        "@threadnote/protocol": "workspace:*",
+        "@threadnote/recall": "workspace:*",
+        "@threadnote/remote-memory": "workspace:*",
+        "@threadnote/store": "workspace:*",
+        "@threadnote/workspace": "workspace:*",
+        "effect": "4.0.0-rc.115",
+        "jose": "6.2.12",
+        "js-yaml": "^5.4.2",
+        "jsonc-parser": "3.3.1",
+        "pxpipe-proxy": "0.13.2",
+        "smol-toml": "1.8.0",
+        "yaml": "^2.9.1",
+      },
+    },
+    "apps/website": {
+      "name": "@threadnote/website",
+      "dependencies": {
+        "@effect/platform-bun": "4.0.0-rc.115",
+        "@fontsource-variable/jetbrains-mono": "5.3.0",
+        "@fontsource-variable/spline-sans": "5.3.0",
+        "@threadnote/evidence": "workspace:*",
+        "@threadnote/integrations": "workspace:*",
+        "effect": "4.0.0-rc.115",
+        "fflate": "0.8.3",
+        "react": "^19.3.0",
+        "react-dom": "^19.3.0",
+        "react-markdown": "^10.1.0",
+        "remark-gfm": "^4.0.1",
+        "three": "^0.186.0",
+        "yaml": "^2.9.1",
+      },
+      "devDependencies": {
+        "@resvg/resvg-js": "2.6.2",
+        "@types/bun": "1.4.2",
+        "@types/react": "^19.3.0",
+        "@types/react-dom": "^19.3.0",
+        "@types/three": "^0.186.0",
+        "@vitejs/plugin-react": "6.1.1",
+        "fast-check": "4.10.1",
+        "happy-dom": "20.14.5",
+        "vite": "8.3.0",
+        "vitest": "5.0.1",
+      },
+    },
+    "packages/context": {
+      "name": "@threadnote/context",
+      "dependencies": {
+        "@threadnote/graph": "workspace:*",
+        "@threadnote/integrations": "workspace:*",
+        "@threadnote/memory": "workspace:*",
+        "@threadnote/platform": "workspace:*",
+        "@threadnote/protocol": "workspace:*",
+        "@threadnote/recall": "workspace:*",
+        "@threadnote/store": "workspace:*",
+        "@threadnote/workspace": "workspace:*",
+        "effect": "4.0.0-rc.115",
+      },
+      "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
+      },
+    },
+    "packages/evidence": {
+      "name": "@threadnote/evidence",
+      "dependencies": {
+        "@threadnote/platform": "workspace:*",
+        "effect": "4.0.0-rc.115",
+      },
+    },
+    "packages/graph": {
+      "name": "@threadnote/graph",
+      "dependencies": {
+        "@effect/platform-bun": "4.0.0-rc.115",
+        "@effect/sql-sqlite-bun": "4.0.0-rc.115",
+        "@threadnote/inference": "workspace:*",
+        "@threadnote/platform": "workspace:*",
+        "@threadnote/protocol": "workspace:*",
+        "@threadnote/workspace": "workspace:*",
+        "effect": "4.0.0-rc.115",
+        "fflate": "0.8.3",
+        "jose": "6.2.12",
+        "js-yaml": "^5.4.2",
+        "typescript-compiler": "npm:typescript@5.9.3",
+        "unpdf": "1.8.1",
+        "web-tree-sitter": "0.27.0",
+      },
+    },
+    "packages/inference": {
+      "name": "@threadnote/inference",
+      "dependencies": {
+        "@threadnote/platform": "workspace:*",
+        "effect": "4.0.0-rc.115",
+        "node-llama-cpp": "3.21.1",
+      },
+      "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
+      },
+    },
+    "packages/integrations": {
+      "name": "@threadnote/integrations",
+      "dependencies": {
+        "effect": "4.0.0-rc.115",
+      },
+    },
+    "packages/manager": {
+      "name": "@threadnote/manager",
+      "dependencies": {
+        "@threadnote/context": "workspace:*",
+        "@threadnote/graph": "workspace:*",
+        "@threadnote/integrations": "workspace:*",
+        "@threadnote/memory": "workspace:*",
+        "@threadnote/platform": "workspace:*",
+        "@threadnote/recall": "workspace:*",
+        "@threadnote/workspace": "workspace:*",
+        "effect": "4.0.0-rc.115",
+        "react": "^19.3.0",
+        "react-dom": "^19.3.0",
+        "react-markdown": "^10.1.0",
+        "remark-gfm": "^4.0.1",
+        "three": "^0.186.0",
+      },
+      "devDependencies": {
+        "vitest": "5.0.1",
+      },
+    },
+    "packages/memory": {
+      "name": "@threadnote/memory",
+      "dependencies": {
+        "@threadnote/platform": "workspace:*",
+        "@threadnote/store": "workspace:*",
+        "@threadnote/workspace": "workspace:*",
+        "effect": "4.0.0-rc.115",
+      },
+      "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
+      },
+    },
+    "packages/platform": {
+      "name": "@threadnote/platform",
+      "dependencies": {
+        "@effect/platform-bun": "4.0.0-rc.115",
+        "effect": "4.0.0-rc.115",
+      },
+      "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
+      },
+    },
+    "packages/protocol": {
+      "name": "@threadnote/protocol",
+      "dependencies": {
+        "effect": "4.0.0-rc.115",
+        "jose": "6.2.12",
+      },
+    },
+    "packages/recall": {
+      "name": "@threadnote/recall",
+      "dependencies": {
+        "@effect/sql-sqlite-bun": "4.0.0-rc.115",
+        "@threadnote/inference": "workspace:*",
+        "@threadnote/memory": "workspace:*",
+        "@threadnote/platform": "workspace:*",
+        "@threadnote/protocol": "workspace:*",
+        "@threadnote/store": "workspace:*",
+        "@threadnote/workspace": "workspace:*",
+        "effect": "4.0.0-rc.115",
+      },
+      "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
+      },
+    },
+    "packages/remote-memory": {
+      "name": "@threadnote/remote-memory",
+      "dependencies": {
+        "@threadnote/context": "workspace:*",
+        "@threadnote/graph": "workspace:*",
+        "@threadnote/memory": "workspace:*",
+        "@threadnote/platform": "workspace:*",
+        "@threadnote/protocol": "workspace:*",
+        "@threadnote/recall": "workspace:*",
+        "@threadnote/store": "workspace:*",
+        "effect": "4.0.0-rc.115",
+        "jose": "6.2.12",
+        "postgres": "3.4.9",
+      },
+    },
+    "packages/store": {
+      "name": "@threadnote/store",
+      "dependencies": {
+        "@threadnote/platform": "workspace:*",
+        "effect": "4.0.0-rc.115",
+      },
+      "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
+      },
+    },
+    "packages/testing": {
+      "name": "@threadnote/testing",
+      "dependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "effect": "4.0.0-rc.115",
+        "fast-check": "4.10.1",
+      },
+    },
+    "packages/workspace": {
+      "name": "@threadnote/workspace",
+      "dependencies": {
+        "@threadnote/platform": "workspace:*",
+        "@threadnote/store": "workspace:*",
+        "effect": "4.0.0-rc.115",
+        "js-yaml": "^5.4.2",
       },
     },
   },
@@ -320,6 +578,38 @@
     "@simple-git/args-pathspec": ["@simple-git/args-pathspec@1.0.3", "", {}, "sha512-ngJMaHlsWDTfjyq9F3VIQ8b7NXbBLq5j9i5bJ6XLYtD6qlDXT7fdKY2KscWWUF8t18xx052Y/PUO1K1TRc9yKA=="],
 
     "@simple-git/argv-parser": ["@simple-git/argv-parser@1.1.1", "", { "dependencies": { "@simple-git/args-pathspec": "^1.0.3" } }, "sha512-Q9lBcfQ+VQCpQqGJFHe5yooOS5hGdLFFbJ5R+R5aDsnkPCahtn1hSkMcORX65J2Z5lxSkD0lQorMsncuBQxYUw=="],
+
+    "@threadnote/context": ["@threadnote/context@workspace:packages/context"],
+
+    "@threadnote/evidence": ["@threadnote/evidence@workspace:packages/evidence"],
+
+    "@threadnote/graph": ["@threadnote/graph@workspace:packages/graph"],
+
+    "@threadnote/inference": ["@threadnote/inference@workspace:packages/inference"],
+
+    "@threadnote/integrations": ["@threadnote/integrations@workspace:packages/integrations"],
+
+    "@threadnote/manager": ["@threadnote/manager@workspace:packages/manager"],
+
+    "@threadnote/memory": ["@threadnote/memory@workspace:packages/memory"],
+
+    "@threadnote/platform": ["@threadnote/platform@workspace:packages/platform"],
+
+    "@threadnote/protocol": ["@threadnote/protocol@workspace:packages/protocol"],
+
+    "@threadnote/recall": ["@threadnote/recall@workspace:packages/recall"],
+
+    "@threadnote/remote-memory": ["@threadnote/remote-memory@workspace:packages/remote-memory"],
+
+    "@threadnote/store": ["@threadnote/store@workspace:packages/store"],
+
+    "@threadnote/testing": ["@threadnote/testing@workspace:packages/testing"],
+
+    "@threadnote/threadnote": ["@threadnote/threadnote@workspace:apps/threadnote"],
+
+    "@threadnote/website": ["@threadnote/website@workspace:apps/website"],
+
+    "@threadnote/workspace": ["@threadnote/workspace@workspace:packages/workspace"],
 
     "@tinyhttp/content-disposition": ["@tinyhttp/content-disposition@2.2.4", "", {}, "sha512-5Kc5CM2Ysn3vTTArBs2vESUt0AQiWZA86yc1TI3B+lxXmtEq133C1nxXNOgnzhrivdPZIh3zLj5gDnZjoLL5GA=="],
 

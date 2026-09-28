@@ -1,13 +1,13 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect, FileSystem, Path} from 'effect';
-import {codeGraphLayout} from '../src/code_graph/layout.js';
-import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
-import {CodeGraphQueryService} from '../src/code_graph/query.js';
-import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
-import {CodeGraphStore} from '../src/code_graph/store.js';
-import type {CodeGraphQueryResult} from '../src/code_graph/types.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {codeGraphLayout} from '@threadnote/graph/layout';
+import {CodeGraphIndexer} from '@threadnote/graph/indexer';
+import {CodeGraphQueryService} from '@threadnote/graph/query';
+import {resolveRepositoryIdentity} from '@threadnote/graph/repository';
+import {CodeGraphStore} from '@threadnote/graph/store';
+import type {CodeGraphQueryResult} from '@threadnote/graph/types';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   CODE_GRAPH_BASELINE_VERSION,
   codeGraphEdgeKey,
@@ -15,7 +15,7 @@ import {
   evaluateCodeGraphObservations,
   parseCodeGraphEvaluationFixtureV1,
   type CodeGraphEvaluationBaselineV1,
-} from '../src/evaluation/code-graph.js';
+} from '@threadnote/threadnote/evaluation/code-graph';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {git, prepareCodeGraphFixture} from './code-graph-fixture.js';
 
@@ -25,7 +25,7 @@ const evaluateNativeCodeGraph = Effect.scoped(
     const fs = yield* FileSystem.FileSystem;
     const options = parseArguments(yield* scriptArguments());
     const fixturePath = yield* path.fromFileUrl(
-      new URL(`../test/evaluation/fixtures/${options.fixture}/fixture.json`, import.meta.url),
+      new URL(`../apps/threadnote/test/evaluation/fixtures/${options.fixture}/fixture.json`, import.meta.url),
     );
     const fixture = parseCodeGraphEvaluationFixtureV1(yield* readJsonFile(fixturePath));
     const prepared = yield* prepareCodeGraphFixture(options.fixture);

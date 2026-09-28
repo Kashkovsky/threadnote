@@ -19,4 +19,4 @@ COPY deploy/threadnote-org/github_known_hosts /etc/threadnote/github_known_hosts
 RUN chmod 755 /usr/local/bin/threadnote-org-entrypoint && chmod 644 /etc/threadnote/github_known_hosts
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/threadnote-org-entrypoint"]
-CMD ["bun", "src/standalone.ts", "remote-memory-service"]
+CMD ["bun", "apps/threadnote/src/standalone.ts", "remote-memory-service"]

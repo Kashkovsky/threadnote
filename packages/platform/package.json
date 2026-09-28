@@ -1,0 +1,43 @@
+{
+  "name": "@threadnote/platform",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./child-environment-policy": "./src/child-environment-policy.ts",
+    "./command": "./src/command.ts",
+    "./digest": "./src/digest.ts",
+    "./errors": "./src/errors.ts",
+    "./file/durability": "./src/file/durability.ts",
+    "./file/lock": "./src/file/lock.ts",
+    "./glob": "./src/glob.ts",
+    "./http": "./src/http.ts",
+    "./hmac": "./src/hmac.ts",
+    "./json": "./src/json.ts",
+    "./linux_cgroup": "./src/linux_cgroup.ts",
+    "./optional": "./src/optional.ts",
+    "./paths": "./src/paths.ts",
+    "./safe_scan": "./src/safe_scan.ts",
+    "./scrubber": "./src/scrubber.ts",
+    "./sha256": "./src/sha256.ts",
+    "./string-boundaries": "./src/string-boundaries.ts",
+    "./system": "./src/system.ts",
+    "./time": "./src/time.ts",
+    "./uuid": "./src/uuid.ts",
+    "./windows-disk-worker-contract": "./src/windows-disk-worker-contract.ts",
+    "./windows_system": "./src/windows_system.ts",
+    "./runtime-entrypoint": "./src/runtime-entrypoint.ts"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.115",
+    "@effect/platform-bun": "4.0.0-rc.115"
+  },
+  "devDependencies": {
+    "@threadnote/testing": "workspace:*",
+    "@effect/vitest": "4.0.0-rc.115",
+    "vitest": "5.0.1",
+    "fast-check": "4.10.1"
+  },
+  "scripts": {
+    "test": "bun --bun vitest run --config ../../vitest.config.ts --root ../.. packages/platform/test"
+  }
+}

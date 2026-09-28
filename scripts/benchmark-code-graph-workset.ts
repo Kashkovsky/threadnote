@@ -1,14 +1,14 @@
 import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
-import {runCommandEffect} from '../src/effect/command.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   parseBenchmarkArtifactV1,
   type BenchmarkArtifactV1,
-} from '../src/evaluation/benchmark.js';
+} from '@threadnote/evidence/benchmark';
 import {atomicWrite, printJson, scriptArguments} from './effect/script.js';
 import {
   codeGraphWorksetBenchmarkBudgetFailures,

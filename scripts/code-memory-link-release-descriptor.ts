@@ -1,8 +1,8 @@
-import {CODE_MEMORY_LINK_RETAINED_BUNDLE_ROOT} from '../src/evaluation/code-memory-link-retained-bundle.js';
+import {CODE_MEMORY_LINK_RETAINED_BUNDLE_ROOT} from '@threadnote/threadnote/evaluation/code-memory-link-retained-bundle';
 import {
   CODE_MEMORY_LINK_SCALE_ARTIFACT_ROOT,
   codeMemoryLinkScaleArtifactPath,
-} from '../src/evaluation/code-memory-link-scale-contract.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-scale-contract';
 
 export const CODE_MEMORY_LINK_RELEASE_DESCRIPTOR_ROOT = '.github/release-evidence/code-memory-link' as const;
 export const CODE_MEMORY_LINK_RELEASE_DESCRIPTOR_TYPE = 'code-memory-link-release-governance' as const;

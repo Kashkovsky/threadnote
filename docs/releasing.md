@@ -133,7 +133,7 @@ remain restricted to commits already present on protected `main`.
    The inverse-selector job must run after C on the same pinned `macos-15`/arm64/Bun class used by tag verification. It
    produces a passed `release-scale` artifact with exact runner class `github-hosted-macos-15-ARM64`,
    `candidateCommit=observedCommit=C`, `dirty=false`, the frozen 100,000-memory budget, and a built-target digest. Download the job artifact at its staged content-addressed path
-   `test/evaluation/retained/code-memory-link-scale/<artifact-sha256>.json`; review it, but do not add it in C or A.
+   `apps/threadnote/test/evaluation/retained/code-memory-link-scale/<artifact-sha256>.json`; review it, but do not add it in C or A.
    Confirm the frozen dense-selector scenario indexes exactly 99,996 backlinks, returns the exact first eight
    canonical URIs, and records exactly two bounded selector truncations per lookup within both pooled and per-scenario
    latency budgets. Those truncations are required abstention evidence for the shadowed file-selector prefix, not a
@@ -180,16 +180,16 @@ remain restricted to commits already present on protected `main`.
    **A**, then final governance **G**. C is the exact published commit under evaluation; do not freeze main or move the
    immutable release tag while the experiment runs. A must be
    the immediate child of C and may add only the manifest hash to
-   `src/evaluation/code-memory-link-approvals.json`. G must be the immediate child of A and may only update that JSON,
-   add the exact hash-named bundle under `test/evaluation/retained/code-memory-link/`, add the exact content-addressed
-   scale artifact under `test/evaluation/retained/code-memory-link-scale/`, and add the version-bound final descriptor
+   `apps/threadnote/src/evaluation/code-memory-link-approvals.json`. G must be the immediate child of A and may only update that JSON,
+   add the exact hash-named bundle under `apps/threadnote/test/evaluation/retained/code-memory-link/`, add the exact content-addressed
+   scale artifact under `apps/threadnote/test/evaluation/retained/code-memory-link-scale/`, and add the version-bound final descriptor
    under `.github/release-evidence/code-memory-link/vX.Y.Z.json`. Put documentation and all executable
    experiment-control changes in C, not A or G. External receipts must name A. The executable verifier checks this exact
    C→A→G ancestry, parses the allowlist deltas, proves the outcome hashes did not preexist G, requires the bundle and
    descriptor and scale artifact to be newly added at G, and rejects dirty, merged, delayed, change-then-revert, executable
    approval-loader changes, extra hashes, or any other post-candidate history.
    Follow the complete executable experiment procedure in
-   [`test/evaluation/README.md`](../test/evaluation/README.md#codememorylinkbench-v1); do not infer the preregistration
+   [`apps/threadnote/test/evaluation/README.md`](../apps/threadnote/test/evaluation/README.md#codememorylinkbench-v1); do not infer the preregistration
    or ledger protocol from the scorer alone. From an exact clean C checkout with the exact C development runtime
    installed, prepare the sealed experiment and independently review the emitted manifest and its printed hash before
    creating A:
@@ -320,11 +320,11 @@ remain restricted to commits already present on protected `main`.
      },
      "releaseTag": "vX.Y.Z",
      "retainedBundle": {
-       "path": "test/evaluation/retained/code-memory-link/<bundle-sha256>/bundle.json",
+       "path": "apps/threadnote/test/evaluation/retained/code-memory-link/<bundle-sha256>/bundle.json",
        "sha256": "<bundle-sha256>"
      },
      "scaleArtifact": {
-       "path": "test/evaluation/retained/code-memory-link-scale/<scale-artifact-sha256>.json",
+       "path": "apps/threadnote/test/evaluation/retained/code-memory-link-scale/<scale-artifact-sha256>.json",
        "sha256": "<scale-artifact-sha256>"
      },
      "type": "code-memory-link-release-governance",
@@ -387,7 +387,7 @@ remain restricted to commits already present on protected `main`.
      bun run bench:code-graph:heavy-tail -- --governed \
        --candidate-commit <candidate-sha> \
        --evidence-class governed-performance \
-       --ratchet test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json \
+       --ratchet apps/threadnote/test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json \
        --output artifacts/heavy-tail-<candidate-sha>-$run.json
    done
    RELEASE_OBSERVED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -395,7 +395,7 @@ remain restricted to commits already present on protected `main`.
      --candidate-commit <candidate-sha> \
      --runner-class "$THREADNOTE_BENCHMARK_RUNNER_CLASS" \
      --runner-identity "$THREADNOTE_BENCHMARK_RUNNER_ID" \
-     --ratchet test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json \
+     --ratchet apps/threadnote/test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json \
      --release-not-before "$RELEASE_NOT_BEFORE" \
      --release-observed-at "$RELEASE_OBSERVED_AT" \
      --maximum-evidence-age-ms 86400000 \

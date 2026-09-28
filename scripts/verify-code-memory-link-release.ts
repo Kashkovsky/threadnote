@@ -2,38 +2,38 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Console, Effect, Layer, Path} from 'effect';
-import {sha256HexSync} from '../src/crypto/sha256.js';
-import {runCommandEffect} from '../src/effect/command.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1,
   assertCodeMemoryLinkAgentAbRuntimeIdentity,
   evaluateCodeMemoryLinkAgentAb,
   parseCodeMemoryLinkAgentAbManifestV1,
   parseCodeMemoryLinkAgentAbTrialsJsonl,
-} from '../src/evaluation/code-memory-link-agent-ab.js';
-import {parseCodeMemoryLinkAgentAttemptsJsonl} from '../src/evaluation/code-memory-link-agent-attempts.js';
-import {parseCodeMemoryLinkAgentEvidenceJsonl} from '../src/evaluation/code-memory-link-agent-evidence.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-ab';
+import {parseCodeMemoryLinkAgentAttemptsJsonl} from '@threadnote/threadnote/evaluation/code-memory-link-agent-attempts';
+import {parseCodeMemoryLinkAgentEvidenceJsonl} from '@threadnote/threadnote/evaluation/code-memory-link-agent-evidence';
 import {
   assertCodeMemoryLinkSealedSuiteBindingsV1,
   codeMemoryLinkContextBriefResponseReceiptHashV1,
   parseCodeMemoryLinkRubricV1,
   parseCodeMemoryLinkSealedSuiteV1,
   parseCodeMemoryLinkTaskPacketV1,
-} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import {
   codeMemoryLinkClientImplementationDescriptorHash,
   codeMemoryLinkClientProjectionHash,
   parseCodeMemoryLinkClientImplementationDescriptorV1,
-} from '../src/evaluation/code-memory-link-client-descriptor.js';
-import {evaluateCodeMemoryLinkDogfood} from '../src/evaluation/code-memory-link-dogfood.js';
-import {createCodeMemoryLinkRetainedResultV1} from '../src/evaluation/code-memory-link-retained-result.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-client-descriptor';
+import {evaluateCodeMemoryLinkDogfood} from '@threadnote/threadnote/evaluation/code-memory-link-dogfood';
+import {createCodeMemoryLinkRetainedResultV1} from '@threadnote/threadnote/evaluation/code-memory-link-retained-result';
 import {
   CODE_MEMORY_LINK_RETAINED_BUNDLE_ROOT,
   parseCodeMemoryLinkRetainedBundleIndexV1,
   type CodeMemoryLinkRetainedBundleContentsV1,
   verifyCodeMemoryLinkRetainedBundleV1,
-} from '../src/evaluation/code-memory-link-retained-bundle.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-retained-bundle';
 import {
   CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
   CODE_MEMORY_LINK_SCALE_ARTIFACT_ROOT,
@@ -41,7 +41,7 @@ import {
   codeMemoryLinkScaleArtifactPath,
   parseCodeMemoryLinkScaleArtifactV1,
   type CodeMemoryLinkScaleCandidateBindingV1,
-} from '../src/evaluation/code-memory-link-scale-contract.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-scale-contract';
 import {rebuildCodeMemoryLinkScaleTargetDigest} from './benchmark-code-memory-link-scale.js';
 import {
   CodeMemoryLinkScaleProvenanceLive,
@@ -234,7 +234,7 @@ export const resolveGovernedCodeMemoryLinkRelease = Effect.fn('codeMemoryLinkRel
   },
 );
 
-const APPROVALS_PATH = 'src/evaluation/code-memory-link-approvals.json';
+const APPROVALS_PATH = 'apps/threadnote/src/evaluation/code-memory-link-approvals.json';
 const GOVERNANCE_ONLY_PATHS = new Set([APPROVALS_PATH]);
 
 export function assertCodeMemoryLinkReleaseDescriptorRuntime(
@@ -732,7 +732,9 @@ export const verifyApprovalCheckout = Effect.fn('codeMemoryLinkRelease.verifyApp
   if (releaseDescriptorPath !== undefined) allowedGovernancePaths.add(releaseDescriptorPath);
   if (scaleArtifactPath !== undefined) allowedGovernancePaths.add(scaleArtifactPath);
   const invalidPaths = changedPaths.filter(
-    value => !allowedGovernancePaths.has(value) && !value.startsWith('test/evaluation/retained/code-memory-link/'),
+    value =>
+      !allowedGovernancePaths.has(value) &&
+      !value.startsWith('apps/threadnote/test/evaluation/retained/code-memory-link/'),
   );
   if (invalidPaths.length > 0) {
     const offendingCommits = changedByCommit

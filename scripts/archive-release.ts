@@ -1,10 +1,11 @@
+import {ScriptCommandExecutorLayer} from './effect/system-layer.js';
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Path} from 'effect';
-import {runCommandEffect, CommandExecutor} from '../src/effect/command.js';
-import {sha256FileHex} from '../src/effect/digest.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {sha256FileHex} from '@threadnote/platform/digest';
 
 const ROOT_URL = new URL('..', import.meta.url);
 const ARCHIVE_TARGET_PATTERN = /^(darwin|linux|windows)-(arm64|x64)$/;
@@ -42,8 +43,8 @@ const archiveRelease = Effect.gen(function* () {
   yield* Console.log(`Archived ${artifactName}`);
 });
 
-const systemLayer = SystemInfo.layer;
-const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const systemLayer = ScriptSystemInfoLayer;
+const commandLayer = ScriptCommandExecutorLayer.pipe(Layer.provide(systemLayer));
 const archiveLayer = Layer.merge(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 
 BunRuntime.runMain(provideScriptLayer(archiveRelease, archiveLayer));

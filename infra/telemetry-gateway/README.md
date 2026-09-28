@@ -134,7 +134,7 @@ confirm that the selected Tempo data source returns this query in Explore:
 Validate the artifact locally with:
 
 ```sh
-bun --bun vitest run test/unit/telemetry-gateway-dashboard.test.ts
+bun --bun vitest run infra/telemetry-gateway/test/telemetry-gateway-dashboard.test.ts
 ```
 
 ## Validate and smoke locally

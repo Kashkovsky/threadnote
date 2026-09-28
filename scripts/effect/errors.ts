@@ -1,4 +1,6 @@
+import {runtimeEntrypointLayer} from '@threadnote/threadnote/effect/runtime-entrypoint';
 import {Effect, Layer, Schema} from 'effect';
+import {telemetryChildEnvironmentPolicyLayer} from '@threadnote/threadnote/telemetry/session';
 
 /** Typed failure used at executable-script Effect boundaries. */
 export class ScriptError extends Schema.TaggedError<ScriptError>()('ScriptError', {
@@ -16,5 +18,9 @@ export function provideScriptLayer<A, E, R, Services, LayerError, LayerRequireme
   effect: Effect.Effect<A, E, R>,
   layer: Layer.Layer<Services, LayerError, LayerRequirements>,
 ) {
-  return Effect.scoped(Layer.build(layer).pipe(Effect.flatMap(context => effect.pipe(Effect.provide(context)))));
+  const runtimePorts = Layer.merge(telemetryChildEnvironmentPolicyLayer, runtimeEntrypointLayer);
+  const completeLayer = Layer.merge(layer.pipe(Layer.provide(runtimePorts)), runtimePorts);
+  return Effect.scoped(
+    Layer.build(completeLayer).pipe(Effect.flatMap(context => effect.pipe(Effect.provide(context)))),
+  );
 }

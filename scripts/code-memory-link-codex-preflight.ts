@@ -7,7 +7,7 @@ import {
   canonicalizeCodeMemoryLinkContextBriefResultV1,
   codeMemoryLinkGoldCitationDigest,
   type CodeMemoryLinkContextBriefResponseReceiptV1,
-} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import type {CodeMemoryLinkCodexClientConfigV1} from './code-memory-link-codex-isolation.js';
 
 export const CODE_MEMORY_LINK_EVALUATION_ACCOUNT = 'local' as const;

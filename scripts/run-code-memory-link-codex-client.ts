@@ -10,7 +10,7 @@ import {
   deriveCodeMemoryLinkCodexAppServerProjectionV1,
   normalizeCodeMemoryLinkCodexAppServerEvidenceV1,
   type CodeMemoryLinkArmPacketV1,
-} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import {
   CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION,
   assertCodeMemoryLinkCodexArtifacts,
@@ -30,7 +30,7 @@ import {
   codeMemoryLinkCodexRunBindingHashV1,
   createCodeMemoryLinkCodexRawEvidenceV1,
   type CodeMemoryLinkCodexRawEvidenceV1,
-} from '../src/evaluation/code-memory-link-codex-evidence.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-codex-evidence';
 import {
   CODE_MEMORY_LINK_EVALUATION_ACCOUNT,
   CODE_MEMORY_LINK_EVALUATION_AGENT_ID,

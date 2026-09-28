@@ -194,7 +194,7 @@ jobs:
           THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
         run: ./dist/threadnote --home "$THREADNOTE_HOME" doctor --dry-run --strict
       - name: Produce a real embedding with the release payload
-        run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+        run: bun --bun vitest run --config vitest.e2e.config.ts apps/threadnote/test/e2e/local-bins.e2e.ts
       - run: bun run archive:release
         env:
           THREADNOTE_RELEASE_TARGET: linux-${{ matrix.architecture }}
@@ -277,7 +277,7 @@ jobs:
           THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
         run: ./dist/threadnote --home "$THREADNOTE_HOME" doctor --dry-run --strict
       - name: Produce a real embedding with the release payload
-        run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+        run: bun --bun vitest run --config vitest.e2e.config.ts apps/threadnote/test/e2e/local-bins.e2e.ts
 
       - name: Import and select Developer ID certificate
         shell: bash
@@ -458,7 +458,7 @@ jobs:
           & .\dist\threadnote.exe --home $env:THREADNOTE_HOME doctor --dry-run --strict
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Produce a real embedding with the release payload
-        run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+        run: bun --bun vitest run --config vitest.e2e.config.ts apps/threadnote/test/e2e/local-bins.e2e.ts
 
       - name: Verify PowerShell installer and installed runtime
         run: bun --bun vitest run --config vitest.windows-e2e.config.ts

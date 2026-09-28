@@ -1,7 +1,7 @@
 import {ScriptError} from '../effect/errors.js';
 import {BunFileSystem, BunPath} from '@effect/platform-bun';
 import {Effect, FileSystem, Layer, ManagedRuntime, Path} from 'effect';
-import {sha256HexSync} from '../../src/crypto/sha256.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
 
 const platformRuntime = ManagedRuntime.make(Layer.merge(BunFileSystem.layer, BunPath.layer));
 const fileSystem = platformRuntime.runSync(FileSystem.FileSystem);

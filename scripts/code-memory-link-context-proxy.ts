@@ -9,8 +9,8 @@ import {spawn} from 'node:child_process';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {Schema} from 'effect';
-import {EffectSchemaSdkTools} from '../src/mcp/effect_schema_sdk_tools.js';
-import {AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN, measureAgentToolResponse} from '../src/evaluation/agent-response.js';
+import {EffectSchemaSdkTools} from '@threadnote/threadnote/mcp/effect_schema_sdk_tools';
+import {AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN, measureAgentToolResponse} from '@threadnote/protocol/agent-response';
 import {
   CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1,
   canonicalizeCodeMemoryLinkContextBriefResultV1,
@@ -23,7 +23,7 @@ import {
   type CodeMemoryLinkContextBriefProxyReceiptV1,
   type CodeMemoryLinkArmPacketV1,
   type CodeMemoryLinkTaskPacketV1,
-} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import {
   CODE_MEMORY_LINK_PROXY_CAPABILITY_ENV,
   CODE_MEMORY_LINK_PROXY_SERVER_NAME,
