@@ -1,0 +1,27 @@
+{
+  "name": "@threadnote/store",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./layout": "./src/layout.ts",
+    "./resource/lock": "./src/resource/lock.ts",
+    "./resource/mutation_generation": "./src/resource/mutation_generation.ts",
+    "./resource/recall-invalidation": "./src/resource/recall-invalidation.ts",
+    "./resource-id": "./src/resource-id.ts",
+    "./resource-segment": "./src/resource-segment.ts",
+    "./resource-store": "./src/resource-store.ts"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.115",
+    "@threadnote/platform": "workspace:*"
+  },
+  "devDependencies": {
+    "@threadnote/testing": "workspace:*",
+    "@effect/vitest": "4.0.0-rc.115",
+    "vitest": "5.0.1",
+    "fast-check": "4.10.1"
+  },
+  "scripts": {
+    "test": "bun --bun vitest run --config ../../vitest.config.ts --root ../.. packages/store/test"
+  }
+}

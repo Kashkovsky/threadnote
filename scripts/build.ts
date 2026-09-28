@@ -13,9 +13,9 @@ interface PackageManifest {
 }
 
 const ROOT_URL = new URL('..', import.meta.url);
-const RELEASE_DIRECTORIES = ['assets', 'config', 'cursor-plugin', 'manager'] as const;
+const RELEASE_DIRECTORIES = ['assets', 'config', 'cursor-plugin'] as const;
 const REMOTE_MEMORY_MIGRATION_DIRECTORY = 'remote-memory/migrations';
-const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;
+const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'apps', 'packages', 'site-dist'] as const;
 const RELEASE_FILES = ['.threadnoteignore', 'LICENSE', 'THIRD_PARTY.md'] as const;
 const NATIVE_RUNTIME_PACKAGE = 'node-llama-cpp';
 const OPTIONAL_NATIVE_PACKAGE = /^@node-llama-cpp\//;
@@ -62,8 +62,11 @@ const build = Effect.gen(function* () {
   for (const directory of RELEASE_DIRECTORIES) {
     yield* fs.copy(path.join(root, directory), path.join(outputRoot, directory), {overwrite: true});
   }
+  yield* fs.copy(path.join(root, 'packages', 'manager', 'static'), path.join(outputRoot, 'manager'), {
+    overwrite: true,
+  });
   yield* fs.copy(
-    path.join(root, 'src', 'remote_memory', 'migrations'),
+    path.join(root, 'packages', 'remote-memory', 'src', 'migrations'),
     path.join(outputRoot, REMOTE_MEMORY_MIGRATION_DIRECTORY),
     {overwrite: true},
   );
@@ -87,7 +90,7 @@ const build = Effect.gen(function* () {
       THREADNOTE_VERSION: JSON.stringify(version),
     },
     bytecode: true,
-    entrypoints: [path.join(root, 'src', 'standalone.ts')],
+    entrypoints: [path.join(root, 'apps', 'threadnote', 'src', 'standalone.ts')],
     format: 'esm',
     minify: true,
     sourcemap: 'linked',
@@ -98,7 +101,7 @@ const build = Effect.gen(function* () {
   }
 
   yield* runBunBuild({
-    entrypoints: [path.join(root, 'src', 'manager', 'ui.tsx')],
+    entrypoints: [path.join(root, 'packages', 'manager', 'src', 'ui.tsx')],
     format: 'iife',
     minify: true,
     naming: 'app.js',

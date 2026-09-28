@@ -1,20 +1,21 @@
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {BunRuntime} from '@effect/platform-bun';
 import {Database} from 'bun:sqlite';
 import {Clock, Console, Effect, FileSystem, Layer, Path} from 'effect';
-import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {BUILTIN_MODEL_MANIFESTS} from '../src/models/builtin.js';
-import {LocalModelCatalog} from '../src/models/catalog.js';
-import {selectLocalModel} from '../src/models/selection.js';
-import {LocalModelStore, type LocalModelStoreShape} from '../src/models/store.js';
+import {LocalModelRuntime} from '@threadnote/inference/engine/local-model-runtime';
+
+import {BUILTIN_MODEL_MANIFESTS} from '@threadnote/inference/models/builtin';
+import {LocalModelCatalog} from '@threadnote/inference/models/catalog';
+import {selectLocalModel} from '@threadnote/inference/models/selection';
+import {LocalModelStore, type LocalModelStoreShape} from '@threadnote/inference/models/store';
 import {
   rebuildVectorIndex,
   selectedSemanticScores,
   vectorIndexDatabaseFilename,
   type VectorIndexProgress,
-} from '../src/search/vector-index.js';
+} from '@threadnote/recall/vector-index';
 import {assessRecallVectorPerformance} from './recall-vector-performance-budget.js';
 import {assessVectorDatabaseStorage, createCompactedSqliteSnapshot} from './recall-vector-storage-budget.js';
 
@@ -54,7 +55,7 @@ const benchmarkLayer = Layer.mergeAll(
   LocalModelCatalog.layer([manifest]),
   modelStoreLayer,
   runtimeLayer,
-  SystemInfo.layer,
+  ScriptSystemInfoLayer,
 );
 
 const program = Effect.scoped(

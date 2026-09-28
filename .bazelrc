@@ -1,0 +1,7 @@
+build --enable_bzlmod
+build --spawn_strategy=sandboxed,local
+build --sandbox_default_allow_network=false
+build --symlink_prefix=.context/bazel-
+build --incompatible_strict_action_env
+test --test_output=errors
+test --test_env=TZ=UTC

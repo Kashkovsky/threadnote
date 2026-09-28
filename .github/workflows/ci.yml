@@ -3,14 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '.github/release-notes/**'
-      - '.gitignore'
-      - '.threadnoteignore'
-      - '*.md'
-      - 'LICENSE'
-      - 'docs/**'
-      - 'website/**'
   pull_request:
     branches: [main, codex/4.0.0, release/5.0.0]
 
@@ -21,393 +13,149 @@ env:
   BUN_VERSION: 1.4.2
 
 jobs:
-  changes:
-    name: Classify changed paths
+  bazel:
+    name: Bazel selected checks
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     outputs:
-      actions: ${{ steps.scopes.outputs.actions }}
-      build: ${{ steps.scopes.outputs.build }}
-      code: ${{ steps.scopes.outputs.code }}
-      guidance: ${{ steps.scopes.outputs.guidance }}
-      long_test_groups: ${{ steps.scopes.outputs.long_test_groups }}
-      long_test_mode: ${{ steps.scopes.outputs.long_test_mode }}
-      postgres_test_mode: ${{ steps.scopes.outputs.postgres_test_mode }}
-      postgres_test_paths: ${{ steps.scopes.outputs.postgres_test_paths }}
-      quality: ${{ steps.scopes.outputs.quality }}
-      release: ${{ steps.scopes.outputs.release }}
-      site_check: ${{ steps.scopes.outputs.site_check }}
-      site_build: ${{ steps.scopes.outputs.site_build }}
-      standard_test_mode: ${{ steps.scopes.outputs.standard_test_mode }}
-      standard_test_paths: ${{ steps.scopes.outputs.standard_test_paths }}
-      windows: ${{ steps.scopes.outputs.windows }}
+      recall_quality: ${{ steps.selection.outputs.recall_quality }}
+      release_matrix: ${{ steps.selection.outputs.release_matrix }}
+      windows_smoke: ${{ steps.selection.outputs.windows_smoke }}
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_DB: threadnote_ci
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d threadnote_ci"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - id: scopes
-        name: Select required checks conservatively
+      - name: Install frozen workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prepare explicit website metadata
+        run: bun apps/website/tools/site-prepared-metadata.ts --output apps/website/.bazel-inputs/metadata.json
+
+      - name: Verify generated Bazel declarations
+        run: bun tools/bazel/generate.mjs --check
+
+      - id: selection
+        name: Select affected Bazel targets
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: bun test/ci/ci-scopes.ts --base "$BASE_SHA" --head "$HEAD_SHA"
-
-  quality:
-    name: Static checks and build
-    needs: changes
-    runs-on: ubuntu-latest
-    env:
-      THREADNOTE_LINT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
+        run: bun tools/ci/bazel-select.mjs --base "$BASE_SHA"
 
       - name: Validate GitHub Actions workflows
-        if: needs.changes.outputs.actions == 'true'
+        if: steps.selection.outputs.workflow_validation == 'true'
         uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
           args: -color
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
+      - name: Verify Bazel selection edge cases
+        if: steps.selection.outputs.bazel_validation == 'true'
+        run: bun tools/bazel/verify-selection.mjs
 
-      - run: bun install --frozen-lockfile
+      - name: Execute selected Bazel targets
+        run: bun tools/ci/bazel-run-selected.mjs
 
-      - run: bun run prettier:check
-
-      - run: bun run lint
-        if: needs.changes.outputs.code == 'true'
-        env:
-          LINT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-
-      - run: bun run typecheck
-        if: needs.changes.outputs.code == 'true'
-
-      - name: Check website contracts
-        if: needs.changes.outputs.site_check == 'true' && needs.changes.outputs.code != 'true'
-        run: bun run site:check
-
-      - run: bun run site:build
-        if: needs.changes.outputs.site_build == 'true'
-        env:
-          THREADNOTE_SITE_BASE: /
-
-      - run: bun run build
-        if: needs.changes.outputs.build == 'true' || needs.changes.outputs.release == 'true'
-
-      - run: bun run check:self-contained
-        if: needs.changes.outputs.release == 'true'
-
-  standard_tests:
-    name: Tests · standard ${{ matrix.shard }}/4
-    needs: changes
-    if: needs.changes.outputs.standard_test_mode == 'full'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Run ordinary tests with a deterministic bounded worker pool
-        run: bun --bun vitest run --shard=${{ matrix.shard }}/4
-        env:
-          THREADNOTE_VITEST_STANDARD_SHARD: ${{ matrix.shard }}
-
-  standard_tests_selected:
-    name: Tests · standard · selected
-    needs: changes
-    if: needs.changes.outputs.standard_test_mode == 'selected'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Run changed ordinary tests with a deterministic bounded worker pool
-        run: bun --bun vitest run
-        env:
-          THREADNOTE_VITEST_SELECTION: ${{ needs.changes.outputs.standard_test_paths }}
-
-  agent_instructions:
-    name: Agent instructions and packaged skills
-    needs: changes
-    if: needs.changes.outputs.guidance == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - run: bun install --frozen-lockfile
-      - run: bun --bun vitest run test/unit/agent-instructions.test.ts
-      - run: >-
-          bun --bun vitest run test/unit/cursor-plugin.test.ts
-          -t "matches Cursor manifest anatomy and the canonical Threadnote instructions"
-
-  long_tests:
-    name: Tests · long · ${{ matrix.group }}
-    needs: changes
-    if: needs.changes.outputs.long_test_mode != 'none'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        group: ${{ fromJSON(needs.changes.outputs.long_test_groups) }}
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Run isolated long-running group with bounded Vitest workers
-        run: bun --bun vitest run
-        env:
-          THREADNOTE_VITEST_LONG_GROUP: ${{ matrix.group }}
-
-  remote_memory_postgres:
-    name: Tests · remote memory · PostgreSQL
-    needs: changes
-    if: needs.changes.outputs.postgres_test_mode == 'full'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:17.6-alpine
-        env:
-          POSTGRES_DB: threadnote_ci
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d threadnote_ci"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 10
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Run isolated PostgreSQL integration coverage
-        run: bun --bun vitest run test/integration/remote-memory-*.test.ts
-        env:
-          THREADNOTE_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci
-
-  remote_memory_postgres_selected:
-    name: Tests · remote memory · PostgreSQL · selected
-    needs: changes
-    if: needs.changes.outputs.postgres_test_mode == 'selected'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:17.6-alpine
-        env:
-          POSTGRES_DB: threadnote_ci
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d threadnote_ci"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 10
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Run changed PostgreSQL integration coverage
-        run: bun --bun vitest run
-        env:
-          THREADNOTE_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/threadnote_ci
-          THREADNOTE_VITEST_SELECTION: ${{ needs.changes.outputs.postgres_test_paths }}
-
-  test:
-    name: Unit and integration tests
-    needs:
-      [
-        changes,
-        quality,
-        agent_instructions,
-        standard_tests,
-        standard_tests_selected,
-        long_tests,
-        remote_memory_postgres,
-        remote_memory_postgres_selected,
-      ]
-    if: always()
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Require every applicable test shard
-        env:
-          CHANGES_RESULT: ${{ needs.changes.result }}
-          QUALITY_RESULT: ${{ needs.quality.result }}
-          CODE_CHANGED: ${{ needs.changes.outputs.code }}
-          GUIDANCE_CHANGED: ${{ needs.changes.outputs.guidance }}
-          STANDARD_MODE: ${{ needs.changes.outputs.standard_test_mode }}
-          LONG_MODE: ${{ needs.changes.outputs.long_test_mode }}
-          POSTGRES_MODE: ${{ needs.changes.outputs.postgres_test_mode }}
-          AGENT_INSTRUCTIONS_RESULT: ${{ needs.agent_instructions.result }}
-          STANDARD_RESULT: ${{ needs.standard_tests.result }}
-          STANDARD_SELECTED_RESULT: ${{ needs.standard_tests_selected.result }}
-          LONG_RESULT: ${{ needs.long_tests.result }}
-          REMOTE_MEMORY_POSTGRES_RESULT: ${{ needs.remote_memory_postgres.result }}
-          REMOTE_MEMORY_POSTGRES_SELECTED_RESULT: ${{ needs.remote_memory_postgres_selected.result }}
+      - name: Record authoritative selection
+        if: always()
         run: |
-          test "$CHANGES_RESULT" = success
-          test "$QUALITY_RESULT" = success
-          if [ "$GUIDANCE_CHANGED" = true ]; then
-            test "$AGENT_INSTRUCTIONS_RESULT" = success
+          if [ -f .context/bazel-selection/selection.json ]; then
+            echo '### Bazel CI selection' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat .context/bazel-selection/selection.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
-          active_test_lanes=0
-          case "$STANDARD_MODE" in
-            full) test "$STANDARD_RESULT" = success || exit 1; active_test_lanes=$((active_test_lanes + 1)) ;;
-            selected) test "$STANDARD_SELECTED_RESULT" = success || exit 1; active_test_lanes=$((active_test_lanes + 1)) ;;
-            none) ;;
-            *) echo "Invalid standard test mode: $STANDARD_MODE" >&2; exit 1 ;;
-          esac
-          case "$LONG_MODE" in
-            full|selected) test "$LONG_RESULT" = success || exit 1; active_test_lanes=$((active_test_lanes + 1)) ;;
-            none) ;;
-            *) echo "Invalid long test mode: $LONG_MODE" >&2; exit 1 ;;
-          esac
-          case "$POSTGRES_MODE" in
-            full) test "$REMOTE_MEMORY_POSTGRES_RESULT" = success || exit 1; active_test_lanes=$((active_test_lanes + 1)) ;;
-            selected) test "$REMOTE_MEMORY_POSTGRES_SELECTED_RESULT" = success || exit 1; active_test_lanes=$((active_test_lanes + 1)) ;;
-            none) ;;
-            *) echo "Invalid PostgreSQL test mode: $POSTGRES_MODE" >&2; exit 1 ;;
-          esac
-          if [ "$CODE_CHANGED" = true ]; then
-            test "$active_test_lanes" -gt 0
-          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bazel-selection
+          path: .context/bazel-selection/
+          include-hidden-files: true
 
   recall-quality:
     name: Recall quality and non-inferiority
-    needs: changes
-    if: needs.changes.outputs.quality == 'true'
+    needs: bazel
+    if: needs.bazel.outputs.recall_quality == 'true'
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
-
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
       - run: bun install --frozen-lockfile
-
       - name: Frozen v1 quality and indexed-recall smoke
         run: bun run eval:recall
-
       - name: Frozen native code graph quality gate
         run: bun run eval:code-graph
-
       - name: Bounded cross-repository workset quality smoke
         run: bun run eval:code-graph-workset -- --sizes 1,8
-
       - name: Actual-runtime memory citation and Context Brief gate
         run: bun run eval:context-brief-citations:runtime
-
       - name: Actual-runtime code-to-memory backlink gate
         run: bun run eval:code-memory-link-bench
-
       - name: Recall-v2 category and safety gate
         run: >-
           bun run eval:recall:v2 --
-          --baseline test/evaluation/baselines/threadnote-4.2.7-hybrid-v8/recall-v2-lexical.json
+          --baseline apps/threadnote/test/evaluation/baselines/threadnote-4.2.7-hybrid-v8/recall-v2-lexical.json
           --fail-on-contract
           --fail-on-regression
           --max-failures 10
 
   windows-smoke:
     name: Bun unit smoke · Windows
-    needs: changes
-    if: needs.changes.outputs.windows == 'true'
+    needs: bazel
+    if: needs.bazel.outputs.windows_smoke == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v7
-
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: >-
           bun --bun vitest run
-          test/unit/windows-support.test.ts
-          test/unit/command-shim.test.ts
-          test/unit/effect-command.test.ts
-          test/unit/effect-system.test.ts
-          test/unit/standalone-process-lease.test.ts
-          test/unit/process-diagnostics.test.ts
-          test/unit/local-ai.test.ts
-          test/unit/update.test.ts
-          test/unit/mcp.test.ts
+          apps/threadnote/test/unit/windows-support.test.ts
+          apps/threadnote/test/unit/command-shim.test.ts
+          apps/threadnote/test/unit/effect-command.test.ts
+          apps/threadnote/test/unit/effect-system.test.ts
+          apps/threadnote/test/unit/standalone-process-lease.test.ts
+          apps/threadnote/test/unit/process-diagnostics.test.ts
+          apps/threadnote/test/unit/local-ai.test.ts
+          apps/threadnote/test/unit/update.test.ts
+          apps/threadnote/test/unit/mcp.test.ts
       - name: Graph repair quarantine smoke
         run: >-
           bun --bun vitest run
-          test/unit/code-graph.maintenance-bounded.test.ts
+          apps/threadnote/test/unit/code-graph.maintenance-bounded.test.ts
           -t "removes a database-less orphan spool"
 
   standalone-targets:
     name: Bytecode compile · ${{ matrix.target }}
-    needs: changes
-    if: needs.changes.outputs.release == 'true'
+    needs: bazel
+    if: needs.bazel.outputs.release_matrix == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -424,11 +172,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
       - run: bun install --frozen-lockfile
       - run: bun run compile:targets
         env:
@@ -436,29 +182,50 @@ jobs:
 
   self-contained-distribution:
     name: Self-contained Bun release · ${{ matrix.os }}
-    needs: changes
-    if: needs.changes.outputs.release == 'true'
+    needs: bazel
+    if: needs.bazel.outputs.release_matrix == 'true'
     strategy:
       fail-fast: false
       matrix:
-        # Gate both exact macOS runner architectures used by the release workflow.
         os: [ubuntu-latest, macos-15, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v7
-
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-
       - run: bun install --frozen-lockfile
-
       - run: bun run check:self-contained
       - name: Platform process identity smoke
-        run: bun --bun vitest run test/unit/effect-system.test.ts
+        run: bun --bun vitest run apps/threadnote/test/unit/effect-system.test.ts
       - run: bun run test:smoke:self-contained
-
       - name: Installed release E2E
         run: bun run test:e2e:local-bins
+
+  test:
+    name: Unit and integration tests
+    if: always()
+    needs: [bazel, recall-quality, windows-smoke, standalone-targets, self-contained-distribution]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require every selected lane
+        env:
+          BAZEL_RESULT: ${{ needs.bazel.result }}
+          RECALL_SELECTED: ${{ needs.bazel.outputs.recall_quality }}
+          RELEASE_SELECTED: ${{ needs.bazel.outputs.release_matrix }}
+          WINDOWS_SELECTED: ${{ needs.bazel.outputs.windows_smoke }}
+          RECALL_RESULT: ${{ needs.recall-quality.result }}
+          WINDOWS_RESULT: ${{ needs.windows-smoke.result }}
+          STANDALONE_RESULT: ${{ needs.standalone-targets.result }}
+          SELF_CONTAINED_RESULT: ${{ needs.self-contained-distribution.result }}
+        run: |
+          test "$BAZEL_RESULT" = success
+          if [ "$RECALL_SELECTED" = true ]; then test "$RECALL_RESULT" = success; fi
+          if [ "$WINDOWS_SELECTED" = true ]; then test "$WINDOWS_RESULT" = success; fi
+          if [ "$RELEASE_SELECTED" = true ]; then
+            test "$STANDALONE_RESULT" = success
+            test "$SELF_CONTAINED_RESULT" = success
+          fi

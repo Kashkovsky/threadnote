@@ -22,7 +22,7 @@ import {delimiter, dirname, extname, isAbsolute, join, posix, relative, resolve,
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {Effect} from 'effect';
-import {codeGraphCommittedFileContentHash} from '../src/code_graph/content_identity.js';
+import {codeGraphCommittedFileContentHash} from '@threadnote/graph/content_identity';
 import {
   CODE_MEMORY_LINK_AGENT_AB_SCHEDULE_ALGORITHM_VERSION,
   codeMemoryLinkAgentAbAssignmentHash,
@@ -36,7 +36,7 @@ import {
   type CodeMemoryLinkAgentAbManifestTaskV1,
   type CodeMemoryLinkAgentAbManifestV1,
   type CodeMemoryLinkAgentAbScenarioFamily,
-} from '../src/evaluation/code-memory-link-agent-ab.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-ab';
 import {
   CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1,
   CODE_MEMORY_LINK_AGENT_PROTOCOL_VERSION,
@@ -60,7 +60,7 @@ import {
   type CodeMemoryLinkRubricV1,
   type CodeMemoryLinkSealedSuiteV1,
   type CodeMemoryLinkTaskPacketV1,
-} from '../src/evaluation/code-memory-link-agent-protocol.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import {
   CODE_MEMORY_LINK_AGENT_SUITE_ACCOUNT,
   CODE_MEMORY_LINK_AGENT_SUITE_AGENT_ID,
@@ -78,7 +78,7 @@ import {
   createCodeMemoryLinkAgentSuiteCorpusV1,
   type CodeMemoryLinkAgentSuiteMemorySeedV1,
   type CodeMemoryLinkAgentSuiteTaskDefinitionV1,
-} from '../src/evaluation/code-memory-link-agent-suite.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-suite';
 import {
   codeMemoryLinkClientArgumentVectorHash,
   codeMemoryLinkClientImplementationDescriptorHash,
@@ -87,11 +87,11 @@ import {
   parseCodeMemoryLinkClientImplementationDescriptorV1,
   type CodeMemoryLinkClientArtifactBindingV2,
   type CodeMemoryLinkClientImplementationDescriptorV1,
-} from '../src/evaluation/code-memory-link-client-descriptor.js';
-import {parseMemoryDocument, type MemoryRecord} from '../src/memory/document.js';
-import {MEMORY_SCHEMA_VERSION} from '../src/memory/code/citation.js';
-import {parseContextBriefV1} from '../src/context_brief/projector.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-client-descriptor';
+import {parseMemoryDocument, type MemoryRecord} from '@threadnote/memory/document';
+import {MEMORY_SCHEMA_VERSION} from '@threadnote/memory/code/citation';
+import {parseContextBriefV1} from '@threadnote/context/projector';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {verifyCodeMemoryLinkEvaluatedSubject} from './code-memory-link-evaluated-subject.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
@@ -317,7 +317,10 @@ export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: 
     for (const task of corpus.calibrationTasks) {
       calibrationPrepared.push(await prepareTask(task, candidate, options, join(workRoot, task.taskId)));
     }
-    const judgeProgramPath = join(sourceRoot, 'test/evaluation/fixtures/code-memory-link-agent-suite-v1/judge.ts');
+    const judgeProgramPath = join(
+      sourceRoot,
+      'apps/threadnote/test/evaluation/fixtures/code-memory-link-agent-suite-v1/judge.ts',
+    );
     const judgeProgram = await readReviewedTextFile(judgeProgramPath, 'sealed static judge');
     const sealed = assembleCodeMemoryLinkSealedSuiteV1({
       corpusHash: corpus.corpusHash,
@@ -1135,7 +1138,9 @@ async function createManifest(input: {
     },
     implementationDescriptorHash: client.implementationDescriptorHash,
   })) satisfies readonly CodeMemoryLinkAgentAbManifestClientV1[];
-  const evaluatorHash = await sha256File(join(input.sourceRoot, 'src/evaluation/code-memory-link-agent-ab.ts'));
+  const evaluatorHash = await sha256File(
+    join(input.sourceRoot, 'apps/threadnote/src/evaluation/code-memory-link-agent-ab.ts'),
+  );
   const schedule = deriveCodeMemoryLinkAgentAbScheduleV1({
     clients: manifestClients,
     scheduleAlgorithmVersion: CODE_MEMORY_LINK_AGENT_AB_SCHEDULE_ALGORITHM_VERSION,

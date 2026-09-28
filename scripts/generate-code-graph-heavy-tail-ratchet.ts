@@ -1,7 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect, Path} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   assertHeavyTailReleaseRatchet,
   parseCodeGraphHeavyTailReleaseEvidence,
@@ -17,7 +17,7 @@ const generate = Effect.gen(function* () {
   const path = yield* Path.Path;
   const checkedRatchetPath = path.resolve(
     yield* path.fromFileUrl(new URL('..', import.meta.url)),
-    'test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json',
+    'apps/threadnote/test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json',
   );
   if (path.resolve(ratchetPath) !== checkedRatchetPath) {
     return yield* ScriptError.make({

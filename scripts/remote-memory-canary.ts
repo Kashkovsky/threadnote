@@ -1,8 +1,8 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Console, Effect, Schema} from 'effect';
-import {fromPromiseInterruptible} from '../src/effect/errors.js';
-import {randomUuidV4} from '../src/crypto/uuid.js';
-import {parseRemoteShareAddress} from '../src/memory_domain/address.js';
+import {fromPromiseInterruptible} from '@threadnote/platform/errors';
+import {randomUuidV4} from '@threadnote/threadnote/crypto/uuid';
+import {parseRemoteShareAddress} from '@threadnote/memory/remote/address';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const MAX_RESPONSE_BYTES = 1024 * 1024;

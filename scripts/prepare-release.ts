@@ -1,10 +1,15 @@
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {printJson, scriptArguments} from './effect/script.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Path, Schema} from 'effect';
-import {SystemInfo} from '../src/effect/system.js';
-import {parseStableReleaseVersion, releaseHeadlineFromSummary, summarizeReleaseNote} from './site-release-notes.js';
+
+import {
+  parseStableReleaseVersion,
+  releaseHeadlineFromSummary,
+  summarizeReleaseNote,
+} from '@threadnote/website/release-notes';
 
 const ROOT_URL = new URL('..', import.meta.url);
 const RELEASE_NOTES_HEADING = "## What's new";
@@ -173,7 +178,7 @@ export const prepareRelease = Effect.fn('prepareRelease.run')(function* (
   return plan;
 });
 
-const systemLayer = SystemInfo.layer;
+const systemLayer = ScriptSystemInfoLayer;
 const prepareLayer = systemLayer.pipe(Layer.provideMerge(BunServices.layer));
 const program = Effect.gen(function* () {
   const options = parsePrepareReleaseArguments(yield* scriptArguments());

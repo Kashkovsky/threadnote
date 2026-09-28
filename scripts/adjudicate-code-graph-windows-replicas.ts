@@ -1,16 +1,17 @@
 #!/usr/bin/env bun
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import {sha256Hex} from '../src/effect/digest.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {parseBenchmarkArtifactV1, type BenchmarkArtifactV1} from '../src/evaluation/benchmark.js';
+import {sha256Hex} from '@threadnote/platform/digest';
+
+import {parseBenchmarkArtifactV1, type BenchmarkArtifactV1} from '@threadnote/evidence/benchmark';
 import {enforceCodeGraphBenchmarkBudget} from './benchmark-code-graph.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
-const DEFAULT_BUDGET = 'test/evaluation/baselines/code-graph-v1/budgets.json';
+const DEFAULT_BUDGET = 'apps/threadnote/test/evaluation/baselines/code-graph-v1/budgets.json';
 const WINDOWS_REPLICA_FILE = /^code-graph-Windows-X64-replica-([123])\.json$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const GIT_COMMIT = /^[0-9a-f]{40}$/u;
@@ -582,6 +583,6 @@ const program = Effect.gen(function* () {
   }
 });
 
-const scriptLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
+const scriptLayer = Layer.mergeAll(BunServices.layer, ScriptSystemInfoLayer);
 
 if (import.meta.main) BunRuntime.runMain(provideScriptLayer(program, scriptLayer));

@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load("//tools/bazel:package_files.bzl", "export_package_files")
+
+export_package_files(["**"])
+
+go_library(
+    name = "canary_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/Kashkovsky/threadnote/infra/telemetry-gateway/cmd/canary",
+    visibility = ["//visibility:private"],
+    deps = [
+        "@io_opentelemetry_go_proto_otlp//collector/trace/v1:trace",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_binary(
+    name = "canary",
+    embed = [":canary_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "canary_test",
+    srcs = ["main_test.go"],
+    embed = [":canary_lib"],
+    deps = [
+        "@io_opentelemetry_go_proto_otlp//collector/trace/v1:trace",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

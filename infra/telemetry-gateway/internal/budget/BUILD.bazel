@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("//tools/bazel:package_files.bzl", "export_package_files")
+
+package(default_visibility = ["//infra/telemetry-gateway:__subpackages__"])
+
+export_package_files(["**"])
+
+go_library(
+    name = "budget",
+    srcs = ["budget.go"],
+    importpath = "github.com/Kashkovsky/threadnote/infra/telemetry-gateway/internal/budget",
+)
+
+go_test(
+    name = "budget_test",
+    srcs = ["budget_test.go"],
+    embed = [":budget"],
+)

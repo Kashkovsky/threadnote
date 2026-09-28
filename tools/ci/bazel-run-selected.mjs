@@ -1,0 +1,29 @@
+/* oxlint-disable effecttsgo/node-builtin-import -- CI artifact and Bazel subprocess boundary. */
+import {readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+import {bazelPath} from '../bazel/cli-tools.mjs';
+
+const root = resolve(import.meta.dir, '../..');
+const selection = JSON.parse(
+  readFileSync(resolve(root, process.argv[2] ?? '.context/bazel-selection/selection.json'), 'utf8'),
+);
+const inventory = JSON.parse(readFileSync(resolve(root, 'tools/bazel/targets.json'), 'utf8'));
+const allowed = new Set(inventory.targets.map(target => target.label));
+if (!Array.isArray(selection.targets) || selection.targets.some(label => !allowed.has(label)))
+  throw new Error('Invalid modeled target selection');
+const executable = await bazelPath(root);
+for (const kind of ['test', 'action']) {
+  const targets = selection.targets.filter(label =>
+    inventory.targets.some(target => target.label === label && target.kind === kind),
+  );
+  if (!targets.length) continue;
+  const child = Bun.spawn([executable, kind === 'test' ? 'test' : 'build', ...targets], {
+    cwd: root,
+    stdin: 'inherit',
+    stdout: 'inherit',
+    stderr: 'inherit',
+  });
+  const code = await child.exited;
+  if (code !== 0) process.exit(code);
+}
+process.stdout.write(`Validated ${selection.targets.length} selected modeled targets.\n`);

@@ -1,11 +1,11 @@
-import {measureAgentToolResponse} from '../src/evaluation/agent-response.js';
-import {sha256HexSync} from '../src/crypto/sha256.js';
+import {measureAgentToolResponse} from '@threadnote/protocol/agent-response';
+import {sha256HexSync} from '@threadnote/platform/sha256';
 import {
   memoryReadMcpStructuredContent,
   projectMemoryRead,
   type MemoryReadMcpResponseFormat,
   type MemoryReadResource,
-} from '../src/memory/read/projection.js';
+} from '@threadnote/memory/read/projection';
 
 const responseFormat: MemoryReadMcpResponseFormat = process.argv.includes('--text') ? 'text' : 'dual';
 
@@ -39,7 +39,10 @@ const cases = [
 const caseHash = sha256HexSync(JSON.stringify(cases));
 const baseline = JSON.parse(
   await Bun.file(
-    new URL('../test/evaluation/baselines/memory-read-token-efficiency-v1/baseline.json', import.meta.url),
+    new URL(
+      '../apps/threadnote/test/evaluation/baselines/memory-read-token-efficiency-v1/baseline.json',
+      import.meta.url,
+    ),
   ).text(),
 ) as {
   readonly caseHash: string;

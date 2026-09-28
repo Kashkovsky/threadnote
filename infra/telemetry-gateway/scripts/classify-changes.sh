@@ -12,7 +12,7 @@ while IFS= read -r -d '' path; do
       .github/workflows/telemetry-gateway.yml | \
       .github/workflows/telemetry-delivery-canary.yml | \
       docs/operations/telemetry-production.md | docs/telemetry.md | \
-      infra/telemetry-gateway/* | test/unit/telemetry-gateway-*.test.ts)
+      infra/telemetry-gateway/* | infra/telemetry-gateway/test/telemetry-gateway-*.test.ts)
       validate=true
       ;;
   esac

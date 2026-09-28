@@ -1,0 +1,45 @@
+import {Effect, Option} from 'effect';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {extractFileFacts} from '../../extractor.js';
+import {manifestWorkspaceDetector} from '../../workspace.js';
+import {CodeGraphLanguagePackError, type CodeGraphLanguagePack} from '../types.js';
+
+export const codeGraphLanguagePack: CodeGraphLanguagePack = {
+  assets: [],
+  capabilities: new Set(['declarations', 'dependencies', 'workspace']),
+  extractor: {
+    extract: file =>
+      Effect.try({
+        try: () => extractFileFacts(file),
+        catch: cause =>
+          CodeGraphLanguagePackError.make({message: `Could not extract manifest facts from ${file.path}.`, cause}),
+      }),
+    version: sha256HexSync('threadnote-manifest-extractors-v4-typescript-config-patterns'),
+  },
+  files: [
+    {kind: 'basename', language: 'npm-manifest', role: 'manifest', value: 'package.json'},
+    {kind: 'basename', language: 'pnpm-workspace', role: 'workspace', value: 'pnpm-workspace.yaml'},
+    {kind: 'basename', language: 'typescript-config', role: 'workspace', value: 'tsconfig.json'},
+    {kind: 'basename', language: 'typescript-config', role: 'workspace', value: 'tsconfig.jsonc'},
+    {kind: 'basename-pattern', language: 'typescript-config', role: 'workspace', value: 'tsconfig.*.json'},
+    {kind: 'basename-pattern', language: 'typescript-config', role: 'workspace', value: 'tsconfig.*.jsonc'},
+    {kind: 'basename', language: 'go-manifest', role: 'manifest', value: 'go.mod'},
+    {kind: 'basename', language: 'maven-manifest', role: 'manifest', value: 'pom.xml'},
+    {kind: 'basename', language: 'gradle-manifest', role: 'workspace', value: 'settings.gradle'},
+    {kind: 'basename', language: 'gradle-manifest', role: 'workspace', value: 'settings.gradle.kts'},
+    {kind: 'basename', language: 'gradle-manifest', role: 'manifest', value: 'build.gradle'},
+    {kind: 'basename', language: 'gradle-manifest', role: 'manifest', value: 'build.gradle.kts'},
+    {kind: 'basename', language: 'gradle-manifest', role: 'workspace', value: 'gradle.properties'},
+    {kind: 'basename', language: 'swift-package-manifest', role: 'workspace', value: 'package.swift'},
+    {
+      kind: 'path-suffix',
+      language: 'xcode-project',
+      role: 'workspace',
+      value: '.xcodeproj/project.pbxproj',
+    },
+  ],
+  id: 'manifests',
+  resolutionStrategy: {domain: 'workspace', version: 'static-manifests-v3-typescript-config-patterns'},
+  version: '1.2.0',
+  workspaceDetector: Option.some(manifestWorkspaceDetector),
+};

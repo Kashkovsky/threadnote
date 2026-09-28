@@ -9,7 +9,7 @@ const generateCatalog = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = yield* path.fromFileUrl(ROOT_URL);
-  const languagesRoot = path.join(root, 'src', 'code_graph', 'languages');
+  const languagesRoot = path.join(root, 'packages', 'graph', 'src', 'languages');
   const directories = (yield* fs.readDirectory(languagesRoot)).sort();
   const packs: Array<{readonly alias: string; readonly directory: string}> = [];
   for (const directory of directories) {

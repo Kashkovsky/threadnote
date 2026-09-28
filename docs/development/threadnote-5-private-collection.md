@@ -14,7 +14,7 @@ authority, or replayable source contracts fail closed; there is no fixture mode 
 ## Workflow
 
 1. Prepare a private plan matching `Threadnote5CollectionPlan` in
-   `src/evaluation/threadnote-5-release-collection.ts`. Use the canonical candidate descriptor and a new run ID.
+   `apps/threadnote/src/evaluation/threadnote-5-release-collection.ts`. Use the canonical candidate descriptor and a new run ID.
    Preview it with `bun scripts/collect-threadnote-5-release-readiness.ts preview --plan <plan.json>`.
 2. Review the complete plan, including every CLI/MCP operation and synthetic input write. Collection requires the
    exact preview's SHA-256 via `--approved-plan-sha256`, the absolute canonical native standalone payload (ELF/Mach-O,

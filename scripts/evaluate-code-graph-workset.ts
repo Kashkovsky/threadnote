@@ -1,9 +1,9 @@
 import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
-import {runCommandEffect} from '../src/effect/command.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
 import {
   CODE_GRAPH_WORKSET_BASELINE_VERSION,
   codeGraphWorksetEvaluationFixtureHash,
@@ -12,8 +12,8 @@ import {
   type CodeGraphWorksetCoverageObservationV1,
   type CodeGraphWorksetEvaluationMetrics,
   type CodeGraphWorksetEvaluationObservationV1,
-} from '../src/evaluation/code-graph-workset.js';
-import {getThreadnoteVersion} from '../src/release/runtime_version.js';
+} from '@threadnote/threadnote/evaluation/code-graph-workset';
+import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 import {atomicWrite, printJson, scriptArguments} from './effect/script.js';
 import {
   buildCodeGraphWorksetEvaluationFixture,

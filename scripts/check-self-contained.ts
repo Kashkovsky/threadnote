@@ -2,7 +2,7 @@ import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Path} from 'effect';
-import {sha256FileHex} from '../src/effect/digest.js';
+import {sha256FileHex} from '@threadnote/platform/digest';
 
 interface PackageManifest {
   readonly dependencies?: Readonly<Record<string, string>>;
@@ -40,26 +40,37 @@ const FORBIDDEN_LEGACY_FILES = [
   'scripts/check-node-version.cjs',
   'scripts/local-ai-server.py',
 ] as const;
-const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;
+const FORBIDDEN_RELEASE_DIRECTORIES = ['apps', 'docs', 'packages', 'training', 'site-dist'] as const;
+const REMOTE_MEMORY_MIGRATIONS = [
+  '001_initial.sql',
+  '002_git_canonical_pointers.sql',
+  '003_git_ingest_observations.sql',
+  '004_durable_memory_proposals.sql',
+  '005_code_link_backlinks.sql',
+  '006_identity_client_grant_expiry.sql',
+  '007_cloud_admission_profile.sql',
+  '008_hosted_context_health.sql',
+  '009_hosted_context_ci.sql',
+] as const;
 const ALLOWED_LEGACY_RUNTIME_SOURCES = new Set([
-  'src/effect/cli.ts',
-  'src/lifecycle.ts',
-  'src/migration/home.ts',
-  'src/migration/legacy-installations.ts',
-  'src/migration/legacy-runtime.ts',
-  'src/storage/layout.ts',
+  'apps/threadnote/src/effect/cli.ts',
+  'apps/threadnote/src/lifecycle.ts',
+  'apps/threadnote/src/migration/home.ts',
+  'apps/threadnote/src/migration/legacy-installations.ts',
+  'apps/threadnote/src/migration/legacy-runtime.ts',
+  'packages/store/src/layout.ts',
 ]);
 const ALLOWED_LEGACY_IDENTIFIER_SOURCES = new Set([
-  'src/evaluation/recall-fixture.ts',
-  'src/memory/hygiene.ts',
-  'src/migration/home.ts',
-  'src/migration/layout.ts',
-  'src/storage/resource-id.ts',
+  'apps/threadnote/src/evaluation/recall-fixture.ts',
+  'packages/memory/src/hygiene.ts',
+  'apps/threadnote/src/migration/home.ts',
+  'apps/threadnote/src/migration/layout.ts',
+  'packages/store/src/resource-id.ts',
 ]);
 const ALLOWED_PYTHON_LANGUAGE_PACK_SOURCES = new Set([
-  'src/code_graph/languages/catalog.generated.ts',
-  'src/code_graph/languages/generic/definitions.ts',
-  'src/code_graph/languages/tree_sitter_assets.ts',
+  'packages/graph/src/languages/catalog.generated.ts',
+  'packages/graph/src/languages/generic/definitions.ts',
+  'packages/graph/src/languages/tree_sitter_assets.ts',
 ]);
 
 const checkSelfContained = Effect.gen(function* () {
@@ -76,7 +87,13 @@ const checkSelfContained = Effect.gen(function* () {
     }
   }
 
-  for (const file of yield* sourceFiles(fs, path, path.join(root, 'src'))) {
+  const runtimeSourceFiles = [...(yield* sourceFiles(fs, path, path.join(root, 'apps', 'threadnote', 'src')))];
+  for (const name of yield* fs.readDirectory(path.join(root, 'packages'))) {
+    const packageSource = path.join(root, 'packages', name, 'src');
+    if (name !== 'testing' && (yield* fs.exists(packageSource)))
+      runtimeSourceFiles.push(...(yield* sourceFiles(fs, path, packageSource)));
+  }
+  for (const file of runtimeSourceFiles) {
     const relativePath = normalizePath(path.relative(root, file));
     const content = yield* fs.readFileString(file);
     if (/\b(?:openviking|pipx)\b/i.test(content) && !ALLOWED_LEGACY_RUNTIME_SOURCES.has(relativePath)) {
@@ -84,7 +101,7 @@ const checkSelfContained = Effect.gen(function* () {
     }
     if (
       /\bpython\b/i.test(content) &&
-      relativePath !== 'src/migration/legacy-installations.ts' &&
+      relativePath !== 'apps/threadnote/src/migration/legacy-installations.ts' &&
       !ALLOWED_PYTHON_LANGUAGE_PACK_SOURCES.has(relativePath)
     ) {
       failures.push(`Python runtime token outside migration or language-pack metadata: ${relativePath}`);
@@ -98,7 +115,10 @@ const checkSelfContained = Effect.gen(function* () {
     if (/from\s+['"](?:@effect\/platform-node|@effect\/sql-sqlite-node)['"]/.test(content)) {
       failures.push(`Node Effect adapter in production source: ${relativePath}`);
     }
-    if (/from\s+['"]node-llama-cpp['"]/.test(content) && relativePath !== 'src/effect/ai/node-llama-cpp.ts') {
+    if (
+      /from\s+['"]node-llama-cpp['"]/.test(content) &&
+      relativePath !== 'packages/inference/src/engine/node-llama-cpp.ts'
+    ) {
       failures.push(`raw node-llama-cpp import outside adapter: ${relativePath}`);
     }
   }
@@ -210,6 +230,9 @@ const checkSelfContained = Effect.gen(function* () {
       path.join(root, 'dist', 'cursor-plugin', 'assets', 'logo.svg'),
       path.join(root, 'dist', 'cursor-plugin', 'rules', 'threadnote.mdc'),
       path.join(root, 'dist', 'cursor-plugin', 'LICENSE'),
+      path.join(root, 'dist', 'manager', 'app.css'),
+      path.join(root, 'dist', 'manager', 'app.js'),
+      path.join(root, 'dist', 'manager', 'index.html'),
       packagedLogo,
       packagedModelLicense,
       path.join(root, 'dist', 'assets', 'code-graph', 'manifest.json'),
@@ -221,6 +244,7 @@ const checkSelfContained = Effect.gen(function* () {
       path.join(root, 'dist', 'assets', 'code-graph', 'licenses', 'tree-sitter-kotlin.LICENSE'),
       path.join(root, 'dist', 'assets', 'code-graph', 'licenses', 'tree-sitter-swift.LICENSE'),
       path.join(root, 'dist', 'assets', 'code-graph', 'licenses', 'web-tree-sitter.LICENSE'),
+      ...REMOTE_MEMORY_MIGRATIONS.map(name => path.join(root, 'dist', 'remote-memory', 'migrations', name)),
     ]) {
       if (!(yield* fs.exists(required))) {
         failures.push(`standalone build output is missing: ${normalizePath(path.relative(root, required))}`);

@@ -1,0 +1,13 @@
+{
+  "name": "@threadnote/integrations",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./agents": "./src/agents.ts",
+    "./catalog": "./src/catalog.ts",
+    "./catalog.json": "./src/catalog.json"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.115"
+  }
+}

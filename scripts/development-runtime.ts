@@ -1,10 +1,10 @@
 import {ScriptError} from './effect/errors.js';
 import {Effect, FileSystem, Option, Path} from 'effect';
-import {runCommandEffect} from '../src/effect/command.js';
-import {sha256FileHex, sha256Hex} from '../src/effect/digest.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {installationRoot} from '../src/installations.js';
-import {readStandaloneProcessLeaseVerification} from '../src/process/standalone_lease.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {sha256FileHex, sha256Hex} from '@threadnote/platform/digest';
+import {SystemInfo} from '@threadnote/platform/system';
+import {installationRoot} from '@threadnote/threadnote/installations';
+import {readStandaloneProcessLeaseVerification} from '@threadnote/threadnote/process/standalone_lease';
 
 export const DEVELOPMENT_INSTALL_RECEIPT = 'development-install.json';
 export const DEVELOPMENT_INSTALL_RECEIPT_VERSION = 2 as const;
@@ -599,7 +599,7 @@ function parseReleaseMetadata(value: unknown): Option.Option<ReleaseMetadata> {
 
 function canonicalPathEquals(
   path: Path.Path,
-  system: Pick<import('../src/effect/system.js').SystemInfoShape, 'platform'>,
+  system: Pick<import('@threadnote/platform/system').SystemInfoShape, 'platform'>,
   left: string,
   right: string,
 ): boolean {
@@ -616,7 +616,7 @@ function comparePayloadPaths(left: string, right: string): number {
 
 function releaseTargetMatchesHost(
   target: string,
-  system: Pick<import('../src/effect/system.js').SystemInfoShape, 'architecture' | 'platform'>,
+  system: Pick<import('@threadnote/platform/system').SystemInfoShape, 'architecture' | 'platform'>,
 ): boolean {
   const platform = system.platform === 'win32' ? 'windows' : system.platform;
   const architecture = system.architecture === 'arm64' ? '(?:arm64|aarch64)' : system.architecture;

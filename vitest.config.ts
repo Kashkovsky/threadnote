@@ -4,8 +4,7 @@ import {
   ciLongRunningTestGroups,
   ciSerializedLongRunningTestGroups,
   type CiLongRunningTestGroupName,
-} from './test/ci/vitest-plan.js';
-import {isOrdinaryCiTestPath} from './test/ci/ci-scopes.js';
+} from './tools/ci/vitest-plan.js';
 
 const lifecycleAlphaVerbs =
   'aliases|atomically|attaches|batches|builds|changes|coalesces|collapses|counts|falls|materializes|serves|shares';
@@ -27,85 +26,74 @@ const ciLongRunningTestPatterns: Partial<Record<string, RegExp>> = {
   ),
 };
 
-const ciLongRunningGroupName = process.env.THREADNOTE_VITEST_LONG_GROUP;
-const ciLongRunningGroup = ciLongRunningGroupName
-  ? ciLongRunningTestGroups[ciLongRunningGroupName as CiLongRunningTestGroupName]
-  : undefined;
-const ciSerializedLongGroup = ciLongRunningGroupName
-  ? ciSerializedLongRunningTestGroups.has(ciLongRunningGroupName as CiLongRunningTestGroupName)
-  : false;
+export const createVitestConfig = (ciLongRunningGroupName = process.env.THREADNOTE_VITEST_LONG_GROUP) => {
+  const ciLongRunningGroup = ciLongRunningGroupName
+    ? ciLongRunningTestGroups[ciLongRunningGroupName as CiLongRunningTestGroupName]
+    : undefined;
+  const ciSerializedLongGroup = ciLongRunningGroupName
+    ? ciSerializedLongRunningTestGroups.has(ciLongRunningGroupName as CiLongRunningTestGroupName)
+    : false;
 
-if (ciLongRunningGroupName && !ciLongRunningGroup) {
-  throw new Error(`Unknown CI long-running test group: ${ciLongRunningGroupName}`);
-}
-
-const ciLongRunningTests = [...new Set(Object.values(ciLongRunningTestGroups).flat())];
-
-export function decodeCiTestSelection(encoded: string | undefined): string[] | undefined {
-  if (!encoded) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(encoded);
-    if (
-      !Array.isArray(parsed) ||
-      parsed.length === 0 ||
-      !parsed.every(path => typeof path === 'string' && isOrdinaryCiTestPath(path))
-    ) {
-      throw new Error('selection must be a non-empty array of ordinary test paths');
-    }
-    return [...new Set(parsed)].sort((left, right) => left.localeCompare(right));
-  } catch (error) {
-    throw new Error(`Invalid CI Vitest selection: ${error instanceof Error ? error.message : String(error)}`, {
-      cause: error,
-    });
+  if (ciLongRunningGroupName && !ciLongRunningGroup) {
+    throw new Error(`Unknown CI long-running test group: ${ciLongRunningGroupName}`);
   }
-}
 
-const ciSelectedTests = decodeCiTestSelection(process.env.THREADNOTE_VITEST_SELECTION);
-
-export default defineConfig({
-  assetsInclude: ['**/*.gguf'],
-  test: {
-    // Test files use isolated Threadnote homes, so the production home-scoped
-    // parser-slot locks cannot bound child processes across Vitest workers.
-    // Dedicated parser-pool and heavy-tail tests exercise parallel extraction.
-    env: {THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '1'},
-    environment: 'node',
-    // Keep worker pressure invariant across local and hosted runs. Four outer
-    // CI shards provide parallelism; varying an inner pool with runner capacity
-    // only makes contention-sensitive test timing nondeterministic.
-    maxWorkers: ciSerializedLongGroup ? 1 : 2,
-    ...(ciSerializedLongGroup ? {fileParallelism: false} : {}),
-    hookTimeout: 30_000,
-    include: ciLongRunningGroup ? [...ciLongRunningGroup] : (ciSelectedTests ?? ['test/**/*.test.ts']),
-    exclude: process.env.THREADNOTE_VITEST_STANDARD_SHARD ? ciLongRunningTests : undefined,
-    testNamePattern: ciLongRunningGroupName ? ciLongRunningTestPatterns[ciLongRunningGroupName] : undefined,
-    // Long groups are independently bounded jobs; ordinary shards retain the
-    // same fast timeout as local runs so new regressions fail promptly.
-    testTimeout:
-      ciLongRunningGroupName === 'load-evidence'
-        ? 600_000
-        : ciLongRunningGroupName
-          ? 180_000
-          : CI_STANDARD_TEST_TIMEOUT_MILLISECONDS,
-    coverage: {
-      provider: 'istanbul',
-      reporter: ['text', 'html', 'lcov'],
-      include: ['src/**/*.ts'],
-      exclude: [
-        'src/types.ts',
-        'src/threadnote.ts',
-        'src/mcp/server/index.ts',
-        'src/mcp/index.ts',
-        'src/mcp/install.ts',
-        'src/hooks.ts',
-        'src/lifecycle.ts',
-        'src/seeding.ts',
-        'src/manifest.ts',
-        'src/memory/index.ts',
-        'src/memory/commands.ts',
-        'src/runtime.ts',
-        'src/release/check.ts',
-      ],
+  return defineConfig({
+    assetsInclude: ['**/*.gguf'],
+    test: {
+      // Test files use isolated Threadnote homes, so the production home-scoped
+      // parser-slot locks cannot bound child processes across Vitest workers.
+      // Dedicated parser-pool and heavy-tail tests exercise parallel extraction.
+      env: {THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '1'},
+      environment: 'node',
+      // Keep worker pressure invariant across local and hosted runs. Four outer
+      // CI shards provide parallelism; varying an inner pool with runner capacity
+      // only makes contention-sensitive test timing nondeterministic.
+      maxWorkers: ciSerializedLongGroup ? 1 : 2,
+      ...(ciSerializedLongGroup ? {fileParallelism: false} : {}),
+      hookTimeout: 30_000,
+      include: ciLongRunningGroup
+        ? [...ciLongRunningGroup]
+        : [
+            'apps/threadnote/test/**/*.test.ts',
+            'apps/website/test/**/*.test.ts',
+            'infra/*/test/**/*.test.ts',
+            'packages/*/test/**/*.test.ts',
+            'tools/bazel/test/*.test.ts',
+            'tools/ci/test/*.test.ts',
+            'tools/workspace/test/*.test.ts',
+          ],
+      testNamePattern: ciLongRunningGroupName ? ciLongRunningTestPatterns[ciLongRunningGroupName] : undefined,
+      // Long groups are independently bounded jobs; ordinary shards retain the
+      // same fast timeout as local runs so new regressions fail promptly.
+      testTimeout:
+        ciLongRunningGroupName === 'load-evidence'
+          ? 600_000
+          : ciLongRunningGroupName
+            ? 180_000
+            : CI_STANDARD_TEST_TIMEOUT_MILLISECONDS,
+      coverage: {
+        provider: 'istanbul',
+        reporter: ['text', 'html', 'lcov'],
+        include: ['apps/threadnote/src/**/*.ts', 'packages/*/src/**/*.ts'],
+        exclude: [
+          'packages/testing/**',
+          'apps/threadnote/src/types.ts',
+          'apps/threadnote/src/threadnote.ts',
+          'apps/threadnote/src/mcp/server/index.ts',
+          'apps/threadnote/src/mcp/index.ts',
+          'apps/threadnote/src/mcp/install.ts',
+          'apps/threadnote/src/hooks.ts',
+          'apps/threadnote/src/lifecycle.ts',
+          'apps/threadnote/src/seeding.ts',
+          'apps/threadnote/src/memory/index.ts',
+          'apps/threadnote/src/memory/commands.ts',
+          'apps/threadnote/src/runtime.ts',
+          'apps/threadnote/src/release/check.ts',
+        ],
+      },
     },
-  },
-});
+  });
+};
+
+export default createVitestConfig();

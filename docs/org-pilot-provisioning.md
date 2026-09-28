@@ -208,7 +208,7 @@ receipt path must not already exist:
 
 ```sh
 export THREADNOTE_ORG_CLOUD_ACCEPTANCE_RECEIPT=/tmp/org-cloud-acceptance.json
-bun --bun vitest run test/integration/remote-memory-org-cloud.test.ts
+bun --bun vitest run apps/threadnote/test/integration/remote-memory-org-cloud.test.ts
 ```
 
 `THREADNOTE_TEST_POSTGRES_URL` must be set; without it Vitest skips this database integration test, which is not an

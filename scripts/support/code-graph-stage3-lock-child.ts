@@ -1,9 +1,9 @@
 import {Database} from 'bun:sqlite';
 import {BunRuntime} from '@effect/platform-bun';
 import {Clock, Effect, FileSystem} from 'effect';
-import {withExclusiveFileLock} from '../../src/effect/file/lock.js';
-import {StandaloneBrokerLayer} from '../../src/effect/runtime.js';
-import {SystemInfo} from '../../src/effect/system.js';
+import {withExclusiveFileLock} from '@threadnote/platform/file/lock';
+import {StandaloneBrokerLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
 import {provideScriptLayer, ScriptError} from '../effect/errors.js';
 
 const program = Effect.gen(function* () {

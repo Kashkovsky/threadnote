@@ -1,7 +1,7 @@
 import {ScriptError} from '../effect/errors.js';
 import {Schema} from 'effect';
-import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {detectSecretMatches} from '../../src/share/scrubber.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {detectSecretMatches} from '@threadnote/platform/scrubber';
 
 export const RECALL_RERANKER_DATASET_VERSION = 1 as const;
 export const RECALL_RERANKER_MAX_CANDIDATES = 32 as const;

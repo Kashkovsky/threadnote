@@ -39,17 +39,17 @@ boundaries below when changing the CLI, lifecycle, manager, MCP, command executi
 
 Keep these invariants intact:
 
-- The application constructs one Effect, provides the application layer once, and runs it once in `src/standalone.ts`.
+- The application constructs one Effect, provides the application layer once, and runs it once in `apps/threadnote/src/standalone.ts`.
   The signal-transparent diagnostics worker is a mutually exclusive root execution path, not a nested runtime.
 - Independent build, benchmark, and evaluation scripts are separate executables and may run one top-level Effect. Their
   workflows still compose Effects internally and must not start a nested runtime.
 - Library workflows return and compose Effects. Do not introduce internal `runSync`, `runPromise`, `runFork`,
   `runCallback`, `ManagedRuntime.make`, or repeated runtime boundaries.
 - Expected failures belong in typed Effect error channels. Use defects for truly unexpected programmer errors.
-- Use the shared `fromPromise`/`fromSync` adapters in `src/effect/errors.ts` for compatibility helpers; do not add
+- Use the shared `fromPromise`/`fromSync` adapters in `apps/threadnote/src/effect/errors.ts` for compatibility helpers; do not add
   module-local Promise-lifting helpers or a generic Promise bridge in the CLI.
 - Use Effect's `Console` service for application output. Promise compatibility code must use the scoped adapter in
-  `src/effect/console.ts`; raw `console.*` calls are rejected by the architecture tests.
+  `apps/threadnote/src/effect/console.ts`; raw `console.*` calls are rejected by the architecture tests.
 - Use `Scope` or `acquireRelease` for servers, temporary directories, child processes, and other resources that require
   cleanup.
 - MCP inputs use Effect Schema as the source for types, runtime validation, descriptions, and emitted JSON Schema.
@@ -78,10 +78,7 @@ Before opening a pull request, run:
 bun run lint
 bun run prettier:check
 bun run typecheck
-bun run test:coverage
-bun run build
-bun run check:self-contained
-bun run test:smoke:self-contained
+# Run only the focused Vitest or Bazel targets covering the change.
 ```
 
 `typecheck` intentionally uses TypeScript 7 for both source and test code.
@@ -91,23 +88,11 @@ files changed in the working tree are checked as errors. Pull-request CI applies
 diff using the base commit supplied by GitHub. The initial rollout is anchored to the pre-policy source commit, so code
 that was already on this development line is not misclassified as new during the adoption PR.
 
-### CI changed-path routing
+### Bazel CI selection
 
-Pull-request CI classifies the complete merge-base diff and enables checks by dependency scope. Scopes are monotonic:
-adding a changed path can only add checks, and an empty, invalid, or unrecognized path inventory enables every scope.
+Pull-request CI computes the affected Bazel graph from the complete base/head diff. Colocated package tests are selected through their source closures, so `apps/website` changes do not run `packages/graph` tests. Shared dependency changes select all dependent checks. Missing baselines, unrecognized inputs, or failed graph analysis select the complete inventory.
 
-| Change surface                                   | Required CI work                                                                              |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| Documentation only                               | Formatting                                                                                    |
-| `website/**` only                                | Formatting, website contracts, and website build                                              |
-| Unit or integration tests only                   | Lint, typecheck, and coverage                                                                 |
-| Runtime and release inputs                       | General checks, standalone build, bytecode targets, platform release smoke, and Windows smoke |
-| Recall, vector, evaluation, or code-graph inputs | General checks plus recall/graph quality and the separately path-filtered benchmarks          |
-| Workflow files                                   | Actionlint plus the scopes owned by that workflow                                             |
-
-The classifier lives in `test/ci/ci-scopes.ts`, and its routing contract is covered by property and workflow tests.
-Website deployment has a separate path filter limited to site output inputs, so unrelated merges do not rebuild Pages.
-Documentation-only and website-only merges also avoid repeating pull-request CI on the resulting `main` push.
+The same inventory selects Actionlint, recall quality, Windows smoke, and release matrices. `tools/ci/bazel-select.mjs` writes the selection artifact and `tools/ci/bazel-run-selected.mjs` executes the Bun, Vitest, build, and native Go targets. Selection determinism, monotonicity, file additions, deletions, renames, and dependency-edge changes are covered by focused property and real Bazel tests.
 
 ### Local distribution end-to-end tests
 
@@ -164,11 +149,11 @@ Keep tool names and the default core toolset compact and backward-compatible. Wh
 Update documentation in the same pull request as behavior. Keep `README.md` concise and put architectural or
 operational detail under `docs/`.
 
-`dist/` and `manager/app.js` are generated by `bun run build`; do not hand-edit them. Always run the build and release
+`dist/` is generated by `bun run build`; do not hand-edit it. Always run the build and release
 checks when changing entrypoints, dependencies, manager UI code, or build scripts.
 
 The public React website is developed separately with `bun run site:dev` and validated with
-`bun run site:check && bun run site:build`. Its source lives under `website/`, its ignored output is `site-dist/`, and
+`bun run site:check && bun run site:build`. Its source lives under `apps/website/`, its ignored output is `site-dist/`, and
 neither is part of a standalone release. See [`docs/website.md`](./docs/website.md).
 
 ## Pull requests

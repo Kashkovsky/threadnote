@@ -1,3 +1,4 @@
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import {provideScriptLayer, scriptError, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
@@ -9,7 +10,7 @@ import {
   runtimeStat,
   SystemInfo,
   type RuntimeBigIntStats,
-} from '../src/effect/system.js';
+} from '@threadnote/platform/system';
 
 const MAX_DARWIN_LSOF_BYTES = 8 * 1024 * 1024;
 const DARWIN_OPEN_FILE_SAMPLE_INTERVAL_MILLISECONDS = 1_000;
@@ -1468,6 +1469,6 @@ function parseArguments(args: readonly string[]): SamplerOptions {
   };
 }
 
-const SamplerLayer = SystemInfo.layer.pipe(Layer.provideMerge(BunServices.layer));
+const SamplerLayer = ScriptSystemInfoLayer.pipe(Layer.provideMerge(BunServices.layer));
 
 if (import.meta.main) BunRuntime.runMain(provideScriptLayer(samplerMain, SamplerLayer));

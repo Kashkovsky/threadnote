@@ -1,6 +1,6 @@
 import {ScriptError} from './effect/errors.js';
 import {Effect, FileSystem, Path} from 'effect';
-import {runCommandEffect} from '../src/effect/command.js';
+import {runCommandEffect} from '@threadnote/platform/command';
 
 const MEBIBYTE = 1_048_576;
 

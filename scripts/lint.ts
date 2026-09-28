@@ -1,6 +1,6 @@
 import {ScriptError} from './effect/errors.js';
 
-export const LINT_TARGETS = ['config/lint', 'scripts', 'src', 'test', 'website/src', 'website/vite.config.ts'] as const;
+export const LINT_TARGETS = ['config/lint', 'scripts', 'packages', 'apps', 'tools', 'infra'] as const;
 
 export const STRICT_LINT_ARGUMENTS = [
   '--config',
@@ -9,7 +9,7 @@ export const STRICT_LINT_ARGUMENTS = [
   '--deny-warnings',
   '--report-unused-disable-directives-severity=error',
   '--ignore-pattern',
-  'test/evaluation/fixtures/**/repository/**',
+  'apps/threadnote/test/evaluation/fixtures/**/repository/**',
 ] as const;
 
 const UNSAFE_TYPE_ASSERTION_RULE = 'typescript/no-unsafe-type-assertion';

@@ -1,12 +1,12 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect, FileSystem} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {evaluateRecallFixture, parseRecallEvaluationFixture} from '../src/recall/evaluate.js';
-import {RECALL_RANKER_VERSION} from '../src/recall/rank.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {evaluateRecallFixture, parseRecallEvaluationFixture} from '@threadnote/recall/evaluate';
+import {RECALL_RANKER_VERSION} from '@threadnote/recall/rank';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
-const FIXTURE_PATH = 'test/evaluation/fixtures/recall-v1/fixture.json';
+const FIXTURE_PATH = 'apps/threadnote/test/evaluation/fixtures/recall-v1/fixture.json';
 const DEFAULT_CREATED_AT = '2026-07-27T00:00:00.000Z';
 
 const captureBaseline = Effect.gen(function* () {

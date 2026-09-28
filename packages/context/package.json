@@ -1,0 +1,44 @@
+{
+  "name": "@threadnote/context",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./citation/capture": "./src/citation/capture.ts",
+    "./citation_validation": "./src/citation_validation.ts",
+    "./compiler": "./src/compiler.ts",
+    "./graph/anchor_evidence": "./src/graph/anchor_evidence.ts",
+    "./graph/evidence": "./src/graph/evidence.ts",
+    "./graph/isolated_inspect": "./src/graph/isolated_inspect.ts",
+    "./memory-evidence": "./src/memory-evidence.ts",
+    "./planner": "./src/planner.ts",
+    "./procedure/contract": "./src/procedure/contract.ts",
+    "./procedure/exact_text": "./src/procedure/exact_text.ts",
+    "./procedure/selection": "./src/procedure/selection.ts",
+    "./projector": "./src/projector.ts",
+    "./types": "./src/types.ts",
+    "./check": "./src/check.ts",
+    "./health": "./src/health.ts",
+    "./health_semantic": "./src/health_semantic.ts",
+    "./health_schedule": "./src/health_schedule.ts"
+  },
+  "dependencies": {
+    "@threadnote/platform": "workspace:*",
+    "@threadnote/store": "workspace:*",
+    "@threadnote/memory": "workspace:*",
+    "@threadnote/recall": "workspace:*",
+    "@threadnote/graph": "workspace:*",
+    "@threadnote/workspace": "workspace:*",
+    "@threadnote/protocol": "workspace:*",
+    "@threadnote/integrations": "workspace:*",
+    "effect": "4.0.0-rc.115"
+  },
+  "devDependencies": {
+    "@threadnote/testing": "workspace:*",
+    "@effect/vitest": "4.0.0-rc.115",
+    "vitest": "5.0.1",
+    "fast-check": "4.10.1"
+  },
+  "scripts": {
+    "test": "bun --bun vitest run --config ../../vitest.config.ts --root ../.. packages/context/test"
+  }
+}

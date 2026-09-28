@@ -1,7 +1,7 @@
 import {
   BUNDLED_CORE_EMBEDDING_ASSET_RELATIVE_PATH,
   BUNDLED_CORE_EMBEDDING_MANIFEST,
-} from '../src/models/core-embedding-asset.js';
+} from '@threadnote/threadnote/models/core-embedding-asset';
 
 const BUNDLED_MODEL_LICENSE_SHA256 = '587a673933425dbc36ec61268d3b954051b2d3ef3c9b322ede357976055ffdd5';
 const source = Bun.file(new URL(`../${BUNDLED_CORE_EMBEDDING_ASSET_RELATIVE_PATH}`, import.meta.url));

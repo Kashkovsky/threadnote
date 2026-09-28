@@ -7,13 +7,13 @@ import {
   QUERY_SEMANTIC_TIME_BUDGET_MILLISECONDS,
   QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS,
   type CodeGraphInspectOptions,
-} from '../src/code_graph/query.js';
+} from '@threadnote/graph/query';
 import type {
   CodeGraphQueryTelemetryObserver,
   CodeGraphQueryTelemetryPhase,
   CodeGraphQueryTelemetryStage,
   CodeGraphStatusOptions,
-} from '../src/code_graph/query/contract.js';
+} from '@threadnote/graph/query/contract';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
@@ -21,20 +21,20 @@ import {
   CODE_GRAPH_SCHEMA_VERSION,
   type CodeGraphQueryResult,
   type CodeGraphStatus,
-} from '../src/code_graph/types.js';
-import {runCommandEffect} from '../src/effect/command.js';
-import {sha256Hex} from '../src/effect/digest.js';
-import {withExclusiveFileLock} from '../src/effect/file/lock.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {runtimeHostHardwareInfo, SystemInfo} from '../src/effect/system.js';
-import {diagnoseCodeGraphDatabaseReadOnly} from '../src/code_graph/store/health.js';
+} from '@threadnote/graph/types';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {sha256Hex} from '@threadnote/platform/digest';
+import {withExclusiveFileLock} from '@threadnote/platform/file/lock';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {runtimeHostHardwareInfo, SystemInfo} from '@threadnote/platform/system';
+import {diagnoseCodeGraphDatabaseReadOnly} from '@threadnote/graph/store/health';
 import {
   awaitCodeGraphWorktreeBuilds,
   withCodeGraphMaintenanceIntent,
   withCodeGraphMaintenanceRegistration,
-} from '../src/code_graph/maintenance/gate.js';
-import {codeGraphRepositoryLockPath} from '../src/code_graph/layout.js';
-import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
+} from '@threadnote/graph/maintenance/gate';
+import {codeGraphRepositoryLockPath} from '@threadnote/graph/layout';
+import {resolveRepositoryIdentity} from '@threadnote/graph/repository';
 import {
   READY_QUERY_CONTROLS,
   READY_QUERY_EVIDENCE_SUITE,
@@ -63,13 +63,13 @@ import {
   type ReadyQueryStageDisposition,
   type ReadyQueryStageSeriesV1,
   type ReadyQueryTimingSeriesV1,
-} from '../src/evaluation/ready/query_evidence.js';
+} from '@threadnote/threadnote/evaluation/ready/query_evidence';
 import {
   readReadyQueryLinuxHostSample,
   readyQueryHostEvidence,
   type ReadyQueryLinuxHostSample,
-} from '../src/evaluation/ready/query_host.js';
-import {codeGraphMcpResponse} from '../src/mcp/server/code_graph.js';
+} from '@threadnote/threadnote/evaluation/ready/query_host';
+import {codeGraphMcpResponse} from '@threadnote/threadnote/mcp/server/code_graph';
 import {
   publicGitHubRepositoryEvidence,
   revalidateExternalBenchmarkPreflightState,

@@ -9,8 +9,13 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "types": ["bun"],
-    "rootDir": "src",
+    "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  "include": [
+    "apps/threadnote/src/**/*.ts",
+    "apps/threadnote/src/**/*.tsx",
+    "packages/*/src/**/*.ts",
+    "packages/*/src/**/*.tsx"
+  ]
 }

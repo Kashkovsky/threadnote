@@ -1,6 +1,6 @@
 /* oxlint-disable effecttsgo/node-builtin-import -- This container preflight verifies raw volume files and native Ed25519 key identity before starting Effect services. */
-import {canonicalOAuthUrl, sameOriginOAuthEndpoint} from '../../src/code_graph/sharing/oauth/m2m_config.js';
-import {parseOAuthM2MPublisherRegistryCredentialConfig} from '../../src/code_graph/sharing/oauth/m2m_registry_credential.js';
+import {canonicalOAuthUrl, sameOriginOAuthEndpoint} from '@threadnote/graph/sharing/oauth/m2m_config';
+import {parseOAuthM2MPublisherRegistryCredentialConfig} from '@threadnote/graph/sharing/oauth/m2m_registry_credential';
 import {createPrivateKey, createPublicKey} from 'node:crypto';
 import {constants, fstatSync, lstatSync, openSync, readFileSync, closeSync} from 'node:fs';
 import {join, resolve, sep} from 'node:path';
@@ -12,11 +12,11 @@ import {
   graphShareProfileDigest,
   type GraphShareEnrollment,
   type GraphShareProfileV1,
-} from '../../src/code_graph/sharing/profile.js';
-import {parseGraphShareProfileOciArtifact} from '../../src/code_graph/sharing/profile/oci_artifact.js';
-import {parseGraphSharePublisherKey, type GraphSharePublisherKeyV1} from '../../src/code_graph/sharing/artifacts.js';
-import {parseGraphControlPolicy, type GraphControlPolicy} from '../../src/code_graph/sharing/control/authorization.js';
-import {sha256Digest, SHA256_DIGEST, SHA256_HEX} from '../../src/code_graph/sharing/digest.js';
+} from '@threadnote/graph/sharing/profile';
+import {parseGraphShareProfileOciArtifact} from '@threadnote/graph/sharing/profile/oci_artifact';
+import {parseGraphSharePublisherKey, type GraphSharePublisherKeyV1} from '@threadnote/graph/sharing/artifacts';
+import {parseGraphControlPolicy, type GraphControlPolicy} from '@threadnote/graph/sharing/control/authorization';
+import {sha256Digest, SHA256_DIGEST, SHA256_HEX} from '@threadnote/graph/sharing/digest';
 
 type Environment = Readonly<Record<string, string | undefined>>;
 

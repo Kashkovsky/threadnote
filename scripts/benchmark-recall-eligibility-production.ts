@@ -1,20 +1,22 @@
+import {ScriptCommandExecutorLayer} from './effect/system-layer.js';
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Database} from 'bun:sqlite';
 import {Clock, DateTime, Effect, FileSystem, Layer, Path} from 'effect';
-import {sha256HexSync} from '../src/crypto/sha256.js';
-import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
-import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {benchmarkMeasurement} from '../src/evaluation/benchmark.js';
-import {BUILTIN_MODEL_MANIFESTS} from '../src/models/builtin.js';
-import {LocalModelCatalog} from '../src/models/catalog.js';
-import {selectLocalModel} from '../src/models/selection.js';
-import {LocalModelStore, type LocalModelStoreShape} from '../src/models/store.js';
-import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../src/recall/eligibility.js';
-import {loadRecallIndexData, type RecallIndexQueryDiagnostics} from '../src/recall/index.js';
-import {rebuildVectorIndex, selectedSemanticScores, vectorIndexDatabaseFilename} from '../src/search/vector-index.js';
-import {getThreadnoteVersion} from '../src/release/runtime_version.js';
+import {sha256HexSync} from '@threadnote/platform/sha256';
+import {LocalModelRuntime} from '@threadnote/inference/engine/local-model-runtime';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {SystemInfo} from '@threadnote/platform/system';
+import {benchmarkMeasurement} from '@threadnote/evidence/benchmark';
+import {BUILTIN_MODEL_MANIFESTS} from '@threadnote/inference/models/builtin';
+import {LocalModelCatalog} from '@threadnote/inference/models/catalog';
+import {selectLocalModel} from '@threadnote/inference/models/selection';
+import {LocalModelStore, type LocalModelStoreShape} from '@threadnote/inference/models/store';
+import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '@threadnote/recall/eligibility';
+import {loadRecallIndexData, type RecallIndexQueryDiagnostics} from '@threadnote/recall/index';
+import {rebuildVectorIndex, selectedSemanticScores, vectorIndexDatabaseFilename} from '@threadnote/recall/vector-index';
+import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, scriptArguments} from './effect/script.js';
 
@@ -82,8 +84,8 @@ const runtimeLayer = Layer.succeed(
   }),
 );
 
-const systemLayer = SystemInfo.layer;
-const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const systemLayer = ScriptSystemInfoLayer;
+const commandLayer = ScriptCommandExecutorLayer.pipe(Layer.provide(systemLayer));
 const benchmarkLayer = Layer.mergeAll(
   systemLayer,
   commandLayer,

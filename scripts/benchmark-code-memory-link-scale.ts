@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
+import {ScriptCommandExecutorLayer} from './effect/system-layer.js';
+import {ScriptSystemInfoLayer} from './effect/system-layer.js';
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Layer, Path} from 'effect';
-import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
-import {sha256Hex} from '../src/effect/digest.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {runCommandEffect} from '@threadnote/platform/command';
+import {sha256Hex} from '@threadnote/platform/digest';
+import {SystemInfo} from '@threadnote/platform/system';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {hasScriptHelpFlag, scriptArguments} from './effect/script.js';
 
@@ -94,8 +96,8 @@ const program = Effect.scoped(
   }),
 );
 
-const systemLayer = SystemInfo.layer;
-const commandLayer = CommandExecutor.layer.pipe(Layer.provide(systemLayer));
+const systemLayer = ScriptSystemInfoLayer;
+const commandLayer = ScriptCommandExecutorLayer.pipe(Layer.provide(systemLayer));
 const wrapperLayer = Layer.mergeAll(systemLayer, commandLayer).pipe(Layer.provideMerge(BunServices.layer));
 
 function usage(): string {

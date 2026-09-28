@@ -2,12 +2,12 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Console, Effect, FileSystem, Stream} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   previewThreadnote5ReviewedAuthorityManifestV1,
   reviewedAuthorityBundleArtifact,
   verifyThreadnote5ReviewedAuthorityManifestV1,
-} from '../src/evaluation/threadnote-5-release-readiness-observer-authority.js';
+} from '@threadnote/threadnote/evaluation/threadnote-5-release-readiness-observer-authority';
 import {printJson, scriptArguments} from './effect/script.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 

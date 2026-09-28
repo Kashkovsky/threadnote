@@ -2,8 +2,8 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {DateTime, Effect} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo} from '@threadnote/platform/system';
 import {
   CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
   CODE_MEMORY_LINK_SCALE_DEVELOPMENT_MAXIMUM_SAMPLES,
@@ -13,13 +13,13 @@ import {
   codeMemoryLinkScaleReleaseClaimFailures,
   evaluateCodeMemoryLinkScaleCapture,
   parseCodeMemoryLinkScaleBudgetV1,
-} from '../src/evaluation/code-memory-link-scale-contract.js';
-import {runCodeMemoryLinkScaleWorkload} from '../src/evaluation/code-memory-link-scale.js';
-import {getThreadnoteVersion} from '../src/release/runtime_version.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-scale-contract';
+import {runCodeMemoryLinkScaleWorkload} from '@threadnote/threadnote/evaluation/code-memory-link-scale';
+import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
-const DEFAULT_BUDGET = 'test/evaluation/baselines/code-memory-link-scale-v1/budget.json';
+const DEFAULT_BUDGET = 'apps/threadnote/test/evaluation/baselines/code-memory-link-scale-v1/budget.json';
 const CONFIG_NEUTRAL_GIT_STATUS_ARGUMENTS = [
   '-c',
   'core.fsmonitor=false',

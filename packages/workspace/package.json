@@ -1,0 +1,25 @@
+{
+  "name": "@threadnote/workspace",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./config": "./src/config.ts",
+    "./constants": "./src/constants.ts",
+    "./installation": "./src/installation.ts",
+    "./manifest": "./src/manifest.ts",
+    "./runtime-version": "./src/runtime-version.ts",
+    "./test/helpers/image-projection-runtime-config": "./test/helpers/image-projection-runtime-config.ts"
+  },
+  "dependencies": {
+    "@threadnote/platform": "workspace:*",
+    "@threadnote/store": "workspace:*",
+    "effect": "4.0.0-rc.115",
+    "js-yaml": "^5.4.2"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0-rc.115",
+    "@threadnote/testing": "workspace:*",
+    "fast-check": "4.10.1",
+    "vitest": "5.0.1"
+  }
+}

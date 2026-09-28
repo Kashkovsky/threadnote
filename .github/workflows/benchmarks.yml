@@ -73,7 +73,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: bun test/ci/platform-benchmark-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: bun tools/ci/platform-benchmark-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"
 
   recall-pr-10k:
     name: Recall production 10k · Linux
@@ -414,7 +414,7 @@ jobs:
           retained_root="artifacts/test/evaluation/retained/code-memory-link-scale"
           mkdir -p "$retained_root"
           mv "$artifact" "$retained_root/${artifact_hash}.json"
-          printf 'Retain at test/evaluation/retained/code-memory-link-scale/%s.json\n' "$artifact_hash"
+          printf 'Retain at apps/threadnote/test/evaluation/retained/code-memory-link-scale/%s.json\n' "$artifact_hash"
 
       - uses: actions/upload-artifact@v7
         if: always()

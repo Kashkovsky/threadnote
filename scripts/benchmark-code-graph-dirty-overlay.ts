@@ -1,15 +1,11 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Clock, DateTime, Effect, FileSystem, Path, Schema} from 'effect';
-import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../src/code_graph/indexer.js';
-import type {
-  CodeGraphIndexSummary,
-  CodeGraphMaterializationMetrics,
-  CodeGraphProgress,
-} from '../src/code_graph/types.js';
-import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo, type SystemInfoShape} from '../src/effect/system.js';
-import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../src/evaluation/benchmark.js';
+import {CodeGraphIndexer, type CodeGraphIndexerShape} from '@threadnote/graph/indexer';
+import type {CodeGraphIndexSummary, CodeGraphMaterializationMetrics, CodeGraphProgress} from '@threadnote/graph/types';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
+import {SystemInfo, type SystemInfoShape} from '@threadnote/platform/system';
+import {benchmarkMeasurement, type BenchmarkArtifactV1} from '@threadnote/evidence/benchmark';
 import {
   benchmarkStorageEnvironment,
   enforceCodeGraphBenchmarkRatchet,

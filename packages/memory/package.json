@@ -1,0 +1,49 @@
+{
+  "name": "@threadnote/memory",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./candidate": "./src/candidate.ts",
+    "./code/citation": "./src/code/citation.ts",
+    "./code/citation-policy": "./src/code/citation-policy.ts",
+    "./document": "./src/document.ts",
+    "./hygiene": "./src/hygiene.ts",
+    "./hygiene/provenance": "./src/hygiene/provenance.ts",
+    "./identity-alias": "./src/identity-alias.ts",
+    "./knowledge_delta": "./src/knowledge_delta.ts",
+    "./lock": "./src/lock.ts",
+    "./maintenance/metadata": "./src/maintenance/metadata.ts",
+    "./migrations": "./src/migrations.ts",
+    "./read/projection": "./src/read/projection.ts",
+    "./read/recovery": "./src/read/recovery.ts",
+    "./references": "./src/references.ts",
+    "./relocation": "./src/relocation.ts",
+    "./remote/address": "./src/remote/address.ts",
+    "./remote/citation_sources": "./src/remote/citation_sources.ts",
+    "./remote/content": "./src/remote/content.ts",
+    "./remote/contracts": "./src/remote/contracts.ts",
+    "./remote/lifecycle": "./src/remote/lifecycle.ts",
+    "./remote/policy": "./src/remote/policy.ts",
+    "./remote/receipts": "./src/remote/receipts.ts",
+    "./remote/relations": "./src/remote/relations.ts",
+    "./remote/repository": "./src/remote/repository.ts",
+    "./remote/revisions": "./src/remote/revisions.ts",
+    "./test/helpers/remote-memory-document": "./test/helpers/remote-memory-document.ts",
+    "./types": "./src/types.ts"
+  },
+  "dependencies": {
+    "@threadnote/platform": "workspace:*",
+    "@threadnote/store": "workspace:*",
+    "@threadnote/workspace": "workspace:*",
+    "effect": "4.0.0-rc.115"
+  },
+  "devDependencies": {
+    "@threadnote/testing": "workspace:*",
+    "@effect/vitest": "4.0.0-rc.115",
+    "vitest": "5.0.1",
+    "fast-check": "4.10.1"
+  },
+  "scripts": {
+    "test": "bun --bun vitest run --config ../../vitest.config.ts --root ../.. packages/memory/test"
+  }
+}

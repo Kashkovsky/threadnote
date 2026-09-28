@@ -192,7 +192,7 @@ export function assertCodeMemoryLinkReleaseDefermentGovernance(input: {
     {mode: '100644', path: '.github/workflows/publish.yml', status: 'M'},
     {mode: '100644', path: input.waiverPath, status: 'A'},
     {mode: '100644', path: 'scripts/verify-code-memory-link-release-deferment.ts', status: 'A'},
-    {mode: '100644', path: 'test/unit/code-memory-link-release-deferment.test.ts', status: 'A'},
+    {mode: '100644', path: 'apps/threadnote/test/unit/code-memory-link-release-deferment.test.ts', status: 'A'},
   ];
   const observed = [...input.changes].sort(compareChange);
   expected.sort(compareChange);
@@ -284,7 +284,7 @@ function governancePaths(waiverPath: string): readonly string[] {
     '.github/workflows/publish.yml',
     waiverPath,
     'scripts/verify-code-memory-link-release-deferment.ts',
-    'test/unit/code-memory-link-release-deferment.test.ts',
+    'apps/threadnote/test/unit/code-memory-link-release-deferment.test.ts',
   ];
 }
 

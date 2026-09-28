@@ -2,19 +2,19 @@
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Console, Effect, FileSystem} from 'effect';
-import {ApplicationLayer} from '../src/effect/runtime.js';
+import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1,
   assertCodeMemoryLinkAgentAbRuntimeIdentity,
   evaluateCodeMemoryLinkAgentAb,
   parseCodeMemoryLinkAgentAbTrialsJsonl,
-} from '../src/evaluation/code-memory-link-agent-ab.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-ab';
 import {
   parseCodeMemoryLinkAgentAttemptsJsonl,
   resolveCodeMemoryLinkAgentLedgerLayout,
   withCodeMemoryLinkAgentLedgerLock,
-} from '../src/evaluation/code-memory-link-agent-attempts.js';
-import {parseCodeMemoryLinkAgentEvidenceJsonl} from '../src/evaluation/code-memory-link-agent-evidence.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-agent-attempts';
+import {parseCodeMemoryLinkAgentEvidenceJsonl} from '@threadnote/threadnote/evaluation/code-memory-link-agent-evidence';
 import {verifyManagedDevelopmentRuntimeForSource} from './development-runtime.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {readJsonFile, scriptArguments} from './effect/script.js';

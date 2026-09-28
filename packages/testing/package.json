@@ -1,0 +1,31 @@
+{
+  "name": "@threadnote/testing",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./fast-check-property": "./src/fast-check-property.ts",
+    "./fixture-temp-directory": "./src/fixture-temp-directory.ts",
+    "./git-share-worktree": "./src/git-share-worktree.ts",
+    "./http-fetch": "./src/http-fetch.ts",
+    "./node-child-process": "./src/node-child-process.ts",
+    "./node-crypto": "./src/node-crypto.ts",
+    "./node-fs": "./src/node-fs.ts",
+    "./node-fs-promises": "./src/node-fs-promises.ts",
+    "./node-http": "./src/node-http.ts",
+    "./node-module": "./src/node-module.ts",
+    "./node-net": "./src/node-net.ts",
+    "./node-os": "./src/node-os.ts",
+    "./node-path": "./src/node-path.ts",
+    "./node-url": "./src/node-url.ts",
+    "./node-util": "./src/node-util.ts",
+    "./omp-environment": "./src/omp-environment.ts",
+    "./process-environment": "./src/process-environment.ts",
+    "./test-error": "./src/test-error.ts",
+    "./windows-command-launcher": "./src/windows-command-launcher.ts"
+  },
+  "dependencies": {
+    "@effect/vitest": "4.0.0-rc.115",
+    "effect": "4.0.0-rc.115",
+    "fast-check": "4.10.1"
+  }
+}

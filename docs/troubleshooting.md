@@ -430,6 +430,6 @@ failures. Use `--no-baseline --global-eligibility` to diagnose omitted-project r
 does not compare that broader retrieval contract against the explicit-project gate.
 
 For a rank-performance change, use the clean Apple M1 Max `hybrid-v3` artifacts at 200, 1k, 10k, and 100k under
-`test/evaluation/baselines/threadnote-4.2.7/benchmarks/darwin-arm64-m1-max/`. Capture the candidate with
+`apps/threadnote/test/evaluation/baselines/threadnote-4.2.7/benchmarks/darwin-arm64-m1-max/`. Capture the candidate with
 `bun run bench:recall -- --require-clean` using the reference artifact's document count, seed, warmups, and samples.
 Compare only when hardware, runtime, and fixture hash match; the checked-in timings are not cross-platform limits.

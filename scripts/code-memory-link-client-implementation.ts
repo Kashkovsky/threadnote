@@ -1,5 +1,5 @@
 import {Effect, FileSystem, Option, Path} from 'effect';
-import {sha256FileHex} from '../src/effect/digest.js';
+import {sha256FileHex} from '@threadnote/platform/digest';
 import {
   codeMemoryLinkClientArgumentVectorHash,
   codeMemoryLinkClientPathDigest,
@@ -7,7 +7,7 @@ import {
   parseCodeMemoryLinkClientImplementationDescriptorV1,
   type CodeMemoryLinkClientArtifactBindingV2,
   type CodeMemoryLinkClientImplementationDescriptorV1,
-} from '../src/evaluation/code-memory-link-client-descriptor.js';
+} from '@threadnote/threadnote/evaluation/code-memory-link-client-descriptor';
 import {
   CODE_MEMORY_LINK_CODEX_ENVIRONMENT_POLICY_V1,
   CODE_MEMORY_LINK_PROXY_SERVER_NAME,

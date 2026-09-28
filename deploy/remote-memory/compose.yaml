@@ -25,7 +25,7 @@ services:
       dockerfile: deploy/remote-memory/Dockerfile
     cap_drop:
       - ALL
-    command: ['bun', 'src/standalone.ts', 'remote-memory-operator', 'migrate']
+    command: ['bun', 'apps/threadnote/src/standalone.ts', 'remote-memory-operator', 'migrate']
     depends_on:
       remote-memory-db:
         condition: service_healthy
