@@ -1,5 +1,10 @@
 import {describe, expect, it} from 'vitest';
-import {moduleSpecifiers, validateWorkspaceBoundaries, type WorkspacePackage} from '../boundaries.js';
+import {
+  moduleSpecifiers,
+  validateSourceVisibility,
+  validateWorkspaceBoundaries,
+  type WorkspacePackage,
+} from '../boundaries.js';
 
 const platform: WorkspacePackage = {
   name: '@threadnote/platform',
@@ -17,6 +22,15 @@ const memory: WorkspacePackage = {
 };
 
 describe('private workspace boundaries', () => {
+  it('rejects source modules hidden by Git ignore rules', () => {
+    const sources = [
+      {path: 'packages/graph/src/build/owner.ts', imports: []},
+      {path: 'packages/graph/src/index.ts', imports: []},
+    ];
+    expect(validateSourceVisibility(sources, new Set(['packages/graph/src/index.ts']))).toEqual([
+      'packages/graph/src/build/owner.ts: source file is hidden by Git ignore rules',
+    ]);
+  });
   it('accepts a declared exported domain dependency', () => {
     expect(
       validateWorkspaceBoundaries(

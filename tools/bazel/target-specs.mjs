@@ -58,6 +58,7 @@ const packageDataRoots = {
     'assets/code-graph',
     'apps/threadnote/test/evaluation/baselines/code-graph-v1',
     'apps/threadnote/test/evaluation/fixtures/code-graph-v1/repository',
+    'packages/graph/src',
   ],
   'packages/recall': ['training/recall-reranker'],
   'packages/remote-memory': [
@@ -69,8 +70,31 @@ const packageDataRoots = {
 };
 const packageData = {
   'packages/evidence': ['.github/workflows/benchmarks.yml'],
+  'packages/graph': [
+    '.github/actionlint.yml',
+    '.github/workflows/code-graph-ready-query-evidence.yml',
+    'THIRD_PARTY.md',
+    'bun.lock',
+    'docs/code-graph-readiness.md',
+  ],
   'packages/recall': ['apps/threadnote/test/evaluation/fixtures/recall-v1/fixture.json'],
   'packages/remote-memory': ['scripts/build.ts', 'scripts/check-self-contained.ts'],
+};
+const packageTestNpm = {
+  'packages/graph': [
+    '@repomix/tree-sitter-wasms',
+    '@tree-sitter-grammars/tree-sitter-hcl',
+    '@tree-sitter-grammars/tree-sitter-lua',
+    '@tree-sitter-grammars/tree-sitter-svelte',
+    '@tree-sitter-grammars/tree-sitter-zig',
+    '@vscode/tree-sitter-wasm',
+    'tree-sitter-elixir',
+    'tree-sitter-julia',
+    'tree-sitter-objc',
+    'tree-sitter-scala',
+    'tree-sitter-systemverilog',
+    'web-tree-sitter',
+  ],
 };
 const applicationTestDataRoots = [
   'apps/threadnote/test/evaluation',
@@ -88,6 +112,9 @@ const packageRuntimeTestEntries = {
   'packages/graph': ['apps/threadnote/src/standalone.ts'],
   'packages/memory': ['apps/threadnote/src/standalone.ts'],
   'packages/platform': ['apps/threadnote/src/standalone.ts', 'scripts/remote-memory-canary.ts'],
+};
+const packageWorkspaceTestEntries = {
+  'packages/graph': ['packages/graph/test/unit/code-graph.stage3-gate.test.ts'],
 };
 
 export const virtualModules = [
@@ -109,12 +136,14 @@ const packageTests = packageDirectories.flatMap(directory => {
   const runtimeEntries = packageRuntimeTestEntries[directory]
     ? entries.filter(path => readFileSync(join(root, path), 'utf8').includes('standalone.ts'))
     : [];
-  const standardEntries = entries.filter(path => !runtimeEntries.includes(path));
+  const workspaceEntries = packageWorkspaceTestEntries[directory] ?? [];
+  const standardEntries = entries.filter(path => !runtimeEntries.includes(path) && !workspaceEntries.includes(path));
   const shared = {
     package: directory,
     kind: 'test',
     data: packageData[directory] ?? [],
     dataRoots: packageDataRoots[directory] ?? [],
+    npm: packageTestNpm[directory] ?? [],
   };
   return [
     ...(standardEntries.length
@@ -134,6 +163,16 @@ const packageTests = packageDirectories.flatMap(directory => {
             name: 'test_runtime',
             entries: runtimeEntries,
             closureEntries: packageRuntimeTestEntries[directory],
+          },
+        ]
+      : []),
+    ...(workspaceEntries.length
+      ? [
+          {
+            ...shared,
+            name: 'test_workspace',
+            entries: workspaceEntries,
+            workspace: true,
           },
         ]
       : []),

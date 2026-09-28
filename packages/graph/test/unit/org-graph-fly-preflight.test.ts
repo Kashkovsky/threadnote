@@ -2,7 +2,7 @@
 import {generateKeyPairSync} from 'node:crypto';
 import {chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
 import fc from 'fast-check';
 import {sha256Digest} from '@threadnote/graph/sharing/digest';
@@ -85,7 +85,7 @@ function fixture() {
   };
   const write = (name: string, content: unknown, privateFile = false) => {
     const path = join(root, name);
-    mkdirSync(join(path, '../../../test'), {recursive: true});
+    mkdirSync(dirname(path), {recursive: true});
     writeFileSync(path, JSON.stringify(content));
     if (privateFile) chmodSync(path, 0o600);
     return path;
@@ -136,7 +136,7 @@ describe('Fly graph publisher preflight', () => {
     const {env, enrollment, profile, profileDigest, root, write} = fixture();
     const artifact = graphShareProfileOciArtifact(profile);
     const manifestFile = join(root, 'threadnote/graph-sharing/cas/sha256', artifact.manifestDigest.slice(7));
-    mkdirSync(join(manifestFile, '../../../test'), {recursive: true});
+    mkdirSync(dirname(manifestFile), {recursive: true});
     writeFileSync(manifestFile, artifact.manifestBytes);
     write('repository/.threadnote/graph-share.json', {
       ...enrollment,

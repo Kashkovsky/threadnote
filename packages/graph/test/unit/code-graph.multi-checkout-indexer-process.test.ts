@@ -75,7 +75,7 @@ function spawnIndexer(options: IndexerProcessOptions): {
   readonly process: ReturnType<typeof Bun.spawn>;
   readonly ready: Promise<void>;
 } {
-  const indexerUrl = new URL('../../src/code_graph/indexer.ts', import.meta.url).href;
+  const indexerUrl = new URL('../../src/indexer.ts', import.meta.url).href;
   const runtimeUrl = new URL('../../../../apps/threadnote/src/effect/runtime.ts', import.meta.url).href;
   const readyPath = `${options.output}.ready`;
   const child = Bun.spawn({

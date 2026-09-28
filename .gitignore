@@ -7,6 +7,11 @@ dist/
 /.*.bun-build
 site-dist/
 build/
+# These are source namespaces, not generated build output.
+!packages/graph/src/build/
+!packages/graph/src/build/**
+!packages/graph/src/store/build/
+!packages/graph/src/store/build/**
 out/
 coverage/
 artifacts/

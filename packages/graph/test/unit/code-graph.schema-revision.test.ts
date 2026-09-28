@@ -19,7 +19,7 @@ import {
   planCodeGraphPersistentSchemaUpgrade,
 } from '@threadnote/graph/store/schema/revision';
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../test', '../../../test');
+const graphSourceRoot = join(dirname(fileURLToPath(import.meta.url)), '../../src');
 
 const historicalProfiles = [
   [2, 'build-owner-plan', 'rebuild-extensions'],
@@ -133,7 +133,7 @@ describe('code graph schema revision entity', () => {
     const leftComparison = new RegExp(String.raw`\b${subject}\s*(?:===|!==|<=|>=|<|>)\s*${numericRevision}\b`, 'u');
     const rightComparison = new RegExp(String.raw`\b${numericRevision}\s*(?:===|!==|<=|>=|<|>)\s*${subject}\b`, 'u');
     for (const file of governedFiles) {
-      const source = await readFile(join(repoRoot, 'src', 'code_graph', file), 'utf8');
+      const source = await readFile(join(graphSourceRoot, file), 'utf8');
       expect(source, file).not.toMatch(leftComparison);
       expect(source, file).not.toMatch(rightComparison);
       expect(source, file).not.toMatch(/CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION\s*[+-]/u);

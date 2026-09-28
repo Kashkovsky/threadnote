@@ -15,6 +15,16 @@ export interface SourceModule {
   readonly virtualModules?: readonly string[];
 }
 
+export function validateSourceVisibility(
+  sources: readonly SourceModule[],
+  gitVisiblePaths: ReadonlySet<string>,
+): readonly string[] {
+  return sources
+    .filter(source => !gitVisiblePaths.has(source.path))
+    .map(source => `${source.path}: source file is hidden by Git ignore rules`)
+    .sort();
+}
+
 const allowedDependencies: Readonly<Record<string, readonly string[]>> = {
   platform: [],
   store: ['platform'],

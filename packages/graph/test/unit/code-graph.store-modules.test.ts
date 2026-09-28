@@ -1,17 +1,25 @@
 import {readdirSync, readFileSync} from '@threadnote/testing/node-fs';
-import {join} from '@threadnote/testing/node-path';
+import {join, posix, relative, sep} from '@threadnote/testing/node-path';
 import {describe, expect, it} from 'vitest';
 
-const STORE_DIRECTORY = join(process.cwd(), 'src/code_graph');
-const STORE_MODULE_PATTERN = /^store(?:_.*)?\.ts$/u;
-const STORE_IMPORT_PATTERN = /\b(?:from|import)\s+['"]\.\/(store(?:_[^'"]*)?)\.js['"]/gu;
+const GRAPH_SOURCE_DIRECTORY = join(import.meta.dirname, '../../src');
+const STORE_DIRECTORY = join(GRAPH_SOURCE_DIRECTORY, 'store');
+const STORE_IMPORT_PATTERN = /\b(?:from|import)\s+['"](\.[^'"]+)['"]/gu;
+
+function typeScriptFilesBelow(directory: string): readonly string[] {
+  return readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return typeScriptFilesBelow(path);
+    return entry.name.endsWith('.ts') ? [path] : [];
+  });
+}
 
 function storeModules(): ReadonlyMap<string, string> {
   return new Map(
-    readdirSync(STORE_DIRECTORY)
-      .filter(name => STORE_MODULE_PATTERN.test(name))
+    [join(GRAPH_SOURCE_DIRECTORY, 'store.ts'), ...typeScriptFilesBelow(STORE_DIRECTORY)]
+      .map(path => relative(GRAPH_SOURCE_DIRECTORY, path).split(sep).join('/'))
       .sort()
-      .map(name => [name, readFileSync(join(STORE_DIRECTORY, name), 'utf8')]),
+      .map(name => [name, readFileSync(join(GRAPH_SOURCE_DIRECTORY, name), 'utf8')]),
   );
 }
 
@@ -20,7 +28,7 @@ function storeModuleDependencies(modules: ReadonlyMap<string, string>): Readonly
     [...modules].map(([name, source]) => [
       name,
       [...source.matchAll(STORE_IMPORT_PATTERN)]
-        .map(match => `${match[1]}.ts`)
+        .map(match => posix.normalize(posix.join(posix.dirname(name), match[1].replace(/\.js$/u, '.ts'))))
         .filter(dependency => modules.has(dependency)),
     ]),
   );

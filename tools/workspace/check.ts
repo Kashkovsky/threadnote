@@ -2,6 +2,7 @@ import {Schema} from 'effect';
 import {
   declaredVirtualModules,
   moduleSpecifiers,
+  validateSourceVisibility,
   validateWorkspaceBoundaries,
   type SourceModule,
   type WorkspacePackage,
@@ -38,6 +39,30 @@ for (const path of new Bun.Glob('{scripts,tools,infra,apps,packages}/**/*.{ts,ts
   sources.push({path, imports: moduleSpecifiers(path, content), virtualModules: declaredVirtualModules(path, content)});
 }
 const errors = [...validateWorkspaceBoundaries(packages, sources)];
+const gitFiles = Bun.spawnSync({
+  cmd: [
+    'git',
+    'ls-files',
+    '--cached',
+    '--others',
+    '--exclude-standard',
+    '-z',
+    '--',
+    'apps',
+    'packages',
+    'scripts',
+    'tools',
+    'infra',
+  ],
+  stderr: 'pipe',
+  stdout: 'pipe',
+});
+if (gitFiles.exitCode !== 0) {
+  errors.push(`Could not inspect Git-visible workspace files: ${gitFiles.stderr.toString().trim()}`);
+} else {
+  const gitVisiblePaths = new Set(gitFiles.stdout.toString().split('\0').filter(Boolean));
+  errors.push(...validateSourceVisibility(sources, gitVisiblePaths));
+}
 for (const retiredRoot of ['manager', 'public', 'src', 'test', 'website']) {
   const migratedFiles = [...new Bun.Glob(`${retiredRoot}/**/*`).scanSync('.')];
   if (migratedFiles.length > 0)
