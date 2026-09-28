@@ -3,7 +3,7 @@ import {sha256HexSync} from '@threadnote/platform/sha256';
 import {readExclusiveFileLockOwner, type FileLockOwner} from '@threadnote/platform/file/lock';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '@threadnote/platform/system';
 import type {CodeGraphBuildOwnerIdentity} from './build/owner.js';
-import {parseCodeGraphBuildStatus} from './build_status/codec.js';
+import {codeGraphBuildStatusError, parseCodeGraphBuildStatus} from './build_status/codec.js';
 import {sameProcessOwner} from './build_status/coordination.js';
 import {
   annotateBuildCoordinationByWorktree,
@@ -17,6 +17,7 @@ import {
   type CodeGraphBuildScheduling,
 } from './build_status/scheduling.js';
 import type {CodeGraphBuilderAdmissionQueue} from './builder/admission_scheduler.js';
+import type {CodeGraphCapacityFailureOperation} from './disk/capacity.js';
 import {
   CODE_GRAPH_BUILD_HASH_ID as HASH_ID,
   CODE_GRAPH_BUILD_ID as BUILD_ID,
@@ -46,20 +47,21 @@ import {
   type CodeGraphSlowFileTelemetry,
   type CodeGraphSourceSizeBucket,
 } from './progress/telemetry.js';
-import type {
-  CodeGraphActivationActivity,
-  CodeGraphIndexSummary,
-  CodeGraphMaterializationActivity,
-  CodeGraphMaterializationMetrics,
-  CodeGraphRegistrationActivity,
-  CodeGraphOverlayFallbackReason,
-  CodeGraphProgress,
-  CodeGraphResolutionActivity,
-  CodeGraphSnapshot,
-  RepositoryIdentity,
+import {
+  type CodeGraphActivationActivity,
+  type CodeGraphDiskCapacityFailureEvidence,
+  type CodeGraphIndexSummary,
+  type CodeGraphMaterializationActivity,
+  type CodeGraphMaterializationMetrics,
+  type CodeGraphRegistrationActivity,
+  type CodeGraphOverlayFallbackReason,
+  type CodeGraphProgress,
+  type CodeGraphResolutionActivity,
+  type CodeGraphSnapshot,
+  type RepositoryIdentity,
 } from './types.js';
 
-export {parseCodeGraphBuildStatus} from './build_status/codec.js';
+export {codeGraphBuildStatusError, parseCodeGraphBuildStatus} from './build_status/codec.js';
 export {CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION} from './build_status/validation.js';
 export const CODE_GRAPH_BUILD_HEARTBEAT_INTERVAL_MILLISECONDS = 2_000;
 export const CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS = 250;
@@ -125,6 +127,17 @@ export interface CodeGraphBuildMaterialization {
   readonly metrics?: CodeGraphMaterializationMetrics;
 }
 
+export interface CodeGraphBuildCapacityFailure {
+  readonly code: 'no-space' | 'transient-io';
+  readonly evidence: CodeGraphDiskCapacityFailureEvidence;
+  readonly operation: CodeGraphCapacityFailureOperation;
+}
+
+export interface CodeGraphBuildError {
+  readonly capacity?: CodeGraphBuildCapacityFailure;
+  readonly summary: string;
+}
+
 export interface CodeGraphBuildActivation {
   readonly activity: CodeGraphActivationActivity & {readonly startedAt: string};
 }
@@ -143,7 +156,7 @@ export interface CodeGraphBuildStatus {
   readonly activity?: CodeGraphBuildActivity;
   readonly buildId: string;
   readonly counters: CodeGraphBuildCounters;
-  readonly error?: {readonly summary: string};
+  readonly error?: CodeGraphBuildError;
   readonly eta?: {
     readonly basis?: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes';
     readonly confidence: 'high' | 'low' | 'medium';
@@ -479,7 +492,7 @@ export const makeCodeGraphBuildReporter = Effect.fn('codeGraph.buildStatus.makeR
             ...current.status,
             activation: undefined,
             activity: undefined,
-            error: {summary: privacySafeError(cause)},
+            error: codeGraphBuildStatusError(cause),
             eta: undefined,
             materialization: current.status.materialization?.metrics
               ? {metrics: current.status.materialization.metrics}
@@ -1969,17 +1982,6 @@ export function selectCodeGraphBuildStatuses(
     builds: builds.sort(compareObservedBuildStatus),
     waiters: waiters.sort(compareObservedBuildStatus),
   };
-}
-
-function privacySafeError(cause: unknown): string {
-  const raw = cause instanceof Error ? cause.message : String(cause);
-  return boundedText(
-    raw
-      .replaceAll(/(?:[A-Za-z]:[\\/]|\/)(?:[^\s'"`<>]|\\ )+/g, '<local-path>')
-      .replaceAll(/\s+/g, ' ')
-      .trim() || 'Code graph build failed.',
-    300,
-  );
 }
 
 function boundedText(value: string, maximum: number): string {

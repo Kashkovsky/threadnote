@@ -13,6 +13,13 @@ For unfamiliar source or relationship claims, call `inspect_code_graph` before b
 Use `analyze_code_graph` for repository-wide `stats`, `communities`, `community`, `groups`, `hubs`, `surprises`,
 `confidence`, or `full`. Verify with exact source.
 
+Analysis defaults to `freshness: current`. When current refresh is blocked, use `freshness: ready` to accept an existing
+compatible snapshot for the selected project, or `freshness: allow-stale` to avoid starting indexing. `ready` permits a
+bounded refresh when no usable snapshot exists; `allow-stale` returns `no-ready-snapshot` instead. Preserve the returned
+freshness and snapshot identity, and keep stale analysis separate from exact-current path, impact, or citation claims.
+Writer contention and refresh failures return actionable states; a successful tool call does not necessarily contain
+analysis. Follow the returned recovery and retry guidance instead of repeatedly requesting the same blocked refresh.
+
 For local-repository `inspect_code_graph`, omit `responseFormat` for the default schema-aware, text-only `agent`
 projection; explicit budgets apply after final formatting and semantic truncation. `analyze_code_graph` likewise
 defaults to bounded text. Named Worksets do not yet support agent projection and default to lossless JSON in one text

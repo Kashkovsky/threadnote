@@ -14,7 +14,12 @@ import {
 } from '../build_status.js';
 import {codeGraphLayout, codeGraphWorktreeSpawnLockPath} from '../layout.js';
 import {resolveRepositoryIdentity} from '../repository.js';
-import type {CodeGraphProgress, RepositoryIdentity} from '../types.js';
+import {
+  CodeGraphDiskCapacityObservationError,
+  CodeGraphDiskCapacityPressureError,
+  type CodeGraphProgress,
+  type RepositoryIdentity,
+} from '../types.js';
 import type {ProjectManifest} from '@threadnote/workspace/config';
 import {CODE_GRAPH_BUILDER_ADMISSION_CLASS_ENV, type CodeGraphBuilderAdmissionClass} from '../builder/admission.js';
 import {CODE_GRAPH_REFRESH_DEMAND_SUPERSEDED_EXIT_CODE, CodeGraphRefreshDemandSuperseded} from '../refresh/demand.js';
@@ -444,9 +449,10 @@ export const runIsolatedCodeGraphIndex: (
       return yield* CodeGraphRefreshDemandSuperseded.make({message: 'Code graph refresh demand was superseded.'});
     // A failed child is never rescued by a later sidecar; only enrich its failure with the exact owned status.
     const failed = yield* statusOwnedBy(readStatus, child.processId, priorBuildId, yield* Ref.get(observedBuildId));
-    return yield* IsolatedBuilderError.make({
-      message: isolatedBuilderFailureMessage(exitCode, failed?.error?.summary, child.stderrTail?.()),
-    });
+    return yield* isolatedBuilderFailureFromStatus(
+      failed?.error,
+      isolatedBuilderFailureMessage(exitCode, failed?.error?.summary, child.stderrTail?.()),
+    );
   }
 
   return yield* awaitOwnedIsolatedBuilderResult(
@@ -467,6 +473,21 @@ export function isolatedBuilderFailureMessage(
   const stderr = stderrTail?.trim();
   if (stderr) return `isolated graph index exited with code ${exitCode}: ${stderr.slice(0, 500)}`;
   return `isolated graph index exited with code ${exitCode}`;
+}
+
+/** @internal Rehydrates the child's typed capacity failure after the process boundary. */
+export function isolatedBuilderFailureFromStatus(
+  error: CodeGraphBuildStatus['error'] | undefined,
+  fallbackMessage: string,
+): IsolatedBuilderError | CodeGraphDiskCapacityObservationError | CodeGraphDiskCapacityPressureError {
+  const capacity = error?.capacity;
+  if (capacity?.code === 'no-space') {
+    return CodeGraphDiskCapacityPressureError.of(capacity.operation, capacity.evidence);
+  }
+  if (capacity?.code === 'transient-io') {
+    return CodeGraphDiskCapacityObservationError.of(capacity.evidence);
+  }
+  return IsolatedBuilderError.make({message: fallbackMessage});
 }
 
 /** @internal Pure success contract for unit tests. */
@@ -687,9 +708,10 @@ function awaitExistingBuilder<E, R>(
         });
       }
       if (status.observation.liveness !== 'active' && status.observation.liveness !== 'stalled') {
-        return yield* IsolatedBuilderError.make({
-          message: status.error?.summary ?? 'Existing code graph builder stopped before completion.',
-        });
+        return yield* isolatedBuilderFailureFromStatus(
+          status.error,
+          status.error?.summary ?? 'Existing code graph builder stopped before completion.',
+        );
       }
       if (status.observation.liveness === 'stalled') {
         const now = yield* Clock.currentTimeMillis;

@@ -137,4 +137,44 @@ describe('code graph refresh demand properties', () => {
       {numRuns: 100},
     );
   });
+
+  it('preserves one deferred target and its backoff under repeated equivalent demand', () => {
+    fc.assert(
+      fc.property(fc.array(fc.boolean(), {maxLength: 100}), operations => {
+        const targetKey = '1'.repeat(64);
+        const targetToken = 'cgdq_11111111111111111111111111111111';
+        const claimed = registerCodeGraphRefreshDemand(emptyCodeGraphRefreshDemand(checkout, worktree), {
+          now: 0,
+          targetKey,
+          token: targetToken,
+        });
+        let state = deferCodeGraphRefreshDemand(claimed.state, targetToken, targetKey, 0);
+
+        for (const [index, enqueue] of operations.entries()) {
+          const observed = enqueue
+            ? enqueueCodeGraphRefreshDemand(state, {
+                now: index + 1,
+                targetKey,
+                token: `cgdq_${(index + 2).toString(16).padStart(32, '0')}`,
+              })
+            : registerCodeGraphRefreshDemand(state, {
+                now: index + 1,
+                targetKey,
+                token: `cgdq_${(index + 2).toString(16).padStart(32, '0')}`,
+              });
+          expect(observed.type).toBe('deferred');
+          state = observed.state;
+        }
+
+        expect(state.active).toBeUndefined();
+        expect(state.desired).toMatchObject({
+          requestedAt: 0,
+          retry: {attempt: 1, notBefore: 250},
+          targetKey,
+          targetToken,
+        });
+      }),
+      {numRuns: 100},
+    );
+  });
 });

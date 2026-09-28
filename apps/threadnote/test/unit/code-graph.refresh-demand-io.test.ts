@@ -101,6 +101,30 @@ describe('code graph refresh demand sidecar', () => {
       ).pipe(provideTestLayer(TestLayer)),
   );
 
+  effectIt.effect('attaches equivalent host routes to one scoped claim while a sibling scope remains independent', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-refresh-demand-equivalent-routes-'});
+        const rootExplicit = {checkoutId, scopeId: scopeA, threadnoteHome: home, worktreeId};
+        const nestedInferred = {...rootExplicit};
+        const sibling = {...rootExplicit, scopeId: scopeB};
+
+        const claimed = yield* registerCodeGraphBackgroundDemand(rootExplicit, firstKey);
+        const attached = yield* registerCodeGraphBackgroundDemand(nestedInferred, firstKey);
+        const siblingClaimed = yield* registerCodeGraphBackgroundDemand(sibling, firstKey);
+
+        expect(claimed.type).toBe('claimed');
+        expect(attached).toMatchObject({
+          type: 'attached',
+          target: {targetKey: firstKey, targetToken: claimed.target.targetToken},
+        });
+        expect(siblingClaimed.type).toBe('claimed');
+        expect(siblingClaimed.target.targetToken).not.toBe(claimed.target.targetToken);
+      }),
+    ).pipe(provideTestLayer(TestLayer)),
+  );
+
   effectIt.effect('persists full and scoped demand below an owner-controlled legacy home', () =>
     Effect.scoped(
       Effect.gen(function* () {

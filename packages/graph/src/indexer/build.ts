@@ -5,7 +5,7 @@ import {CodeGraphProcessActivity} from '../runtime_ports.js';
 import type {CodeGraphBuildOwnerIdentity} from '../build/owner.js';
 import type {CodeGraphBuildResourceCoordinator} from '../build/resources.js';
 import {canonicalCodeGraphMonikers} from '../cross_repository/monikers.js';
-import {CodeGraphDiskCapacityPressureError, isNonResumableCodeGraphBuildFailure} from '../disk/capacity.js';
+import {isNonResumableCodeGraphBuildFailure} from '../disk/capacity.js';
 import {coordinateCodeGraphBuild, measureCodeGraphAttribution} from './build_coordination.js';
 import type {CodeGraphEmbeddingIndexShape, CodeGraphEmbeddingStatus} from '../embedding.js';
 import {finalCodeGraphFactBatches, serializeBoundedCodeGraphFact} from '../fact/budget.js';
@@ -1271,12 +1271,12 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
       });
     const storageShortfalls = materializationStorageShortfalls(storagePlan);
     if (storageShortfalls.length > 0) {
-      if (directPersistentMaterialization) {
-        return yield* CodeGraphDiskCapacityPressureError.of('protect code graph storage');
-      }
       extractionDiagnostics.push(
-        `Available ${storageShortfalls.join(' and ')} disk space is below the heuristic materialization estimate; ` +
-          'indexing will continue while reporting actual TEMP database usage.',
+        directPersistentMaterialization
+          ? `Available ${storageShortfalls.join(' and ')} disk space is below the advisory whole-build ` +
+              'materialization estimate; indexing will continue under measured bounded-write reservations.'
+          : `Available ${storageShortfalls.join(' and ')} disk space is below the heuristic materialization ` +
+              'estimate; indexing will continue while reporting actual TEMP database usage.',
       );
     }
     yield* input.onProgress?.({

@@ -1,3 +1,4 @@
+import type {CodeGraphBuildCapacityFailure} from '@threadnote/graph/build_status';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import type {ObservedCodeGraphBuildStatus} from '@threadnote/graph/build_status';
@@ -15,6 +16,29 @@ import {
   projectCodeGraphStatusBuildSummaryV5,
   projectCodeGraphStatusLanguagePacksV4,
 } from '@threadnote/graph/status/projection';
+
+const capacityFailure: CodeGraphBuildCapacityFailure = {
+  code: 'no-space',
+  operation: 'stage persistent code graph facts',
+  evidence: {
+    activeReservations: ['durable', 'shared', 'temporary'].map(role => ({
+      role: role as 'durable' | 'shared' | 'temporary',
+      bytes: Number.MAX_SAFE_INTEGER,
+    })),
+    calibrationIdentity: 'c'.repeat(256),
+    decisionLayer: 'bounded-write-reservation',
+    estimateBasis: 'final-fact-bytes-and-row-count',
+    filesystems: ['durable', 'shared', 'temporary'].map(role => ({
+      role: role as 'durable' | 'shared' | 'temporary',
+      availableBytes: Number.MAX_SAFE_INTEGER,
+      requiredBytes: Number.MAX_SAFE_INTEGER,
+    })),
+    modelVersion: Number.MAX_SAFE_INTEGER,
+    recovery: 'free-space',
+    retryable: false,
+    scope: {checkoutId: 'a'.repeat(64), scopeId: `code-graph-scope:${'b'.repeat(64)}`},
+  },
+};
 
 describe('code graph status JSON projection', () => {
   it('bounds the observed 74-worktree shape and pins an otherwise omitted current build', () => {
@@ -139,7 +163,7 @@ describe('code graph status JSON projection', () => {
             unexpected: noise,
             unit: 'files',
           },
-          error: {summary: noise, unexpected: noise},
+          error: {summary: noise, capacity: capacityFailure, unexpected: noise},
           eta: {
             basis: 'cached-fact-bytes',
             confidence: 'high',
@@ -191,6 +215,7 @@ describe('code graph status JSON projection', () => {
         expect(first).not.toHaveProperty('request');
         expect(first.activity).not.toHaveProperty('unexpected');
         expect(first.error).not.toHaveProperty('unexpected');
+        expect(first.error?.capacity).toEqual(capacityFailure);
         expect(utf8Bytes(first.error?.summary ?? '')).toBeLessThanOrEqual(300);
         expect(utf8Bytes(first.subphase ?? '')).toBeLessThanOrEqual(64);
         expect(utf8Bytes(JSON.stringify(first))).toBeLessThanOrEqual(CODE_GRAPH_STATUS_BUILD_SUMMARY_MAXIMUM_BYTES);

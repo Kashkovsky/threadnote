@@ -123,6 +123,10 @@ export function codeGraphDirectPersistentCapacityProtector(
             onWaiting: (input.onProgress?.({phase: 'waiting', reason: 'disk-capacity'}) ?? Effect.void).pipe(
               Effect.ignore,
             ),
+            scope: {
+              checkoutId: input.layout.checkoutId,
+              ...(input.layout.scopeId === undefined ? {} : {scopeId: input.layout.scopeId}),
+            },
           },
           transaction,
         ).pipe(
@@ -139,6 +143,10 @@ export function codeGraphDirectPersistentCapacityProtector(
               state: 'unknown',
             },
             boundary.operation,
+            {
+              checkoutId: input.layout.checkoutId,
+              ...(input.layout.scopeId === undefined ? {} : {scopeId: input.layout.scopeId}),
+            },
           ),
         );
 }
@@ -1031,6 +1039,7 @@ const FACT_MATERIALIZATION_TEMP_MINIMUM_ESTIMATE_BYTES = 512 * 1_048_576;
 const FACT_MATERIALIZATION_DIRECT_TEMP_ESTIMATE_BYTES = 16 * 1_048_576;
 const FACT_MATERIALIZATION_DURABLE_MINIMUM_ESTIMATE_BYTES = 512 * 1_048_576;
 const FACT_MATERIALIZATION_JOURNAL_MINIMUM_ESTIMATE_BYTES = 256 * 1_048_576;
+export const CODE_GRAPH_MATERIALIZATION_STORAGE_HEURISTIC_MODEL_VERSION = 1 as const;
 
 export function estimatedMaterializationStorageBytes(
   factBytes: number | undefined,
@@ -1060,6 +1069,8 @@ export function estimatedMaterializationStorageBytes(
     estimatedJournalBytes,
   );
   return {
+    decisionLayer: 'whole-build-heuristic' as const,
+    enforcement: 'advisory' as const,
     estimateBasis: factBytes === undefined ? ('source-bytes-fallback' as const) : estimateBasis,
     estimatedConcurrentBuildBytes,
     estimatedDurableSnapshotBytes,
@@ -1067,6 +1078,7 @@ export function estimatedMaterializationStorageBytes(
     estimatedRequiredBytes: saturatingAdd(estimatedConcurrentBuildBytes, estimatedConcurrentBuildBytes),
     estimatedTemporaryDatabaseBytes,
     materializationMode,
+    modelVersion: CODE_GRAPH_MATERIALIZATION_STORAGE_HEURISTIC_MODEL_VERSION,
   };
 }
 

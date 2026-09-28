@@ -326,6 +326,8 @@ export interface CodeGraphMaterializationMetrics {
     readonly durableSidecarWalHighWaterBytes?: number;
     readonly durableWalBytes?: number;
     readonly durableWalHighWaterBytes?: number;
+    readonly decisionLayer?: 'whole-build-heuristic';
+    readonly enforcement?: 'advisory';
     readonly estimateBasis?: 'cached-fact-bytes' | 'final-fact-bytes' | 'source-bytes-fallback';
     /** Allowance for one other repository/worktree build sharing the same disk. */
     readonly estimatedConcurrentBuildBytes?: number;
@@ -339,6 +341,7 @@ export interface CodeGraphMaterializationMetrics {
     /** Whether SQLite TEMP and the durable graph database are on the same filesystem. */
     readonly filesystemsShared?: boolean;
     readonly materializationMode?: 'direct-persistent' | 'temporary-staged';
+    readonly modelVersion?: number;
     readonly temporaryAvailableBytes?: number;
     /** Allocated SQLite TEMP database pages; rollback journals and subjournals are excluded. */
     readonly temporaryDatabaseBytes: number;
@@ -1030,9 +1033,75 @@ export class CodeGraphMaintenanceActiveError extends Schema.TaggedError<CodeGrap
   }
 }
 
+export interface CodeGraphDiskCapacityFailureEvidence {
+  readonly activeReservations: readonly {
+    readonly bytes: number;
+    readonly role: 'durable' | 'shared' | 'temporary';
+  }[];
+  readonly calibrationIdentity: string;
+  readonly decisionLayer: 'bounded-write-reservation';
+  readonly estimateBasis: 'final-fact-bytes-and-row-count';
+  readonly filesystems: readonly {
+    readonly availableBytes: number;
+    readonly requiredBytes: number;
+    readonly role: 'durable' | 'shared' | 'temporary';
+  }[];
+  readonly modelVersion: number;
+  readonly reason?:
+    | 'available-space-unknown'
+    | 'calibration-input-unknown'
+    | 'filesystem-topology-unknown'
+    | 'page-storage-unknown'
+    | 'reservation-input-unknown';
+  readonly recovery: 'defer' | 'free-space' | 'retry-read-only';
+  readonly retryable: boolean;
+  readonly scope?: {
+    readonly checkoutId: string;
+    readonly scopeId?: string;
+  };
+}
+
+const CodeGraphDiskCapacityFailureEvidenceSchema = Schema.Struct({
+  activeReservations: Schema.Array(
+    Schema.Struct({
+      bytes: Schema.Finite,
+      role: Schema.Literals(['durable', 'shared', 'temporary']),
+    }),
+  ),
+  calibrationIdentity: Schema.String,
+  decisionLayer: Schema.Literal('bounded-write-reservation'),
+  estimateBasis: Schema.Literal('final-fact-bytes-and-row-count'),
+  filesystems: Schema.Array(
+    Schema.Struct({
+      availableBytes: Schema.Finite,
+      requiredBytes: Schema.Finite,
+      role: Schema.Literals(['durable', 'shared', 'temporary']),
+    }),
+  ),
+  modelVersion: Schema.Finite,
+  reason: Schema.optionalKey(
+    Schema.Literals([
+      'available-space-unknown',
+      'calibration-input-unknown',
+      'filesystem-topology-unknown',
+      'page-storage-unknown',
+      'reservation-input-unknown',
+    ]),
+  ),
+  recovery: Schema.Literals(['defer', 'free-space', 'retry-read-only']),
+  retryable: Schema.Boolean,
+  scope: Schema.optionalKey(
+    Schema.Struct({
+      checkoutId: Schema.String,
+      scopeId: Schema.optionalKey(Schema.String),
+    }),
+  ),
+});
+
 export class CodeGraphDiskCapacityObservationError extends Schema.TaggedError<CodeGraphDiskCapacityObservationError>()(
   'CodeGraphDiskCapacityObservationError',
   {
+    evidence: Schema.optionalKey(CodeGraphDiskCapacityFailureEvidenceSchema),
     message: Schema.String,
     operation: Schema.String,
   },
@@ -1041,8 +1110,9 @@ export class CodeGraphDiskCapacityObservationError extends Schema.TaggedError<Co
   readonly recovery = 'retry-read-only' as const;
   readonly retryable = true as const;
 
-  static of(): CodeGraphDiskCapacityObservationError {
+  static of(evidence?: CodeGraphDiskCapacityFailureEvidence): CodeGraphDiskCapacityObservationError {
     return CodeGraphDiskCapacityObservationError.make({
+      ...(evidence === undefined ? {} : {evidence}),
       message: 'Code graph storage capacity could not be observed; the bounded write was not started.',
       operation: 'observe code graph storage capacity',
     });
@@ -1052,16 +1122,24 @@ export class CodeGraphDiskCapacityObservationError extends Schema.TaggedError<Co
 export class CodeGraphDiskCapacityPressureError extends Schema.TaggedError<CodeGraphDiskCapacityPressureError>()(
   'CodeGraphDiskCapacityPressureError',
   {
+    evidence: Schema.optionalKey(CodeGraphDiskCapacityFailureEvidenceSchema),
     message: Schema.String,
     operation: Schema.String,
   },
 ) {
   readonly code = 'no-space' as const;
-  readonly recovery = 'free-space' as const;
-  readonly retryable = false as const;
 
-  static of(operation: string): CodeGraphDiskCapacityPressureError {
+  get recovery(): 'defer' | 'free-space' {
+    return this.evidence?.recovery === 'defer' ? 'defer' : 'free-space';
+  }
+
+  get retryable(): boolean {
+    return this.evidence?.retryable ?? false;
+  }
+
+  static of(operation: string, evidence?: CodeGraphDiskCapacityFailureEvidence): CodeGraphDiskCapacityPressureError {
     return CodeGraphDiskCapacityPressureError.make({
+      ...(evidence === undefined ? {} : {evidence}),
       message: 'Code graph storage capacity is insufficient; the bounded write was not started.',
       operation,
     });

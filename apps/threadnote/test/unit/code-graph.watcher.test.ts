@@ -13,10 +13,12 @@ import {
   driveCodeGraphBackgroundDemand,
   handoffCodeGraphPreparedDemand,
   makeCodeGraphWatcher,
+  persistedRefreshStatus,
   prewarmCandidatesFromRefOutput,
   type CodeGraphWatchOptions,
   watchRepository,
 } from '@threadnote/graph/watcher';
+import type {ObservedCodeGraphBuildStatus} from '@threadnote/graph/build_status';
 import {recordCodeGraphSnapshotAdmission} from '@threadnote/graph/admission_freshness';
 import {codeGraphLayout} from '@threadnote/graph/layout';
 import {extractorSetIdentity} from '@threadnote/graph/indexer/materialization';
@@ -32,6 +34,7 @@ import {
   registerCodeGraphRefreshDemand,
 } from '@threadnote/graph/refresh/demand_scheduler';
 import {
+  CodeGraphDiskCapacityPressureError,
   CodeGraphRuntimeReconnectRequiredError,
   CodeGraphStoreBusyError,
   CodeGraphStoreNoSpaceError,
@@ -859,6 +862,47 @@ describe('CodeGraphWatcher', () => {
     }),
   );
 
+  effectIt.effect('coalesces equivalent explicit and inferred project routes while isolating a sibling scope', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Ref.make<string[]>([]);
+        const firstStarted = yield* Deferred.make<void>();
+        const siblingStarted = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const project = {
+          graph: {closure: 'dependencies' as const, roots: ['apps/a']},
+          name: 'a',
+          uri: 'threadnote://resources/repos/a',
+        };
+        const sibling = {
+          graph: {closure: 'dependencies' as const, roots: ['apps/b']},
+          name: 'b',
+          uri: 'threadnote://resources/repos/b',
+        };
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          refreshOptions =>
+            Effect.gen(function* () {
+              const observed = yield* Ref.updateAndGet(starts, current => [...current, refreshOptions.project!.uri]);
+              yield* Deferred.succeed(observed.length === 1 ? firstStarted : siblingStarted, undefined);
+              yield* Deferred.await(release);
+            }),
+        );
+        const rootExplicit = {...options, cwd: '/fixture/repository', key: 'worktree', project};
+        const nestedInferred = {...rootExplicit, cwd: '/fixture/repository/apps/a'};
+        const siblingRoute = {...rootExplicit, cwd: '/fixture/repository/apps/b', project: sibling};
+
+        expect(yield* watcher.refresh(rootExplicit)).toBe(true);
+        yield* Deferred.await(firstStarted);
+        expect(yield* watcher.refresh(nestedInferred)).toBe(false);
+        expect(yield* watcher.refresh(siblingRoute)).toBe(true);
+        yield* Deferred.await(siblingStarted);
+        expect(yield* Ref.get(starts)).toEqual([project.uri, sibling.uri]);
+        yield* Deferred.succeed(release, undefined);
+      }),
+    ),
+  );
+
   effectIt.effect('returns promptly under held-writer load and publishes one typed deferred failure', () =>
     Effect.gen(function* () {
       const logs: string[] = [];
@@ -982,6 +1026,133 @@ describe('CodeGraphWatcher', () => {
       }
     }),
   );
+
+  effectIt.effect('keeps a known capacity failure parked without an automatic retry loop', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Ref.make(0);
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          () =>
+            Ref.update(starts, count => count + 1).pipe(
+              Effect.andThen(Effect.fail(CodeGraphStoreNoSpaceError.of('expected capacity pause'))),
+            ),
+        );
+        const capacityOptions = {...options, admissionClass: 'background' as const, key: 'capacity-pause'};
+
+        yield* watcher.ensure(capacityOptions);
+        expect(yield* watcher.refresh(capacityOptions)).toBe(true);
+        let status = yield* watcher.status(capacityOptions.key);
+        for (let attempt = 0; attempt < 32; attempt += 1) {
+          if (status._tag === 'Some' && status.value.state === 'deferred') break;
+          yield* Effect.yieldNow;
+          status = yield* watcher.status(capacityOptions.key);
+        }
+        for (let attempt = 0; attempt < 32; attempt += 1) yield* Effect.yieldNow;
+
+        expect(status).toMatchObject({
+          _tag: 'Some',
+          value: {failure: {code: 'no-space', retryable: false}, state: 'deferred'},
+        });
+        expect(yield* Ref.get(starts)).toBe(1);
+      }),
+    ),
+  );
+
+  effectIt.effect('preserves bounded capacity evidence and its dynamic retry policy in refresh status', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const evidence = {
+          activeReservations: [{bytes: 256, role: 'durable' as const}],
+          calibrationIdentity: 'calibration-v1',
+          decisionLayer: 'bounded-write-reservation' as const,
+          estimateBasis: 'final-fact-bytes-and-row-count' as const,
+          filesystems: [{availableBytes: 512, requiredBytes: 1_024, role: 'durable' as const}],
+          modelVersion: 1,
+          recovery: 'defer' as const,
+          retryable: true,
+          scope: {checkoutId: 'a'.repeat(64), scopeId: `code-graph-scope:${'b'.repeat(64)}`},
+        };
+        const watcher = yield* makeCodeGraphWatcher(
+          () => Effect.never,
+          () => Effect.fail(CodeGraphDiskCapacityPressureError.of('reserve graph storage', evidence)),
+        );
+        const capacityOptions = {...options, key: 'retryable-capacity-pressure'};
+
+        yield* watcher.ensure(capacityOptions);
+        expect(yield* watcher.refresh(capacityOptions)).toBe(true);
+        let status = yield* watcher.status(capacityOptions.key);
+        for (let attempt = 0; attempt < 32; attempt += 1) {
+          if (status._tag === 'Some' && status.value.state === 'deferred') break;
+          yield* Effect.yieldNow;
+          status = yield* watcher.status(capacityOptions.key);
+        }
+
+        expect(status).toMatchObject({
+          _tag: 'Some',
+          value: {
+            failure: {code: 'no-space', evidence, recovery: 'defer', retryable: true},
+            state: 'deferred',
+          },
+        });
+      }),
+    ),
+  );
+
+  it('restores persisted capacity evidence in a new watcher host', () => {
+    const evidence = {
+      activeReservations: [{bytes: 256, role: 'durable' as const}],
+      calibrationIdentity: 'calibration-v1',
+      decisionLayer: 'bounded-write-reservation' as const,
+      estimateBasis: 'final-fact-bytes-and-row-count' as const,
+      filesystems: [{availableBytes: 512, requiredBytes: 1_024, role: 'durable' as const}],
+      modelVersion: 2,
+      recovery: 'defer' as const,
+      retryable: true,
+    };
+    const timestamp = '2026-09-28T00:00:00.000Z';
+    const status: ObservedCodeGraphBuildStatus = {
+      buildId: 'a'.repeat(32),
+      counters: {},
+      identity: {
+        checkoutId: 'b'.repeat(64),
+        commit: 'c'.repeat(40),
+        repositoryId: 'd'.repeat(64),
+        worktreeId: 'e'.repeat(64),
+      },
+      owner: {processId: 42, runtime: 'bun', runtimeVersion: '1.4.2'},
+      phase: 'materializing',
+      schemaVersion: 1,
+      state: 'failed',
+      timestamps: {
+        heartbeatAt: timestamp,
+        lastProgressAt: timestamp,
+        phaseStartedAt: timestamp,
+        startedAt: timestamp,
+        updatedAt: timestamp,
+      },
+      error: {
+        capacity: {
+          code: 'no-space' as const,
+          evidence,
+          operation: 'stage persistent code graph facts' as const,
+        },
+        summary: 'Capacity is temporarily reserved.',
+      },
+      observation: {heartbeatAgeMilliseconds: 0, liveness: 'failed'},
+    };
+
+    expect(persistedRefreshStatus(status)).toEqual({
+      failure: {
+        code: 'no-space',
+        evidence,
+        operation: 'refresh code graph',
+        recovery: 'defer',
+        retryable: true,
+      },
+      state: 'deferred',
+    });
+  });
 
   effectIt.effect('turns a refresh defect into one bounded unknown status instead of stranding indexing', () =>
     Effect.gen(function* () {

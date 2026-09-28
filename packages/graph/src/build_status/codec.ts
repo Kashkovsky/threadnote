@@ -1,4 +1,5 @@
-import {Option} from 'effect';
+import {Option, Schema} from 'effect';
+import {isCodeGraphCapacityFailureOperation} from '../disk/capacity.js';
 import {CODE_GRAPH_BUILD_PHASES as VALID_PHASES, parseCodeGraphBuildScheduling} from './scheduling.js';
 import {
   CODE_GRAPH_BUILD_COMMIT_ID,
@@ -16,15 +17,19 @@ import {
   type CodeGraphSlowFileTelemetry,
 } from '../progress/telemetry.js';
 import type {
+  CodeGraphDiskCapacityFailureEvidence,
   CodeGraphMaterializationActivity,
   CodeGraphMaterializationMetrics,
   CodeGraphMaterializationRows,
   CodeGraphOverlayFallbackReason,
 } from '../types.js';
+import {CodeGraphDiskCapacityObservationError, CodeGraphDiskCapacityPressureError} from '../types.js';
 import type {
   CodeGraphBuildActivation,
   CodeGraphBuildActivity,
+  CodeGraphBuildCapacityFailure,
   CodeGraphBuildCounters,
+  CodeGraphBuildError,
   CodeGraphBuildExtraction,
   CodeGraphBuildMaterialization,
   CodeGraphBuildRegistration,
@@ -60,6 +65,38 @@ const isRecord = isBuildStatusRecord;
 const isHash = isBuildStatusHash;
 const isText = isBuildStatusText;
 const isTimestamp = isBuildStatusTimestamp;
+
+/** Privacy-safe, bounded terminal receipt shared with the isolated parent process. */
+export function codeGraphBuildStatusError(cause: unknown): CodeGraphBuildError {
+  const capacity = Schema.is(CodeGraphDiskCapacityPressureError)(cause)
+    ? codeGraphBuildCapacityFailure(cause.code, cause.operation, cause.evidence)
+    : Schema.is(CodeGraphDiskCapacityObservationError)(cause)
+      ? codeGraphBuildCapacityFailure(cause.code, cause.operation, cause.evidence)
+      : undefined;
+  return {
+    ...(capacity === undefined ? {} : {capacity}),
+    summary: privacySafeBuildError(cause),
+  };
+}
+
+function codeGraphBuildCapacityFailure(
+  code: CodeGraphBuildCapacityFailure['code'],
+  operation: string,
+  evidence: CodeGraphDiskCapacityFailureEvidence | undefined,
+): CodeGraphBuildCapacityFailure | undefined {
+  if (evidence === undefined || !isCodeGraphCapacityFailureOperation(operation)) return undefined;
+  return {code, evidence, operation};
+}
+
+function privacySafeBuildError(cause: unknown): string {
+  const raw = cause instanceof Error ? cause.message : String(cause);
+  const sanitized =
+    raw
+      .replaceAll(/(?:[A-Za-z]:[\\/]|\/)(?:[^\s'"`<>]|\\ )+/g, '<local-path>')
+      .replaceAll(/\s+/g, ' ')
+      .trim() || 'Code graph build failed.';
+  return sanitized.length <= 300 ? sanitized : `${sanitized.slice(0, 299)}…`;
+}
 
 export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus | undefined {
   if (!isRecord(value) || value.schemaVersion !== CODE_GRAPH_BUILD_STATUS_SCHEMA_VERSION) return undefined;
@@ -761,6 +798,16 @@ function parseMaterializationStorage(
   ) {
     return undefined;
   }
+  const decisionLayer = oneOf(value, 'decisionLayer', ['whole-build-heuristic']);
+  const enforcement = oneOf(value, 'enforcement', ['advisory']);
+  if (value.decisionLayer !== undefined && decisionLayer === undefined) return undefined;
+  if (value.enforcement !== undefined && enforcement === undefined) return undefined;
+  if (
+    value.modelVersion !== undefined &&
+    (!isNonNegativeSafeInteger(value.modelVersion) || Number(value.modelVersion) < 1)
+  ) {
+    return undefined;
+  }
   const estimateBasis = oneOf(value, 'estimateBasis', [
     'cached-fact-bytes',
     'final-fact-bytes',
@@ -839,6 +886,9 @@ function parseMaterializationStorage(
     return undefined;
   }
   return {
+    ...(decisionLayer === undefined ? {} : {decisionLayer}),
+    ...(enforcement === undefined ? {} : {enforcement}),
+    ...(value.modelVersion === undefined ? {} : {modelVersion: Number(value.modelVersion)}),
     ...(value.availableBytes === undefined ? {} : {availableBytes: Number(value.availableBytes)}),
     ...(value.durableAvailableBytes === undefined ? {} : {durableAvailableBytes: Number(value.durableAvailableBytes)}),
     ...(value.durableDatabaseBytes === undefined ? {} : {durableDatabaseBytes: Number(value.durableDatabaseBytes)}),
@@ -1173,7 +1223,135 @@ function parseCounters(value: unknown): CodeGraphBuildCounters | undefined {
 }
 
 function parseError(value: unknown): CodeGraphBuildStatus['error'] | undefined {
-  return isRecord(value) && isText(value.summary, 300) ? {summary: value.summary} : undefined;
+  if (!isRecord(value) || !isText(value.summary, 300)) return undefined;
+  const capacity = parseCapacityFailure(value.capacity);
+  if (value.capacity !== undefined && capacity === undefined) return undefined;
+  return {...(capacity === undefined ? {} : {capacity}), summary: value.summary};
+}
+
+export function parseCapacityFailure(value: unknown): CodeGraphBuildCapacityFailure | undefined {
+  if (!isRecord(value) || !isCodeGraphCapacityFailureOperation(value.operation)) return undefined;
+  const code = oneOfValue(value.code, ['no-space', 'transient-io']);
+  const evidence = parseCapacityFailureEvidence(value.evidence);
+  if (code === undefined || evidence === undefined) return undefined;
+  if (code === 'transient-io' && (evidence.recovery !== 'retry-read-only' || !evidence.retryable)) return undefined;
+  if (
+    code === 'no-space' &&
+    (evidence.recovery === 'retry-read-only' ||
+      (evidence.recovery === 'defer' && !evidence.retryable) ||
+      (evidence.recovery === 'free-space' && evidence.retryable))
+  ) {
+    return undefined;
+  }
+  return {code, evidence, operation: value.operation};
+}
+
+function parseCapacityFailureEvidence(value: unknown): CodeGraphBuildCapacityFailure['evidence'] | undefined {
+  if (
+    !isRecord(value) ||
+    value.decisionLayer !== 'bounded-write-reservation' ||
+    value.estimateBasis !== 'final-fact-bytes-and-row-count' ||
+    !isText(value.calibrationIdentity, 256) ||
+    !Number.isSafeInteger(value.modelVersion) ||
+    Number(value.modelVersion) <= 0 ||
+    typeof value.retryable !== 'boolean'
+  ) {
+    return undefined;
+  }
+  const recovery = oneOfValue(value.recovery, ['defer', 'free-space', 'retry-read-only']);
+  const reason = oneOfValue(value.reason, [
+    'available-space-unknown',
+    'calibration-input-unknown',
+    'filesystem-topology-unknown',
+    'page-storage-unknown',
+    'reservation-input-unknown',
+  ]);
+  if (recovery === undefined || (value.reason !== undefined && reason === undefined)) return undefined;
+  const activeReservations = parseCapacityRoles(value.activeReservations, 'bytes');
+  const filesystems = parseCapacityFilesystems(value.filesystems);
+  if (activeReservations === undefined || filesystems === undefined) return undefined;
+  const scope = parseCapacityScope(value.scope);
+  if (value.scope !== undefined && scope === undefined) return undefined;
+  return {
+    activeReservations,
+    calibrationIdentity: value.calibrationIdentity,
+    decisionLayer: value.decisionLayer,
+    estimateBasis: value.estimateBasis,
+    filesystems,
+    modelVersion: Number(value.modelVersion),
+    ...(reason === undefined ? {} : {reason}),
+    recovery,
+    retryable: value.retryable,
+    ...(scope === undefined ? {} : {scope}),
+  };
+}
+
+function parseCapacityRoles(
+  value: unknown,
+  bytesKey: 'bytes',
+): CodeGraphBuildCapacityFailure['evidence']['activeReservations'] | undefined {
+  if (!Array.isArray(value) || value.length > 3) return undefined;
+  const roles = new Set<string>();
+  const parsed: Array<{bytes: number; role: 'durable' | 'shared' | 'temporary'}> = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return undefined;
+    const role = oneOfValue(entry.role, ['durable', 'shared', 'temporary']);
+    if (
+      role === undefined ||
+      roles.has(role) ||
+      !Number.isSafeInteger(entry[bytesKey]) ||
+      Number(entry[bytesKey]) < 0
+    ) {
+      return undefined;
+    }
+    roles.add(role);
+    parsed.push({bytes: Number(entry[bytesKey]), role});
+  }
+  return parsed;
+}
+
+function parseCapacityFilesystems(
+  value: unknown,
+): CodeGraphBuildCapacityFailure['evidence']['filesystems'] | undefined {
+  if (!Array.isArray(value) || value.length > 3) return undefined;
+  const roles = new Set<string>();
+  const parsed: Array<{
+    availableBytes: number;
+    requiredBytes: number;
+    role: 'durable' | 'shared' | 'temporary';
+  }> = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return undefined;
+    const role = oneOfValue(entry.role, ['durable', 'shared', 'temporary']);
+    if (
+      role === undefined ||
+      roles.has(role) ||
+      !Number.isSafeInteger(entry.availableBytes) ||
+      Number(entry.availableBytes) < 0 ||
+      !Number.isSafeInteger(entry.requiredBytes) ||
+      Number(entry.requiredBytes) < 0
+    ) {
+      return undefined;
+    }
+    roles.add(role);
+    parsed.push({
+      availableBytes: Number(entry.availableBytes),
+      requiredBytes: Number(entry.requiredBytes),
+      role,
+    });
+  }
+  return parsed;
+}
+
+function parseCapacityScope(value: unknown): CodeGraphBuildCapacityFailure['evidence']['scope'] | undefined {
+  if (!isRecord(value) || !isHash(value.checkoutId)) return undefined;
+  if (
+    value.scopeId !== undefined &&
+    (typeof value.scopeId !== 'string' || !/^code-graph-scope:[0-9a-f]{64}$/u.test(value.scopeId))
+  ) {
+    return undefined;
+  }
+  return {checkoutId: value.checkoutId, ...(value.scopeId === undefined ? {} : {scopeId: value.scopeId})};
 }
 
 function parseEta(value: unknown): CodeGraphBuildStatus['eta'] | undefined {

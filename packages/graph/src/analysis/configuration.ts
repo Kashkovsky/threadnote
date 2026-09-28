@@ -30,6 +30,7 @@ export interface CodeGraphAnalysisOptions {
   /** Stable `cgc_…` identifier returned by an earlier analysis. */
   readonly communityId?: string;
   readonly databasePath: string;
+  readonly deadlineMilliseconds?: number;
   readonly limits?: CodeGraphAnalysisLimits;
   readonly minimumGodNodeDegree?: number;
   readonly minimumHubDegree?: number;

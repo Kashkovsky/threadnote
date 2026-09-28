@@ -209,6 +209,224 @@ describe('code graph CLI project selection', () => {
     }
   }, 60_000);
 
+  it('coalesces explicit and nested inferred routes inside a linked worktree while isolating sibling scopes', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'threadnote-graph-cli-linked-siblings-'));
+    const root = join(fixture, 'repository');
+    const linked = join(fixture, 'linked');
+    const home = join(fixture, '.threadnote-home');
+    const manifest = join(home, 'seed-manifest.yaml');
+    try {
+      for (const name of ['a', 'b']) {
+        await mkdir(join(root, 'apps', name), {recursive: true});
+        await writeFile(join(root, 'apps', name, 'package.json'), JSON.stringify({name: `@fixture/${name}`}));
+        await writeFile(join(root, 'apps', name, 'index.ts'), `export const ${name} = '${name}';\n`);
+      }
+      await writeFile(join(root, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+      await execFilePromise('git', ['-C', root, 'worktree', 'add', '--detach', linked, 'HEAD']);
+      await mkdir(home, {recursive: true});
+      await writeFile(
+        manifest,
+        [
+          'version: 1',
+          'projects:',
+          ...['a', 'b'].flatMap(name => [
+            `  - name: ${name}`,
+            `    path: ${root}`,
+            '    seed: []',
+            `    uri: threadnote://resources/repos/${name}`,
+            '    graph:',
+            '      closure: dependencies',
+            `      roots: [apps/${name}]`,
+          ]),
+          '',
+        ].join('\n'),
+      );
+
+      const explicit = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'index',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            linked,
+            '--project',
+            'a',
+            '--no-vectors',
+            '--json',
+          ])
+        ).stdout,
+      );
+      const inferred = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'status',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            join(linked, 'apps', 'a'),
+            '--json',
+          ])
+        ).stdout,
+      );
+      expect(inferred).toMatchObject({
+        projectCoverage: {kind: 'project', project: 'a'},
+        readySnapshot: {id: explicit.snapshot.id},
+      });
+
+      const sibling = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'status',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            join(linked, 'apps', 'b'),
+            '--json',
+          ])
+        ).stdout,
+      );
+      expect(sibling).toMatchObject({projectCoverage: {kind: 'project', project: 'b'}});
+      expect(sibling.readySnapshot).toBeNull();
+    } finally {
+      await rm(fixture, {force: true, recursive: true});
+    }
+  }, 60_000);
+
+  it('does not infer a nested independent repository from an outer linked worktree', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'threadnote-graph-cli-linked-nested-repository-'));
+    const root = join(fixture, 'repository');
+    const linked = join(fixture, 'linked');
+    const nested = join(root, 'vendor', 'other');
+    const home = join(fixture, '.threadnote-home');
+    const manifest = join(home, 'seed-manifest.yaml');
+    try {
+      for (const name of ['a', 'b']) {
+        await mkdir(join(root, 'apps', name), {recursive: true});
+        await writeFile(join(root, 'apps', name, 'package.json'), JSON.stringify({name: `@fixture/${name}`}));
+        await writeFile(join(root, 'apps', name, 'index.ts'), `export const ${name} = '${name}';\n`);
+      }
+      await writeFile(join(root, 'package.json'), JSON.stringify({private: true, workspaces: ['apps/*']}));
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+      await execFilePromise('git', ['-C', root, 'worktree', 'add', '--detach', linked, 'HEAD']);
+
+      await mkdir(join(nested, 'apps', 'b'), {recursive: true});
+      await writeFile(join(nested, 'apps', 'b', 'package.json'), JSON.stringify({name: '@fixture/foreign-b'}));
+      await writeFile(join(nested, 'apps', 'b', 'index.ts'), 'export const foreignB = true;\n');
+      await execFilePromise('git', ['-C', nested, 'init', '-q']);
+      await execFilePromise('git', ['-C', nested, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        nested,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'nested fixture',
+      ]);
+
+      await mkdir(home, {recursive: true});
+      await writeFile(
+        manifest,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: outer',
+          `    path: ${root}`,
+          '    seed: []',
+          '    uri: threadnote://resources/repos/outer',
+          '    graph:',
+          '      closure: dependencies',
+          '      roots: [apps/a]',
+          '  - name: foreign',
+          `    path: ${nested}`,
+          '    seed: []',
+          '    uri: threadnote://resources/repos/foreign',
+          '    graph:',
+          '      closure: dependencies',
+          '      roots: [apps/b]',
+          '',
+        ].join('\n'),
+      );
+
+      const explicit = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'index',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            linked,
+            '--project',
+            'outer',
+            '--no-vectors',
+            '--json',
+          ])
+        ).stdout,
+      );
+      const inferred = JSON.parse(
+        (
+          await runCli([
+            'graph',
+            'status',
+            '--home',
+            home,
+            '--manifest',
+            manifest,
+            '--cwd',
+            join(linked, 'apps', 'b'),
+            '--json',
+          ])
+        ).stdout,
+      );
+      expect(inferred).toMatchObject({
+        projectCoverage: {kind: 'project', project: 'outer'},
+        readySnapshot: {id: explicit.snapshot.id},
+      });
+    } finally {
+      await rm(fixture, {force: true, recursive: true});
+    }
+  }, 60_000);
+
   it('selects the sole configured scope from the monorepo root without building the full repository', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-graph-cli-root-scope-'));
     const home = join(root, '.threadnote-home');

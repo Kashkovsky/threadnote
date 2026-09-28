@@ -1,200 +1,150 @@
-import {it as effectIt} from '@effect/vitest';
-import {Effect, Fiber, Layer, Ref} from 'effect';
-import {TestClock} from 'effect/testing';
-import {describe, expect} from 'vitest';
-import {resolveCodeGraphAnalysisSnapshot} from '@threadnote/graph/analysis/cli';
-import type {CodeGraphCliFreshnessPolicy} from '@threadnote/graph/cli/freshness';
-import {
-  CodeGraphQueryService,
-  type CodeGraphSharedReadyAttachInterlock,
-  type CodeGraphStatusOptions,
-} from '@threadnote/graph/query';
-import type {CodeGraphSnapshot, CodeGraphStatus, RepositoryIdentity} from '@threadnote/graph/types';
-import type {RuntimeConfig} from '@threadnote/workspace/config';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {it as effectIt} from '@effect/vitest';
+import {Clock, Effect, Layer} from 'effect';
+import {describe, expect} from 'vitest';
+import fc from 'fast-check';
+import {fcEffectProp} from '@threadnote/testing/fast-check-property';
+import {CodeGraphAnalysis, analyzeCodeGraph} from '@threadnote/graph/analysis';
+import {CodeGraphIndexer, type CodeGraphIndexerShape} from '@threadnote/graph/indexer';
+import {serveCodeGraphAnalysisRead} from '@threadnote/graph/isolated/analysis';
+import {CodeGraphQueryService, type CodeGraphStatusOptions} from '@threadnote/graph/query';
+import {CodeGraphDiskCapacityPressureError, type CodeGraphStatus} from '@threadnote/graph/types';
+import {analysisSnapshot, pagedAnalysisStore} from '@threadnote/graph/test/helpers/code-graph-analysis';
 
-describe('code graph CLI analysis freshness', () => {
-  effectIt.effect('never borrows repository-level stale evidence for analysis', () => {
-    const unavailable = codeGraphStatus({ready: false, stale: true});
-    const harness = analysisSnapshotHarness({attachResults: [unavailable], statuses: [unavailable]});
-
-    return Effect.gen(function* () {
-      const result = yield* resolve(harness, 'allow-stale');
-
-      expect(result).toMatchObject({
-        ready: false,
-        state: {
-          freshnessPolicy: 'allow-stale',
-          operation: 'stats',
-          reason: 'no-ready-snapshot',
-          state: 'unavailable',
-          type: 'code-graph-analysis-state',
-          version: 1,
-        },
-      });
-      expect(harness.observation.attachOptions).toEqual([{allowBorrowedStale: false, requestMaintenance: false}]);
-      expect(harness.observation.statusOptions).toEqual([{requestMaintenance: false}]);
-      expect(harness.observation.refreshes).toBe(0);
-    }).pipe(provideTestLayer(harness.layer));
-  });
-
-  effectIt.effect('fails current analysis closed when refresh leaves only a stale snapshot', () => {
-    const stale = codeGraphStatus({ready: true, stale: true});
-    const harness = analysisSnapshotHarness({attachResults: [stale], statuses: [stale, stale]});
-
-    return Effect.gen(function* () {
-      const error = yield* Effect.flip(resolve(harness, 'current'));
-
-      expect(String(error)).toContain('current native code graph snapshot is unavailable after indexing');
-      expect(harness.observation.attachOptions).toEqual([{allowBorrowedStale: false, requestMaintenance: false}]);
-      expect(harness.observation.statusOptions).toEqual([{requestMaintenance: false}, {requestMaintenance: false}]);
-      expect(harness.observation.refreshes).toBe(1);
-    }).pipe(provideTestLayer(harness.layer));
-  });
-
-  effectIt.effect('interrupts a timed-out cold refresh and returns no analysis snapshot', () => {
-    const unavailable = codeGraphStatus({ready: false, stale: true});
-    const harness = analysisSnapshotHarness({attachResults: [unavailable], statuses: [unavailable]});
-
-    return Effect.gen(function* () {
-      const interrupted = yield* Ref.make(false);
-      const resolution = yield* resolveCodeGraphAnalysisSnapshot<never, never>(
-        runtimeConfig(),
-        TEST_REPOSITORY,
-        'ready',
-        () => Effect.never.pipe(Effect.ensuring(Ref.set(interrupted, true))),
-        {operation: 'stats', readTimeoutMilliseconds: 25_000},
-      ).pipe(Effect.forkChild({startImmediately: true}));
-      yield* Effect.yieldNow;
-      yield* TestClock.adjust(25_000);
-      const result = yield* Fiber.join(resolution);
-
-      expect(result).toMatchObject({
-        ready: false,
-        state: {
-          budgetMilliseconds: 25_000,
-          operation: 'stats',
-          reason: 'read-timeout',
-          state: 'timed-out',
-          type: 'code-graph-analysis-state',
-          version: 1,
-        },
-      });
-      expect(yield* Ref.get(interrupted)).toBe(true);
-      expect(harness.observation.attachOptions).toEqual([{allowBorrowedStale: false, requestMaintenance: false}]);
-      expect(harness.observation.statusOptions).toEqual([{requestMaintenance: false}]);
-    }).pipe(provideTestLayer(harness.layer));
-  });
-});
-
-const TEST_HOME = '/threadnote-analysis-command-home';
-const TEST_REPOSITORY = '/workspace/divergent-analysis-worktree';
-
-interface AnalysisSnapshotHarnessInput {
-  readonly attachResults: readonly CodeGraphStatus[];
-  readonly statuses: readonly CodeGraphStatus[];
-}
-
-function analysisSnapshotHarness(input: AnalysisSnapshotHarnessInput) {
-  const attachOptions: Array<CodeGraphSharedReadyAttachInterlock | undefined> = [];
-  const statusOptions: Array<CodeGraphStatusOptions | undefined> = [];
-  let refreshes = 0;
-  let attachIndex = 0;
-  let statusIndex = 0;
-  const query = CodeGraphQueryService.of({
-    attachSharedReadySnapshot: (_threadnoteHome, _identity, _status, options) =>
-      Effect.suspend(() => {
-        attachOptions.push(options);
-        const result = input.attachResults[attachIndex];
-        attachIndex += 1;
-        return result === undefined
-          ? Effect.die(new Error(`Unexpected analysis attachment ${attachIndex}.`))
-          : Effect.succeed(result);
-      }),
-    inspect: () => Effect.die(new Error('Analysis snapshot resolution must not inspect the graph.')),
-    purge: () => Effect.die(new Error('Analysis snapshot resolution must not purge the graph.')),
-    status: (_threadnoteHome, _cwd, options) =>
-      Effect.suspend(() => {
-        statusOptions.push(options);
-        const result = input.statuses[statusIndex];
-        statusIndex += 1;
-        return result === undefined
-          ? Effect.die(new Error(`Unexpected analysis status ${statusIndex}.`))
-          : Effect.succeed(result);
-      }),
-    statusForIdentity: () => Effect.die(new Error('Analysis snapshot resolution must not query another identity.')),
-    statusForPublishedIdentity: () =>
-      Effect.die(new Error('Analysis snapshot resolution must not query a published identity.')),
-  });
-
-  return {
-    layer: Layer.succeed(CodeGraphQueryService, query),
-    observation: {
-      attachOptions,
-      statusOptions,
-      get refreshes() {
-        return refreshes;
-      },
-    },
-    refresh: () =>
-      Effect.sync(() => {
-        refreshes += 1;
-      }),
-  };
-}
-
-function resolve(harness: ReturnType<typeof analysisSnapshotHarness>, freshness: CodeGraphCliFreshnessPolicy) {
-  return resolveCodeGraphAnalysisSnapshot(runtimeConfig(), TEST_REPOSITORY, freshness, harness.refresh, {
-    operation: 'stats',
-    readTimeoutMilliseconds: 25_000,
-  });
-}
-
-function codeGraphStatus(options: {readonly ready: boolean; readonly stale: boolean}): CodeGraphStatus {
-  const snapshot = analysisSnapshot();
-  const identity: RepositoryIdentity = {
+const snapshot = analysisSnapshot([], []);
+const status: CodeGraphStatus = {
+  databasePath: '/fixture/graph.sqlite',
+  freshness: 'current',
+  stale: false,
+  readySnapshot: snapshot,
+  languagePacks: [],
+  identity: {
     caseMode: 'sensitive',
-    checkoutId: 'analysis-checkout',
-    displayName: 'Fixture/divergent-analysis',
-    gitCommonDirectory: '/workspace/repository/.git',
-    headCommit: '2'.repeat(40),
+    checkoutId: 'checkout',
+    displayName: 'fixture',
+    gitCommonDirectory: '/fixture/.git',
+    headCommit: snapshot.commit,
     objectFormat: 'sha1',
-    repoRoot: TEST_REPOSITORY,
+    repoRoot: '/fixture',
     repositoryId: snapshot.repositoryId,
     worktreeId: snapshot.worktreeId,
+  },
+};
+const project = {
+  name: 'web',
+  uri: 'threadnote://projects/web',
+  graph: {roots: ['apps/web'], closure: 'dependencies' as const},
+};
+
+function harness(input: {ready: boolean; stale: boolean; failRefresh?: boolean; changesDuringAnalysis?: boolean}) {
+  let selected = {
+    ...status,
+    readySnapshot: input.ready ? snapshot : undefined,
+    stale: input.stale,
+    freshness: input.stale ? ('stale' as const) : ('current' as const),
   };
+  const calls = {analysis: 0, attaches: 0, refreshes: 0, status: 0};
+  const query = CodeGraphQueryService.of({
+    status: (_home, _cwd, options?: CodeGraphStatusOptions) =>
+      Effect.gen(function* () {
+        calls.status += 1;
+        if (options?.afterIdentityObserved) yield* options.afterIdentityObserved(status.identity, project);
+        return selected;
+      }),
+    attachSharedReadySnapshot: () =>
+      Effect.sync(() => {
+        calls.attaches += 1;
+        return selected;
+      }),
+    inspect: () => Effect.die('unused'),
+    purge: () => Effect.die('unused'),
+    statusForIdentity: () => Effect.die('unused'),
+    statusForPublishedIdentity: () => Effect.die('unused'),
+  });
+  const indexer = {
+    index: (options: Parameters<CodeGraphIndexerShape['index']>[0]) =>
+      Effect.gen(function* () {
+        calls.refreshes += 1;
+        expect(options.project).toEqual(project);
+        if (input.failRefresh) return yield* CodeGraphDiskCapacityPressureError.of('reserve graph write');
+        selected = {...selected, readySnapshot: snapshot, freshness: 'current', stale: false};
+        return {};
+      }),
+  } as CodeGraphIndexerShape;
+  const analysis = CodeGraphAnalysis.of({
+    analyze: options =>
+      Effect.gen(function* () {
+        calls.analysis += 1;
+        if (input.changesDuringAnalysis) selected = {...selected, freshness: 'stale', stale: true};
+        return yield* analyzeCodeGraph(pagedAnalysisStore([], []), options);
+      }),
+  });
   return {
-    databasePath: `${TEST_HOME}/graph.sqlite`,
-    freshness: options.stale ? 'stale' : 'current',
-    identity,
-    languagePacks: [],
-    ...(options.ready ? {readySnapshot: snapshot} : {}),
-    stale: options.stale,
+    calls,
+    layer: Layer.mergeAll(
+      Layer.succeed(CodeGraphQueryService, query),
+      Layer.succeed(CodeGraphAnalysis, analysis),
+      Layer.succeed(CodeGraphIndexer, indexer),
+    ),
   };
 }
 
-function analysisSnapshot(): CodeGraphSnapshot {
-  return {
-    commit: '1'.repeat(40),
-    dirty: false,
-    edgeCount: 0,
-    extractorSet: 'analysis-fixture',
-    fileCount: 1,
-    graphContentId: 'analysis-content',
-    id: 'analysis-snapshot',
-    repositoryId: 'analysis-repository',
-    state: 'ready',
-    symbolCount: 1,
-    worktreeId: 'analysis-worktree',
-  };
-}
+const request = {
+  cwd: '/fixture/apps/web',
+  threadnoteHome: '/home',
+  manifestPath: '/manifest',
+  operation: 'stats' as const,
+  deadlineMilliseconds: 25000,
+  refresh: true,
+};
 
-function runtimeConfig(): RuntimeConfig {
-  return {
-    account: 'local',
-    agentContextHome: TEST_HOME,
-    agentId: 'analysis-command-test',
-    manifestPath: `${TEST_HOME}/seed-manifest.yaml`,
-    user: 'analysis-command-test',
-  };
-}
+describe('CLI analysis uses the same isolated selection contract as MCP', () => {
+  fcEffectProp(
+    effectIt,
+    'refreshes exactly when policy requires it and never upgrades accepted stale evidence',
+    {
+      freshness: fc.constantFrom('current' as const, 'ready' as const, 'allow-stale' as const),
+      ready: fc.boolean(),
+      stale: fc.boolean(),
+    },
+    ({freshness, ready, stale}) => {
+      const test = harness({ready, stale});
+      return Effect.gen(function* () {
+        const result = yield* serveCodeGraphAnalysisRead({...request, freshness});
+        const shouldRefresh = freshness !== 'allow-stale' && (!ready || (freshness === 'current' && stale));
+        expect(test.calls.refreshes).toBe(Number(shouldRefresh));
+        expect(test.calls.analysis).toBe(Number(ready || shouldRefresh));
+        if (result.state === 'ready')
+          expect(result.status.freshness).toBe(shouldRefresh ? 'current' : stale ? 'stale' : 'current');
+        if (freshness === 'allow-stale') expect(test.calls.attaches).toBe(0);
+      }).pipe(provideTestLayer(test.layer));
+    },
+    {fastCheck: {numRuns: 30}},
+  );
+
+  effectIt.effect('returns a typed refresh failure immediately instead of exhausting the deadline', () => {
+    const test = harness({ready: false, stale: true, failRefresh: true});
+    return Effect.gen(function* () {
+      const result = yield* serveCodeGraphAnalysisRead({...request, freshness: 'ready'});
+      expect(result).toMatchObject({
+        state: 'failed',
+        failure: {code: 'no-space', recovery: 'free-space', retryable: false},
+      });
+      expect(test.calls.analysis).toBe(0);
+      expect(yield* Clock.currentTimeMillis).toBe(0);
+    }).pipe(provideTestLayer(test.layer));
+  });
+
+  effectIt.effect('rejects a current result if the worktree changes during analysis', () => {
+    const test = harness({ready: true, stale: false, changesDuringAnalysis: true});
+    return Effect.gen(function* () {
+      const result = yield* serveCodeGraphAnalysisRead({...request, freshness: 'current'});
+      expect(result).toMatchObject({
+        state: 'unavailable',
+        reason: 'current-snapshot-unavailable',
+        status: {freshness: 'stale'},
+      });
+      expect(test.calls.status).toBe(2);
+    }).pipe(provideTestLayer(test.layer));
+  });
+});

@@ -5,7 +5,6 @@
   "exports": {
     "./admission_freshness": "./src/admission_freshness.ts",
     "./analysis": "./src/analysis.ts",
-    "./analysis/cli": "./src/analysis/cli.ts",
     "./analysis/configuration": "./src/analysis/configuration.ts",
     "./analysis/render": "./src/analysis/render.ts",
     "./automatic/compaction": "./src/automatic/compaction.ts",
@@ -108,6 +107,7 @@
     "./inventory/scope": "./src/inventory/scope.ts",
     "./inventory/sparse": "./src/inventory/sparse.ts",
     "./isolated/builder": "./src/isolated/builder.ts",
+    "./isolated/analysis": "./src/isolated/analysis.ts",
     "./isolated/impact_query": "./src/isolated/impact_query.ts",
     "./isolated/index": "./src/isolated/index.ts",
     "./json_progress": "./src/json_progress.ts",

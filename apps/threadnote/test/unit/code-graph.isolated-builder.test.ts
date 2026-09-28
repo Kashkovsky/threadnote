@@ -15,6 +15,7 @@ import {
   codeGraphProgressFromBuildStatus,
   developmentStandaloneScript,
   isCodeGraphIsolatedBuilderHost,
+  isolatedBuilderFailureFromStatus,
   isolatedBuilderFailureMessage,
   isolatedBuilderOwnedAdmission,
   isolatedBuilderRequestMatches,
@@ -25,7 +26,11 @@ import {
   type CodeGraphIsolatedBuilderSpawnPlan,
 } from '@threadnote/graph/isolated/builder';
 import type {ObservedCodeGraphBuildStatus} from '@threadnote/graph/build_status';
-import {CodeGraphRuntimeReconnectRequiredError, type RepositoryIdentity} from '@threadnote/graph/types';
+import {
+  CodeGraphDiskCapacityPressureError,
+  CodeGraphRuntimeReconnectRequiredError,
+  type RepositoryIdentity,
+} from '@threadnote/graph/types';
 import type {SystemInfoShape} from '@threadnote/platform/system';
 import {runEffect} from '../helpers/effect-runtime.js';
 import {mkdtempSync, rmSync} from '@threadnote/testing/node-fs';
@@ -518,6 +523,32 @@ describe('shouldAwaitExistingBuilder and statusBelongsToChild', () => {
 });
 
 describe('isolated builder exit contracts', () => {
+  it('rehydrates typed capacity evidence from a failed child status', () => {
+    const evidence = {
+      activeReservations: [{bytes: 20, role: 'durable' as const}],
+      calibrationIdentity: 'fixture-v1',
+      decisionLayer: 'bounded-write-reservation' as const,
+      estimateBasis: 'final-fact-bytes-and-row-count' as const,
+      filesystems: [{availableBytes: 10, requiredBytes: 30, role: 'durable' as const}],
+      modelVersion: 2,
+      recovery: 'free-space' as const,
+      retryable: false,
+    };
+    const failure = isolatedBuilderFailureFromStatus(
+      {
+        capacity: {
+          code: 'no-space',
+          evidence,
+          operation: 'stage persistent code graph facts',
+        },
+        summary: 'Capacity is insufficient.',
+      },
+      'fallback',
+    );
+
+    expect(failure).toEqual(CodeGraphDiskCapacityPressureError.of('stage persistent code graph facts', evidence));
+  });
+
   effectIt.effect('surfaces summaries and rejects missing results', () =>
     Effect.gen(function* () {
       expect(isolatedBuilderFailureMessage(1, 'lock contended', 'ignored')).toBe('lock contended');

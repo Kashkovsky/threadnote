@@ -1,4 +1,5 @@
-import {Clock, Context, Effect, Layer, Option} from 'effect';
+import {Clock, Context, Effect, Layer, Option, Schema} from 'effect';
+import {CodeGraphStoreBusyError} from './types.js';
 import {sha256HexSync} from '@threadnote/platform/sha256';
 import {
   positiveInteger,
@@ -255,7 +256,13 @@ export interface CodeGraphAnalysisUsage {
   readonly nodePageReads: number;
 }
 
+export class CodeGraphAnalysisDeferred extends Schema.TaggedError<CodeGraphAnalysisDeferred>()(
+  'CodeGraphAnalysisDeferred',
+  {message: Schema.String, reason: Schema.Literal('writer-contention')},
+) {}
+
 export interface CodeGraphAnalysisResult {
+  readonly leaseCleanup?: {readonly state: 'released' | 'expiry'; readonly expiresAt: number};
   readonly projectCoverage?: import('./types.js').CodeGraphProjectCoverage;
   readonly algorithms: {
     readonly communities: 'structural-connectivity-v1';
@@ -442,13 +449,54 @@ export const analyzeCodeGraphWithLease = Effect.fn('codeGraph.analyzeWithSnapsho
     60 * 60_000,
     Math.max(2 * 60_000, budget.maxDurationMilliseconds + SNAPSHOT_LEASE_BUFFER_MILLISECONDS),
   );
-  const lease = yield* store.acquireSnapshotLease(options.databasePath, options.snapshot.id, leaseDuration);
-  if (typeof store.ensureAnalysisSummary === 'function') {
-    yield* store.ensureAnalysisSummary(options.databasePath, options.snapshot.id).pipe(Effect.catch(() => Effect.void));
-  }
-  return yield* store
-    .withSession(options.databasePath, analyzeCodeGraph(store, options), {readOnly: true})
-    .pipe(Effect.ensuring(store.releaseSnapshotLease(options.databasePath, lease).pipe(Effect.ignore)));
+  const startedAt = yield* Clock.currentTimeMillis;
+  let released = false;
+  let leaseExpiresAt = startedAt + leaseDuration;
+  const result = yield* Effect.acquireUseRelease(
+    store
+      .acquireSnapshotLease(options.databasePath, options.snapshot.id, leaseDuration, {waitTimeoutMilliseconds: 0})
+      .pipe(
+        Effect.tap(() =>
+          Clock.currentTimeMillis.pipe(
+            Effect.tap(now =>
+              Effect.sync(() => {
+                leaseExpiresAt = now + leaseDuration;
+              }),
+            ),
+          ),
+        ),
+        Effect.catchIf(Schema.is(CodeGraphStoreBusyError), () =>
+          Effect.fail(
+            CodeGraphAnalysisDeferred.make({
+              message: 'Analysis is deferred because the snapshot lease writer gate is busy. Retry shortly.',
+              reason: 'writer-contention',
+            }),
+          ),
+        ),
+      ),
+    () =>
+      store.withSession(
+        options.databasePath,
+        analyzeCodeGraph(store, {
+          ...options,
+          deadlineMilliseconds: options.deadlineMilliseconds ?? startedAt + budget.maxDurationMilliseconds,
+        }),
+        {readOnly: true},
+      ),
+    lease =>
+      store.releaseSnapshotLease(options.databasePath, lease, {waitTimeoutMilliseconds: 0}).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            released = true;
+          }),
+        ),
+        Effect.catch(() => Effect.logWarning('Code graph analysis lease cleanup deferred to bounded expiry.')),
+      ),
+  );
+  return {
+    ...result,
+    leaseCleanup: {state: released ? 'released' : 'expiry', expiresAt: leaseExpiresAt},
+  } satisfies CodeGraphAnalysisResult;
 });
 
 export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
@@ -460,7 +508,7 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
   const allowedProvenances = resolveProvenances(options.allowedProvenances);
   const allowed = new Set(allowedProvenances);
   const startedAt = yield* Clock.currentTimeMillis;
-  const deadline = startedAt + budget.maxDurationMilliseconds;
+  const deadline = Math.min(options.deadlineMilliseconds ?? Infinity, startedAt + budget.maxDurationMilliseconds);
   const symbolAggregates = makeSymbolAggregateAccumulator();
   const edgeAggregates = makeEdgeAggregateAccumulator();
   const persistedSummary =

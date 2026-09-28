@@ -28,19 +28,28 @@ import {readExclusiveFileLockOwner} from '@threadnote/platform/file/lock';
 import {SystemInfo} from '@threadnote/platform/system';
 import type {CommandResult} from '@threadnote/platform/command';
 import type {
+  CodeGraphDiskCapacityFailureEvidence,
   CodeGraphProgress,
   CodeGraphStoreFailureCode,
   CodeGraphStoreRecovery,
   RepositoryIdentity,
 } from './types.js';
 import type {ProjectManifest} from '@threadnote/workspace/config';
-import {CodeGraphRuntimeReconnectRequiredError} from './types.js';
+import {
+  CodeGraphDiskCapacityObservationError,
+  CodeGraphDiskCapacityPressureError,
+  CodeGraphRuntimeReconnectRequiredError,
+} from './types.js';
 import {
   currentCodeGraphBuildStatus,
   readCodeGraphBuildStatuses,
   type ObservedCodeGraphBuildStatus,
 } from './build_status.js';
-import {isCodeGraphIsolatedBuilderHost, runIsolatedCodeGraphIndex} from './isolated/builder.js';
+import {
+  isCodeGraphIsolatedBuilderHost,
+  isolatedBuilderFailureFromStatus,
+  runIsolatedCodeGraphIndex,
+} from './isolated/builder.js';
 import {codeGraphLayout, codeGraphWorktreeSpawnLockPath} from './layout.js';
 import {
   completeCodeGraphBackgroundDemand,
@@ -136,6 +145,7 @@ export interface CodeGraphProgressTiming {
 
 export interface CodeGraphRefreshFailure {
   readonly code: CodeGraphStoreFailureCode;
+  readonly evidence?: CodeGraphDiskCapacityFailureEvidence;
   readonly operation: 'refresh code graph';
   readonly recovery: CodeGraphStoreRecovery;
   readonly retryable: boolean;
@@ -325,11 +335,15 @@ export function codeGraphRefreshFailure(cause: unknown): CodeGraphRefreshFailure
   const code = Object.hasOwn(CODE_GRAPH_REFRESH_FAILURE_METADATA, classified.code) ? classified.code : 'unknown';
   const defaults = CODE_GRAPH_REFRESH_FAILURE_METADATA[code];
   const reconnectRequired = Schema.is(CodeGraphRuntimeReconnectRequiredError)(classified);
+  const capacityFailure =
+    Schema.is(CodeGraphDiskCapacityPressureError)(classified) ||
+    Schema.is(CodeGraphDiskCapacityObservationError)(classified);
   return {
     code,
+    ...(capacityFailure && classified.evidence !== undefined ? {evidence: classified.evidence} : {}),
     operation: CODE_GRAPH_REFRESH_OPERATION,
-    recovery: reconnectRequired ? classified.recovery : defaults.recovery,
-    retryable: reconnectRequired ? classified.retryable : defaults.retryable,
+    recovery: reconnectRequired || capacityFailure ? classified.recovery : defaults.recovery,
+    retryable: reconnectRequired || capacityFailure ? classified.retryable : defaults.retryable,
   };
 }
 
@@ -1610,13 +1624,19 @@ function refreshStatusAt(status: CodeGraphRefreshStatus, now: number): CodeGraph
   };
 }
 
-function persistedRefreshStatus(status: ObservedCodeGraphBuildStatus): CodeGraphRefreshStatus {
+/** @internal Pure new-host projection from the persisted child build receipt. */
+export function persistedRefreshStatus(status: ObservedCodeGraphBuildStatus): CodeGraphRefreshStatus {
   if (status.observation.liveness === 'completed' && status.result) {
     return {edges: status.result.edges, state: 'ready', symbols: status.result.symbols};
   }
   if (status.observation.liveness === 'failed' || status.observation.liveness === 'abandoned') {
     return {
-      failure: codeGraphRefreshFailure(undefined),
+      failure: codeGraphRefreshFailure(
+        isolatedBuilderFailureFromStatus(
+          status.error,
+          status.error?.summary ?? 'Code graph build stopped before completion.',
+        ),
+      ),
       state: 'deferred',
     };
   }

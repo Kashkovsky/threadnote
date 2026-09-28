@@ -89,7 +89,11 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
     candidate => candidate.project,
   );
   if (matches.length === 0) {
-    const worktreeRoots = yield* resolveCheckoutWorktreeRoots(caller).pipe(Effect.option);
+    const canonicalCaller = yield* fs.realPath(caller).pipe(Effect.orElseSucceed(() => caller));
+    const [worktreeRoots, callerWorktreeRoot] = yield* Effect.all([
+      resolveCheckoutWorktreeRoots(caller).pipe(Effect.option),
+      resolveGitWorktreeRoot(caller).pipe(Effect.option),
+    ]);
     if (Option.isSome(worktreeRoots)) {
       const matchedRoots = new Set(
         expanded
@@ -115,23 +119,18 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
           matchedRoots.add(root);
         }
       }
-      matches = expanded.filter(candidate => matchedRoots.has(candidate.root)).map(candidate => candidate.project);
-    } else {
-      const callerIdentity = yield* resolveRepositoryIdentity(caller);
-      const roots = [...new Set(expanded.map(candidate => candidate.root))];
-      const identities = yield* Effect.forEach(
-        roots,
-        root =>
-          resolveRepositoryIdentity(root).pipe(
-            Effect.option,
-            Effect.map(identity => [root, identity] as const),
-          ),
-        {concurrency: 4},
+      const localProjects = yield* rootedProjectsInCallerRepository(
+        expanded.filter(candidate => matchedRoots.has(candidate.root)),
+        caller,
       );
-      const byRoot = new Map(identities);
-      matches = expanded
-        .filter(candidate => sameCheckoutRepository(callerIdentity, byRoot.get(candidate.root) ?? Option.none()))
-        .map(candidate => candidate.project);
+      matches = preferCallerGraphRootMatches(path, localProjects, canonicalCaller, callerWorktreeRoot);
+    } else {
+      matches = preferCallerGraphRootMatches(
+        path,
+        yield* rootedProjectsInCallerRepository(expanded, caller),
+        canonicalCaller,
+        callerWorktreeRoot,
+      );
     }
   }
   if (matches.length === 0) return {state: 'full'} as const satisfies CodeGraphScopeRoute;
@@ -151,18 +150,35 @@ export const resolveCodeGraphScopeRoute = Effect.fn('codeGraph.resolveScopeRoute
 
 function projectsInCallerRepository(projects: readonly ProjectManifest[], caller: string) {
   return Effect.gen(function* () {
-    const callerIdentity = yield* resolveRepositoryIdentity(caller);
-    const candidates = yield* Effect.forEach(
+    const rooted = yield* Effect.forEach(
       projects,
-      project =>
-        Effect.gen(function* () {
-          const root = yield* expandPath(project.path);
-          const projectIdentity = yield* resolveRepositoryIdentity(root).pipe(Effect.option);
-          return sameCheckoutRepository(callerIdentity, projectIdentity) ? project : undefined;
-        }),
+      project => expandPath(project.path).pipe(Effect.map(root => ({project, root}))),
       {concurrency: 4},
     );
-    return candidates.filter((project): project is ProjectManifest => project !== undefined);
+    return yield* rootedProjectsInCallerRepository(rooted, caller);
+  });
+}
+
+function rootedProjectsInCallerRepository(
+  candidates: readonly {readonly project: ProjectManifest; readonly root: string}[],
+  caller: string,
+) {
+  return Effect.gen(function* () {
+    const callerIdentity = yield* resolveRepositoryIdentity(caller);
+    const roots = [...new Set(candidates.map(candidate => candidate.root))];
+    const identities = yield* Effect.forEach(
+      roots,
+      root =>
+        resolveRepositoryIdentity(root).pipe(
+          Effect.option,
+          Effect.map(identity => [root, identity] as const),
+        ),
+      {concurrency: 4},
+    );
+    const byRoot = new Map(identities);
+    return candidates
+      .filter(candidate => sameCheckoutRepository(callerIdentity, byRoot.get(candidate.root) ?? Option.none()))
+      .map(candidate => candidate.project);
   });
 }
 
@@ -242,6 +258,19 @@ function parseGitWorktreeRoot(output: Uint8Array): string | undefined {
 function pathContains(path: Path.Path, root: string, target: string): boolean {
   const relative = path.relative(path.resolve(root), target);
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function preferCallerGraphRootMatches(
+  path: Path.Path,
+  projects: readonly ProjectManifest[],
+  caller: string,
+  callerWorktreeRoot: Option.Option<string>,
+): ProjectManifest[] {
+  if (Option.isNone(callerWorktreeRoot)) return [...projects];
+  const graphRootMatches = projects.filter(project =>
+    project.graph?.roots.some(root => pathContains(path, path.resolve(callerWorktreeRoot.value, root), caller)),
+  );
+  return graphRootMatches.length > 0 ? graphRootMatches : [...projects];
 }
 
 function graphRootAliasProjects(projects: readonly ProjectManifest[], requested: string): readonly ProjectManifest[] {
