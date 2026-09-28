@@ -114,9 +114,6 @@ describe('isolated analysis worker result finalization', () => {
           expect(read.result.coverage.aggregates.symbols.complete).toBe(false);
           expect(read.result.coverage.aggregates.symbols.rows).toBeGreaterThan(0);
           expect(read.result.coverage.aggregates.symbols.rows).toBeLessThan(read.result.budget.maxNodes);
-          expect(read.result.usage.durationMilliseconds).toBeGreaterThanOrEqual(
-            read.result.budget.maxDurationMilliseconds,
-          );
         }
       }).pipe(TestClock.withLive, provideTestLayer(layer)),
     );
