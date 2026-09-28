@@ -1,6 +1,7 @@
 import {Effect} from 'effect';
 import {runCommandEffect} from '@threadnote/platform/command';
 import {SystemInfo} from '@threadnote/platform/system';
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
 
 const NOTIFICATION_TIMEOUT_MILLISECONDS = 5_000;
 const NOTIFICATION_OUTPUT_LIMIT_BYTES = 4 * 1_024;
@@ -49,7 +50,10 @@ export function systemNotificationInvocation(
         executable: 'notify-send',
       };
     case 'win32': {
-      const systemRoot = (environment.SystemRoot ?? environment.SYSTEMROOT ?? 'C:\\Windows').replace(/[\\/]+$/, '');
+      const systemRoot = trimTrailingCharacters(
+        environment.SystemRoot ?? environment.SYSTEMROOT ?? 'C:\\Windows',
+        '/\\',
+      );
       return {
         args: ['-NoProfile', '-NonInteractive', '-Command', windowsToastScript],
         env: {

@@ -5,6 +5,7 @@ import {
   validateExternalRepositoryEvidence,
 } from './external-evidence.js';
 import type {BenchmarkArtifactV1} from './benchmark.js';
+import {trimBoundaryCharacters} from '@threadnote/platform/string-boundaries';
 
 export const performanceControlLanguages = ['java', 'kotlin', 'typescript', 'bazel'] as const;
 
@@ -1150,7 +1151,7 @@ export function validateRetainedPerformancePayload(input: unknown): RetainedPerf
   const repositoryUrl = metadataString(metadata, 'externalRepositoryUrl');
   try {
     const parsed = new URL(repositoryUrl);
-    const expectedPath = `/${repositoryName.replace(/^\/+|\/+$/g, '')}`;
+    const expectedPath = `/${trimBoundaryCharacters(repositoryName, '/')}`;
     if (
       parsed.protocol !== 'https:' ||
       parsed.hostname !== 'github.com' ||

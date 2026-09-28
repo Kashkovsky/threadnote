@@ -76,7 +76,6 @@ export interface MemoryRecord {
   readonly uri: string;
 }
 
-const LEGACY_MEMORY_FIELDS_TRAILER = /\r?\n\r?\n<!-- MEMORY_FIELDS\r?\n[\s\S]*?\r?\n-->\s*$/;
 const HEADER_LINE_BREAK = /[\r\n]/;
 const AUTHORITY_LEVEL: Readonly<Record<MemoryAuthority, number>> = {
   external: 0,
@@ -99,13 +98,7 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
   const parseable = normalizeMemoryDocumentLineEndings(trimmed);
   const separatorIndex = parseable.indexOf('\n\n');
   const header = separatorIndex === -1 ? parseable : parseable.slice(0, separatorIndex);
-  const body =
-    separatorIndex === -1
-      ? ''
-      : parseable
-          .slice(separatorIndex + 2)
-          .replace(LEGACY_MEMORY_FIELDS_TRAILER, '')
-          .trim();
+  const body = separatorIndex === -1 ? '' : stripLegacyMemoryFieldsTrailer(parseable.slice(separatorIndex + 2)).trim();
   const firstLine = header.split('\n')[0]?.trim();
   if (firstLine !== 'MEMORY' && firstLine !== 'HANDOFF') {
     return undefined;
@@ -267,7 +260,38 @@ export function formatMemoryDocumentWithKeywords(content: string, keywords: read
  * of the user-approved memory payload and must not affect content identity.
  */
 export function canonicalMemoryDocumentContent(content: string): string {
-  return content.trim().replace(LEGACY_MEMORY_FIELDS_TRAILER, '').trim();
+  return stripLegacyMemoryFieldsTrailer(content.trim()).trim();
+}
+
+function stripLegacyMemoryFieldsTrailer(content: string): string {
+  const trimmed = content.trimEnd();
+  if (!trimmed.endsWith('-->')) return content;
+  const marker = '<!-- MEMORY_FIELDS';
+  const markerStart = trimmed.lastIndexOf(marker);
+  if (
+    markerStart < 0 ||
+    !lineBreakEndsAt(trimmed, markerStart) ||
+    !lineBreakStartsAt(trimmed, markerStart + marker.length)
+  ) {
+    return content;
+  }
+  const precedingBreak = previousLineBreakStart(trimmed, previousLineBreakStart(trimmed, markerStart));
+  const closingStart = trimmed.length - '-->'.length;
+  if (precedingBreak < 0 || !lineBreakEndsAt(trimmed, closingStart)) return content;
+  return trimmed.slice(0, precedingBreak);
+}
+
+function lineBreakStartsAt(value: string, index: number): boolean {
+  return value[index] === '\n' || (value[index] === '\r' && value[index + 1] === '\n');
+}
+
+function lineBreakEndsAt(value: string, index: number): boolean {
+  return index > 0 && value[index - 1] === '\n';
+}
+
+function previousLineBreakStart(value: string, index: number): number {
+  if (!lineBreakEndsAt(value, index)) return -1;
+  return index > 1 && value[index - 2] === '\r' ? index - 2 : index - 1;
 }
 
 /**

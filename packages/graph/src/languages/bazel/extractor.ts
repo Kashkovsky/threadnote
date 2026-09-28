@@ -179,7 +179,8 @@ function extractBazelRc(facts: MutableBazelFacts): void {
   const configs = new Map<string, CodeGraphSymbol>();
   let offset = 0;
   for (const line of facts.file.content!.split(/\r?\n/u)) {
-    const source = line.replace(/\s+#.*$/u, '').trim();
+    const comment = bazelCommentStart(line);
+    const source = (comment < 0 ? line : line.slice(0, comment)).trim();
     const end = offset + line.length;
     if (!source) {
       offset = end + 1;
@@ -210,6 +211,15 @@ function extractBazelRc(facts: MutableBazelFacts): void {
     }
     offset = end + 1;
   }
+}
+
+function bazelCommentStart(line: string): number {
+  let cursor = line.indexOf('#');
+  while (cursor >= 0) {
+    if (cursor > 0 && /\s/u.test(line[cursor - 1])) return cursor;
+    cursor = line.indexOf('#', cursor + 1);
+  }
+  return -1;
 }
 
 function createFacts(

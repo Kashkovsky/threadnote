@@ -1,4 +1,5 @@
 import {Schema} from 'effect';
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
 import {canonicalJson} from '../checkpoint/canonical_json.js';
 import {graphSharingFailure} from './errors.js';
 import {SHA256_DIGEST, SHA256_HEX, sha256Digest, type Sha256Digest} from './digest.js';
@@ -173,7 +174,7 @@ export function enrolledProfileBodyDigest(enrollment: GraphShareEnrollment): Sha
 }
 
 export function parseGraphShareCoordinatorUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/u, '');
+  const trimmed = trimTrailingCharacters(value.trim(), '/');
   let parsed: URL;
   try {
     parsed = new URL(trimmed);

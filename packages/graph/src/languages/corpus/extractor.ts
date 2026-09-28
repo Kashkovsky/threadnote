@@ -5,6 +5,7 @@ import {sha256HexSync} from '@threadnote/platform/sha256';
 import {compareNaturalCodeUnits} from '../../ordering.js';
 import type {CodeGraphEdge, CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../types.js';
 import type {CodeGraphExtractionContext} from '../types.js';
+import {scanXmlAttributes, scanXmlStartTags} from '../xml_scan.js';
 import {
   CORPUS_ARCHIVE_ENTRY_BYTES_LIMIT,
   CORPUS_ARCHIVE_EXPANDED_BYTES_LIMIT,
@@ -164,16 +165,14 @@ function extractMobileResourceXml(path: string, source: string, extension: strin
   const references: string[] = [];
   let attributes = 0;
   let elements = 0;
-  const elementPattern = /<([A-Za-z_][A-Za-z0-9_.:-]*)(?:\s+([^<>]*?))?\s*\/?>/gu;
-  for (const match of source.matchAll(elementPattern)) {
+  for (const element of scanXmlStartTags(source)) {
     if (elements >= MOBILE_RESOURCE_XML_ELEMENT_LIMIT || attributes >= MOBILE_RESOURCE_XML_ATTRIBUTE_LIMIT) break;
-    const elementName = match[1];
+    const elementName = element.name;
     const values = [`element ${elementName}`];
-    const attributeSource = match[2] ?? '';
-    for (const attribute of attributeSource.matchAll(/([A-Za-z_][A-Za-z0-9_.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gu)) {
+    for (const attribute of scanXmlAttributes(element.attributes)) {
       if (attributes >= MOBILE_RESOURCE_XML_ATTRIBUTE_LIMIT) break;
-      const name = attribute[1];
-      const value = decodeXmlEntities(attribute[2] ?? attribute[3] ?? '');
+      const name = attribute.name;
+      const value = decodeXmlEntities(attribute.value);
       values.push(`attribute ${name} ${value}`);
       for (const reference of value.match(/[@?](?:android:)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/gu) ?? []) {
         references.push(reference);
@@ -628,9 +627,42 @@ function normalizeTextDocument(content: string, extension: string): string {
   if (extension === '.org')
     return content.replace(/^(\*{1,6})\s+/gm, (_match, marks: string) => `${'#'.repeat(marks.length)} `);
   if (extension === '.tex') {
-    return content.replace(/\\(?:part|chapter|section|subsection|subsubsection)\*?\{([^}]+)\}/g, '# $1');
+    return replaceTexHeadings(content);
   }
   return content;
+}
+
+function replaceTexHeadings(content: string): string {
+  const commands = ['subsubsection', 'subsection', 'section', 'chapter', 'part'] as const;
+  const output: string[] = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    const opening = content.indexOf('\\', cursor);
+    if (opening < 0) break;
+    const command = commands.find(candidate => content.startsWith(candidate, opening + 1));
+    if (!command) {
+      output.push(content.slice(cursor, opening + 1));
+      cursor = opening + 1;
+      continue;
+    }
+    let brace = opening + 1 + command.length;
+    if (content[brace] === '*') brace += 1;
+    if (content[brace] !== '{') {
+      output.push(content.slice(cursor, brace));
+      cursor = brace;
+      continue;
+    }
+    const closing = content.indexOf('}', brace + 1);
+    if (closing <= brace + 1) {
+      output.push(content.slice(cursor, brace + 1));
+      cursor = brace + 1;
+      continue;
+    }
+    output.push(content.slice(cursor, opening), '# ', content.slice(brace + 1, closing));
+    cursor = closing + 1;
+  }
+  output.push(content.slice(cursor));
+  return output.join('');
 }
 
 function notebookToText(content: string): string {

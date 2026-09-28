@@ -1,5 +1,6 @@
 import {Schema} from 'effect';
 import {sha256HexSync} from '@threadnote/platform/sha256';
+import {parseMarkdownHeadingLine} from '@threadnote/platform/string-boundaries';
 
 export const MEMORY_READ_MAXIMUM_CONTENT_BYTES = 65_536;
 export const MEMORY_READ_PAGE_BYTES = 16_384;
@@ -320,10 +321,7 @@ function markdownHeadings(content: string): MarkdownHeading[] {
 }
 
 function markdownSectionSelector(section: string): {readonly level?: number; readonly title: string} {
-  const match = /^(#{1,6})[\t ]+(.+)$/u.exec(section);
-  return match?.[1] && match[2]
-    ? {level: match[1].length, title: match[2].trim().replace(/[\t ]+#+[\t ]*$/u, '')}
-    : {title: section};
+  return parseMarkdownHeadingLine(section) ?? {title: section};
 }
 
 function normalizedSection(section: string | undefined): string | undefined {

@@ -22,6 +22,7 @@ import {
 import {continueCodeGraphWorksetQueryV2, queryCodeGraphWorksetV2} from '@threadnote/graph/workset/query_v2';
 import {CODE_GRAPH_WORKSET_ROUTER_LIMITS} from '@threadnote/graph/workset/router';
 import {sha256HexSync} from '@threadnote/platform/sha256';
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
 import {queueCodeGraphScopeRetirements, reconcileCodeGraphScopeRetirements} from '@threadnote/graph/scope/retirement';
 import {isFileLockTimeout, withExclusiveFileLock} from '@threadnote/platform/file/lock';
 import type {ApplicationServices} from '../effect/runtime.js';
@@ -170,11 +171,7 @@ export function managerWorksetCatalogFromManifest(
   projects: readonly Omit<ManagerWorksetProjectSummary, 'worksetCount' | 'worksets'>[] = manifest.projects.map(
     project => ({
       branchState: 'not-observed',
-      folder:
-        project.path
-          .replace(/[\\/]+$/u, '')
-          .split(/[\\/]/u)
-          .at(-1) || safeLabel(project.name),
+      folder: trimTrailingCharacters(project.path, '/\\').split(/[\\/]/u).at(-1) || safeLabel(project.name),
       name: safeLabel(project.name),
       path: safeLocalPath(project.path),
     }),

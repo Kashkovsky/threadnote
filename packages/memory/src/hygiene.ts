@@ -8,6 +8,7 @@ import {
   type MemoryRecord,
 } from '@threadnote/memory/document';
 import {parseResourceId} from '@threadnote/store/resource-id';
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
 import type {MemoryKind, MemoryStatus} from '@threadnote/memory/types';
 import {
   MEMORY_HYGIENE_SOURCES_HEADING,
@@ -492,7 +493,7 @@ export function activePersonalMemoryUrisFromText(text: string, user: string): re
   const matches = text.matchAll(/(?:threadnote|viking):\/\/[^\s)]+/g);
   const uris: string[] = [];
   for (const match of matches) {
-    const uri = match[0]?.replace(/[.,;:]+$/g, '');
+    const uri = match[0] ? trimTrailingCharacters(match[0], '.,;:') : undefined;
     const canonicalUri = uri ? canonicalResourceInput(uri) : undefined;
     if (!canonicalUri || !parsePersonalMemoryUri(canonicalUri, userSegment)) {
       continue;
@@ -574,8 +575,10 @@ export function topicForRecord(record: MemoryRecord): string | undefined {
 }
 
 function branchFromBody(body: string): string | undefined {
-  const branch = /^branch:\s*(.+)$/m.exec(body)?.[1]?.trim();
-  return branch?.split(/\s+/)[0]?.replace(/[.,;:]+$/g, '');
+  const branchLine = body.split(/\r?\n/u).find(line => line.startsWith('branch:'));
+  const branch = branchLine?.slice('branch:'.length).trim();
+  const firstToken = branch?.split(/\s+/)[0];
+  return firstToken ? trimTrailingCharacters(firstToken, '.,;:') : undefined;
 }
 
 function topicFromUri(uri: string): string | undefined {

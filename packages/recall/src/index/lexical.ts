@@ -1,6 +1,7 @@
 import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from '../rank.js';
 import {casedCodeIdentifiers} from '../identifier.js';
 import {recallLexicalTerms, recallTokens} from '../tokenize.js';
+import {stripFragment} from '@threadnote/platform/string-boundaries';
 
 export interface RecallIndexPosting {
   readonly documentLength: number;
@@ -110,7 +111,7 @@ export function selectQueryTerms(terms: readonly string[], statistics: RecallQue
 }
 
 export function stripRecallAnchor(uri: string): string {
-  return uri.replace(/#.*$/, '');
+  return stripFragment(uri);
 }
 
 export function indexTerms(value: string): readonly string[] {

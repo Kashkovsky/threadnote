@@ -4,6 +4,7 @@ import {assertSafeRelativePath} from '@threadnote/platform/paths';
 import {validatePortableSegment} from '@threadnote/store/resource-id';
 import {remoteMemoryError} from '../errors.js';
 import {randomUuidV4} from '@threadnote/platform/uuid';
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
 import {requireGitMemoryBinding, type GitMemoryBinding} from './binding.js';
 
 export const GIT_REF_UPDATE_TIMEOUT_MILLISECONDS = 30_000;
@@ -129,7 +130,7 @@ export class GitCanonicalMemoryStore {
     if (!worktree || !isAbsoluteGitWorktree(worktree)) {
       throw remoteMemoryError('invalid_request', 'THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE must be an absolute path.');
     }
-    this.worktree = worktree.replace(/[\\/]+$/u, '');
+    this.worktree = trimTrailingCharacters(worktree, '/\\');
     this.branch = requireGitRefName(options.branch?.trim() || 'main', 'THREADNOTE_REMOTE_MEMORY_GIT_BRANCH');
     this.remote = requireGitRefName(options.remote?.trim() || 'origin', 'THREADNOTE_REMOTE_MEMORY_GIT_REMOTE');
     this.push = options.push !== false;
@@ -560,7 +561,7 @@ export interface LiveGitShareWorktreeOptions {
 }
 
 export async function ensureLiveGitShareWorktree(options: LiveGitShareWorktreeOptions): Promise<string> {
-  const worktree = options.worktree.trim().replace(/[\\/]+$/u, '');
+  const worktree = trimTrailingCharacters(options.worktree.trim(), '/\\');
   if (!worktree || !isAbsoluteGitWorktree(worktree)) {
     throw remoteMemoryError('invalid_request', 'THREADNOTE_REMOTE_MEMORY_GIT_WORKTREE must be an absolute path.');
   }

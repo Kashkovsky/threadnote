@@ -1,4 +1,5 @@
 import {Option} from 'effect';
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
 import type {TreeSitterImport, TreeSitterReferenceInput, TreeSitterSymbolInput} from '../../tree_sitter/extractor.js';
 
 export function jvmSymbolLookupKeys(input: TreeSitterSymbolInput): readonly string[] {
@@ -38,11 +39,7 @@ export function jvmReferenceLookupTiers(input: TreeSitterReferenceInput): readon
 }
 
 export function parseJvmImport(value: string): Option.Option<TreeSitterImport> {
-  const withoutKeywords = value
-    .replace(/^\s*import\s+/, '')
-    .replace(/^\s*static\s+/, '')
-    .replace(/[;\s]+$/g, '')
-    .trim();
+  const withoutKeywords = trimJvmTerminator(stripJvmKeyword(stripJvmKeyword(value, 'import'), 'static'));
   if (!withoutKeywords) return Option.none();
   const aliasMatch = /\s+as\s+([A-Za-z_$][\w$]*)$/.exec(withoutKeywords);
   const module = (aliasMatch ? withoutKeywords.slice(0, aliasMatch.index) : withoutKeywords).trim();
@@ -57,11 +54,19 @@ export function parseJvmImport(value: string): Option.Option<TreeSitterImport> {
 }
 
 export function parseJvmNamespace(value: string): Option.Option<string> {
-  const namespace = value
-    .replace(/^\s*package\s+/, '')
-    .replace(/[;\s]+$/g, '')
-    .trim();
+  const namespace = trimJvmTerminator(stripJvmKeyword(value, 'package'));
   return namespace ? Option.some(namespace) : Option.none();
+}
+
+function stripJvmKeyword(value: string, keyword: string): string {
+  const trimmed = value.trimStart();
+  if (!trimmed.startsWith(keyword)) return trimmed;
+  const boundary = trimmed[keyword.length];
+  return boundary !== undefined && /\s/u.test(boundary) ? trimmed.slice(keyword.length).trimStart() : trimmed;
+}
+
+function trimJvmTerminator(value: string): string {
+  return trimTrailingCharacters(value, '; \t\r\n\v\f');
 }
 
 function importForLocalName(imports: readonly TreeSitterImport[], name: string): Option.Option<TreeSitterImport> {

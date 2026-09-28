@@ -1,5 +1,6 @@
 import type {Sql} from 'postgres';
 import {sha256HexSync} from '@threadnote/platform/sha256';
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
 import {remoteMemoryError} from './errors.js';
 
 export const STANDALONE_REMOTE_MEMORY_MIGRATION_DIRECTORY = 'remote-memory/migrations';
@@ -8,7 +9,7 @@ export function standaloneMigrationFilePath(executablePath: string, name: string
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.sql$/u.test(name)) {
     throw remoteMemoryError('invalid_request', 'Remote memory migration file name is invalid.');
   }
-  const trimmed = executablePath.replace(/[\\/]+$/u, '');
+  const trimmed = trimTrailingCharacters(executablePath, '/\\');
   const separator = trimmed.includes('\\') && !trimmed.includes('/') ? '\\' : '/';
   const slash = trimmed.lastIndexOf(separator);
   const root = slash <= 0 ? trimmed : trimmed.slice(0, slash);

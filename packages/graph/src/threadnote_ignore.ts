@@ -1,4 +1,5 @@
 import {Effect, FileSystem, Path} from 'effect';
+import {trimBoundaryCharacters} from '@threadnote/platform/string-boundaries';
 import {readOptionalText} from './inventory/contained_file.js';
 
 export const THREADNOTE_IGNORE_FILE = '.threadnoteignore';
@@ -75,7 +76,7 @@ function compileIgnoreContent(content: string, source: CompiledIgnoreRule['sourc
 
 function compileIgnorePattern(pattern: string): RegExp | undefined {
   const directoryPattern = pattern.endsWith('/');
-  const normalized = pattern.replace(/^\/+|\/+$/g, '');
+  const normalized = trimBoundaryCharacters(pattern, '/');
   if (!normalized) return undefined;
   const escaped = normalized
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')

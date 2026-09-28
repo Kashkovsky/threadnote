@@ -1,3 +1,5 @@
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
+
 export const IMAGE_PROJECTION_EXACT_TOKEN_LIMIT = 256 as const;
 
 const TOKEN_PATTERNS = [
@@ -33,5 +35,5 @@ export function renderExactTokenAppendix(tokens: readonly string[]): string | un
 }
 
 function trimTrailingUriPunctuation(value: string): string {
-  return value.startsWith('threadnote://') ? value.replace(/[.,;:]+$/u, '') : value;
+  return value.startsWith('threadnote://') ? trimTrailingCharacters(value, '.,;:') : value;
 }

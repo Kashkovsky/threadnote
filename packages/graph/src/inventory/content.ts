@@ -3,6 +3,7 @@ import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape}
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT} from '../languages/corpus/policy.js';
 import {isLowSignalStructuredPath} from '../languages/schemas/policy.js';
 import type {CodeGraphInventoryFile} from '../types.js';
+import {xcodeNativeTargetNames} from '../workspace/xcode.js';
 
 const COMPACT_RESOLUTION_CONTEXT_NAMES = new Set([
   'build.gradle',
@@ -165,7 +166,8 @@ function compactGoModule(content: string): string {
   const output: string[] = [];
   let inRequireBlock = false;
   for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.replace(/\/\/.*$/, '').trim();
+    const comment = rawLine.indexOf('//');
+    const line = (comment < 0 ? rawLine : rawLine.slice(0, comment)).trim();
     if (!line) continue;
     if (/^module\s+\S+/.test(line)) {
       output.push(line);
@@ -243,9 +245,7 @@ function compactSwiftPackage(content: string): string | undefined {
 }
 
 function compactXcodeProject(content: string): string {
-  const targets = [...content.matchAll(/isa\s*=\s*PBXNativeTarget;[\s\S]*?\bname\s*=\s*"?([^";\n]+)"?;/g)].map(match =>
-    match[1].trim(),
-  );
+  const targets = xcodeNativeTargetNames(content);
   return `${targets.map(target => `isa = PBXNativeTarget; name = ${JSON.stringify(target)};`).join('\n')}\n`;
 }
 

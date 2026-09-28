@@ -42,6 +42,7 @@ bun_test(
         "//packages/platform:src/safe_scan.ts",
         "//packages/platform:src/scrubber.ts",
         "//packages/platform:src/sha256.ts",
+        "//packages/platform:src/string-boundaries.ts",
         "//packages/platform:src/system.ts",
         "//packages/platform:src/windows-disk-worker-contract.ts",
         "//packages/platform:src/windows_system.ts",

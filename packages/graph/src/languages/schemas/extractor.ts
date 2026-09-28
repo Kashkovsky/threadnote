@@ -11,9 +11,15 @@ import type {
   CodeGraphSymbol,
 } from '../../types.js';
 import {createSourceLineIndex, sourceSpan, type SourceLineIndex} from '../source_line_index.js';
-import {isLowSignalStructuredPath, isRecognizedStructuredPath, structuredObjectDeclarationBudget} from './policy.js';
+import {
+  isLowSignalStructuredPath,
+  isRecognizedStructuredPath,
+  isXcodeAssetContentsPath,
+  structuredObjectDeclarationBudget,
+} from './policy.js';
 import {canonicalCodeGraphMonikers, codeGraphProtobufMoniker} from '../../cross_repository/monikers.js';
 import type {CodeGraphMonikerV1} from '../../cross_repository/types.js';
+import {scanXmlAttributes, scanXmlStartTags} from '../xml_scan.js';
 
 interface MutableStructuredFacts {
   readonly diagnostics: string[];
@@ -159,7 +165,7 @@ function extractObjectConfig(facts: MutableStructuredFacts, policy: ReturnType<t
   const declarationBudget = structuredObjectDeclarationBudget(facts.file.path);
   const maximumSymbols = declarationBudget.maximumDeclarations + 1;
   const locateConfigKey = createConfigKeyLocator(content, facts.file.language);
-  const retainResourceValues = /(?:^|\/)[^/]+\.xcassets\/.*\/Contents\.json$/iu.test(facts.file.path);
+  const retainResourceValues = isXcodeAssetContentsPath(facts.file.path);
   const visit = (value: unknown, parent: CodeGraphSymbol, path: readonly string[], depth: number): void => {
     if (depth > declarationBudget.maximumDepth || facts.symbols.length >= maximumSymbols) return;
     if (typeof value !== 'object' || value === null) return;
@@ -713,20 +719,20 @@ function extractProtobuf(facts: MutableStructuredFacts): void {
   }
   let imports = 0;
   let importsTruncated = false;
-  for (const match of declarationsSource.matchAll(/\bimport\s+(?:public\s+|weak\s+)?\s*;/gi)) {
+  for (const statementSpan of protobufImportStatementSpans(declarationsSource)) {
     if (imports >= MAX_STRUCTURED_IMPORTS) {
       importsTruncated = true;
       break;
     }
-    const offset = match.index ?? 0;
-    const statement = content.slice(offset, offset + match[0].length);
-    const importPath = /\bimport\s+(?:public\s+|weak\s+)?["']([^"']+)["']\s*;/i.exec(statement)?.[1];
+    const offset = statementSpan.start;
+    const statement = content.slice(offset, statementSpan.end);
+    const importPath = protobufImportPath(statement);
     if (importPath === undefined) continue;
     addMoniker(() =>
       codeGraphProtobufMoniker({
         evidence: {
           path: facts.file.path,
-          span: sourceSpan(requiredLineIndex(facts), offset, offset + match[0].length),
+          span: sourceSpan(requiredLineIndex(facts), offset, statementSpan.end),
         },
         importPath,
         kind: 'file',
@@ -734,7 +740,7 @@ function extractProtobuf(facts: MutableStructuredFacts): void {
         symbolId: facts.module.id,
       }),
     );
-    addUnresolvedEdge(facts, facts.module, importPath, 'imports', 'declared', offset, offset + match[0].length);
+    addUnresolvedEdge(facts, facts.module, importPath, 'imports', 'declared', offset, statementSpan.end);
     imports += 1;
   }
   if (monikersTruncated) {
@@ -752,29 +758,62 @@ function extractProtobuf(facts: MutableStructuredFacts): void {
   }
 }
 
+function* protobufImportStatementSpans(
+  maskedSource: string,
+): IterableIterator<{readonly end: number; readonly start: number}> {
+  const keyword = 'import';
+  const normalizedSource = maskedSource.toLowerCase();
+  let cursor = 0;
+  while (cursor < maskedSource.length) {
+    const start = normalizedSource.indexOf(keyword, cursor);
+    if (start < 0) return;
+    const before = maskedSource[start - 1];
+    const after = maskedSource[start + keyword.length];
+    if ((before && /[A-Za-z0-9_]/u.test(before)) || !after || !/\s/u.test(after)) {
+      cursor = start + keyword.length;
+      continue;
+    }
+    const semicolon = maskedSource.indexOf(';', start + keyword.length);
+    if (semicolon < 0) return;
+    const modifier = maskedSource
+      .slice(start + keyword.length, semicolon)
+      .trim()
+      .toLowerCase();
+    if (!modifier || modifier === 'public' || modifier === 'weak') yield {end: semicolon + 1, start};
+    cursor = semicolon + 1;
+  }
+}
+
+function protobufImportPath(statement: string): string | undefined {
+  let remainder = statement.slice('import'.length).trimStart();
+  for (const modifier of ['public', 'weak']) {
+    if (remainder.startsWith(modifier) && /\s/u.test(remainder[modifier.length] ?? '')) {
+      remainder = remainder.slice(modifier.length).trimStart();
+      break;
+    }
+  }
+  const quote = remainder[0];
+  if (quote !== '"' && quote !== "'") return undefined;
+  const closing = remainder.indexOf(quote, 1);
+  if (closing <= 1 || remainder.slice(closing + 1).trim() !== ';') return undefined;
+  return remainder.slice(1, closing);
+}
+
 function extractXml(facts: MutableStructuredFacts): void {
   const content = facts.file.content!;
-  const elements = /<([A-Za-z_][\w:.-]*)([^<>]*?)\/?\s*>/g;
-  for (const match of content.matchAll(elements)) {
+  for (const element of scanXmlStartTags(content)) {
     if (facts.symbols.length >= MAX_STRUCTURED_SYMBOLS) break;
-    const tag = match[1];
-    const attributes = match[2] ?? '';
-    const identity = /\b(?:x:Class|x:Name|Name|Include|Update|Remove|Id)\s*=\s*["']([^"']+)["']/.exec(attributes)?.[1];
+    const tag = element.name;
+    const identity = [...scanXmlAttributes(element.attributes)].find(attribute =>
+      ['x:Class', 'x:Name', 'Name', 'Include', 'Update', 'Remove', 'Id'].includes(attribute.name),
+    )?.value;
     if (!identity && !/^(?:Project|PackageReference|ProjectReference|Target|PropertyGroup|ItemGroup)$/i.test(tag))
       continue;
     const name = identity ?? tag;
-    const offset = match.index ?? 0;
-    const symbol = addDeclaration(
-      facts,
-      facts.module,
-      tag.toLowerCase(),
-      name,
-      `${tag}:${name}`,
-      offset,
-      offset + match[0].length,
-    );
+    const offset = element.offset;
+    const symbol = addDeclaration(facts, facts.module, tag.toLowerCase(), name, `${tag}:${name}`, offset, element.end);
     if (/^(?:PackageReference|ProjectReference)$/i.test(tag) && identity) {
-      addUnresolvedEdge(facts, symbol, identity, 'depends_on', 'declared', offset, offset + match[0].length);
+      addUnresolvedEdge(facts, symbol, identity, 'depends_on', 'declared', offset, element.end);
     }
   }
 }

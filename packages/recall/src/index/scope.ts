@@ -1,4 +1,5 @@
 import {stripRecallAnchor} from './lexical.js';
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
 
 export interface RecallSqlPredicate {
   readonly params: readonly string[];
@@ -96,7 +97,9 @@ export function normalizeRecallWorkspaceScope(scope: string | undefined): string
 }
 
 export function normalizeRecallUriScopes(scopes: readonly string[]): readonly string[] {
-  return [...new Set(scopes.map(scope => stripRecallAnchor(scope).replace(/\/+$/, '').trim()).filter(Boolean))];
+  return [
+    ...new Set(scopes.map(scope => trimTrailingCharacters(stripRecallAnchor(scope), '/').trim()).filter(Boolean)),
+  ];
 }
 
 function recallWorkspaceScopeHierarchy(scope: string | undefined): readonly string[] {

@@ -788,16 +788,34 @@ function pnpmWorkspacePatterns(content: string): readonly string[] {
   const patterns: string[] = [];
   let packages = false;
   for (const rawLine of content.split(/\r?\n/)) {
-    if (/^\s*packages\s*:/.test(rawLine)) {
+    const trimmedStart = rawLine.trimStart();
+    const colon = trimmedStart.indexOf(':');
+    if (colon >= 0 && trimmedStart.slice(0, colon).trimEnd() === 'packages') {
       packages = true;
       continue;
     }
-    if (packages && /^\S/.test(rawLine)) break;
+    if (packages && rawLine === trimmedStart && trimmedStart) break;
     if (!packages) continue;
-    const match = /^\s*-\s*["']?([^"'#]+?)["']?\s*(?:#.*)?$/.exec(rawLine);
-    if (match?.[1]) patterns.push(match[1].trim());
+    if (!trimmedStart.startsWith('-')) continue;
+    let value = trimmedStart.slice(1).trimStart();
+    const quote = value[0] === '"' || value[0] === "'" ? value[0] : undefined;
+    if (quote) {
+      const closing = value.indexOf(quote, 1);
+      if (closing < 0 || !isBlankOrComment(value.slice(closing + 1))) continue;
+      value = value.slice(1, closing).trim();
+    } else {
+      const comment = value.indexOf('#');
+      value = (comment < 0 ? value : value.slice(0, comment)).trim();
+      if (value.includes('"') || value.includes("'")) continue;
+    }
+    if (value) patterns.push(value);
   }
   return uniqueStrings(patterns);
+}
+
+function isBlankOrComment(value: string): boolean {
+  const trimmed = value.trimStart();
+  return !trimmed || trimmed.startsWith('#');
 }
 
 function typescriptReferencePaths(root: string, config: Record<string, unknown>): readonly string[] {

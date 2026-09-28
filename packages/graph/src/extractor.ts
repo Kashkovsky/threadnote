@@ -1,6 +1,7 @@
 import type ts from 'typescript-compiler';
 import {Option, Predicate} from 'effect';
 import {sha256HexSync} from '@threadnote/platform/sha256';
+import {parseMarkdownHeadingLine, textLines} from '@threadnote/platform/string-boundaries';
 import {compareCodeUnits} from './ordering.js';
 import {loadTypeScriptExtractionRuntime, typeScriptKindForPath} from './typescript_runtime.js';
 import {documentLookupTiers, resolveLegacyDocumentReference, resolveLookupTiers} from './resolution/lookup.js';
@@ -831,21 +832,23 @@ function extractMarkdown(content: string, context: ExtractionContext): CodeGraph
   const facts: MutableFacts = {diagnostics: [], edges: [], symbols: []};
   const document = makeTextSymbol(context, 'document', context.path, context.path, true, content, 0, 1);
   facts.symbols.push(document);
-  for (const match of content.matchAll(/^(#{1,6})\s+(.+)$/gm)) {
-    const name = match[2].trim().replace(/\s+#+$/, '');
-    const symbol = makeTextSymbol(
-      context,
-      'heading',
-      name,
-      `${context.path}#${slug(name)}`,
-      true,
-      content,
-      match.index,
-      match.index + match[0].length,
-      boundedMarkdownSection(content, match.index),
-    );
-    facts.symbols.push(symbol);
-    addTextResolvedEdge(facts, context, document, symbol, 'contains', 'syntactic', content, match.index);
+  for (const line of textLines(content)) {
+    const heading = parseMarkdownHeadingLine(line.text);
+    if (heading) {
+      const symbol = makeTextSymbol(
+        context,
+        'heading',
+        heading.title,
+        `${context.path}#${slug(heading.title)}`,
+        true,
+        content,
+        line.start,
+        line.end,
+        boundedMarkdownSection(content, line.start),
+      );
+      facts.symbols.push(symbol);
+      addTextResolvedEdge(facts, context, document, symbol, 'contains', 'syntactic', content, line.start);
+    }
   }
   const references = new Set<string>();
   for (const match of content.matchAll(/`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`/g)) {

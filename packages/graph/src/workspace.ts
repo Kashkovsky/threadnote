@@ -14,6 +14,7 @@ import {canonicalCodeGraphMonikers, codeGraphPackageMoniker} from './cross_repos
 import type {CodeGraphExternalDependencyV1, CodeGraphMonikerV1} from './cross_repository/types.js';
 import {discoverNodeWorkspaceCandidates} from './workspace/node.js';
 import {boundedCodeGraphWorkspaceDiagnostics, resolveCodeGraphWorkspaceDiagnostics} from './workspace/diagnostics.js';
+import {xcodeNativeTargetNames} from './workspace/xcode.js';
 import {
   basename,
   dirname,
@@ -523,11 +524,7 @@ function discoverXcodeProjects(
     const projectBundle = dirname(file.path);
     const root = dirname(projectBundle);
     const projectName = basename(projectBundle).replace(/\.xcodeproj$/i, '');
-    const targetNames = file.content
-      ? [...file.content.matchAll(/isa\s*=\s*PBXNativeTarget;[\s\S]*?\bname\s*=\s*"?([^";\n]+)"?;/g)].map(match =>
-          match[1].trim(),
-        )
-      : [];
+    const targetNames = file.content ? xcodeNativeTargetNames(file.content) : [];
     output.push({
       aliases: [projectName, root, ...targetNames],
       buildSystem: 'xcode',

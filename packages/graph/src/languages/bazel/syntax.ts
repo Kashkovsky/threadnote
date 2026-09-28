@@ -1,4 +1,5 @@
 import {Option} from 'effect';
+import {trimBoundaryCharacters} from '@threadnote/platform/string-boundaries';
 
 export interface BazelStringLiteral {
   readonly end: number;
@@ -114,7 +115,7 @@ export function canonicalBazelLabel(raw: string, packagePath: string): Option.Op
   const separator = label.indexOf('//');
   if (separator < 0) return Option.none();
   const repository = label.slice(0, separator);
-  const body = label.slice(separator + 2).replace(/^\/+|\/+$/gu, '');
+  const body = trimBoundaryCharacters(label.slice(separator + 2), '/');
   const colon = body.indexOf(':');
   const rawPackage = colon >= 0 ? body.slice(0, colon) : body;
   const rawTarget = colon >= 0 ? body.slice(colon + 1) : (rawPackage.split('/').at(-1) ?? '');

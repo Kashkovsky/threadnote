@@ -3,6 +3,7 @@ import {sha256Hex} from '@threadnote/platform/digest';
 import {withExclusiveFileLock} from '@threadnote/platform/file/lock';
 import {safeChildDirectoryNames, scanFilesWithinBoundary} from '@threadnote/platform/safe_scan';
 import {SystemInfo} from '@threadnote/platform/system';
+import {parseMarkdownHeadingLine} from '@threadnote/platform/string-boundaries';
 import {uriSegment} from '@threadnote/workspace/manifest';
 import {canonicalMemoryDocumentContent, parseMemoryDocument, type MemoryRecord} from '@threadnote/memory/document';
 import {
@@ -872,7 +873,7 @@ function sectionHeadings(body: string): readonly string[] {
   for (const line of body.split(/\r?\n/u)) {
     const trimmed = line.trim();
     const section =
-      /^#{1,6}\s+(.+?)\s*#*\s*$/u.exec(trimmed)?.[1]?.trim() ??
+      parseMarkdownHeadingLine(trimmed)?.title ??
       (/^[^\s].{0,118}:$/u.test(trimmed) && !/^[-*+]\s/u.test(trimmed) ? trimmed.slice(0, -1).trim() : undefined);
     if (!section) continue;
     const key = normalizedSectionKey(section);

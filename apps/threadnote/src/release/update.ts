@@ -510,11 +510,24 @@ export function parseReleaseChecksum(content: string, artifactName: string): str
     .split(/\r?\n/)
     .map(value => value.trim())
     .find(value => value.length > 0);
-  const match = line ? /^([a-f0-9]{64})(?:\s+\*?(.+))?$/i.exec(line) : undefined;
-  if (!match || (match[2] !== undefined && match[2] !== artifactName)) {
+  const parsed = line ? parseReleaseChecksumLine(line) : undefined;
+  if (!parsed || (parsed.artifact !== undefined && parsed.artifact !== artifactName)) {
     throw UpdateOperationError.make({message: `Invalid checksum document for ${artifactName}.`});
   }
-  return match[1].toLowerCase();
+  return parsed.digest.toLowerCase();
+}
+
+function parseReleaseChecksumLine(line: string): {readonly artifact?: string; readonly digest: string} | undefined {
+  const digest = line.slice(0, 64);
+  if (digest.length !== 64 || [...digest].some(character => !'0123456789abcdefABCDEF'.includes(character))) {
+    return undefined;
+  }
+  if (line.length === 64) return {digest};
+  const separator = line[64];
+  if (separator !== ' ' && separator !== '\t') return undefined;
+  let artifact = line.slice(64).trimStart();
+  if (artifact.startsWith('*')) artifact = artifact.slice(1);
+  return artifact ? {artifact, digest} : undefined;
 }
 
 const validateExtractedRelease = Effect.fn('update.validateExtractedRelease')(function* (

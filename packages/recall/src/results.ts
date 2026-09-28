@@ -22,6 +22,7 @@ import {recallTokens} from './tokenize.js';
 import {parseResourceId} from '@threadnote/store/resource-id';
 import {isJsonObject} from '@threadnote/platform/json';
 import {escapeRegExp} from '@threadnote/platform/glob';
+import {stripFragment} from '@threadnote/platform/string-boundaries';
 const parseJson = Option.liftThrowable((content: string): unknown => JSON.parse(content));
 
 export function exactRecallTerms(query: string): readonly string[] {
@@ -352,7 +353,7 @@ export function parseRecallHits(output: string, options: ParseRecallHitsOptions 
 
 /** Drop a chunk anchor (`#chunk_0001`) so a URI addresses its document. */
 function stripAnchor(uri: string): string {
-  return uri.replace(/#.*$/, '');
+  return stripFragment(uri);
 }
 
 /**

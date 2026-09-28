@@ -1,4 +1,5 @@
 import {Cause, Console, DateTime, Effect, Option, Result, Schema} from 'effect';
+import {stripFragment} from '@threadnote/platform/string-boundaries';
 import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '@threadnote/recall/selection';
 import {uriSegment} from '@threadnote/workspace/manifest';
 import type {MemoryRecord, MemoryRelationType} from '@threadnote/memory/document';
@@ -145,14 +146,36 @@ export function createRecallRerankerCache(): RecallRerankerCache {
 }
 
 export function deterministicRecallQueryVariants(query: string): readonly string[] {
-  const clauses = query
-    .split(/\s+(?:and|or)\s+|[,;]+/i)
-    .map(clause => clause.replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
+  const clauses = splitRecallQueryClauses(query);
   if (clauses.length < 2 || clauses.some(clause => recallTokens(clause).length < MINIMUM_QUERY_VARIANT_TERMS)) {
     return [];
   }
   return clauses.slice(0, MAX_DETERMINISTIC_QUERY_VARIANTS);
+}
+
+function splitRecallQueryClauses(query: string): readonly string[] {
+  const clauses: string[] = [];
+  for (const segment of query.replaceAll(',', ';').split(';')) {
+    const trimmed = segment.trim();
+    if (!trimmed) continue;
+    const segmentWords = trimmed.split(/\s+/u);
+    const leadingWhitespace = segment[0] !== trimmed[0];
+    const trailingWhitespace = segment.at(-1) !== trimmed.at(-1);
+    let words: string[] = [];
+    const flush = (): void => {
+      if (words.length > 0) clauses.push(words.join(' '));
+      words = [];
+    };
+    for (const [index, word] of segmentWords.entries()) {
+      const normalized = word.toLowerCase();
+      const surroundedByWhitespace =
+        (index > 0 || leadingWhitespace) && (index < segmentWords.length - 1 || trailingWhitespace);
+      if ((normalized === 'and' || normalized === 'or') && surroundedByWhitespace) flush();
+      else if (word) words.push(word);
+    }
+    flush();
+  }
+  return clauses;
 }
 
 function recallQueryVariants(query: string, supplied: readonly string[] | undefined): readonly string[] {
@@ -922,9 +945,9 @@ export function buildRecallSelectionCandidates(
   indexedCandidates: readonly RecallCandidate[],
   limit: number,
 ): readonly RecallSelectionCandidate[] {
-  const indexedByUri = new Map(indexedCandidates.map(candidate => [candidate.uri.replace(/#.*$/, ''), candidate]));
+  const indexedByUri = new Map(indexedCandidates.map(candidate => [stripFragment(candidate.uri), candidate]));
   return ranked.slice(0, Math.min(limit, MAX_RECALL_SELECTION_CANDIDATES)).map((hit, index) => {
-    const uri = hit.uri.replace(/#.*$/, '');
+    const uri = stripFragment(hit.uri);
     const indexed = indexedByUri.get(uri);
     const uriTopic = uri.slice(uri.lastIndexOf('/') + 1).replace(/\.[a-z0-9]+$/i, '');
     const project =
@@ -1333,10 +1356,10 @@ export function mergeRecallExpansionCandidates(
   requiredUris: readonly string[],
   topicalSetCount = candidateSets.length,
 ): readonly RecallCandidate[] {
-  const required = new Set(requiredUris.map(uri => uri.replace(/#.*$/, '')));
+  const required = new Set(requiredUris.map(stripFragment));
   const reorderedCandidateSets = candidateSets.map(candidates => [
-    ...candidates.filter(candidate => !required.has(candidate.uri.replace(/#.*$/, ''))),
-    ...candidates.filter(candidate => required.has(candidate.uri.replace(/#.*$/, ''))),
+    ...candidates.filter(candidate => !required.has(stripFragment(candidate.uri))),
+    ...candidates.filter(candidate => required.has(stripFragment(candidate.uri))),
   ]);
   return mergePrioritizedRecallIndexCandidates(
     reorderedCandidateSets.slice(0, topicalSetCount),

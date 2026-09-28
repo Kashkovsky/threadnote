@@ -124,15 +124,100 @@ export function credentialScrubberBlocker(content: string): string | undefined {
 }
 
 export function redactSensitiveText(content: string): string {
-  let redacted = content.replace(
-    /([A-Za-z0-9_.-]*(?:token|secret|password|api[_-]?key|authorization|credential|session)[A-Za-z0-9_.-]*\s*[:=]\s*)("[^"]+"|'[^']+'|Bearer\s+[^'"\s]+|\S+)/gi,
-    '$1[REDACTED]',
-  );
+  let redacted = redactCredentialAssignments(content);
   for (const pattern of SCRUBBER_PATTERNS) {
     const placeholder = pattern.placeholder ?? '<secret>';
     redacted = redacted.replace(globalize(pattern.regex), placeholder);
   }
   return redacted;
+}
+
+function redactCredentialAssignments(content: string): string {
+  const output: string[] = [];
+  let cursor = 0;
+  let search = 0;
+  while (search < content.length) {
+    const colon = content.indexOf(':', search);
+    const equals = content.indexOf('=', search);
+    const separator = colon < 0 ? equals : equals < 0 ? colon : Math.min(colon, equals);
+    if (separator < 0) break;
+    let keyEnd = separator;
+    while (keyEnd > cursor && isAssignmentWhitespace(content[keyEnd - 1])) keyEnd -= 1;
+    let keyStart = keyEnd;
+    while (keyStart > cursor && isCredentialKeyCharacter(content[keyStart - 1])) keyStart -= 1;
+    const key = content.slice(keyStart, keyEnd).toLowerCase();
+    let valueStart = separator + 1;
+    while (valueStart < content.length && isAssignmentWhitespace(content[valueStart])) valueStart += 1;
+    const valueEnd = sensitiveCredentialKey(key) ? credentialValueEnd(content, valueStart) : undefined;
+    if (valueEnd === undefined) {
+      search = separator + 1;
+      continue;
+    }
+    output.push(content.slice(cursor, valueStart), '[REDACTED]');
+    cursor = valueEnd;
+    search = valueEnd;
+  }
+  output.push(content.slice(cursor));
+  return output.join('');
+}
+
+function sensitiveCredentialKey(key: string): boolean {
+  return (
+    key.includes('token') ||
+    key.includes('secret') ||
+    key.includes('password') ||
+    key.includes('apikey') ||
+    key.includes('api_key') ||
+    key.includes('api-key') ||
+    key.includes('authorization') ||
+    key.includes('credential') ||
+    key.includes('session')
+  );
+}
+
+function credentialValueEnd(content: string, start: number): number | undefined {
+  if (start >= content.length || isAssignmentWhitespace(content[start])) return undefined;
+  const quote = content[start];
+  if (quote === '"' || quote === "'") {
+    const closing = content.indexOf(quote, start + 1);
+    if (closing > start + 1) return closing + 1;
+  }
+  if (content.slice(start, start + 'Bearer'.length).toLowerCase() === 'bearer') {
+    let tokenStart = start + 'Bearer'.length;
+    if (isAssignmentWhitespace(content[tokenStart])) {
+      while (tokenStart < content.length && isAssignmentWhitespace(content[tokenStart])) tokenStart += 1;
+      let tokenEnd = tokenStart;
+      while (
+        tokenEnd < content.length &&
+        !isAssignmentWhitespace(content[tokenEnd]) &&
+        content[tokenEnd] !== '"' &&
+        content[tokenEnd] !== "'"
+      ) {
+        tokenEnd += 1;
+      }
+      if (tokenEnd > tokenStart) return tokenEnd;
+    }
+  }
+  let end = start;
+  while (end < content.length && !isAssignmentWhitespace(content[end])) end += 1;
+  return end > start ? end : undefined;
+}
+
+function isCredentialKeyCharacter(value: string | undefined): boolean {
+  if (!value) return false;
+  const code = value.charCodeAt(0);
+  return (
+    value === '_' ||
+    value === '.' ||
+    value === '-' ||
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122)
+  );
+}
+
+function isAssignmentWhitespace(value: string | undefined): boolean {
+  return value === ' ' || value === '\t' || value === '\r' || value === '\n' || value === '\v' || value === '\f';
 }
 
 const globalPatterns = new WeakMap<RegExp, {readonly source: string; readonly flags: string; readonly regex: RegExp}>();

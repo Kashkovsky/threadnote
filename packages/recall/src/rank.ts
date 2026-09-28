@@ -1054,7 +1054,10 @@ function workspaceBranchRelationship(
 ): {readonly relationship: WorkspaceBranchRelationship; readonly score: number} {
   const current = normalizeWorkspaceBranch(currentWorkspaceBranch);
   if (!current || candidate.kind !== 'handoff') return {relationship: 'unavailable', score: 0};
-  const recorded = normalizeWorkspaceBranch(/^branch:\s*(.+)$/im.exec(candidate.text)?.[1]);
+  const branchLine = candidate.text
+    .split(/\r?\n/u)
+    .find(line => line.slice(0, 'branch:'.length).toLowerCase() === 'branch:');
+  const recorded = normalizeWorkspaceBranch(branchLine?.slice('branch:'.length).trim());
   if (!recorded || recorded === 'current' || recorded === 'unknown') {
     return {relationship: 'neutral', score: 0.5};
   }

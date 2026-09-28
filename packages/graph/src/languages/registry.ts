@@ -15,6 +15,7 @@ import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../types.js';
 import type {CodeGraphLanguagePackProvenance} from '../store/models.js';
 import {TREE_SITTER_RUNTIME_CACHE_IDENTITY, type TreeSitterRuntime} from '../tree_sitter/runtime.js';
 import {mergeCodeGraphWorkspaces, projectForPath} from '../workspace.js';
+import {isXcodeAssetContentsPath} from './schemas/policy.js';
 import {
   augmentRationaleFacts,
   captureRationaleInputs,
@@ -146,8 +147,7 @@ export function createCodeGraphLanguagePackRegistry(
         CodeGraphLanguagePackError.make({message: `No code graph language pack accepts ${file.path}.`}),
       );
     }
-    const nearestProjectContext =
-      matched.value.role === 'corpus' || /(?:^|\/)[^/]+\.xcassets\/.*\/Contents\.json$/iu.test(file.path);
+    const nearestProjectContext = matched.value.role === 'corpus' || isXcodeAssetContentsPath(file.path);
     const project = projectForPath(
       projects,
       file.path,

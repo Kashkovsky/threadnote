@@ -1,5 +1,6 @@
 import {Schema} from 'effect';
 import React, {useMemo} from 'react';
+import {trimTrailingCharacters} from '@threadnote/platform/string-boundaries';
 import {ManagerAutocompleteInput} from '@threadnote/manager/dialog';
 import type {
   GraphAnalysis,
@@ -479,7 +480,7 @@ function nodeMatches(node: TreeNode, filter: string): boolean {
 
 function resourceUrisFromText(text: string): readonly string[] {
   const matches = text.match(/threadnote:\/\/[^\s)"'<>`\]]+/g) ?? [];
-  return [...new Set(matches.map(uri => uri.replace(/[.,;:]+$/, '')))];
+  return [...new Set(matches.map(uri => trimTrailingCharacters(uri, '.,;:')))];
 }
 
 function formatBulkResults(action: string, results: readonly BulkItemResult[]): string {

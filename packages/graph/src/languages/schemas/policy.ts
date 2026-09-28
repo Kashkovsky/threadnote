@@ -28,11 +28,17 @@ export interface StructuredObjectDeclarationBudget {
  * Recognized configs and resource wiring retain a larger declaration surface.
  */
 export function structuredObjectDeclarationBudget(path: string): StructuredObjectDeclarationBudget {
-  if (/(?:^|\/)[^/]+\.xcassets\/.*\/Contents\.json$/iu.test(path)) {
+  if (isXcodeAssetContentsPath(path)) {
     return {maximumDeclarations: RESOURCE_STRUCTURED_DECLARATION_LIMIT, maximumDepth: 16, policy: 'resource'};
   }
   if (isRecognizedStructuredPath(path)) {
     return {maximumDeclarations: RECOGNIZED_STRUCTURED_DECLARATION_LIMIT, maximumDepth: 32, policy: 'recognized'};
   }
   return {maximumDeclarations: GENERIC_STRUCTURED_DECLARATION_LIMIT, maximumDepth: 8, policy: 'generic'};
+}
+
+export function isXcodeAssetContentsPath(path: string): boolean {
+  const segments = path.split('/');
+  if (segments.length < 3 || segments.at(-1)?.toLowerCase() !== 'contents.json') return false;
+  return segments.slice(0, -2).some(segment => segment.toLowerCase().endsWith('.xcassets'));
 }

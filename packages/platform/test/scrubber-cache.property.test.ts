@@ -78,6 +78,18 @@ describe('private scrubber matching clones', () => {
     }
   });
 
+  it('redacts quoted and bearer assignments while preserving labels and separators', () => {
+    expect(
+      redactSensitiveText(
+        ['api_key = "two words"', 'authorization: Bearer abc.def', "session='opaque'", 'url=https://example.com'].join(
+          '\n',
+        ),
+      ),
+    ).toBe(
+      ['api_key = [REDACTED]', 'authorization: [REDACTED]', 'session=[REDACTED]', 'url=https://example.com'].join('\n'),
+    );
+  });
+
   it('preserves output when an oversized pattern evicts the retained clone', () => {
     const regex = /a/;
     for (const pattern of ['a', 'a'.repeat(65_537), 'a']) {

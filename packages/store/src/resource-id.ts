@@ -17,30 +17,60 @@ export class InvalidResourceId extends Schema.TaggedError<InvalidResourceId>()('
   reason: Schema.String,
 }) {}
 
-const RESOURCE_ID_PATTERN = /^(threadnote|viking):\/\/([^/?#]+)([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/i;
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 const PORTABLE_UNSAFE_CHARACTERS = /[<>:"|?*\\/]/;
 
 export function parseResourceId(input: string): ResourceId {
   const trimmed = input.trim();
-  const match = RESOURCE_ID_PATTERN.exec(trimmed);
-  if (!match) return invalid(input, 'expected threadnote:// URI syntax (legacy viking:// aliases are accepted)');
-  const inputScheme = resourceIdScheme(match[1].toLowerCase());
-  const namespace = decodeSegment(match[2], input, 'namespace');
-  const rawPath = match[3] ?? '';
-  if (match[4] !== undefined) return invalid(input, 'query parameters are not supported');
+  const parsed = splitResourceId(trimmed);
+  if (!parsed) return invalid(input, 'expected threadnote:// URI syntax (legacy viking:// aliases are accepted)');
+  const inputScheme = resourceIdScheme(parsed.scheme.toLowerCase());
+  const namespace = decodeSegment(parsed.namespace, input, 'namespace');
+  const rawPath = parsed.path;
+  if (parsed.hasQuery) return invalid(input, 'query parameters are not supported');
   if (rawPath && !rawPath.startsWith('/')) return invalid(input, 'resource path must start with /');
   if (rawPath.includes('//')) return invalid(input, 'empty path segments are not allowed');
   const rawSegments = rawPath.split('/').slice(1);
   if (rawSegments.at(-1) === '') rawSegments.pop();
   const segments = rawSegments.map((segment, index) => decodeSegment(segment, input, `path segment ${index + 1}`));
-  const anchor = match[5] ? decodeAnchor(match[5], input) : undefined;
+  const anchor = parsed.anchor ? decodeAnchor(parsed.anchor, input) : undefined;
   return {
     ...(anchor ? {anchor} : {}),
     canonicalUri: canonicalResourceUri(namespace, segments, anchor),
     inputScheme,
     namespace,
     segments,
+  };
+}
+
+function splitResourceId(value: string):
+  | {
+      readonly anchor?: string;
+      readonly hasQuery: boolean;
+      readonly namespace: string;
+      readonly path: string;
+      readonly scheme: string;
+    }
+  | undefined {
+  const schemeEnd = value.indexOf('://');
+  if (schemeEnd <= 0) return undefined;
+  const scheme = value.slice(0, schemeEnd);
+  if (scheme.toLowerCase() !== 'threadnote' && scheme.toLowerCase() !== 'viking') return undefined;
+  const remainderStart = schemeEnd + 3;
+  const fragment = value.indexOf('#', remainderStart);
+  const query = value.indexOf('?', remainderStart);
+  const queryBeforeFragment = query >= 0 && (fragment < 0 || query < fragment);
+  const pathEnd = queryBeforeFragment ? query : fragment >= 0 ? fragment : value.length;
+  const slash = value.indexOf('/', remainderStart);
+  const namespaceEnd = slash >= 0 && slash < pathEnd ? slash : pathEnd;
+  if (namespaceEnd === remainderStart) return undefined;
+  const path = namespaceEnd < pathEnd ? value.slice(namespaceEnd, pathEnd) : '';
+  return {
+    ...(fragment >= 0 ? {anchor: value.slice(fragment + 1)} : {}),
+    hasQuery: queryBeforeFragment,
+    namespace: value.slice(remainderStart, namespaceEnd),
+    path,
+    scheme,
   };
 }
 
