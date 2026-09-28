@@ -1051,7 +1051,7 @@ describe('Effect CLI', () => {
         '1',
       ]).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
       expect(reportFailure).toMatchObject({code: 1});
-      expect(String(reportFailure.stderr)).toContain('No analysis ran');
+      expect(String(reportFailure.stderr)).toContain('No analysis result was returned');
       expect(String(reportFailure.stderr)).toContain('Run graph index explicitly');
       expect(String(reportFailure.stderr)).toContain('report output was not created');
       await expect(access(report)).rejects.toMatchObject({code: 'ENOENT'});

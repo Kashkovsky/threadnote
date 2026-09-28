@@ -730,8 +730,8 @@
     "cold-materialized-reference-candidate-rows-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 618904,
-      "minimum": 618904
+      "maximum": 310000,
+      "minimum": 310000
     },
     "cold-materialized-symbol-rows": {
       "samplesMinimum": 1,
@@ -2575,8 +2575,8 @@
     "same-overlay-reference-materialized-reference-candidate-rows-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 618904,
-      "minimum": 618904
+      "maximum": 310000,
+      "minimum": 310000
     },
     "same-overlay-reference-maximum-progress-heartbeat-gap-n1": {
       "samplesMinimum": 1,

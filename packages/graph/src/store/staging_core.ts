@@ -43,7 +43,7 @@ import {
   compactLexicalCleanupPageStatement,
   RETIRED_SNAPSHOT_CLEANUP_SPECS,
 } from './cleanup_core.js';
-import {lastStatementChangeCount} from './activation/core.js';
+import {lastStatementChangeCount, nextPersistentActivationBatchRows} from './activation/core.js';
 import {
   boundedSnapshotLeaseProjection,
   type BoundedSnapshotLeaseRow,
@@ -77,8 +77,9 @@ const reclaimRetiredSnapshotRows = Effect.fn('codeGraph.reclaimRetiredSnapshotRo
   }) ?? Effect.void;
   for (let index = 0; index < targetBatches.length; index += 1) {
     const targetBatch = targetBatches[index];
+    const reclaimPage = makeRetiredSnapshotReclamationPage(sql, targetBatch);
     for (;;) {
-      const page = yield* writerGate(sql.withTransaction(reclaimRetiredSnapshotPage(sql, targetBatch)));
+      const page = yield* writerGate(reclaimPage);
       pagesCompleted += 1;
       rowsDeleted += page.rowsDeleted;
       if (page.complete) snapshotsCompleted += targetBatch.length;
@@ -97,9 +98,33 @@ const reclaimRetiredSnapshotRows = Effect.fn('codeGraph.reclaimRetiredSnapshotRo
   }
 });
 
+export function makeRetiredSnapshotReclamationPage(sql: SqlClient.SqlClient, snapshotIds: readonly string[]) {
+  const batchRowsByTable = new Map<string, number>();
+  return Effect.gen(function* () {
+    // Run inside the writer gate so lock contention cannot shrink the next page.
+    const startedAt = yield* Clock.currentTimeMillis;
+    const page = yield* sql.withTransaction(reclaimRetiredSnapshotPage(sql, snapshotIds, batchRowsByTable));
+    if (page.table !== undefined) {
+      batchRowsByTable.set(
+        page.table,
+        Math.min(
+          page.maximumBatchRows,
+          nextPersistentActivationBatchRows(
+            page.batchRows,
+            Math.max(0, (yield* Clock.currentTimeMillis) - startedAt),
+            page.maximumBatchRows,
+          ),
+        ),
+      );
+    }
+    return {complete: page.complete, rowsDeleted: page.rowsDeleted};
+  });
+}
+
 const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPage')(function* (
   sql: SqlClient.SqlClient,
   snapshotIds: readonly string[],
+  batchRowsByTable: ReadonlyMap<string, number> = new Map(),
 ) {
   const now = yield* Clock.currentTimeMillis;
   const snapshotPlaceholders = snapshotIds.map(() => '?').join(', ');
@@ -129,10 +154,18 @@ const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPa
   if (compactTarget !== undefined) {
     const compactSnapshotKey = yield* validatedCompactLexicalCount(compactTarget.snapshot_key, 'cleanup snapshot key');
     for (const spec of COMPACT_LEXICAL_CLEANUP_SPECS) {
-      const statement = compactLexicalCleanupPageStatement(spec, compactSnapshotKey, spec.batchRows, Option.none());
+      const batchRows = batchRowsByTable.get(spec.table) ?? spec.batchRows;
+      const statement = compactLexicalCleanupPageStatement(spec, compactSnapshotKey, batchRows, Option.none());
       yield* sql.unsafe(statement.text, statement.parameters);
       const deleted = yield* lastStatementChangeCount(sql);
-      if (deleted > 0) return {complete: false, rowsDeleted: deleted};
+      if (deleted > 0)
+        return {
+          complete: false,
+          rowsDeleted: deleted,
+          table: spec.table,
+          batchRows,
+          maximumBatchRows: spec.maximumBatchRows,
+        };
     }
     yield* sql.unsafe('DELETE FROM lexical_storage_formats WHERE snapshot_id = ?', [compactTarget.snapshot_id]);
     const formatsDeleted = yield* lastStatementChangeCount(sql);
@@ -146,6 +179,7 @@ const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPa
   }
   for (const spec of RETIRED_SNAPSHOT_CLEANUP_SPECS) {
     if (spec.table === LEGACY_BUILDING_REFERENCES_V3_TABLE && !(yield* tableExists(sql, spec.table))) continue;
+    const batchRows = batchRowsByTable.get(spec.table) ?? spec.batchRows;
     const key = `(${spec.keyColumns.join(', ')})`;
     yield* sql.unsafe(
       `DELETE FROM ${spec.table}
@@ -170,14 +204,21 @@ const reclaimRetiredSnapshotPage = Effect.fn('codeGraph.reclaimRetiredSnapshotPa
          ORDER BY ${spec.keyColumns.map(column => `candidate.${column}`).join(', ')}
          LIMIT ?
        )`,
-      [...snapshotIds, now, now, spec.batchRows],
+      [...snapshotIds, now, now, batchRows],
     );
     const changes = yield* sql.unsafe<{readonly count: number}>('SELECT changes() AS count');
     const deleted = Number(changes[0]?.count ?? 0);
     if (!Number.isSafeInteger(deleted) || deleted < 0) {
       return yield* CodeGraphStoreError.of('Retired snapshot cleanup returned an invalid row count.');
     }
-    if (deleted > 0) return {complete: false, rowsDeleted: deleted};
+    if (deleted > 0)
+      return {
+        complete: false,
+        rowsDeleted: deleted,
+        table: spec.table,
+        batchRows,
+        maximumBatchRows: spec.maximumBatchRows,
+      };
   }
   yield* sql.unsafe(
     `DELETE FROM snapshots

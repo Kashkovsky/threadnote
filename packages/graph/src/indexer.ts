@@ -29,6 +29,7 @@ export {
   addMaterializationRows,
   cacheContentBatch,
   codeGraphActiveParserCacheKey,
+  CODE_GRAPH_MATERIALIZATION_STORAGE_HEURISTIC_MODEL_VERSION,
   codeGraphDirectPersistentCapacityProtector,
   codeGraphParserCacheLookupGenerations,
   deduplicateMaterializationRelationships,

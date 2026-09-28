@@ -6,9 +6,11 @@ import {
   type CodeGraphBuildState,
   type CodeGraphBuildStatus,
   codeGraphAbandonedBuildStatusRemovable,
+  codeGraphBuildStatusError,
   observeCodeGraphBuildStatus,
   parseCodeGraphBuildStatus,
 } from '@threadnote/graph/build_status';
+import {CodeGraphDiskCapacityPressureError} from '@threadnote/graph/types';
 
 const heartbeatAt = Date.parse('2026-07-31T12:00:00.000Z');
 
@@ -35,6 +37,7 @@ const materializationCase = FC.record({
   sourceBytes: FC.integer({max: 1_000_000_000, min: 0}),
   stagingBytes: FC.integer({max: 1_000_000_000, min: 0}),
   symbols: FC.integer({max: 1_000_000, min: 0}),
+  withAdvisoryModel: FC.boolean(),
 });
 
 const activationCase = FC.record({
@@ -66,6 +69,38 @@ const resolutionTransactionCase = FC.record({
 });
 
 describe('code graph build-status properties', () => {
+  it('round-trips bounded capacity evidence while retaining legacy summary-only failures', () => {
+    const evidence = {
+      activeReservations: [{bytes: 20, role: 'durable' as const}],
+      calibrationIdentity: 'fixture-v1',
+      decisionLayer: 'bounded-write-reservation' as const,
+      estimateBasis: 'final-fact-bytes-and-row-count' as const,
+      filesystems: [{availableBytes: 10, requiredBytes: 30, role: 'durable' as const}],
+      modelVersion: 2,
+      recovery: 'free-space' as const,
+      retryable: false,
+      scope: {checkoutId: 'b'.repeat(64)},
+    };
+    const error = codeGraphBuildStatusError(
+      CodeGraphDiskCapacityPressureError.of('stage persistent code graph facts', evidence),
+    );
+    const failed = {...buildStatus('failed', true), error};
+
+    expect(parseCodeGraphBuildStatus(JSON.parse(JSON.stringify(failed)))?.error).toEqual(error);
+    expect(parseCodeGraphBuildStatus({...failed, error: {summary: 'Legacy capacity failure.'}})?.error).toEqual({
+      summary: 'Legacy capacity failure.',
+    });
+    expect(
+      parseCodeGraphBuildStatus({
+        ...failed,
+        error: {
+          ...error,
+          capacity: {...error.capacity, operation: '/private/repository/path'},
+        },
+      }),
+    ).toBeUndefined();
+  });
+
   fcProp(
     it,
     'classifies terminal, exited, reused, stale, and active owners in fail-closed precedence order',
@@ -251,6 +286,9 @@ describe('code graph build-status properties', () => {
               shardSerialization: sample.batchCompleted + 4,
             },
             storage: {
+              ...(sample.withAdvisoryModel
+                ? {decisionLayer: 'whole-build-heuristic' as const, enforcement: 'advisory' as const, modelVersion: 1}
+                : {}),
               availableBytes: sample.availableBytes,
               durableAvailableBytes: sample.availableBytes,
               estimateBasis: 'cached-fact-bytes',
@@ -273,6 +311,28 @@ describe('code graph build-status properties', () => {
       expect(parseCodeGraphBuildStatus(JSON.parse(JSON.stringify(materializing)))?.materialization).toEqual(
         materializing.materialization,
       );
+      for (const invalid of [
+        {decisionLayer: 'bounded-write-reservation'},
+        {enforcement: 'enforced'},
+        {modelVersion: 0},
+        {modelVersion: -1},
+        {modelVersion: 1.5},
+        {modelVersion: Number.MAX_SAFE_INTEGER + 1},
+      ]) {
+        expect(
+          parseCodeGraphBuildStatus({
+            ...materializing,
+            materialization: {
+              ...materializing.materialization,
+              metrics: {
+                ...materializing.materialization!.metrics!,
+                storage: {...materializing.materialization!.metrics!.storage!, ...invalid},
+              },
+            },
+          }),
+        ).toBeUndefined();
+      }
+
       expect(
         parseCodeGraphBuildStatus({
           ...materializing,

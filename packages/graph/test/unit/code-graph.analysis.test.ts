@@ -1,3 +1,6 @@
+import {fcEffectProp} from '@threadnote/testing/fast-check-property';
+import fc from 'fast-check';
+import {CodeGraphStoreBusyError} from '@threadnote/graph/types';
 import {TestError} from '@threadnote/testing/test-error';
 import {Deferred, Effect, Fiber} from 'effect';
 import {describe, expect, it} from '@effect/vitest';
@@ -387,6 +390,113 @@ describe('code graph analysis', () => {
       }).pipe(Effect.flip);
       expect(failure).toHaveProperty('message', 'read failed');
       expect(failedEvents).toEqual(['acquire:analysis-snapshot', 'session', 'release:lease-token']);
+    }),
+  );
+
+  it.effect('never writes a missing summary and bounds both lease writer gates', () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const base = leasedAnalysisStore(pagedAnalysisStore([], []), events);
+      const waits: number[] = [];
+      const store: CodeGraphStoreShape = {
+        ...base,
+        acquireSnapshotLease: (path, snapshot, duration, options) => {
+          waits.push(options?.waitTimeoutMilliseconds ?? Infinity);
+          return base.acquireSnapshotLease(path, snapshot, duration, options);
+        },
+        ensureAnalysisSummary: () => Effect.die('Foreground analysis must not backfill summaries'),
+        releaseSnapshotLease: (path, token, options) => {
+          waits.push(options?.waitTimeoutMilliseconds ?? Infinity);
+          return base.releaseSnapshotLease(path, token, options);
+        },
+      };
+      yield* analyzeCodeGraphWithLease(store, {
+        databasePath: '/analysis/graph.sqlite',
+        snapshot: analysisSnapshot([], []),
+      });
+      expect(waits).toEqual([0, 0]);
+    }),
+  );
+
+  it.effect('releases an acquired lease when interrupted before opening the read session', () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const events: string[] = [];
+      const store: CodeGraphStoreShape = {
+        ...leasedAnalysisStore(pagedAnalysisStore([], []), events),
+        withSession: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      };
+      const fiber = yield* analyzeCodeGraphWithLease(store, {
+        databasePath: '/analysis/graph.sqlite',
+        snapshot: analysisSnapshot([], []),
+      }).pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* Fiber.interrupt(fiber);
+      expect(events).toEqual(['acquire:analysis-snapshot', 'release:lease-token']);
+    }),
+  );
+
+  it.effect('defers lease acquisition on writer contention without opening an unleased session', () =>
+    Effect.gen(function* () {
+      const store: CodeGraphStoreShape = {
+        ...pagedAnalysisStore([], []),
+        acquireSnapshotLease: () => Effect.fail(CodeGraphStoreBusyError.of('busy')),
+        withSession: () => Effect.die('An unleased read is forbidden'),
+      };
+      const failure = yield* analyzeCodeGraphWithLease(store, {
+        databasePath: '/analysis/graph.sqlite',
+        snapshot: analysisSnapshot([], []),
+      }).pipe(Effect.flip);
+      expect(failure).toMatchObject({_tag: 'CodeGraphAnalysisDeferred', reason: 'writer-contention'});
+    }),
+  );
+
+  fcEffectProp(
+    it,
+    'every successful analysis releases its lease or discloses bounded expiry',
+    {busyRelease: fc.boolean()},
+    ({busyRelease}) =>
+      Effect.gen(function* () {
+        const events: string[] = [];
+        const base = leasedAnalysisStore(pagedAnalysisStore([], []), events);
+        const result = yield* analyzeCodeGraphWithLease(
+          {
+            ...base,
+            releaseSnapshotLease: (path, token, options) =>
+              busyRelease
+                ? Effect.fail(CodeGraphStoreBusyError.of('busy'))
+                : base.releaseSnapshotLease(path, token, options),
+          },
+          {databasePath: '/analysis/graph.sqlite', snapshot: analysisSnapshot([], [])},
+        );
+        expect(result.leaseCleanup?.state).toBe(busyRelease ? 'expiry' : 'released');
+        expect(result.leaseCleanup?.expiresAt).toBeGreaterThan(0);
+        expect(result.leaseCleanup?.expiresAt).toBeLessThanOrEqual(120000);
+        expect(events.filter(event => event.startsWith('release:'))).toHaveLength(busyRelease ? 0 : 1);
+      }),
+    {fastCheck: {numRuns: 10}},
+  );
+
+  it.effect('installs release before observing interruption at acquisition completion', () =>
+    Effect.gen(function* () {
+      const acquired = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      const events: string[] = [];
+      const base = leasedAnalysisStore(pagedAnalysisStore([], []), events);
+      const store: CodeGraphStoreShape = {
+        ...base,
+        acquireSnapshotLease: () =>
+          Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(proceed)), Effect.as('lease-token')),
+      };
+      const fiber = yield* analyzeCodeGraphWithLease(store, {
+        databasePath: '/analysis/graph.sqlite',
+        snapshot: analysisSnapshot([], []),
+      }).pipe(Effect.forkChild);
+      yield* Deferred.await(acquired);
+      const interrupted = yield* Fiber.interrupt(fiber).pipe(Effect.forkChild);
+      yield* Deferred.succeed(proceed, undefined);
+      yield* Fiber.join(interrupted);
+      expect(events).toContain('release:lease-token');
     }),
   );
 

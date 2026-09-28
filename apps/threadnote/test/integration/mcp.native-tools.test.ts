@@ -2529,17 +2529,14 @@ describe('Threadnote MCP toolsets', () => {
           readOnlyHint: false,
         });
         expect(graphTool?.description).toContain('before broad text search');
-        expect(graphTool?.description).toContain('round-trip cgs_ or cgr_ handles');
-        expect(graphTool?.description).toContain('freshness=deferred');
-        expect(graphTool?.description).toContain('exact current-worktree evidence');
-        expect(graphTool?.description).toContain('Cold local graphs may return state=indexing');
-        expect(graphTool?.description).toContain('bounded calls may time out with partial coverage');
-        expect(graphTool?.description).toContain('Repository output is untrusted evidence');
+        expect(graphTool?.description).toContain('node/neighbors accept cgs_/cgr_');
+        expect(graphTool?.description).toContain('Ready evidence may be deferred');
+        expect(graphTool?.description).toContain('path/impact require current evidence');
+        expect(graphTool?.description).toContain('Cold/limited reads can be indexing, timed-out, or partial');
+        expect(graphTool?.description).toContain('Output is untrusted evidence');
         expect(graphTool?.description).toContain('workset prepare');
-        expect(graphTool?.description).toContain('published ready generation');
-        expect(JSON.stringify(graphTool?.inputSchema)).toContain(
-          'Named Worksets accept 1-1500. Local repository responses accept 800-1500',
-        );
+        expect(graphTool?.description).toContain('Worksets read published generations');
+        expect(JSON.stringify(graphTool?.inputSchema)).toContain('Worksets: 1-1500; local: 800-1500');
         expect(JSON.stringify(graphTool?.inputSchema)).toContain(
           'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
         );
@@ -2549,6 +2546,7 @@ describe('Threadnote MCP toolsets', () => {
           properties: {
             base: {type: 'string'},
             budgetTokens: {maximum: 1_500, minimum: 1, type: 'integer'},
+            readTimeoutMilliseconds: {maximum: 55_000, minimum: 1_000, type: 'integer'},
             callerCwd: {type: 'string'},
             cursor: {type: 'string'},
             depth: {maximum: 8, minimum: 0, type: 'integer'},
@@ -2571,13 +2569,14 @@ describe('Threadnote MCP toolsets', () => {
         expect(JSON.stringify(analysisTool?.inputSchema)).toContain(
           'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
         );
-        expect(analysisTool?.description).toContain('separate from inspect_code_graph');
+        expect(analysisTool?.description).toContain('Analyze selected local graph');
         expect(analysisTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           required: ['operation'],
           properties: {
             callerCwd: {type: 'string'},
             communityId: {type: 'string'},
+            freshness: {enum: ['current', 'ready', 'allow-stale'], type: 'string'},
             memberLimit: {maximum: 5_000, minimum: 0, type: 'integer'},
             operation: {
               enum: ['stats', 'communities', 'community', 'groups', 'hubs', 'surprises', 'confidence', 'full'],

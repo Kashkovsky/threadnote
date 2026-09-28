@@ -4,3 +4,4 @@ export const CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT = '--threadnote-code-graph-
 export const CODE_GRAPH_COMPACTION_WORKER_ARGUMENT = '--threadnote-code-graph-compaction-worker';
 export const CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT =
   '--threadnote-code-graph-git-worktree-registration-worker';
+export const CODE_GRAPH_ANALYSIS_WORKER_ARGUMENT = '--threadnote-code-graph-analysis-worker';

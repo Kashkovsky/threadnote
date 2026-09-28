@@ -1,3 +1,5 @@
+import {serveCodeGraphAnalysisRead, type CodeGraphAnalysisReadInput} from '@threadnote/graph/isolated/analysis';
+import {CodeGraphIndexer} from '@threadnote/graph/indexer';
 import {systemRuntimeBoundaries} from '../helpers/system-runtime-boundaries.js';
 import {BunFileSystem} from '@effect/platform-bun';
 import * as BunPath from '@effect/platform-bun/BunPath';
@@ -178,7 +180,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     );
   });
 
-  effectIt.effect('allows ready query and exact-node reads to run beyond the former 25-second budget', () => {
+  effectIt.effect('honors an explicit longer budget for ready query and exact-node reads', () => {
     const ready = codeGraphStatus({ready: true, stale: true});
     const harness = analyzeHandlerHarness({
       allowBackgroundRequest: true,
@@ -195,7 +197,12 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       ]) {
         const started = harness.awaitIsolatedInspectCall(harness.observation.isolatedInspectCalls + 1);
         const fiber = yield* harness
-          .invokeInspect({callerCwd: ready.identity.repoRoot, responseFormat: 'dual', ...request})
+          .invokeInspect({
+            callerCwd: ready.identity.repoRoot,
+            responseFormat: 'dual',
+            readTimeoutMilliseconds: 55000,
+            ...request,
+          })
           .pipe(Effect.forkChild({startImmediately: true}));
         yield* started;
         yield* TestClock.adjust('30 seconds');
@@ -302,7 +309,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         .invokeInspect({callerCwd: ready.identity.repoRoot, operation: 'query', query: 'value'})
         .pipe(Effect.forkChild({startImmediately: true}));
       yield* started;
-      yield* TestClock.adjust('55 seconds');
+      yield* TestClock.adjust('25 seconds');
       const result = yield* Fiber.join(fiber);
 
       expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
@@ -316,7 +323,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     }).pipe(provideTestLayer(harness.layer));
   });
 
-  effectIt.effect('keeps a hot ready analysis on watcher-owned maintenance', () => {
+  effectIt.effect('reads a hot snapshot without attaching watcher work before the accepted analysis', () => {
     const ready = codeGraphStatus({ready: true, stale: false});
     const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});
 
@@ -328,21 +335,12 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       expect(result.content).toEqual([
         expect.objectContaining({type: 'text', text: expect.stringContaining('Graph analysis:')}),
       ]);
-      expect(harness.observation.ensureOptions).toEqual([
-        {
-          cwd: ready.identity.repoRoot,
-          key: ready.identity.worktreeId,
-          threadnoteHome: TEST_HOME,
-        },
-      ]);
+      expect(harness.observation.ensureOptions).toEqual([]);
       expect(harness.observation.refreshOptions).toEqual([]);
       expect(harness.observation.watcherStatusCalls).toBe(0);
       expect(harness.observation.analysisCalls).toBe(1);
-      expect(harness.observation.statusOptions).toHaveLength(1);
+      expect(harness.observation.statusOptions).toHaveLength(2);
       expect(harness.observation.statusOptions[0]).toMatchObject({requestMaintenance: false});
-      expect(harness.observation.statusOptions[0]?.observeWorktree).toBeUndefined();
-      expect(harness.observation.statusOptions[0]?.afterIdentityObserved).toEqual(expect.any(Function));
-      expect(harness.observation.statusOptions[0]?.telemetry).toBeDefined();
       expect(harness.observation.attachOptions).toEqual([]);
     }).pipe(provideTestLayer(harness.layer));
   });
@@ -363,6 +361,97 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     }).pipe(provideTestLayer(harness.layer));
   });
 
+  for (const freshness of ['ready', 'allow-stale'] as const) {
+    effectIt.effect(`analyzes the selected stale snapshot with ${freshness} and starts no watcher`, () => {
+      const stale = codeGraphStatus({ready: true, stale: true});
+      const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [stale]});
+      return Effect.gen(function* () {
+        const result = yield* harness.invoke({
+          callerCwd: stale.identity.repoRoot,
+          operation: 'groups',
+          freshness,
+          responseFormat: 'dual',
+        });
+        expect(result.structuredContent).toMatchObject({
+          freshnessPolicy: freshness,
+          freshness: 'stale',
+          snapshot: {id: stale.readySnapshot!.id},
+          type: 'code-graph-analysis',
+        });
+        expect(harness.observation.analysisCalls).toBe(1);
+        expect(harness.observation.ensureOptions).toEqual([]);
+        expect(harness.observation.refreshOptions).toEqual([]);
+        expect(harness.observation.attachOptions).toEqual([]);
+      }).pipe(provideTestLayer(harness.layer));
+    });
+  }
+
+  effectIt.effect('reports a cold allow-stale scope without starting refresh or attaching another graph', () => {
+    const cold = codeGraphStatus({ready: false, stale: true});
+    const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [cold]});
+    return Effect.gen(function* () {
+      const result = yield* harness.invoke({
+        callerCwd: cold.identity.repoRoot,
+        operation: 'stats',
+        freshness: 'allow-stale',
+        responseFormat: 'dual',
+      });
+      expect(result.structuredContent).toMatchObject({
+        freshnessPolicy: 'allow-stale',
+        state: 'unavailable',
+        reason: 'no-ready-snapshot',
+      });
+      expect(harness.observation.analysisCalls).toBe(0);
+      expect(harness.observation.ensureOptions).toEqual([]);
+      expect(harness.observation.refreshOptions).toEqual([]);
+      expect(harness.observation.attachOptions).toEqual([]);
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  for (const freshness of ['current', 'ready', 'allow-stale'] as const) {
+    effectIt.effect(`preserves known cold capacity failure evidence for ${freshness} without retrying it`, () => {
+      const cold = codeGraphStatus({ready: false, stale: true});
+      const failure = {
+        code: 'no-space' as const,
+        operation: 'refresh code graph' as const,
+        recovery: 'free-space' as const,
+        retryable: false,
+        evidence: {
+          activeReservations: [],
+          calibrationIdentity: 'fixture-v1',
+          decisionLayer: 'bounded-write-reservation' as const,
+          estimateBasis: 'final-fact-bytes-and-row-count' as const,
+          filesystems: [{availableBytes: 1, requiredBytes: 2, role: 'durable' as const}],
+          modelVersion: 2,
+          recovery: 'free-space' as const,
+          retryable: false,
+        },
+      };
+      const harness = analyzeHandlerHarness({
+        attachResults: freshness === 'current' ? [cold] : [],
+        refresh: false,
+        statuses: [cold],
+        refreshStatus: {state: 'deferred', failure},
+      });
+      return Effect.gen(function* () {
+        const result = yield* harness.invoke({
+          callerCwd: cold.identity.repoRoot,
+          operation: 'groups',
+          freshness,
+          responseFormat: 'dual',
+        });
+        expect(result.structuredContent).toMatchObject({
+          freshnessPolicy: freshness,
+          failure,
+          type: 'code-graph-analysis-state',
+        });
+        expect(harness.observation.refreshOptions).toEqual([]);
+        expect(harness.observation.analysisCalls).toBe(0);
+        if (freshness === 'allow-stale') expect(harness.observation.ensureOptions).toEqual([]);
+      }).pipe(provideTestLayer(harness.layer));
+    });
+  }
+
   effectIt.effect('keeps stale and no-ready recovery on watcher-owned maintenance', () => {
     const unavailable = codeGraphStatus({ready: false, stale: true});
     const harness = analyzeHandlerHarness({
@@ -372,7 +461,11 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     });
 
     return Effect.gen(function* () {
-      const result = yield* harness.invoke({callerCwd: unavailable.identity.repoRoot, operation: 'stats'});
+      const result = yield* harness.invoke({
+        callerCwd: unavailable.identity.repoRoot,
+        operation: 'stats',
+        responseFormat: 'dual',
+      });
 
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent).toMatchObject({state: 'deferred', type: 'code-graph-analysis-state'});
@@ -390,19 +483,9 @@ describe('registered analyze_code_graph snapshot resolution', () => {
           threadnoteHome: TEST_HOME,
         },
       ]);
-      expect(harness.observation.watcherStatusCalls).toBe(2);
       expect(harness.observation.analysisCalls).toBe(0);
-      expect(harness.observation.statusOptions).toHaveLength(2);
-      expect(harness.observation.statusOptions.map(options => options?.requestMaintenance)).toEqual([false, false]);
-      expect(harness.observation.statusOptions.map(options => options?.observeWorktree)).toEqual([
-        undefined,
-        undefined,
-      ]);
-      expect(harness.observation.statusOptions[0]?.afterIdentityObserved).toEqual(expect.any(Function));
-      expect(harness.observation.statusOptions[1]?.afterIdentityObserved).toBeUndefined();
-      expect(harness.observation.attachOptions).toHaveLength(2);
-      expect(harness.observation.attachOptions.map(options => options?.requestMaintenance)).toEqual([false, false]);
-      expect(harness.observation.attachOptions.every(options => options?.telemetry !== undefined)).toBe(true);
+      expect(harness.observation.statusOptions).toHaveLength(1);
+      expect(harness.observation.attachOptions).toEqual([{allowBorrowedStale: false, requestMaintenance: false}]);
     }).pipe(provideTestLayer(harness.layer));
   });
 });
@@ -416,6 +499,7 @@ interface AnalyzeHandlerHarnessInput {
   readonly liveGit?: boolean;
   readonly manifestPath?: string;
   readonly refresh: boolean;
+  readonly refreshStatus?: CodeGraphRefreshStatus;
   readonly statuses: readonly CodeGraphStatus[];
 }
 
@@ -453,7 +537,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
     status: (_threadnoteHome, _cwd, options) =>
       Effect.gen(function* () {
         statusOptions.push(options);
-        const result = input.statuses[statusIndex];
+        const result = input.statuses[statusIndex] ?? input.statuses.at(-1);
         statusIndex += 1;
         if (result === undefined) return yield* Effect.die(`Unexpected graph status ${statusIndex}.`);
         if (options?.afterIdentityObserved !== undefined) yield* options.afterIdentityObserved(result.identity);
@@ -495,7 +579,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
     status: () =>
       Effect.sync(() => {
         watcherStatusCalls += 1;
-        return Option.some(deferredRefreshStatus());
+        return Option.some(input.refreshStatus ?? deferredRefreshStatus());
       }),
     watch: () => Effect.die('Unexpected graph watch.'),
   });
@@ -521,43 +605,57 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
               stdout: new TextDecoder().decode(result.stdout),
             };
           })
-        : Effect.gen(function* () {
-            isolatedInspectCalls += 1;
-            yield* Deferred.succeed(isolatedInspectStartSignal(isolatedInspectCalls), undefined);
-            const status = input.statuses[0];
-            if (status === undefined || options?.input === undefined) {
-              return yield* Effect.die('Unexpected isolated graph inspection.');
-            }
-            const request = JSON.parse(new TextDecoder().decode(options.input)) as Record<string, unknown> & {
-              readonly operation: CodeGraphQueryResult['operation'];
-            };
-            lifecycleEvents.push('isolated-read-start');
-            isolatedRequests.push(request);
-            if (input.inspectDelayMilliseconds !== undefined) yield* Effect.sleep(input.inspectDelayMilliseconds);
-            lifecycleEvents.push('isolated-read-complete');
-            return commandResult(
-              JSON.stringify({
-                ok: true,
-                protocol: 1,
-                result: {
-                  ...codeGraphInspectionResult(status, request.operation),
-                  ...(status.projectCoverage === undefined ? {} : {projectCoverage: status.projectCoverage}),
-                },
-                status: {
-                  stale: status.stale,
-                  ...(status.readySnapshot === undefined ? {} : {readySnapshotId: status.readySnapshot.id}),
-                  surface: {
-                    freshness: status.freshness,
-                    selection: 'active',
-                    snapshot: {edgeCount: 0, fileCount: 0, symbolCount: 0},
+        : arguments_.at(-1) === '--threadnote-code-graph-analysis-worker'
+          ? Effect.gen(function* () {
+              const request = JSON.parse(new TextDecoder().decode(options?.input)) as CodeGraphAnalysisReadInput;
+              const result = yield* serveCodeGraphAnalysisRead(request).pipe(
+                Effect.provideService(CodeGraphQueryService, query),
+                Effect.provideService(CodeGraphAnalysis, analysis),
+                Effect.provideService(
+                  CodeGraphIndexer,
+                  {} as import('@threadnote/graph/indexer').CodeGraphIndexerShape,
+                ),
+                Effect.orDie,
+              );
+              return commandResult(JSON.stringify({protocol: 1, ok: true, result}));
+            })
+          : Effect.gen(function* () {
+              isolatedInspectCalls += 1;
+              yield* Deferred.succeed(isolatedInspectStartSignal(isolatedInspectCalls), undefined);
+              const status = input.statuses[0];
+              if (status === undefined || options?.input === undefined) {
+                return yield* Effect.die('Unexpected isolated graph inspection.');
+              }
+              const request = JSON.parse(new TextDecoder().decode(options.input)) as Record<string, unknown> & {
+                readonly operation: CodeGraphQueryResult['operation'];
+              };
+              lifecycleEvents.push('isolated-read-start');
+              isolatedRequests.push(request);
+              if (input.inspectDelayMilliseconds !== undefined) yield* Effect.sleep(input.inspectDelayMilliseconds);
+              lifecycleEvents.push('isolated-read-complete');
+              return commandResult(
+                JSON.stringify({
+                  ok: true,
+                  protocol: 1,
+                  result: {
+                    ...codeGraphInspectionResult(status, request.operation),
+                    ...(status.projectCoverage === undefined ? {} : {projectCoverage: status.projectCoverage}),
                   },
-                  worktreeId: status.identity.worktreeId,
-                  repoRoot: status.identity.repoRoot,
-                },
-                telemetry: [],
-              }),
-            );
-          }),
+                  status: {
+                    stale: status.stale,
+                    ...(status.readySnapshot === undefined ? {} : {readySnapshotId: status.readySnapshot.id}),
+                    surface: {
+                      freshness: status.freshness,
+                      selection: 'active',
+                      snapshot: {edgeCount: 0, fileCount: 0, symbolCount: 0},
+                    },
+                    worktreeId: status.identity.worktreeId,
+                    repoRoot: status.identity.repoRoot,
+                  },
+                  telemetry: [],
+                }),
+              );
+            }),
     executeBytes: (executable, arguments_, options) =>
       input.liveGit === true && executable === 'git'
         ? Effect.sync(() => {

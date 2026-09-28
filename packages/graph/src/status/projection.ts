@@ -1,3 +1,4 @@
+import {parseCapacityFailure} from '../build_status/codec.js';
 import type {
   CodeGraphBuildActivity,
   CodeGraphBuildStatusSelection,
@@ -199,6 +200,7 @@ export function projectCodeGraphStatusBuildSummaryV5(
 ): CodeGraphStatusBuildSummaryV5 {
   const retainsActiveActivity = status.state === 'queued' || status.state === 'running';
   const scheduling = parseCodeGraphBuildScheduling(status.scheduling);
+  const capacity = parseCapacityFailure(status.error?.capacity);
   return {
     ...(retainsActiveActivity && status.activity
       ? {activity: projectCodeGraphStatusBuildActivityV5(status.activity)}
@@ -231,7 +233,14 @@ export function projectCodeGraphStatusBuildSummaryV5(
       'total',
       'unit',
     ]),
-    ...(status.error ? {error: {summary: boundedText(status.error.summary, 300)}} : {}),
+    ...(status.error
+      ? {
+          error: {
+            summary: boundedText(status.error.summary, 300),
+            ...(capacity === undefined ? {} : {capacity}),
+          },
+        }
+      : {}),
     ...(status.eta
       ? {
           eta: {

@@ -338,7 +338,8 @@ A large cold MCP inspection can return `state: "indexing"` with measured phase p
 estimate, and adaptive retry timing. When a compatible ready snapshot exists, query, node, neighbors, and explain may
 return stale cards while continuity is `active`, `queued`, or `deferred`; continue bounded discovery and verify exact
 literals in source. Retry only before strict current or relationship claims, or when no usable cards survive—do not
-tight-poll. Path, impact, analyze_code_graph, and exact-current citations remain strict. There is no repository-size admission
+tight-poll. Path, impact, and exact-current citations remain strict. Analysis defaults to current evidence and permits
+explicit `freshness: ready` or `freshness: allow-stale` for compatible snapshots of the selected project. There is no repository-size admission
 limit and no daemon to start. Nested Maven, Gradle, SwiftPM, and Xcode scopes are detected statically. Dynamic build
 logic and ambiguous dependencies remain syntactic rather than being guessed. Bazel workspaces, packages, targets,
 loads, and labels are also detected statically from `WORKSPACE*`, `MODULE.bazel`, `BUILD*`, `.bzl`, `.axl`, and
@@ -378,6 +379,24 @@ budgets. MCP structured content and rendered text each have an independent deter
 output coverage and omission metadata. Reaching any analysis or response budget does not imply that the stored
 snapshot was truncated. Manager shows statistics, community drill-down, structural groups, confidence, hubs, and
 cross-community signals only after **Analyze** is selected.
+
+If a current analysis is waiting for refresh, request MCP `analyze_code_graph` with `freshness: ready`, or use
+`threadnote graph analyze --view groups --freshness ready --project <selected-project>`. This accepts an existing
+compatible snapshot and reports its freshness. On a cold project, `ready` permits a bounded refresh; it cannot provide
+analysis from another project's snapshot. Use `allow-stale` to prevent indexing and receive `no-ready-snapshot` when
+none is available. A historical complete project-coverage receipt is not proof of a readable ready snapshot.
+
+Ordinary MCP inspection and analysis use a 25-second total budget so recovery can reach a client with a 30-second
+deadline. For inspection, `readTimeoutMilliseconds` permits an explicit 1,000–55,000 ms budget when the client's
+deadline allows it. CLI `--read-timeout-ms` bounds the analysis read including snapshot selection and cleanup. Writer
+contention returns a deferred state; a refresh failure carries its recovery information. Check those states before
+treating transport success as completed analysis, and respect retry guidance.
+
+Capacity reporting distinguishes the advisory whole-build estimate from measured reservations around bounded database
+writes. A large cached-fact estimate can warn without rejecting every write. Actual capacity failures retain the model,
+required and available bytes by filesystem, active reservations, and selected scope in their recovery details. Physical
+space exhaustion requires freeing space; contention with another reservation defers the build. Repeated analysis reads
+preserve that failure and its backoff instead of repeatedly launching the same blocked refresh.
 
 Document extraction is deliberately local and deterministic. PDFs, OpenXML/OpenDocument files, EPUB, text documents,
 notebooks, and text-based diagram formats contribute extractable text and links. A scanned PDF, image, audio file, or

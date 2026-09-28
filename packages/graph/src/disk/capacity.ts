@@ -3,6 +3,7 @@ import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
+  type CodeGraphDiskCapacityFailureEvidence,
   CodeGraphDiskCapacityObservationError,
   CodeGraphDiskCapacityPressureError,
 } from '../types.js';
@@ -76,7 +77,16 @@ export const CODE_GRAPH_DISK_RESERVATION_OPERATIONS = [
   'sort persistent code graph materialization spool',
 ] as const satisfies readonly CodeGraphDirectPersistentCapacityOperation[];
 
-type CodeGraphCapacityFailureOperation = CodeGraphDirectPersistentCapacityOperation | 'protect code graph storage';
+export type CodeGraphCapacityFailureOperation =
+  CodeGraphDirectPersistentCapacityOperation | 'observe code graph storage capacity' | 'protect code graph storage';
+
+export function isCodeGraphCapacityFailureOperation(value: unknown): value is CodeGraphCapacityFailureOperation {
+  return (
+    value === 'observe code graph storage capacity' ||
+    value === 'protect code graph storage' ||
+    CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS.some(operation => operation === value)
+  );
+}
 
 export interface CodeGraphDirectPersistentCapacityBoundary {
   /** Exact UTF-8 bytes of the bounded logical payload when that evidence is available. */
@@ -245,9 +255,15 @@ export interface CodeGraphDiskCapacityInput {
 }
 
 export interface CodeGraphDiskCapacityFilesystemDecision {
+  readonly activeReservationBytes: number;
   readonly availableBytes: number;
   readonly requiredBytes: number;
   readonly role: 'durable' | 'shared' | 'temporary';
+}
+
+export interface CodeGraphDiskCapacitySelectedScope {
+  readonly checkoutId: string;
+  readonly scopeId?: string;
 }
 
 export type CodeGraphDiskCapacityDecision =
@@ -495,6 +511,7 @@ export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput)
     }
     const filesystems = [
       {
+        activeReservationBytes: saturatingCapacityAdd(reservedDurableBytes, reservedTemporaryBytes),
         availableBytes,
         requiredBytes: saturatingCapacityAdd(
           projection.filesystems[0]?.bytes ?? 0,
@@ -521,10 +538,16 @@ export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput)
     return {calibrationIdentity, reason: 'available-space-unknown', state: 'unknown'};
   }
   const filesystems: CodeGraphDiskCapacityFilesystemDecision[] = [
-    {availableBytes: durableAvailableBytes, requiredBytes: durableRequiredBytes, role: 'durable'},
+    {
+      activeReservationBytes: reservedDurableBytes,
+      availableBytes: durableAvailableBytes,
+      requiredBytes: durableRequiredBytes,
+      role: 'durable',
+    },
   ];
   if (temporaryRequiredBytes > 0) {
     filesystems.push({
+      activeReservationBytes: reservedTemporaryBytes,
       availableBytes: temporaryAvailableBytes!,
       requiredBytes: temporaryRequiredBytes,
       role: 'temporary',
@@ -540,10 +563,37 @@ export function evaluateCodeGraphDiskCapacity(input: CodeGraphDiskCapacityInput)
 export function codeGraphDiskCapacityFailure(
   decision: CodeGraphDiskCapacityDecision,
   operation: string,
+  scope?: CodeGraphDiskCapacitySelectedScope,
+  pressureKind: 'physical' | 'reservation' = 'physical',
 ): CodeGraphDiskCapacityPressureError | CodeGraphDiskCapacityObservationError {
+  const recovery = decision.state === 'pressure' && pressureKind === 'reservation' ? 'defer' : 'free-space';
+  const evidence: CodeGraphDiskCapacityFailureEvidence = {
+    activeReservations:
+      decision.state === 'unknown'
+        ? []
+        : decision.filesystems
+            .filter(filesystem => filesystem.activeReservationBytes > 0)
+            .map(filesystem => ({bytes: filesystem.activeReservationBytes, role: filesystem.role})),
+    calibrationIdentity: decision.calibrationIdentity,
+    decisionLayer: 'bounded-write-reservation',
+    estimateBasis: 'final-fact-bytes-and-row-count',
+    filesystems:
+      decision.state === 'unknown'
+        ? []
+        : decision.filesystems.map(({availableBytes, requiredBytes, role}) => ({
+            availableBytes,
+            requiredBytes,
+            role,
+          })),
+    modelVersion: CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION,
+    ...(decision.state === 'unknown' ? {reason: decision.reason} : {}),
+    recovery: decision.state === 'unknown' ? 'retry-read-only' : recovery,
+    retryable: decision.state === 'unknown' || pressureKind === 'reservation',
+    ...(scope === undefined ? {} : {scope}),
+  };
   return decision.state === 'pressure'
-    ? CodeGraphDiskCapacityPressureError.of(capacityOperation(operation))
-    : CodeGraphDiskCapacityObservationError.of();
+    ? CodeGraphDiskCapacityPressureError.of(capacityOperation(operation), evidence)
+    : CodeGraphDiskCapacityObservationError.of(evidence);
 }
 
 /** Only these typed failures preserve a deterministic persistent receipt prefix. */
@@ -554,7 +604,8 @@ export function isCodeGraphCapacityPause(cause: unknown): boolean {
 }
 
 export const isNonResumableCodeGraphBuildFailure = (cause: unknown): boolean =>
-  !Schema.is(CodeGraphDiskCapacityObservationError)(cause);
+  !Schema.is(CodeGraphDiskCapacityObservationError)(cause) &&
+  !(Schema.is(CodeGraphDiskCapacityPressureError)(cause) && cause.retryable);
 
 export function saturatingCapacityAdd(...values: readonly number[]): number {
   let total = 0;

@@ -8,6 +8,7 @@ import type {ChildEnvironmentPolicy} from '@threadnote/platform/child-environmen
 import {fromPromise, fromPromiseInterruptibleAwaiting} from '@threadnote/platform/errors';
 import {telemetryChildEnvironmentPolicyLayer} from './telemetry/session.js';
 import {
+  CODE_GRAPH_ANALYSIS_WORKER_ARGUMENT,
   CODE_GRAPH_COMPACTION_WORKER_ARGUMENT,
   CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT,
   CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT,
@@ -23,6 +24,7 @@ const isLocalModelWorker = arguments_[0] === LOCAL_MODEL_WORKER_ARGUMENT;
 const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUMENT;
 const isCodeGraphCompactionWorker = arguments_[0] === CODE_GRAPH_COMPACTION_WORKER_ARGUMENT;
 const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
+const isCodeGraphAnalysisWorker = arguments_[0] === CODE_GRAPH_ANALYSIS_WORKER_ARGUMENT;
 const isCodeGraphImpactQueryWorker = arguments_[0] === CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
 const isWindowsDiskCapacityWorker = arguments_[0] === WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT;
@@ -61,6 +63,7 @@ if (
   isCodeGraphDeepDiagnosticsWorker ||
   isCodeGraphCompactionWorker ||
   isCodeGraphImpactQueryWorker ||
+  isCodeGraphAnalysisWorker ||
   isWindowsDiskCapacityWorker
 ) {
   // These operations perform synchronous native work. Keep the OS default
@@ -71,9 +74,11 @@ if (
       ? await windowsDiskCapacityWorkerProgram()
       : isCodeGraphCompactionWorker
         ? await codeGraphAutomaticCompactionWorkerProgram()
-        : isCodeGraphImpactQueryWorker
-          ? await codeGraphImpactQueryWorkerProgram()
-          : await codeGraphDeepDiagnosticsWorkerProgram();
+        : isCodeGraphAnalysisWorker
+          ? await codeGraphAnalysisWorkerProgram()
+          : isCodeGraphImpactQueryWorker
+            ? await codeGraphImpactQueryWorkerProgram()
+            : await codeGraphDeepDiagnosticsWorkerProgram();
   const nativeWorkerProgram: Effect.Effect<void, unknown, never> = selectedNativeWorkerProgram.pipe(
     Effect.provide(Layer.merge(telemetryChildEnvironmentPolicyLayer, runtimeEntrypointLayer)),
   );
@@ -366,6 +371,29 @@ async function codeGraphImpactQueryWorkerProgram() {
           'graph-query-worker',
           'impact-query',
           worker.codeGraphImpactQueryWorkerProgram(home),
+        ),
+      ),
+    ),
+    Effect.provide(runtime.ApplicationLayer),
+  );
+}
+
+async function codeGraphAnalysisWorkerProgram() {
+  const [worker, runtime, processDiagnostics, processLease] = await Promise.all([
+    import('@threadnote/graph/isolated/analysis'),
+    import('./effect/runtime.js'),
+    import('./process/diagnostics.js'),
+    import('./process/standalone_lease.js'),
+  ]);
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withSignalTransparentThreadnoteWorkerRegistration(
+          home,
+          'graph-query-worker',
+          'analysis',
+          worker.codeGraphAnalysisWorkerProgram(home),
         ),
       ),
     ),

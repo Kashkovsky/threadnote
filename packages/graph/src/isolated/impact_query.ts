@@ -732,7 +732,7 @@ function validCodeGraphQueryScopeReceipt(value: unknown): value is CodeGraphQuer
   );
 }
 
-function codeGraphIsolatedQueryTelemetryRecorder(
+export function codeGraphIsolatedQueryTelemetryRecorder(
   observations: CodeGraphQueryTelemetryObservation[],
 ): CodeGraphQueryTelemetryObserver {
   const record = (
@@ -772,7 +772,7 @@ function codeGraphIsolatedQueryTelemetryRecorder(
   };
 }
 
-const replayCodeGraphIsolatedQueryTelemetry = Effect.fn('codeGraph.replayIsolatedQueryTelemetry')(function* (
+export const replayCodeGraphIsolatedQueryTelemetry = Effect.fn('codeGraph.replayIsolatedQueryTelemetry')(function* (
   observations: readonly CodeGraphQueryTelemetryObservation[],
   observe: ((observation: CodeGraphQueryTelemetryObservation) => Effect.Effect<void>) | undefined,
 ) {
@@ -902,7 +902,7 @@ function decodeImpactQueryReadStatus(value: unknown): CodeGraphImpactQueryReadSt
   };
 }
 
-function decodeCodeGraphIsolatedQueryTelemetry(
+export function decodeCodeGraphIsolatedQueryTelemetry(
   value: unknown,
 ): readonly CodeGraphQueryTelemetryObservation[] | undefined {
   if (value === undefined) return [];

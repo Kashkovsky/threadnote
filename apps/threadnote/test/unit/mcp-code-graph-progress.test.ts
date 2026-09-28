@@ -474,7 +474,7 @@ describe('MCP code graph indexing progress', () => {
     });
     expect(JSON.stringify(readyReadTimedOut.structuredContent)).not.toContain('retryAfterMilliseconds');
     const readyReadTimeoutText = (readyReadTimedOut.content[0] as {readonly text: string}).text;
-    expect(readyReadTimeoutText).toContain('55-second MCP budget');
+    expect(readyReadTimeoutText).toContain('25-second MCP budget');
     expect(readyReadTimeoutText).toContain('--freshness ready --read-timeout-ms 120000');
     expect(readAnonymousTelemetryReportedOutcome(readyReadTimedOut)).toBe('timed-out');
 
@@ -1035,7 +1035,7 @@ describe('MCP code graph indexing progress', () => {
     });
     expect(codeGraphMcpAnalysisLimits('community', 5_000).communityMembers).toBe(5_000);
     expect(codeGraphMcpAnalysisBudget()).toEqual({
-      maxDurationMilliseconds: 25_000,
+      maxDurationMilliseconds: 24_000,
       maxEdges: 500_000,
       maxEdgeVisits: 1_000_000,
       maxNodes: 100_000,
@@ -1208,14 +1208,31 @@ describe('MCP code graph indexing progress', () => {
         ...analysis,
         warnings: Array.from({length: 5_000}, () => ''),
       };
-      const first = codeGraphAnalysisMcpResponse(verbose, 'community', {
-        displayName: `Fixture/${'界'.repeat(2_000)}`,
-        repositoryId: 'repository-id',
-      });
-      const second = codeGraphAnalysisMcpResponse(verbose, 'community', {
-        displayName: `Fixture/${'界'.repeat(2_000)}`,
-        repositoryId: 'repository-id',
-      });
+      const metadata = {
+        freshnessPolicy: 'allow-stale' as const,
+        freshness: 'stale' as const,
+        snapshot: {id: snapshot.id, commit: snapshot.commit, dirty: snapshot.dirty},
+      };
+      const first = codeGraphAnalysisMcpResponse(
+        verbose,
+        'community',
+        {
+          displayName: `Fixture/${'界'.repeat(2_000)}`,
+          repositoryId: 'repository-id',
+        },
+        metadata,
+      );
+      const second = codeGraphAnalysisMcpResponse(
+        verbose,
+        'community',
+        {
+          displayName: `Fixture/${'界'.repeat(2_000)}`,
+          repositoryId: 'repository-id',
+        },
+        metadata,
+      );
+      expect(first.text.startsWith('Read: ')).toBe(true);
+      expect(first.text).toContain(JSON.stringify(metadata));
       const structuredBytes = new TextEncoder().encode(JSON.stringify(first.structuredContent)).byteLength;
       const textBytes = new TextEncoder().encode(first.text).byteLength;
 

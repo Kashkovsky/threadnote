@@ -5,6 +5,7 @@ import fc from 'fast-check';
 import {
   addMaterializationReplayMetrics,
   addMaterializationRows,
+  CODE_GRAPH_MATERIALIZATION_STORAGE_HEURISTIC_MODEL_VERSION,
   compactCachedFileRelationships,
   codeGraphActiveParserCacheKey,
   codeGraphInventoryNeedsSynchronousReclamation,
@@ -23,6 +24,7 @@ import {
   sparseOverlayGraphContentIdentity,
   sparseOverlaySnapshotIdentity,
 } from '@threadnote/graph/indexer';
+import {codeGraphDirectPersistentCapacityDemand, evaluateCodeGraphDiskCapacity} from '@threadnote/graph/disk/capacity';
 import {sha256HexSync} from '@threadnote/platform/sha256';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
@@ -559,6 +561,54 @@ describe('code graph indexer properties', () => {
     const attributed = estimatedMaterializationStorageBytes(2_000_000, 1, 'direct-persistent', 'final-fact-bytes');
 
     expect(attributed).toEqual({...cached, estimateBasis: 'final-fact-bytes'});
+  });
+
+  it('keeps a synthetic whole-build heuristic shortfall advisory when the measured bounded write is safe', () => {
+    const availableBytes = 10 * 1_024 * 1_024 * 1_024;
+    const plan = materializationStoragePlan(
+      estimatedMaterializationStorageBytes(4 * 1_024 * 1_024 * 1_024, 0, 'direct-persistent'),
+      {
+        durableAvailableBytes: availableBytes,
+        filesystemsShared: true,
+        temporaryAvailableBytes: availableBytes,
+      },
+    );
+    expect(materializationStorageShortfalls(plan)).toEqual(['shared']);
+    expect(plan).toMatchObject({
+      decisionLayer: 'whole-build-heuristic',
+      enforcement: 'advisory',
+      estimateBasis: 'cached-fact-bytes',
+      estimatedRequiredBytes: 68_753_031_168,
+      modelVersion: CODE_GRAPH_MATERIALIZATION_STORAGE_HEURISTIC_MODEL_VERSION,
+    });
+
+    const boundedDemand = codeGraphDirectPersistentCapacityDemand({
+      finalFactBytes: 32 * 1_048_576,
+      lexicalFormatVersion: 1,
+      pageSize: 4_096,
+      rowCount: 512_000,
+      walAutoCheckpointPages: 1_000,
+    });
+    const measured = evaluateCodeGraphDiskCapacity({
+      demand: boundedDemand,
+      durableAvailableBytes: availableBytes,
+      filesystemsShared: true,
+      freelistBytes: 0,
+      reservedDurableBytes: 0,
+      reservedTemporaryBytes: 0,
+      temporaryAvailableBytes: availableBytes,
+    });
+    expect(measured.state).toBe('healthy');
+    if (measured.state === 'healthy') {
+      expect(measured.filesystems).toEqual([
+        {
+          activeReservationBytes: 0,
+          availableBytes,
+          requiredBytes: 429_916_160,
+          role: 'shared',
+        },
+      ]);
+    }
   });
 
   fcProp(

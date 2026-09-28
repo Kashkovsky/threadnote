@@ -270,6 +270,7 @@ describe('code graph disk capacity properties', () => {
         if (decision.state !== 'healthy') return;
         expect(decision.filesystems).toEqual([
           {
+            activeReservationBytes: 46,
             availableBytes: Number.MAX_SAFE_INTEGER,
             requiredBytes: saturatingCapacityAdd(
               Math.max(0, main - Math.min(main, freelist)),
@@ -354,7 +355,10 @@ describe('code graph disk capacity properties', () => {
       reservedTemporaryBytes: 0,
       temporaryAvailableBytes: Number.MAX_SAFE_INTEGER,
     });
-    const failure = codeGraphDiskCapacityFailure(decision, '/Users/private/graph.sqlite');
+    const failure = codeGraphDiskCapacityFailure(decision, '/Users/private/graph.sqlite', {
+      checkoutId: 'a'.repeat(64),
+      scopeId: `code-graph-scope:${'b'.repeat(64)}`,
+    });
 
     expect(failure).toBeInstanceOf(CodeGraphDiskCapacityPressureError);
     expect(isCodeGraphStoreNoSpaceError(failure)).toBe(true);
@@ -363,6 +367,20 @@ describe('code graph disk capacity properties', () => {
       operation: 'protect code graph storage',
       recovery: 'free-space',
       retryable: false,
+    });
+    expect(failure.evidence).toEqual({
+      activeReservations: [],
+      calibrationIdentity: 'fixture-v1',
+      decisionLayer: 'bounded-write-reservation',
+      estimateBasis: 'final-fact-bytes-and-row-count',
+      filesystems: [{availableBytes: 0, requiredBytes: 30, role: 'durable'}],
+      modelVersion: 2,
+      recovery: 'free-space',
+      retryable: false,
+      scope: {
+        checkoutId: 'a'.repeat(64),
+        scopeId: `code-graph-scope:${'b'.repeat(64)}`,
+      },
     });
     expect(failure.message).not.toMatch(/[\\/]/u);
     expect(failure.operation).not.toContain('/Users/private');
@@ -392,6 +410,41 @@ describe('code graph disk capacity properties', () => {
     }
   });
 
+  it('reports active reservation pressure as retryable without weakening physical capacity refusal', () => {
+    const demand = codeGraphDirectPersistentCapacityDemand({
+      finalFactBytes: 1_048_576,
+      lexicalFormatVersion: 1,
+      pageSize: 4_096,
+      rowCount: 1_000,
+      walAutoCheckpointPages: 1_000,
+    });
+    const physical = evaluateCodeGraphDiskCapacity(capacityInput({available: 20 * 1_048_576, demand}));
+    const reserved = evaluateCodeGraphDiskCapacity(
+      capacityInput({available: 20 * 1_048_576, demand, reserved: 20 * 1_048_576}),
+    );
+    expect(physical.state).toBe('healthy');
+    expect(reserved.state).toBe('pressure');
+
+    const failure = codeGraphDiskCapacityFailure(
+      reserved,
+      'stage persistent code graph facts',
+      {checkoutId: 'c'.repeat(64)},
+      'reservation',
+    );
+    expect(failure).toMatchObject({
+      code: 'no-space',
+      recovery: 'defer',
+      retryable: true,
+    });
+    expect(failure.evidence).toMatchObject({
+      activeReservations: [{bytes: 20 * 1_048_576, role: 'durable'}],
+      decisionLayer: 'bounded-write-reservation',
+      recovery: 'defer',
+      retryable: true,
+    });
+    expect(isNonResumableCodeGraphBuildFailure(failure)).toBe(false);
+  });
+
   it('maps unknown observation to a path-free retryable capacity pause instead of false no-space', () => {
     const failure = codeGraphDiskCapacityFailure(
       {
@@ -406,6 +459,17 @@ describe('code graph disk capacity properties', () => {
     expect(failure).toMatchObject({
       code: 'transient-io',
       operation: 'observe code graph storage capacity',
+      recovery: 'retry-read-only',
+      retryable: true,
+    });
+    expect(failure.evidence).toEqual({
+      activeReservations: [],
+      calibrationIdentity: 'fixture-v1',
+      decisionLayer: 'bounded-write-reservation',
+      estimateBasis: 'final-fact-bytes-and-row-count',
+      filesystems: [],
+      modelVersion: 2,
+      reason: 'available-space-unknown',
       recovery: 'retry-read-only',
       retryable: true,
     });

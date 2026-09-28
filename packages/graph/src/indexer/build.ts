@@ -5,7 +5,7 @@ import {CodeGraphProcessActivity} from '../runtime_ports.js';
 import type {CodeGraphBuildOwnerIdentity} from '../build/owner.js';
 import type {CodeGraphBuildResourceCoordinator} from '../build/resources.js';
 import {canonicalCodeGraphMonikers} from '../cross_repository/monikers.js';
-import {CodeGraphDiskCapacityPressureError, isNonResumableCodeGraphBuildFailure} from '../disk/capacity.js';
+import {isNonResumableCodeGraphBuildFailure} from '../disk/capacity.js';
 import {coordinateCodeGraphBuild, measureCodeGraphAttribution} from './build_coordination.js';
 import type {CodeGraphEmbeddingIndexShape, CodeGraphEmbeddingStatus} from '../embedding.js';
 import {finalCodeGraphFactBatches, serializeBoundedCodeGraphFact} from '../fact/budget.js';
@@ -236,6 +236,7 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
   readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
   readonly preparationGate?: CodeGraphIndexResourceGate;
   readonly preparedSpoolBudgetGate?: CodeGraphPreparedSpoolBudgetGate;
+  readonly reclaimSnapshots: (cleanupMode: 'deferred' | 'required') => Effect.Effect<void, unknown>;
   readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
@@ -257,11 +258,24 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
     Effect.gen(function* () {
       let cleanFallbackAssessment: IncrementalOverlayAssessment | undefined;
       if (!input.force) {
-        const ready = yield* input.store.currentLexicalReadySnapshotById(
+        let ready = yield* input.store.currentLexicalReadySnapshotById(
           input.layout.databasePath,
           input.logicalSnapshotId,
         );
+        if (!ready) {
+          const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
+          ready = yield* reusableReadySnapshotForCleanCommit({
+            scopeId: input.inventory.scope?.scopeKey,
+            databasePath: input.layout.databasePath,
+            extractorSet,
+            graphContentId: graphContentIdentity(extractorSet, input.inventory.files, input.inventory.scope),
+            headCommit: input.identity.headCommit,
+            repositoryId: input.identity.repositoryId,
+            store: input.store,
+          });
+        }
         if (ready) {
+          yield* input.reclaimSnapshots('deferred');
           if (input.existing?.id !== ready.id) {
             yield* promoteReadySnapshotWithCapacity(input, ready.id);
           }
@@ -280,36 +294,11 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
             totalFiles: input.inventory.files.length,
           });
         }
-        const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
-        const graphContentId = graphContentIdentity(extractorSet, input.inventory.files, input.inventory.scope);
-        const commitReady = yield* reusableReadySnapshotForCleanCommit({
-          scopeId: input.inventory.scope?.scopeKey,
-          databasePath: input.layout.databasePath,
-          extractorSet,
-          graphContentId,
-          headCommit: input.identity.headCommit,
-          repositoryId: input.identity.repositoryId,
-          store: input.store,
-        });
-        if (commitReady) {
-          if (input.existing?.id !== commitReady.id) {
-            yield* promoteReadySnapshotWithCapacity(input, commitReady.id);
-          }
-          return yield* reuseReadySnapshot({
-            embedding: input.embedding,
-            ensureVectors: input.ensureVectors,
-            identity: input.identity,
-            layout: input.layout,
-            onProgress: input.onProgress,
-            reusedFiles: input.inventory.files.length - input.inventory.parsedFiles,
-            skippedFiles: input.inventory.skipped,
-            snapshot: commitReady,
-            startedAt: input.startedAt,
-            store: input.store,
-            threadnoteHome: input.threadnoteHome,
-            totalFiles: input.inventory.files.length,
-          });
-        }
+      }
+      // New clean aliases also copy monikers, file-shard links, and workspace rows.
+      // Drain retired payload before either alias publication or materialization.
+      yield* input.reclaimSnapshots('required');
+      if (!input.force) {
         const workspace =
           input.inventory.workspace ?? (yield* input.languagePacks.discoverWorkspace(input.inventory.files));
         const reused = yield* attemptReusableCleanSnapshot(input, workspace);
@@ -1271,12 +1260,12 @@ const buildAndActivateInternal = Effect.fn('codeGraph.buildAndActivate')(functio
       });
     const storageShortfalls = materializationStorageShortfalls(storagePlan);
     if (storageShortfalls.length > 0) {
-      if (directPersistentMaterialization) {
-        return yield* CodeGraphDiskCapacityPressureError.of('protect code graph storage');
-      }
       extractionDiagnostics.push(
-        `Available ${storageShortfalls.join(' and ')} disk space is below the heuristic materialization estimate; ` +
-          'indexing will continue while reporting actual TEMP database usage.',
+        directPersistentMaterialization
+          ? `Available ${storageShortfalls.join(' and ')} disk space is below the advisory whole-build ` +
+              'materialization estimate; indexing will continue under measured bounded-write reservations.'
+          : `Available ${storageShortfalls.join(' and ')} disk space is below the heuristic materialization ` +
+              'estimate; indexing will continue while reporting actual TEMP database usage.',
       );
     }
     yield* input.onProgress?.({
