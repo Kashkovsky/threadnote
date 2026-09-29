@@ -30107,6 +30107,7 @@
         "@effect/platform-bun",
         "@effect/sql-sqlite-bun",
         "@effect/vitest",
+        "@modelcontextprotocol/sdk",
         "@repomix/tree-sitter-wasms",
         "@tree-sitter-grammars/tree-sitter-hcl",
         "@tree-sitter-grammars/tree-sitter-lua",

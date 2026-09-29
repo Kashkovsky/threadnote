@@ -12,7 +12,7 @@ import {sha256Digest, sha256HexFromDigest} from '@threadnote/graph/sharing/diges
 import {defaultGraphShareProfile, graphShareProfileDigest} from '@threadnote/graph/sharing/profile';
 
 describe('MCP-owned passive graph contribution retries', () => {
-  it.each(['persisted queue', 'ordinary graph query', 'dirty graph then clean restart'] as const)(
+  it.each(['persisted queue', 'strict graph impact', 'dirty graph then clean restart'] as const)(
     'recovers automatically after an outage from %s',
     async source => {
       const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-contribution-retry-'));
@@ -120,6 +120,23 @@ describe('MCP-owned passive graph contribution retries', () => {
               'second fixture',
             ]);
             await writeFile(join(repository, 'untracked.txt'), 'dirty first attempt\n');
+          } else {
+            await writeFile(
+              join(repository, 'src', 'after.ts'),
+              'export function automaticContributionAfterTarget() { return 43; }\n',
+            );
+            await command('git', ['-C', repository, 'add', '.']);
+            await command('git', [
+              '-C',
+              repository,
+              '-c',
+              'user.name=Fixture',
+              '-c',
+              'user.email=fixture@example.invalid',
+              'commit',
+              '-qm',
+              'second fixture',
+            ]);
           }
         }
         const {announcement, resultBytes, attestationBytes} = graphShareContributionFixture(repositoryId);
@@ -187,7 +204,7 @@ describe('MCP-owned passive graph contribution retries', () => {
         };
         await startClient();
         if (source !== 'persisted queue') {
-          await inspect();
+          await inspect('impact');
         }
         await within(firstRefusal, 20_000);
         expect(refusedRequests).toBe(1);
@@ -212,15 +229,18 @@ describe('MCP-owned passive graph contribution retries', () => {
           const candidates = await readJournalCandidates(candidatePath);
           const {stdout: sourceCommit} = await command('git', ['-C', repository, 'rev-parse', 'HEAD']);
           const packageVersion = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')).version;
-          expect(candidates).toHaveLength(1);
-          expect(candidates[0]).toMatchObject({
-            casRoot: cas,
-            partialCoverage: false,
-            releaseIdentity: packageVersion,
-            resourceLimits: [],
-            sourceCommit: sourceCommit.trim(),
-          });
-          expect(candidates[0].graphAbi).toMatch(/^[0-9a-f]{64}$/u);
+          const currentCandidates = candidates.filter(candidate => candidate.sourceCommit === sourceCommit.trim());
+          expect(currentCandidates.length).toBeGreaterThan(0);
+          for (const candidate of currentCandidates) {
+            expect(candidate).toMatchObject({
+              casRoot: cas,
+              partialCoverage: false,
+              releaseIdentity: packageVersion,
+              resourceLimits: [],
+              sourceCommit: sourceCommit.trim(),
+            });
+            expect(candidate.graphAbi).toMatch(/^[0-9a-f]{64}$/u);
+          }
         }
         healthy = true;
         await within(firstDelivery, 20_000);

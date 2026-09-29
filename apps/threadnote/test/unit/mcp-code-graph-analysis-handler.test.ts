@@ -233,6 +233,116 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     }).pipe(provideTestLayer(harness.layer));
   });
 
+  effectIt.effect('rejects unsafe short budgets and preserves one second for the accepted minimum', () => {
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({
+      attachResults: [],
+      inspectDelayMilliseconds: 999,
+      refresh: false,
+      statuses: [ready],
+    });
+
+    return Effect.gen(function* () {
+      for (const readTimeoutMilliseconds of [1_000, 2_999, 3_000, 3_999]) {
+        const rejected = yield* harness.invokeInspect({
+          callerCwd: ready.identity.repoRoot,
+          operation: 'query',
+          query: 'value',
+          readTimeoutMilliseconds,
+        });
+        expect(rejected.isError).toBe(true);
+      }
+      expect(harness.observation.isolatedInspectCalls).toBe(0);
+
+      const started = harness.awaitIsolatedInspectCall(1);
+      const fiber = yield* harness
+        .invokeInspect({
+          callerCwd: ready.identity.repoRoot,
+          operation: 'query',
+          query: 'value',
+          readTimeoutMilliseconds: 4_000,
+          responseFormat: 'dual',
+        })
+        .pipe(Effect.forkChild({startImmediately: true}));
+      yield* started;
+      yield* TestClock.adjust('999 millis');
+      const accepted = yield* Fiber.join(fiber);
+
+      expect(accepted.structuredContent, JSON.stringify(accepted)).toMatchObject({
+        operation: 'query',
+        type: 'code-graph-inspection',
+      });
+      expect(harness.observation.isolatedInspectCalls).toBe(1);
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect('serves stale ready evidence for every ordinary inspection operation', () => {
+    const stale = codeGraphStatus({ready: true, stale: true});
+    const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [stale]});
+    const requests = [
+      {operation: 'query' as const, query: 'value'},
+      {nodeId: `cgs_${'a'.repeat(32)}`, operation: 'node' as const},
+      {nodeId: `cgs_${'a'.repeat(32)}`, operation: 'neighbors' as const},
+      {operation: 'explain' as const, symbol: 'value'},
+    ];
+
+    return Effect.gen(function* () {
+      for (const request of requests) {
+        const result = yield* harness.invokeInspect({
+          callerCwd: stale.identity.repoRoot,
+          responseFormat: 'dual',
+          ...request,
+        });
+
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
+          freshness: 'stale',
+          operation: request.operation,
+          snapshot: {id: stale.readySnapshot!.id},
+          type: 'code-graph-inspection',
+        });
+      }
+      expect(harness.observation.isolatedInspectCalls).toBe(requests.length);
+      expect(harness.observation.refreshOptions).toEqual([]);
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect('returns a cold ordinary inspection after one read without starting indexing', () => {
+    const cold = codeGraphStatus({ready: false, stale: true});
+    const harness = analyzeHandlerHarness({attachResults: [], refresh: true, statuses: [cold]});
+    const requests = [
+      {operation: 'query' as const, query: 'value'},
+      {nodeId: `cgs_${'a'.repeat(32)}`, operation: 'node' as const},
+      {nodeId: `cgs_${'a'.repeat(32)}`, operation: 'neighbors' as const},
+      {operation: 'explain' as const, symbol: 'value'},
+    ];
+
+    return Effect.gen(function* () {
+      for (const request of requests) {
+        const result = yield* harness.invokeInspect({
+          callerCwd: cold.identity.repoRoot,
+          responseFormat: 'dual',
+          ...request,
+        });
+
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
+          operation: request.operation,
+          reason: 'no-ready-snapshot',
+          state: 'unavailable',
+          type: 'code-graph-query-state',
+        });
+      }
+      expect(harness.observation.isolatedInspectCalls).toBe(requests.length);
+      expect(harness.observation.ensureOptions).toEqual([]);
+      expect(harness.observation.refreshOptions).toEqual([]);
+      expect(harness.observation.watcherStatusCalls).toBe(0);
+      expect(harness.observation.lifecycleEvents).toEqual(
+        requests.flatMap(() => ['isolated-read-start', 'isolated-read-complete']),
+      );
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
   effectIt.effect('rediscovers the resolved project scope in the isolated worker', () => {
     const projectScope = scopedProjectObservation();
     const base = codeGraphStatus({ready: true, stale: false});
@@ -293,7 +403,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     }).pipe(provideTestLayer(harness.layer));
   });
 
-  effectIt.effect('returns a structured timeout without scheduling a hidden stale-ready rebuild', () => {
+  effectIt.effect('reserves finalization time without scheduling a hidden stale-ready rebuild', () => {
     const ready = codeGraphStatus({ready: true, stale: true});
     const harness = analyzeHandlerHarness({
       allowBackgroundRequest: true,
@@ -309,7 +419,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         .invokeInspect({callerCwd: ready.identity.repoRoot, operation: 'query', query: 'value'})
         .pipe(Effect.forkChild({startImmediately: true}));
       yield* started;
-      yield* TestClock.adjust('25 seconds');
+      yield* TestClock.adjust('22 seconds');
       const result = yield* Fiber.join(fiber);
 
       expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
@@ -318,6 +428,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         type: 'code-graph-query-state',
       });
       expect(JSON.stringify(result.structuredContent)).not.toContain('readySnapshotAvailable');
+      expect(JSON.stringify(result.content)).not.toContain('before the MCP client timeout');
       expect(harness.observation.isolatedInspectCalls).toBe(1);
       expect(harness.observation.lifecycleEvents).toEqual(['isolated-read-start']);
     }).pipe(provideTestLayer(harness.layer));
@@ -633,6 +744,17 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
               isolatedRequests.push(request);
               if (input.inspectDelayMilliseconds !== undefined) yield* Effect.sleep(input.inspectDelayMilliseconds);
               lifecycleEvents.push('isolated-read-complete');
+              if (status.readySnapshot === undefined) {
+                return commandResult(
+                  JSON.stringify({
+                    identity: {repoRoot: status.identity.repoRoot, worktreeId: status.identity.worktreeId},
+                    ok: false,
+                    protocol: 1,
+                    telemetry: [],
+                    unavailable: 'no-ready-snapshot',
+                  }),
+                );
+              }
               return commandResult(
                 JSON.stringify({
                   ok: true,
