@@ -17,6 +17,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import {basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
+import {Schema} from 'effect';
 import {matchedEvaluationReferenceEnvironmentPolicyHashV1} from '@threadnote/threadnote/evaluation/matched-evaluation';
 import {
   createMatchedEvaluationVerificationReceiptV1,
@@ -37,6 +38,10 @@ import {
   type CodeMemoryLinkAppServerCommand,
 } from './code-memory-link-app-server-client.js';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
+import {
+  CodeMemoryLinkCodexTerminalError,
+  type CodeMemoryLinkCodexTerminalKind,
+} from './code-memory-link-codex-terminal.js';
 import {assertMatchedEvaluationRepositoryV1} from './matched-evaluation-runtime-integrity.js';
 
 export const MATCHED_EVALUATION_CODEX_ADAPTER_VERSION = 2 as const;
@@ -201,12 +206,20 @@ interface ParsedContext {
   readonly taskContextHash: string | null;
 }
 
-interface AppServerTurnResult {
+interface AppServerTurnEvidence {
   readonly events: readonly Record<string, unknown>[];
-  readonly final: Record<string, unknown>;
   readonly stderr: string;
   readonly usage: ProviderTokens;
 }
+
+type AppServerTurnResult = AppServerTurnEvidence &
+  (
+    | {readonly final: Record<string, unknown>; readonly terminal: null}
+    | {
+        readonly final: null;
+        readonly terminal: Extract<CodeMemoryLinkCodexTerminalKind, 'provider-step-budget' | 'provider-token-budget'>;
+      }
+  );
 
 export interface ProviderTokens {
   readonly cachedInputTokens: number;
@@ -280,12 +293,19 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       model: config.model,
       outputSchema: AGENT_OUTPUT_SCHEMA,
       prompt: agentPrompt,
+      recordBudgetTerminal: true,
       taskBudget: config.taskBudget,
       timeoutMilliseconds: 60 * 60_000,
     });
     const patch = await capturePatch(config, repositoryRoot);
+    const agentResult = agentTurn.final ?? {
+      citations: [],
+      completed: false,
+      summary: `Agent stopped at the sealed ${agentTurn.terminal} limit before returning a final answer.`,
+    };
     const artifact = {
-      agentResult: agentTurn.final,
+      agentResult,
+      agentTerminal: agentTurn.terminal,
       arm: config.arm,
       manifestHash: request.manifestHash,
       patch,
@@ -330,9 +350,11 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       model: config.judgeModel,
       outputSchema: JUDGE_OUTPUT_SCHEMA,
       prompt: renderJudgePrompt(request, artifact),
+      recordBudgetTerminal: false,
       taskBudget: config.taskBudget,
       timeoutMilliseconds: 60 * 60_000,
     });
+    if (judgeTurn.final === null) throw new Error('Blinded judge stopped at a sealed task budget.');
     const judge = parseJudgeResult(judgeTurn.final, request.judgeTask.rubric.requiredEvidenceIds);
     const contextProtocolFailure =
       context === null ? countContextCalls(agentTurn.events) !== 0 : countContextCalls(agentTurn.events) !== 1;
@@ -342,7 +364,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     const recalledEvidence = new Set(judge.recalledEvidenceIds.filter(id => requiredEvidenceIds.has(id))).size;
     const supportedEvidence = new Set(judge.supportedEvidenceIds.filter(id => requiredEvidenceIds.has(id))).size;
     const transcript = [
-      {events: agentTurn.events, kind: 'agent', stderr: agentTurn.stderr, version: 1},
+      {events: agentTurn.events, kind: 'agent', stderr: agentTurn.stderr, terminal: agentTurn.terminal, version: 1},
       {events: judgeTurn.events, kind: 'judge', stderr: judgeTurn.stderr, version: 1},
     ]
       .map(value => JSON.stringify(value))
@@ -356,7 +378,10 @@ export async function runMatchedEvaluationCodexAdapter(input: {
           citations: judge.citations.length,
           resolvableCitations: await countResolvableCitations(repositoryRoot, judge.citations),
         },
-        completion: {completed: verification === null ? judge.completed : verification.status === 'passed'},
+        completion: {
+          completed:
+            verification === null ? agentTurn.terminal === null && judge.completed : verification.status === 'passed',
+        },
         context: observationContext(request, context),
         correctness: {
           judge: 'blinded-rubric-v1' as const,
@@ -938,6 +963,7 @@ async function runAppServerTurn(input: {
   readonly model: MatchedEvaluationCodexModelV1;
   readonly outputSchema: Readonly<Record<string, unknown>>;
   readonly prompt: string;
+  readonly recordBudgetTerminal: boolean;
   readonly taskBudget: {readonly steps: number; readonly tokens: number};
   readonly timeoutMilliseconds: number;
 }): Promise<AppServerTurnResult> {
@@ -991,41 +1017,58 @@ async function runAppServerTurn(input: {
       );
       assertMatchedEvaluationMcpInventoryV1(inventory, input.expectedMcpServer);
     }
-    const turnResponse = await client.requestSelectedTurn(
-      {
-        approvalPolicy: 'untrusted',
-        approvalsReviewer: 'user',
-        cwd: input.cwd,
-        effort: input.model.reasoningEffort,
-        environments: [localEnvironment(input.cwd)],
-        input: [{text: input.prompt, type: 'text'}],
-        model: input.model.id,
-        outputSchema: input.outputSchema,
-        runtimeWorkspaceRoots: [input.cwd],
-        sandboxPolicy: {networkAccess: false, type: 'readOnly'},
+    let budgetTerminal: Extract<
+      CodeMemoryLinkCodexTerminalKind,
+      'provider-step-budget' | 'provider-token-budget'
+    > | null = null;
+    try {
+      const turnResponse = await client.requestSelectedTurn(
+        {
+          approvalPolicy: 'untrusted',
+          approvalsReviewer: 'user',
+          cwd: input.cwd,
+          effort: input.model.reasoningEffort,
+          environments: [localEnvironment(input.cwd)],
+          input: [{text: input.prompt, type: 'text'}],
+          model: input.model.id,
+          outputSchema: input.outputSchema,
+          runtimeWorkspaceRoots: [input.cwd],
+          sandboxPolicy: {networkAccess: false, type: 'readOnly'},
+          threadId,
+        },
         threadId,
-      },
-      threadId,
-      input.timeoutMilliseconds,
-    );
-    const turnId = boundedText(object(turnResponse.turn, 'turn response').id, 1, 512, 'turn id');
-    await client.waitForNotification(event => {
-      assertWithinTaskBudget(client.events, input.taskBudget);
-      if (event.method !== 'turn/completed') return false;
-      const params = object(event.params, 'turn completion');
-      const turn = object(params.turn, 'completed turn');
-      if (params.threadId !== threadId || turn.id !== turnId) return false;
-      if (turn.status !== 'completed') throw new Error('Codex turn did not complete successfully.');
-      return true;
-    }, input.timeoutMilliseconds);
+        input.timeoutMilliseconds,
+      );
+      const turnId = boundedText(object(turnResponse.turn, 'turn response').id, 1, 512, 'turn id');
+      await client.waitForNotification(event => {
+        assertWithinTaskBudget(client.events, input.taskBudget);
+        if (event.method !== 'turn/completed') return false;
+        const params = object(event.params, 'turn completion');
+        const turn = object(params.turn, 'completed turn');
+        if (params.threadId !== threadId || turn.id !== turnId) return false;
+        if (turn.status !== 'completed') throw new Error('Codex turn did not complete successfully.');
+        return true;
+      }, input.timeoutMilliseconds);
+    } catch (cause) {
+      if (
+        !input.recordBudgetTerminal ||
+        !Schema.is(CodeMemoryLinkCodexTerminalError)(cause) ||
+        (cause.kind !== 'provider-step-budget' && cause.kind !== 'provider-token-budget')
+      ) {
+        throw cause;
+      }
+      budgetTerminal = cause.kind;
+    }
     client.assertHealthy();
     assertMcpCalls(client.events, input.expectedMcpServer);
-    return {
+    const evidence = {
       events: [...client.events],
-      final: extractFinalAnswer(client.events),
       stderr: client.stderr,
       usage: extractMatchedEvaluationProviderUsageV1(client.events),
     };
+    return budgetTerminal === null
+      ? {...evidence, final: extractFinalAnswer(client.events), terminal: null}
+      : {...evidence, final: null, terminal: budgetTerminal};
   } finally {
     await client.close();
   }

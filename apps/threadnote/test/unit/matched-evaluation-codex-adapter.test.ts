@@ -371,48 +371,46 @@ describe('matched evaluation Codex adapter', () => {
     const responsePath = join(root, 'response.json');
     const artifactPath = join(root, 'artifact.json');
     const transcriptPath = join(root, 'transcript.jsonl');
-    await writeFile(
-      requestPath,
-      `${JSON.stringify({
-        adapterArtifactHash: sha256HexSync(await readFile(selfExecutable)),
-        adapterConfigurationHash: sha256HexSync(configBytes),
-        adapterProtocol: 'matched-evaluation-adapter-v4',
-        agentTask: {
-          category: 'architecture-discovery',
-          memoryFixtures: [],
-          prompt: 'Inspect the service and report completion.',
-          repositoryFixtureHash: observed.fixtureHash,
-          taskId: 'tsk_0123456789abcdef',
-          variant: 'implementation',
-        },
-        arm: 'files',
-        artifactPath,
-        blindLabel: 'A',
-        environmentPolicyHash: config.environmentPolicyHash,
-        judgeTask: {
-          negativeControls: [],
-          rubric: {completion: 'The task is complete.', criteria: ['The answer is correct.'], requiredEvidenceIds: []},
-          sourceGold: [],
-        },
-        manifestHash: '6'.repeat(64),
-        model: {model: config.model.id, parametersHash: config.model.parametersHash, provider: config.model.provider},
-        preparedContext: null,
-        repository: observed,
-        runNonce: 'run_0123456789abcdef0123456789abcdef',
-        runOrder: 0,
-        tool: {
-          artifactHash: null,
-          detail: null,
-          executable: null,
-          lockIdentityHash: null,
-          name: 'files-only',
-          version: '1',
-        },
-        transcriptPath,
-        verificationPlanHash: null,
-        version: 4,
-      })}\n`,
-    );
+    const request = {
+      adapterArtifactHash: sha256HexSync(await readFile(selfExecutable)),
+      adapterConfigurationHash: sha256HexSync(configBytes),
+      adapterProtocol: 'matched-evaluation-adapter-v4',
+      agentTask: {
+        category: 'architecture-discovery',
+        memoryFixtures: [],
+        prompt: 'Inspect the service and report completion.',
+        repositoryFixtureHash: observed.fixtureHash,
+        taskId: 'tsk_0123456789abcdef',
+        variant: 'implementation',
+      },
+      arm: 'files',
+      artifactPath,
+      blindLabel: 'A',
+      environmentPolicyHash: config.environmentPolicyHash,
+      judgeTask: {
+        negativeControls: [],
+        rubric: {completion: 'The task is complete.', criteria: ['The answer is correct.'], requiredEvidenceIds: []},
+        sourceGold: [],
+      },
+      manifestHash: '6'.repeat(64),
+      model: {model: config.model.id, parametersHash: config.model.parametersHash, provider: config.model.provider},
+      preparedContext: null,
+      repository: observed,
+      runNonce: 'run_0123456789abcdef0123456789abcdef',
+      runOrder: 0,
+      tool: {
+        artifactHash: null,
+        detail: null,
+        executable: null,
+        lockIdentityHash: null,
+        name: 'files-only',
+        version: '1',
+      },
+      transcriptPath,
+      verificationPlanHash: null,
+      version: 4,
+    };
+    await writeFile(requestPath, `${JSON.stringify(request)}\n`);
     const originalCwd = process.cwd();
     try {
       process.chdir(repository);
@@ -437,6 +435,53 @@ describe('matched evaluation Codex adapter', () => {
     });
     expect(sha256HexSync(await readFile(artifactPath))).toBe(response.artifactHash);
     expect(sha256HexSync(await readFile(transcriptPath))).toBe(response.transcriptHash);
+
+    const budgetConfig = {...config, taskBudget: {steps: 100, tokens: 100}};
+    const budgetConfigPath = join(root, 'budget-adapter-config.json');
+    const budgetConfigBytes = Buffer.from(`${JSON.stringify(budgetConfig)}\n`);
+    const budgetRequestPath = join(root, 'budget-request.json');
+    const budgetResponsePath = join(root, 'budget-response.json');
+    const budgetArtifactPath = join(root, 'budget-artifact.json');
+    const budgetTranscriptPath = join(root, 'budget-transcript.jsonl');
+    await writeFile(budgetConfigPath, budgetConfigBytes);
+    await writeFile(
+      budgetRequestPath,
+      `${JSON.stringify({
+        ...request,
+        adapterConfigurationHash: sha256HexSync(budgetConfigBytes),
+        artifactPath: budgetArtifactPath,
+        runNonce: 'run_fedcba9876543210fedcba9876543210',
+        transcriptPath: budgetTranscriptPath,
+      })}\n`,
+    );
+    try {
+      process.chdir(repository);
+      await runMatchedEvaluationCodexAdapter({
+        configPath: budgetConfigPath,
+        requestPath: budgetRequestPath,
+        responsePath: budgetResponsePath,
+        selfExecutable,
+      });
+    } finally {
+      process.chdir(originalCwd);
+    }
+    const budgetResponse = JSON.parse(await readFile(budgetResponsePath, 'utf8')) as {
+      readonly metrics: {readonly completion: {readonly completed: boolean}};
+    };
+    expect(budgetResponse).toMatchObject({
+      metrics: {
+        completion: {completed: false},
+        usage: {providerTokens: {inputTokens: 100, outputTokens: 50, totalTokens: 150}},
+        validity: {failureCount: 0, valid: true},
+      },
+      version: 3,
+    });
+    const [budgetAgentTranscript] = (await readFile(budgetTranscriptPath, 'utf8')).trim().split('\n');
+    expect(JSON.parse(budgetAgentTranscript ?? 'null') as unknown).toMatchObject({
+      kind: 'agent',
+      terminal: 'provider-token-budget',
+      version: 1,
+    });
     expect((await readdir(root)).filter(name => name.startsWith('matched-evaluation-codex-'))).toEqual([]);
   }, 30_000);
 });

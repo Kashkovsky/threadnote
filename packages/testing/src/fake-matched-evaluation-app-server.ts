@@ -58,14 +58,17 @@ lines.on('line', line => {
           supportedEvidenceIds: [],
         }
       : {citations: [], completed: true, summary: 'completed by fake app-server'};
+    const usage = judge
+      ? {cachedInputTokens: 5, inputTokens: 50, outputTokens: 25, reasoningOutputTokens: 10, totalTokens: 75}
+      : {cachedInputTokens: 10, inputTokens: 100, outputTokens: 50, reasoningOutputTokens: 20, totalTokens: 150};
     respond(request.id, {turn: {error: null, id: turnId, items: [], status: 'inProgress'}});
     notify('turn/started', {threadId, turn: {error: null, id: turnId, items: [], status: 'inProgress'}});
     notify('thread/tokenUsage/updated', {
       threadId,
       tokenUsage: {
-        last: {cachedInputTokens: 10, inputTokens: 100, outputTokens: 50, reasoningOutputTokens: 20, totalTokens: 150},
+        last: usage,
         modelContextWindow: 200_000,
-        total: {cachedInputTokens: 10, inputTokens: 100, outputTokens: 50, reasoningOutputTokens: 20, totalTokens: 150},
+        total: usage,
       },
       turnId,
     });
