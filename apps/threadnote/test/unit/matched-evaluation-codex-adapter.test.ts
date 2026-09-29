@@ -141,12 +141,14 @@ describe('matched evaluation Codex adapter', () => {
     const rules = renderMatchedEvaluationCommandReviewRulesV1();
     const lines = rules.trim().split('\n');
 
-    expect(lines).toHaveLength(14);
+    expect(lines).toHaveLength(17);
     expect(new Set(lines).size).toBe(lines.length);
     for (const executable of [
       '/bin/zsh',
+      'awk',
       'cat',
       'file',
+      'find',
       'git',
       'head',
       'ls',
@@ -158,6 +160,7 @@ describe('matched evaluation Codex adapter', () => {
       'stat',
       'tail',
       'wc',
+      'xargs',
     ]) {
       expect(lines).toContain(`prefix_rule(pattern=[${JSON.stringify(executable)}], decision="prompt")`);
     }

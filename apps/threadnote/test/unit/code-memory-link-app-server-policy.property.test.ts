@@ -44,6 +44,7 @@ describe('Code Memory Link pre-execution app-server policy', () => {
     ).toMatchObject({itemType: 'commandExecution'});
 
     for (const command of [
+      "find . -maxdepth 3 -type f -name '*.ts' -print",
       'git status --short',
       'git rev-parse --show-toplevel',
       'git ls-files --cached -- src/service.ts',
@@ -210,6 +211,26 @@ describe('Code Memory Link pre-execution app-server policy', () => {
           params: git.params,
           scope: SCOPE,
           startedItem: git.item,
+        }),
+      ).toThrow();
+    }
+  });
+
+  it('rejects find execution, mutation, writes, and paths outside the public repository', () => {
+    for (const command of [
+      'find . -exec cat src/service.ts',
+      'find . -delete',
+      'find . -fprint result.txt',
+      'find ../private -type f',
+      'find . -type s',
+    ]) {
+      const find = commandApproval(command, 'src/service.ts');
+      expect(() =>
+        approveCodeMemoryLinkAppServerRequest({
+          method: 'item/commandExecution/requestApproval',
+          params: find.params,
+          scope: SCOPE,
+          startedItem: find.item,
         }),
       ).toThrow();
     }

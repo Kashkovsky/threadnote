@@ -73,8 +73,10 @@ const MAXIMUM_PREPARED_HOME_BYTES = 2 * 1_024 * 1_024 * 1_024;
 const MAXIMUM_VERIFIER_ENVIRONMENT_BYTES = 1 * 1_024 * 1_024 * 1_024;
 const MATCHED_EVALUATION_PROMPT_RULE_PREFIXES = [
   '/bin/zsh',
+  'awk',
   'cat',
   'file',
+  'find',
   'git',
   'head',
   'ls',
@@ -86,6 +88,7 @@ const MATCHED_EVALUATION_PROMPT_RULE_PREFIXES = [
   'stat',
   'tail',
   'wc',
+  'xargs',
 ] as const;
 
 type MatchedEvaluationArm = (typeof ARMS)[number];

@@ -210,6 +210,7 @@ function assertSingleReadCommand(command: string, repositoryRoot: string, cwd: s
   if (executable === 'pwd') {
     if (tokens.length !== 1) throw new Error('pwd does not accept arguments in the evaluation policy.');
   } else if (executable === 'ls') assertLs(tokens.slice(1), repositoryRoot, cwd);
+  else if (executable === 'find') assertFind(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'git') assertGit(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'rg') assertRipgrep(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'sed') assertSed(tokens.slice(1), repositoryRoot, cwd);
@@ -443,6 +444,40 @@ function assertGit(args: readonly string[], root: string, cwd: string): void {
     return;
   }
   throw new Error('git subcommand is outside the reviewed read-only grammar.');
+}
+
+function assertFind(args: readonly string[], root: string, cwd: string): void {
+  const paths: string[] = [];
+  let index = 0;
+  while (index < args.length && !args[index].startsWith('-')) {
+    paths.push(args[index]);
+    index += 1;
+  }
+  if (paths.length === 0) throw new Error('find requires an explicit repository path.');
+  for (const path of paths) containedPath(path, root, cwd);
+  while (index < args.length) {
+    const predicate = args[index];
+    index += 1;
+    if (predicate === '-maxdepth' || predicate === '-mindepth') {
+      positiveCount(args[index], `find ${predicate}`);
+      index += 1;
+      continue;
+    }
+    if (predicate === '-type') {
+      if (!['d', 'f', 'l'].includes(args[index] ?? '')) {
+        throw new Error('find -type is outside the reviewed grammar.');
+      }
+      index += 1;
+      continue;
+    }
+    if (predicate === '-name' || predicate === '-iname' || predicate === '-path' || predicate === '-ipath') {
+      safeGlob(boundedLiteral(args[index], `find ${predicate}`));
+      index += 1;
+      continue;
+    }
+    if (predicate === '-a' || predicate === '-o' || predicate === '-print') continue;
+    throw new Error('find predicate is outside the reviewed read-only grammar.');
+  }
 }
 
 function assertSed(args: readonly string[], root: string, cwd: string): void {
