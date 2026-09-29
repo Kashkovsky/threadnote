@@ -95,7 +95,6 @@ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/
 test -x "$HOME/.local/bin/threadnote-mcp-server"
 test -f "$HOME/.cursor/rules/threadnote.mdc"
 test -f "$HOME/.cursor/skills/threadnote-context/SKILL.md"
-test -f "$HOME/.cursor/skills/threadnote-code-graph/SKILL.md"
 test -f "$HOME/.cursor/skills/threadnote-memory/SKILL.md"`,
         },
         {
