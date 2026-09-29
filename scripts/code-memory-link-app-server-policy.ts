@@ -216,8 +216,16 @@ function assertSingleReadCommand(command: string, repositoryRoot: string, cwd: s
   else if (SIMPLE_READ_EXECUTABLES.has(executable)) {
     assertSimpleRead(executable, tokens.slice(1), repositoryRoot, cwd);
   } else {
-    throw new Error('Code Memory Link command executable is outside the reviewed read-only allowlist.');
+    throw new Error(
+      `Code Memory Link command executable ${safeExecutableLabel(executable)} is outside the reviewed read-only allowlist.`,
+    );
   }
+}
+
+function safeExecutableLabel(executable: string): string {
+  return /^[A-Za-z0-9._+-]{1,128}$/u.test(executable)
+    ? JSON.stringify(executable)
+    : `with SHA-256 ${createHash('sha256').update(executable).digest('hex')}`;
 }
 
 function reviewableCommands(item: Record<string, unknown>, repositoryRoot: string, cwd: string): readonly string[] {
