@@ -1,6 +1,7 @@
 import {Schema} from 'effect';
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed JSONL client is an explicit operating-system child-process boundary. */
 import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
+import {isAbsolute, relative, resolve, sep} from 'node:path';
 import {createInterface, type Interface as ReadlineInterface} from 'node:readline';
 import {
   CodeMemoryLinkActionDeniedError,
@@ -59,6 +60,11 @@ interface PendingRequest {
 export class CodeMemoryLinkAppServerClient {
   readonly #approvals: CodeMemoryLinkAppServerApprovalReceiptV1[] = [];
   readonly #approvedItemIds = new Set<string>();
+  readonly #autoApprovalReviews = new Map<
+    string,
+    {readonly action: string; readonly startedAtMs: number; readonly targetItemId: string}
+  >();
+  readonly #autoApprovedItemIds = new Set<string>();
   readonly #declinedItemIds = new Set<string>();
   readonly #events: Record<string, unknown>[] = [];
   readonly #pending = new Map<number, PendingRequest>();
@@ -242,6 +248,15 @@ export class CodeMemoryLinkAppServerClient {
       return;
     }
     try {
+      if (message.method === 'item/autoApprovalReview/started') {
+        this.#acceptAutoApprovalReviewStarted(message);
+      }
+      if (message.method === 'item/autoApprovalReview/completed') {
+        this.#acceptAutoApprovalReviewCompleted(message);
+      }
+      if (message.method === 'turn/completed' && this.#autoApprovalReviews.size > 0) {
+        throw new Error('Codex completed a turn with an unfinished approval auto-review.');
+      }
       if (message.method === 'item/started') {
         const params = record(message.params, 'item/started params');
         const item = record(params.item, 'item/started item');
@@ -263,7 +278,7 @@ export class CodeMemoryLinkAppServerClient {
           }
         } else {
           const actionType = assertCodeMemoryLinkPublicAction(item, this.#repositoryRoot);
-          if (actionType !== null && !this.#approvedItemIds.has(itemId)) {
+          if (actionType !== null && !this.#approvedItemIds.has(itemId) && !this.#autoApprovedItemIds.has(itemId)) {
             this.#abort(new Error('Codex completed an action without a reviewed pre-execution approval.'));
             return;
           }
@@ -273,6 +288,57 @@ export class CodeMemoryLinkAppServerClient {
     } catch (cause) {
       this.#abort(cause instanceof Error ? cause : new Error(String(cause)));
     }
+  }
+
+  #acceptAutoApprovalReviewStarted(message: Record<string, unknown>): void {
+    const scope = this.#approvalScope;
+    if (!scope) throw new Error('Codex started an approval auto-review before the selected turn was scoped.');
+    const params = record(message.params, 'approval auto-review started params');
+    if (params.threadId !== scope.threadId || params.turnId !== scope.turnId) {
+      throw new Error('Codex approval auto-review is outside the selected thread or turn.');
+    }
+    const reviewId = textValue(params.reviewId, 'approval auto-review id');
+    const targetItemId = textValue(params.targetItemId, 'approval auto-review target item id');
+    const startedAtMs = safeInteger(params.startedAtMs, 'approval auto-review start time');
+    const review = record(params.review, 'approval auto-review');
+    if (review.status !== 'inProgress') throw new Error('Codex approval auto-review did not start in progress.');
+    const action = record(params.action, 'approval auto-review action');
+    assertCodeMemoryLinkAutoReviewAction(action, this.#startedItems.get(targetItemId), this.#repositoryRoot);
+    if (this.#autoApprovalReviews.has(reviewId)) throw new Error('Codex repeated an approval auto-review id.');
+    this.#autoApprovalReviews.set(reviewId, {action: JSON.stringify(action), startedAtMs, targetItemId});
+  }
+
+  #acceptAutoApprovalReviewCompleted(message: Record<string, unknown>): void {
+    const scope = this.#approvalScope;
+    if (!scope) throw new Error('Codex completed an approval auto-review before the selected turn was scoped.');
+    const params = record(message.params, 'approval auto-review completed params');
+    if (params.threadId !== scope.threadId || params.turnId !== scope.turnId || params.decisionSource !== 'agent') {
+      throw new Error('Codex approval auto-review completion is outside the selected scope or decision source.');
+    }
+    const reviewId = textValue(params.reviewId, 'approval auto-review id');
+    const targetItemId = textValue(params.targetItemId, 'approval auto-review target item id');
+    const prior = this.#autoApprovalReviews.get(reviewId);
+    if (!prior || prior.targetItemId !== targetItemId) {
+      throw new Error('Codex completed an unknown or rerouted approval auto-review.');
+    }
+    const completedAtMs = safeInteger(params.completedAtMs, 'approval auto-review completion time');
+    if (params.startedAtMs !== prior.startedAtMs || completedAtMs < prior.startedAtMs) {
+      throw new Error('Codex approval auto-review timestamps are inconsistent.');
+    }
+    const action = record(params.action, 'approval auto-review action');
+    if (JSON.stringify(action) !== prior.action)
+      throw new Error('Codex approval auto-review action changed in flight.');
+    assertCodeMemoryLinkAutoReviewAction(action, this.#startedItems.get(targetItemId), this.#repositoryRoot);
+    const review = record(params.review, 'approval auto-review');
+    if (review.status === 'approved') {
+      if (this.#approvedItemIds.has(targetItemId) || this.#declinedItemIds.has(targetItemId)) {
+        throw new Error('Codex mixed manual and automatic approval for one action.');
+      }
+      this.#autoApprovedItemIds.add(targetItemId);
+    } else if (['denied', 'timedOut', 'aborted'].includes(String(review.status)))
+      this.#declinedItemIds.add(targetItemId);
+    else throw new Error('Codex approval auto-review completed with an invalid status.');
+    this.#autoApprovalReviews.delete(reviewId);
   }
 
   #acceptServerRequest(message: Record<string, unknown>): void {
@@ -290,7 +356,11 @@ export class CodeMemoryLinkAppServerClient {
         scope: {...this.#approvalScope, repositoryRoot: this.#repositoryRoot},
         startedItem,
       });
-      if (this.#approvedItemIds.has(itemId) || this.#declinedItemIds.has(itemId)) {
+      if (
+        this.#approvedItemIds.has(itemId) ||
+        this.#autoApprovedItemIds.has(itemId) ||
+        this.#declinedItemIds.has(itemId)
+      ) {
         throw new Error('Codex repeated an action approval request.');
       }
       this.#approvedItemIds.add(itemId);
@@ -732,6 +802,8 @@ const ALLOWED_APP_SERVER_NOTIFICATION_METHODS = new Set([
   'account/updated',
   'app/list/updated',
   'item/agentMessage/delta',
+  'item/autoApprovalReview/completed',
+  'item/autoApprovalReview/started',
   'item/commandExecution/outputDelta',
   'item/commandExecution/terminalInteraction',
   'item/completed',
@@ -757,6 +829,60 @@ const ALLOWED_APP_SERVER_NOTIFICATION_METHODS = new Set([
   'turn/plan/updated',
   'turn/started',
 ]);
+
+function assertCodeMemoryLinkAutoReviewAction(
+  action: Record<string, unknown>,
+  startedItemInput: Record<string, unknown> | undefined,
+  repositoryRoot: string,
+): void {
+  if (!startedItemInput) throw new Error('Codex approval auto-review target did not start first.');
+  const item = record(startedItemInput, 'approval auto-review target item');
+  if (item.type === 'commandExecution') {
+    if (!['command', 'execve'].includes(String(action.type)) || action.cwd !== item.cwd) {
+      throw new Error('Codex command approval auto-review does not match its started item.');
+    }
+    if (action.type === 'command' && action.command !== item.command) {
+      throw new Error('Codex command approval auto-review changed the command.');
+    }
+    assertCodeMemoryLinkPublicAction(item, repositoryRoot);
+    return;
+  }
+  if (item.type === 'fileChange') {
+    if (action.type !== 'applyPatch' || typeof action.cwd !== 'string') {
+      throw new Error('Codex file-change approval auto-review does not match its started item.');
+    }
+    assertContainedAutoReviewPath(action.cwd, repositoryRoot);
+    if (!Array.isArray(action.files) || action.files.length === 0 || action.files.length > 1_024) {
+      throw new Error('Codex file-change approval auto-review contains invalid paths.');
+    }
+    for (const path of action.files) assertContainedAutoReviewPath(path, repositoryRoot);
+    assertCodeMemoryLinkPublicAction(item, repositoryRoot);
+    return;
+  }
+  if (
+    item.type !== 'mcpToolCall' ||
+    action.type !== 'mcpToolCall' ||
+    action.server !== item.server ||
+    action.toolName !== item.tool
+  ) {
+    throw new Error('Codex approval auto-review targeted an unsupported or mismatched action.');
+  }
+}
+
+function assertContainedAutoReviewPath(value: unknown, repositoryRoot: string): void {
+  if (typeof value !== 'string' || !isAbsolute(value)) {
+    throw new Error('Codex approval auto-review path must be absolute.');
+  }
+  const fromRoot = relative(repositoryRoot, resolve(value));
+  if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    throw new Error('Codex approval auto-review path escaped the repository.');
+  }
+}
+
+function safeInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value)) throw new Error(`${label} must be a safe integer.`);
+  return value as number;
+}
 
 function assertEffectiveThread(response: Record<string, unknown>, input: RunCodeMemoryLinkAppServerTurnInput): void {
   if (
