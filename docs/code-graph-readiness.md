@@ -10,6 +10,10 @@ before relying on details. `path`, `impact`, and exact-current citation claims r
 evidence. `analyze_code_graph` defaults to strict `freshness: current`; its explicit `ready` and `allow-stale` policies
 accept compatible ready evidence from the selected project and disclose its freshness.
 
+A successful stale `inspect_code_graph` discovery read schedules a keyed durable refresh off the response path.
+Repeated reads coalesce that maintenance work and keep returning the compatible ready snapshot while refresh is queued,
+active, or deferred.
+
 Use `freshness: ready` when a snapshot exists and exact-current refresh is blocked. It may start a bounded refresh on a
 cold project. Use `freshness: allow-stale` when the request must not start indexing: a cold project returns
 `unavailable` with `reason: no-ready-snapshot`. Historical `projectCoverage` does not establish that a project-ready

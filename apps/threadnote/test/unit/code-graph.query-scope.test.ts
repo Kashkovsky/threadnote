@@ -4,6 +4,7 @@ import {discloseCodeGraphProjectCoverage, outsideCodeGraphProjectPaths} from '@t
 import type {ResolvedCodeGraphIndexScope} from '@threadnote/graph/index_scope';
 import type {CodeGraphProjectCoverage, CodeGraphQueryResult} from '@threadnote/graph/types';
 import {compactCodeGraphMcpResult} from '@threadnote/threadnote/mcp/code_graph_projection';
+import {codeGraphIndexScopeMembershipDigest} from '@threadnote/graph/index_scope';
 import {
   presentCodeGraphScopedReadyRead,
   selectCodeGraphReadyReadChangedPaths,
@@ -80,6 +81,37 @@ const projectScope: CodeGraphQueryScope = {
 };
 
 describe('project graph retrieval coverage', () => {
+  it('treats project membership as an order-independent set identity', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.string({minLength: 1, maxLength: 24}), {maxLength: 40}),
+        fc.uniqueArray(fc.string({minLength: 1, maxLength: 24}), {maxLength: 8}),
+        (includedProjectIds, rootProjectIds) => {
+          const expected = codeGraphIndexScopeMembershipDigest({
+            completeness: 'complete',
+            includedProjectIds,
+            rootProjectIds,
+          });
+          expect(
+            codeGraphIndexScopeMembershipDigest({
+              completeness: 'complete',
+              includedProjectIds: [...includedProjectIds].reverse(),
+              rootProjectIds: [...rootProjectIds].reverse(),
+            }),
+          ).toBe(expected);
+          expect(
+            codeGraphIndexScopeMembershipDigest({
+              completeness: 'partial',
+              includedProjectIds,
+              rootProjectIds,
+            }),
+          ).not.toBe(expected);
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
   it('returns typed outside-project-graph paths and preserves disclosure in MCP output', () => {
     const outside = outsideCodeGraphProjectPaths(
       {cwd: '/repo', operation: 'path', from: 'apps/a/index.ts#start', to: 'apps/b/index.ts#target'},

@@ -30,6 +30,47 @@ export interface ResolvedCodeGraphIndexScope {
   readonly scopeKey: string;
 }
 
+export type CodeGraphIndexScopeMembership = Pick<
+  ResolvedCodeGraphIndexScope,
+  'completeness' | 'includedProjectIds' | 'rootProjectIds'
+>;
+
+export const CODE_GRAPH_SCOPE_RECEIPT_IDS_MAXIMUM = 100_000;
+export const CODE_GRAPH_SCOPE_RECEIPT_IDS_JSON_BYTES_MAXIMUM = 4 * 1024 * 1024;
+
+export function canonicalCodeGraphScopeReceiptIds(value: unknown): readonly string[] | undefined {
+  if (
+    !Array.isArray(value) ||
+    value.length > CODE_GRAPH_SCOPE_RECEIPT_IDS_MAXIMUM ||
+    value.some(id => typeof id !== 'string' || id.length === 0 || id.length > 4096 || id.includes('\0'))
+  ) {
+    return undefined;
+  }
+  const canonical = [...new Set<string>(value)].sort();
+  return canonical.length === value.length ? canonical : undefined;
+}
+
+export function encodeCodeGraphScopeReceiptIds(value: readonly string[]): string | undefined {
+  const canonical = canonicalCodeGraphScopeReceiptIds(value);
+  if (canonical === undefined) return undefined;
+  const encoded = JSON.stringify(canonical);
+  return new TextEncoder().encode(encoded).byteLength <= CODE_GRAPH_SCOPE_RECEIPT_IDS_JSON_BYTES_MAXIMUM
+    ? encoded
+    : undefined;
+}
+
+/** Stable set identity for stale-read scope admission; excludes closure details that only require refresh. */
+export function codeGraphIndexScopeMembershipDigest(scope: CodeGraphIndexScopeMembership): string {
+  const canonicalIds = (values: readonly string[]) => [...new Set(values)].sort();
+  return sha256HexSync(
+    JSON.stringify({
+      completeness: scope.completeness,
+      includedProjectIds: canonicalIds(scope.includedProjectIds),
+      rootProjectIds: canonicalIds(scope.rootProjectIds),
+    }),
+  );
+}
+
 export const CODE_GRAPH_INDEX_SCOPE_PREVIEW_VERSION = 1 as const;
 export const CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY = 'full-repository' as const;
 
@@ -172,7 +213,7 @@ function resolvedScope(input: {
       ? 'complete'
       : 'partial';
   const controlPaths = uniqueStrings(input.controlPaths ?? input.catalog.resolutionContextPaths);
-  return {
+  const scope = {
     admittedPrefixes: input.admittedPrefixes,
     closureDigest: sha256HexSync(
       JSON.stringify({
@@ -206,7 +247,16 @@ function resolvedScope(input: {
     includedProjectIds: input.includedProjects.map(project => project.id),
     rootProjectIds: input.rootProjectIds,
     scopeKey: input.scopeKey,
-  };
+  } satisfies ResolvedCodeGraphIndexScope;
+  if (
+    encodeCodeGraphScopeReceiptIds(scope.rootProjectIds) === undefined ||
+    encodeCodeGraphScopeReceiptIds(scope.includedProjectIds) === undefined
+  ) {
+    throw CodeGraphIndexScopeResolutionError.make({
+      message: 'Selected project graph membership exceeds the supported receipt budget.',
+    });
+  }
+  return scope;
 }
 
 function scopeDiagnostics(

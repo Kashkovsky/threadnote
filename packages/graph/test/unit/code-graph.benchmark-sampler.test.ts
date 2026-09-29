@@ -855,18 +855,29 @@ describe('code graph benchmark sampler artifact', () => {
 
   it('retains an uploadable checkpoint when a real sampled process crashes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-benchmark-sampler-crash-'));
+    const parentReady = join(root, 'parent-ready');
+    const crash = join(root, 'crash');
+    const stop = join(root, 'stop');
+    let parent: ReturnType<typeof Bun.spawn> | undefined;
+    let sampler: ReturnType<typeof Bun.spawn> | undefined;
     try {
       const phase = join(root, 'phase');
       const output = join(root, 'output.json');
       const checkpoint = join(root, 'artifacts', 'production-large.cold.sampler.json');
       const ready = join(root, 'ready.json');
       await writeFile(phase, 'scanning');
-      const parent = Bun.spawn({
-        cmd: [process.execPath, '-e', 'await Bun.sleep(500); process.exit(17)'],
+      const parentProgram = [
+        `await Bun.write(${JSON.stringify(parentReady)},'ready');`,
+        `while (!(await Bun.file(${JSON.stringify(crash)}).exists())) await Bun.sleep(10);`,
+        'process.exit(17);',
+      ].join('');
+      parent = Bun.spawn({
+        cmd: [process.execPath, '-e', parentProgram],
         stderr: 'ignore',
         stdout: 'ignore',
       });
-      const sampler = Bun.spawn({
+      await waitForText(parentReady, 5_000);
+      sampler = Bun.spawn({
         cmd: [
           process.execPath,
           fileURLToPath(new URL('../../../../scripts/code-graph-benchmark-sampler.ts', import.meta.url)),
@@ -879,7 +890,7 @@ describe('code graph benchmark sampler artifact', () => {
           '--phase',
           phase,
           '--stop',
-          join(root, 'stop'),
+          stop,
           '--output',
           output,
           '--checkpoint-output',
@@ -895,11 +906,12 @@ describe('code graph benchmark sampler artifact', () => {
         stdout: 'ignore',
       });
 
-      expect(JSON.parse(await waitForText(ready))).toEqual({checkpointVersion: 4, version: 1});
+      expect(JSON.parse(await waitForText(ready, 5_000))).toEqual({checkpointVersion: 4, version: 1});
       expect(parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')))).toMatchObject({
         state: 'running',
         version: 4,
       });
+      await writeFile(crash, '');
       expect(await parent.exited).toBe(17);
       expect(await sampler.exited).toBe(0);
       expect(parseCodeGraphBenchmarkSamplerCheckpoint(JSON.parse(await readFile(checkpoint, 'utf8')))).toMatchObject({
@@ -908,9 +920,13 @@ describe('code graph benchmark sampler artifact', () => {
         version: 4,
       });
     } finally {
+      await writeFile(crash, '').catch(() => undefined);
+      if (parent) await parent.exited;
+      await writeFile(stop, 'aborted').catch(() => undefined);
+      if (sampler) await sampler.exited;
       await rm(root, {force: true, recursive: true});
     }
-  });
+  }, 15_000);
 });
 
 async function waitForText(file: string, timeoutMilliseconds = 2_000): Promise<string> {

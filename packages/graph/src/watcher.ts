@@ -204,6 +204,7 @@ export interface CodeGraphWatcherShape {
   readonly refresh: (options: CodeGraphWatchOptions) => Effect.Effect<boolean>;
   /** Registers background demand before scheduling; never waits for a build. */
   readonly request: (options: CodeGraphWatchOptions) => Effect.Effect<CodeGraphRefreshRequestReceipt, unknown>;
+  readonly scheduleRequest?: (options: CodeGraphWatchOptions) => Effect.Effect<void>;
   /** Resumes existing durable background demand without creating new demand. */
   readonly resume?: (options: CodeGraphWatchOptions) => Effect.Effect<CodeGraphRefreshContinuity | undefined, unknown>;
   readonly scheduleResume?: (options: CodeGraphWatchOptions) => Effect.Effect<void>;
@@ -213,7 +214,6 @@ export interface CodeGraphWatcherShape {
   ) => Effect.Effect<Option.Option<CodeGraphRefreshStatus>, unknown>;
   readonly watch: (options: CodeGraphWatchOptions) => Effect.Effect<void, unknown>;
 }
-
 export interface CodeGraphWatcherLifecycleOptions {
   readonly idleTimeoutMilliseconds?: number;
   readonly maximumWatchers?: number;
@@ -532,7 +532,6 @@ export const handoffCodeGraphPreparedDemand = Effect.fn('codeGraph.handoffPrepar
     ),
   );
 });
-
 export const makeCodeGraphResumeScheduler = Effect.fn('codeGraph.makeResumeScheduler')(function* (
   resume: (options: CodeGraphWatchOptions) => Effect.Effect<unknown, unknown>,
   onFailure: (failure: CodeGraphRefreshFailure) => Effect.Effect<void> = () => Effect.void,
@@ -545,7 +544,6 @@ export const makeCodeGraphResumeScheduler = Effect.fn('codeGraph.makeResumeSched
     run: resume,
   });
 });
-
 export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGraphWatcherShape>()(
   '@threadnote/graph/watcher/CodeGraphWatcher',
 ) {
@@ -1026,13 +1024,15 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             }),
           );
         });
-      const scheduleResume = yield* makeCodeGraphResumeScheduler(resumeBackgroundDemand, failure =>
-        observability.backgroundFailure(anonymousTelemetryComponent, {operation: 'graph-refresh', failure}),
-      );
+      const reportBackgroundFailure = (failure: CodeGraphRefreshFailure) =>
+        observability.backgroundFailure(anonymousTelemetryComponent, {operation: 'graph-refresh', failure});
+      const scheduleResume = yield* makeCodeGraphResumeScheduler(resumeBackgroundDemand, reportBackgroundFailure);
+      const scheduleRequest = yield* makeCodeGraphResumeScheduler(requestBackgroundDemand, reportBackgroundFailure);
       return CodeGraphWatcher.of({
         ...watcher,
         cachedStatus: (key, target) => watcher.cachedStatus(key, target),
         request: requestBackgroundDemand,
+        scheduleRequest,
         resume: resumeBackgroundDemand,
         scheduleResume,
         status: (key, target) =>

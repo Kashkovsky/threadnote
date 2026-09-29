@@ -6,12 +6,16 @@ import fc from 'fast-check';
 import {describe, expect} from 'vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {fcEffectProp} from '@threadnote/testing/fast-check-property';
-import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '@threadnote/graph/index_scope';
+import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY, type ResolvedCodeGraphIndexScope} from '@threadnote/graph/index_scope';
 import {initializeSchema} from '@threadnote/graph/store/schema/initialization';
 import {selectActiveViewFence} from '@threadnote/graph/store/active_views';
 import {legacyCodeGraphAuthorityStatements} from '@threadnote/graph/test/helpers/code-graph-legacy-authority';
 import {removeActiveView} from '@threadnote/graph/store/view_cleanup';
-import {recordScopeApplicability, selectScopeApplicability} from '@threadnote/graph/store/scope/applicability';
+import {
+  recordScopeApplicability,
+  selectScopeApplicability,
+  selectSnapshotScopeReceipt,
+} from '@threadnote/graph/store/scope/applicability';
 import {
   claimRemovedViewCleanupCandidates,
   claimWorktreeReconciliationCandidates,
@@ -214,6 +218,98 @@ describe('composite code graph scope authority', () => {
       expect(replay._tag).toBe('Failure');
       yield* sql`DELETE FROM active_snapshots WHERE worktree_id = ${worktreeId} AND scope_id = ${scopeKey}`;
       expect(yield* selectScopeApplicability(worktreeId, scopeKey)).toBeUndefined();
+    }).pipe(provideTestLayer(SqliteClient.layer({filename: ':memory:', disableWAL: true}))),
+  );
+
+  effectIt.effect('round-trips bounded project membership as an order-independent receipt', () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* initializeSchema(sql);
+      const scopeKey = `code-graph-scope:${'c'.repeat(64)}`;
+      yield* seedSnapshot(1, scopeKey);
+      yield* sql`INSERT INTO active_snapshots (worktree_id, scope_id, snapshot_id, activated_at)
+        VALUES (${worktreeId}, ${scopeKey}, ${snapshotId(1)}, ${timestamp})`;
+      const first = '1'.repeat(64);
+      const last = 'f'.repeat(64);
+      const definitionDigest = 'd'.repeat(64);
+      const closureDigest = 'e'.repeat(64);
+      const evidence = {
+        repositoryId,
+        worktreeId,
+        scopeKey,
+        definitionDigest,
+        closureDigest,
+        inventoryFingerprint: 'inventory',
+        extractorSet: 'extractor',
+        policyFingerprint: 'policy',
+        observedCommit: 'commit',
+        catalogFingerprint: 'catalog',
+      };
+      const scope = {
+        admittedPrefixes: ['apps/a'],
+        closureDigest,
+        completeness: 'complete',
+        controlPaths: [],
+        definitionDigest,
+        diagnostics: [],
+        includedProjectIds: [last, first],
+        rootProjectIds: [last],
+        scopeKey,
+      } satisfies ResolvedCodeGraphIndexScope;
+
+      yield* recordScopeApplicability(snapshotId(1), evidence, scope);
+
+      expect(yield* selectSnapshotScopeReceipt(snapshotId(1), scopeKey)).toMatchObject({
+        includedProjectIds: [first, last],
+        rootProjectIds: [last],
+      });
+    }).pipe(provideTestLayer(SqliteClient.layer({filename: ':memory:', disableWAL: true}))),
+  );
+
+  effectIt.effect('rejects a scope receipt that exceeds the reader byte budget before writing authority', () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* initializeSchema(sql);
+      const scopeKey = `code-graph-scope:${'c'.repeat(64)}`;
+      yield* seedSnapshot(1, scopeKey);
+      yield* sql`INSERT INTO active_snapshots (worktree_id, scope_id, snapshot_id, activated_at)
+        VALUES (${worktreeId}, ${scopeKey}, ${snapshotId(1)}, ${timestamp})`;
+      const definitionDigest = 'd'.repeat(64);
+      const closureDigest = 'e'.repeat(64);
+      const includedProjectIds = Array.from(
+        {length: 1_025},
+        (_, index) => `${index.toString().padStart(6, '0')}${'x'.repeat(4_090)}`,
+      );
+      const attempt = yield* recordScopeApplicability(
+        snapshotId(1),
+        {
+          repositoryId,
+          worktreeId,
+          scopeKey,
+          definitionDigest,
+          closureDigest,
+          inventoryFingerprint: 'inventory',
+          extractorSet: 'extractor',
+          policyFingerprint: 'policy',
+          observedCommit: 'commit',
+          catalogFingerprint: 'catalog',
+        },
+        {
+          admittedPrefixes: ['apps/a'],
+          closureDigest,
+          completeness: 'complete',
+          controlPaths: [],
+          definitionDigest,
+          diagnostics: [],
+          includedProjectIds,
+          rootProjectIds: [includedProjectIds[0]],
+          scopeKey,
+        },
+      ).pipe(Effect.exit);
+
+      expect(attempt._tag).toBe('Failure');
+      expect(yield* sql`SELECT 1 FROM scope_applicability`).toEqual([]);
+      expect(yield* sql`SELECT 1 FROM snapshot_scope_receipts`).toEqual([]);
     }).pipe(provideTestLayer(SqliteClient.layer({filename: ':memory:', disableWAL: true}))),
   );
 
