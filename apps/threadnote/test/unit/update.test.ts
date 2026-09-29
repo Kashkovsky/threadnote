@@ -417,7 +417,7 @@ describe('update notifications', () => {
             requests,
           };
         }),
-      ).pipe(provideTestLayer(ApplicationLayer));
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
 
       expect(result.requests).toBe(1);
       expect(result.output).toContain('Update available: threadnote 4.1.0-beta.2 -> 4.2.0');
@@ -455,7 +455,7 @@ describe('update notifications', () => {
           );
           return {output: captured.output, requests};
         }),
-      ).pipe(provideTestLayer(ApplicationLayer));
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
 
       expect(result).toEqual({output: '', requests: 1});
     }),
@@ -491,7 +491,7 @@ describe('update notifications', () => {
           );
           return {output: captured.output, requests};
         }),
-      ).pipe(provideTestLayer(ApplicationLayer));
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
 
       expect(result.requests).toBe(1);
       expect(result.output).toContain('Update available: threadnote 4.0.0 -> 4.0.1');

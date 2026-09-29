@@ -7,6 +7,16 @@ description: Investigate unfamiliar local source relationships with Threadnote's
 
 # Threadnote code graph
 
+Before a local call, construct the complete payload once. Both tools require an absolute `callerCwd` and an
+`operation`; never probe with an empty or partial payload. Start with one of these valid calls:
+
+- `inspect_code_graph({"callerCwd":"/abs/repo","operation":"query","query":"exclusive file lock"})`
+- `analyze_code_graph({"callerCwd":"/abs/repo","operation":"stats","freshness":"allow-stale"})`
+
+For inspect selectors use `query` -> `query`, `node`/`neighbors` -> `nodeId`, `explain` -> `symbol` or `query`, and
+`path` -> `from` + `to`; `impact` normally uses `query`. Analysis `community` additionally requires `communityId`.
+When validation names a missing key, correct that same payload before making another graph call.
+
 For unfamiliar relationships, call `inspect_code_graph` before broad text search: `query` discovers;
 `node`/`neighbors` round-trip stable `cgs_`/`cgr_` handles; `explain` expands symbols or queries; `path` connects local
 `cgs_` or qualified Workset endpoints; `impact` finds reverse dependencies; `topology` summarizes Worksets.

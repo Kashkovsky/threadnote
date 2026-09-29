@@ -411,6 +411,7 @@ function registeredTelemetryHarness(tracer: Tracer.Tracer, onWatcherEnsure: () =
     statusForPublishedIdentity: () => Effect.die('Unexpected published identity status.'),
   });
   const watcher = CodeGraphWatcher.of({
+    cachedStatus: () => Effect.succeedNone,
     ensure: () => Effect.sync(onWatcherEnsure),
     metrics: Effect.succeed({
       activeRefreshKeys: 0,

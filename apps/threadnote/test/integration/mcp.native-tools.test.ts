@@ -597,9 +597,21 @@ describe('Threadnote MCP toolsets', () => {
           });
           expect(JSON.stringify(codeReferenceTool?.inputSchema)).toContain('Graph-indexed repository-relative path');
         }
-        expect(tools.tools.find(tool => tool.name === 'remember_context')?.inputSchema).toMatchObject({
+        const remember = tools.tools.find(tool => tool.name === 'remember_context');
+        expect(remember?.inputSchema).toMatchObject({
           properties: {
             citationPolicy: {enum: ['require-current', 'defer'], type: 'string'},
+            clearKeywords: {
+              description: expect.stringContaining('handoff/smoke allowed'),
+              type: 'boolean',
+            },
+            keywords: {
+              description: expect.stringContaining('no handoff/smoke'),
+            },
+            regenerateKeywords: {
+              description: expect.stringContaining('no handoff/smoke'),
+              type: 'boolean',
+            },
             relations: {
               items: {
                 additionalProperties: true,
@@ -659,6 +671,12 @@ describe('Threadnote MCP toolsets', () => {
           text: 'Inactive memories cannot own pending anchors.',
         });
         expect(inactiveDeferred).toContain('citationPolicy=defer requires status=active');
+        const handoffKeywords = await callErrorText(client, 'remember_context', {
+          keywords: ['invalid handoff keyword'],
+          kind: 'handoff',
+          text: 'Handoff keyword schema guidance regression.',
+        });
+        expect(handoffKeywords).toContain('Keyword authoring is not supported for handoff memories');
       },
       {toolset: 'core'},
     );
@@ -2566,6 +2584,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(JSON.stringify(graphTool?.inputSchema)).toContain(
           'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
         );
+        expect(JSON.stringify(graphTool?.inputSchema)).toContain('default 55000');
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           required: ['operation'],

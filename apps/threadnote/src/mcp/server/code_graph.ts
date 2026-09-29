@@ -82,7 +82,7 @@ import {
   codeGraphInspectionStartsRefresh,
   codeGraphNoReadySnapshotResult,
   codeGraphQueryExecutionBudget,
-  codeGraphRefreshBlocksReadyInspection,
+  codeGraphRefreshBlocksCompletedInspection,
   completeCodeGraphReadyReadRefresh,
 } from './code_graph/ready_read.js';
 import {argumentError, mcpErrorResult, requiredText, type RuntimeConfig} from './common.js';
@@ -109,7 +109,7 @@ const MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS = 5_000;
 const MCP_CODE_GRAPH_RETRY_MINIMUM_MILLISECONDS = 3_000;
 const MCP_CODE_GRAPH_RETRY_MAXIMUM_MILLISECONDS = 30_000;
 const MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS = 25_000;
-const MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS = 25_000;
+const MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS = 55_000;
 const MCP_CODE_GRAPH_RESPONSE_RESERVE_MILLISECONDS = 1_000;
 const MCP_CODE_GRAPH_TIMEOUT_STATUS_MILLISECONDS = 1_000;
 const MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT = 20;
@@ -220,7 +220,7 @@ export function registerCodeGraphTool(
           },
         ),
         callerCwd: McpInput.string('Absolute checkout path'),
-        readTimeoutMilliseconds: McpInput.integer('Total ms; minimum 4000, default 25000.', {
+        readTimeoutMilliseconds: McpInput.integer('Total ms; minimum 4000, default 55000.', {
           minimum: 4000,
           maximum: 55000,
         }),
@@ -587,8 +587,9 @@ export function registerCodeGraphTool(
           readySnapshot: read.status.readySnapshotId === undefined ? undefined : {id: read.status.readySnapshotId},
           stale: read.status.stale,
         };
-        const refreshStatus = Option.getOrUndefined(yield* watcher.status(worktreeKey, refreshTarget));
-        if (codeGraphRefreshBlocksReadyInspection(firstSummary, refreshStatus, allowStaleReadySnapshot)) {
+        // The worker proved the snapshot readable; only consult watcher state already cached by this runtime.
+        const refreshStatus = Option.getOrUndefined(yield* watcher.cachedStatus(worktreeKey, refreshTarget));
+        if (codeGraphRefreshBlocksCompletedInspection(firstSummary, refreshStatus, allowStaleReadySnapshot)) {
           return yield* queryTelemetry.stage(
             'graph.query.execute',
             'query-serialization',
@@ -635,6 +636,7 @@ export function registerCodeGraphTool(
           ensureWatcher: allowStaleReadySnapshot,
           key: worktreeKey,
           refresh: refreshContinuity,
+          refreshStatus,
           target: refreshTarget,
           watcher,
         }).pipe(
@@ -1713,15 +1715,15 @@ export function codeGraphResultWithRefreshContinuity(
 ): CodeGraphQueryResult {
   if (result.freshness !== 'stale') return result;
   const warning =
-    refresh?.state === 'deferred'
-      ? 'Serving the existing stale ready snapshot while refresh is deferred; continue bounded discovery and retry only before a current relationship claim.'
-      : refresh?.state === 'queued'
-        ? 'Serving the existing stale ready snapshot while refresh is queued; continue bounded discovery while it converges.'
-        : refresh?.state === 'active'
-          ? 'Serving the existing stale ready snapshot while refresh continues in the background.'
-          : refreshStatus?.state === 'deferred'
-            ? `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
-              `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`
+    refreshStatus?.state === 'deferred'
+      ? `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
+        `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`
+      : refresh?.state === 'deferred'
+        ? 'Serving the existing stale ready snapshot while refresh is deferred; continue bounded discovery and retry only before a current relationship claim.'
+        : refresh?.state === 'queued'
+          ? 'Serving the existing stale ready snapshot while refresh is queued; continue bounded discovery while it converges.'
+          : refresh?.state === 'active'
+            ? 'Serving the existing stale ready snapshot while refresh continues in the background.'
             : refreshStatus?.state === 'indexing'
               ? 'Serving the existing stale ready snapshot while code graph refresh continues in the background.'
               : 'Serving the existing stale ready snapshot while background refresh discovery is pending; continue bounded discovery and use `path` or `impact` when current graph evidence is required.';

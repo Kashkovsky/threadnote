@@ -12,6 +12,7 @@ import {
   codeGraphWatcherSnapshotStale,
   driveCodeGraphBackgroundDemand,
   handoffCodeGraphPreparedDemand,
+  makeCodeGraphResumeScheduler,
   makeCodeGraphWatcher,
   persistedRefreshStatus,
   prewarmCandidatesFromRefOutput,
@@ -120,6 +121,129 @@ function makeDemandDriverHarness(input: {
 }
 
 describe('CodeGraphWatcher', () => {
+  effectIt.effect('single-flights scoped resume discovery with one observable trailing run', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstStarted = yield* Deferred.make<void>();
+        const releaseFirst = yield* Deferred.make<void>();
+        const firstCompleted = yield* Deferred.make<void>();
+        const failureObserved = yield* Deferred.make<string>();
+        const runs = yield* Ref.make(0);
+        const schedule = yield* makeCodeGraphResumeScheduler(
+          () =>
+            Ref.updateAndGet(runs, count => count + 1).pipe(
+              Effect.flatMap(count =>
+                count === 1
+                  ? Deferred.succeed(firstStarted, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseFirst)),
+                      Effect.ensuring(Deferred.succeed(firstCompleted, undefined)),
+                    )
+                  : Effect.fail(TestError.make({message: 'resume discovery failed'})),
+              ),
+            ),
+          failure => Deferred.succeed(failureObserved, failure.code).pipe(Effect.asVoid),
+        );
+        const scoped = {
+          ...options,
+          project: {
+            graph: {closure: 'dependencies' as const, roots: ['apps/web']},
+            uri: 'threadnote://projects/web',
+          },
+        };
+
+        yield* schedule(scoped);
+        yield* schedule(scoped);
+        yield* Deferred.await(firstStarted);
+        expect(yield* Ref.get(runs)).toBe(1);
+
+        yield* Deferred.succeed(releaseFirst, undefined);
+        yield* Deferred.await(firstCompleted);
+        expect(yield* Deferred.await(failureObserved)).toBe('unknown');
+        expect(yield* Ref.get(runs)).toBe(2);
+      }),
+    ),
+  );
+
+  effectIt.effect.prop(
+    'coalesces every same-key burst into one trailing run with the latest input',
+    {duplicates: Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 20}))},
+    ({duplicates}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const firstStarted = yield* Deferred.make<void>();
+          const releaseFirst = yield* Deferred.make<void>();
+          const trailingCompleted = yield* Deferred.make<void>();
+          const observed = yield* Ref.make<string[]>([]);
+          const schedule = yield* makeCodeGraphResumeScheduler(options =>
+            Ref.updateAndGet(observed, values => [...values, options.cwd]).pipe(
+              Effect.flatMap(values =>
+                values.length === 1
+                  ? Deferred.succeed(firstStarted, undefined).pipe(Effect.andThen(Deferred.await(releaseFirst)))
+                  : Deferred.succeed(trailingCompleted, undefined),
+              ),
+            ),
+          );
+
+          yield* schedule({...options, cwd: '/first'});
+          yield* Deferred.await(firstStarted);
+          for (let index = 1; index <= duplicates; index += 1) {
+            yield* schedule({...options, cwd: `/trailing/${index}`});
+          }
+          yield* Deferred.succeed(releaseFirst, undefined);
+          yield* Deferred.await(trailingCompleted);
+
+          expect(yield* Ref.get(observed)).toEqual(['/first', `/trailing/${duplicates}`]);
+        }),
+      ),
+  );
+
+  effectIt.effect('installs a reserved scheduler fiber before honoring caller interruption', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const reservationReached = yield* Deferred.make<void>();
+        const releaseReservation = yield* Deferred.make<void>();
+        const firstStarted = yield* Deferred.make<void>();
+        const firstCompleted = yield* Deferred.make<void>();
+        const secondStarted = yield* Deferred.make<void>();
+        const beforeForkCalls = yield* Ref.make(0);
+        const runs = yield* Ref.make(0);
+        const beforeFork = Ref.updateAndGet(beforeForkCalls, count => count + 1).pipe(
+          Effect.flatMap(count =>
+            count === 1
+              ? Deferred.succeed(reservationReached, undefined).pipe(Effect.andThen(Deferred.await(releaseReservation)))
+              : Effect.void,
+          ),
+        );
+        const schedule = yield* makeCodeGraphResumeScheduler(
+          () =>
+            Ref.updateAndGet(runs, count => count + 1).pipe(
+              Effect.flatMap(count =>
+                count === 1
+                  ? Deferred.succeed(firstStarted, undefined).pipe(
+                      Effect.ensuring(Deferred.succeed(firstCompleted, undefined)),
+                    )
+                  : Deferred.succeed(secondStarted, undefined),
+              ),
+            ),
+          () => Effect.void,
+          beforeFork,
+        );
+
+        const caller = yield* schedule(options).pipe(Effect.forkChild({startImmediately: true}));
+        yield* Deferred.await(reservationReached);
+        const interrupted = yield* Fiber.interrupt(caller).pipe(Effect.forkChild({startImmediately: true}));
+        yield* Deferred.succeed(releaseReservation, undefined);
+        yield* Fiber.join(interrupted);
+        yield* Deferred.await(firstStarted);
+        yield* Deferred.await(firstCompleted);
+
+        yield* schedule(options);
+        yield* Deferred.await(secondStarted);
+        expect(yield* Ref.get(runs)).toBe(2);
+      }),
+    ),
+  );
+
   effectIt.effect('consumes a prepared claim with its exact preflight target before reobserving', () =>
     Effect.gen(function* () {
       const oldTarget = {requestKey: demandKey('a')};

@@ -304,6 +304,7 @@ bun_workspace_test(
         "//:.github/release-notes/v5.0.3.md",
         "//:.github/release-notes/v5.0.4.md",
         "//:.github/release-notes/v5.0.5.md",
+        "//:.github/release-notes/v5.0.6.md",
         "//:.github/workflows/ci.yml",
         "//:.github/workflows/pages.yml",
         "//:README.md",

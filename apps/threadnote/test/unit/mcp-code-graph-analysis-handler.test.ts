@@ -20,7 +20,12 @@ import {
 import type {CodeGraphQueryScope} from '@threadnote/graph/query/scope';
 import {attachCodeGraphStatusObservation} from '@threadnote/graph/query/contract';
 import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentity} from '@threadnote/graph/types';
-import {CodeGraphWatcher, type CodeGraphRefreshStatus, type CodeGraphWatchOptions} from '@threadnote/graph/watcher';
+import {
+  CodeGraphWatcher,
+  type CodeGraphRefreshStatus,
+  type CodeGraphWatcherShape,
+  type CodeGraphWatchOptions,
+} from '@threadnote/graph/watcher';
 import {EffectMcpServerAdapter, type EffectMcpServer} from '@threadnote/threadnote/effect/ai/mcp';
 import {registerCodeGraphTool} from '@threadnote/threadnote/mcp/server/code_graph';
 import type {CommandResult} from '@threadnote/platform/command';
@@ -180,7 +185,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     );
   });
 
-  effectIt.effect('honors an explicit longer budget for ready query and exact-node reads', () => {
+  effectIt.effect('uses the 55-second default budget for ready query and exact-node reads', () => {
     const ready = codeGraphStatus({ready: true, stale: true});
     const harness = analyzeHandlerHarness({
       allowBackgroundRequest: true,
@@ -200,7 +205,6 @@ describe('registered analyze_code_graph snapshot resolution', () => {
           .invokeInspect({
             callerCwd: ready.identity.repoRoot,
             responseFormat: 'dual',
-            readTimeoutMilliseconds: 55000,
             ...request,
           })
           .pipe(Effect.forkChild({startImmediately: true}));
@@ -304,6 +308,34 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       }
       expect(harness.observation.isolatedInspectCalls).toBe(requests.length);
       expect(harness.observation.refreshOptions).toEqual([]);
+      expect(harness.observation.watcherStatusTargets).toEqual(
+        requests.map(() => ({cwd: stale.identity.repoRoot, threadnoteHome: TEST_HOME})),
+      );
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect('does not put completed ready reads behind persisted watcher discovery', () => {
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({
+      attachResults: [],
+      refresh: false,
+      rejectTargetedWatcherStatus: true,
+      statuses: [ready],
+    });
+
+    return Effect.gen(function* () {
+      const result = yield* harness.invokeInspect({
+        callerCwd: ready.identity.repoRoot,
+        operation: 'query',
+        query: 'value',
+        responseFormat: 'dual',
+      });
+
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({operation: 'query', type: 'code-graph-inspection'});
+      expect(harness.observation.watcherStatusTargets).toEqual([
+        {cwd: ready.identity.repoRoot, threadnoteHome: TEST_HOME},
+      ]);
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -403,6 +435,89 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     }).pipe(provideTestLayer(harness.layer));
   });
 
+  for (const [refreshState, refreshStatus] of [
+    ['active', indexingRefreshStatus()],
+    ['deferred', deferredRefreshStatus()],
+  ] as const) {
+    effectIt.effect(`preserves cached scoped ${refreshState} refresh state after a completed ready read`, () => {
+      const manifestPath = `/tmp/threadnote-mcp-code-graph-cached-${refreshState}.yaml`;
+      const stale = codeGraphStatus({ready: true, stale: true});
+      const harness = analyzeHandlerHarness({
+        attachResults: [],
+        liveGit: true,
+        manifestPath,
+        refresh: false,
+        refreshStatus,
+        statuses: [stale],
+      });
+
+      return Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(manifestPath, graphManifest(['web'], stale.identity.repoRoot));
+        const result = yield* harness.invokeInspect({
+          callerCwd: stale.identity.repoRoot,
+          operation: 'query',
+          project: 'web',
+          query: 'value',
+          responseFormat: 'dual',
+        });
+
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          freshness: 'stale',
+          refresh: {
+            state: refreshState,
+            ...(refreshStatus.state === 'deferred' ? {failure: refreshStatus.failure} : {}),
+          },
+          type: 'code-graph-inspection',
+        });
+        expect(harness.observation.watcherStatusCalls).toBe(0);
+        expect(harness.observation.watcherStatusTargets).toEqual([
+          expect.objectContaining({
+            cwd: stale.identity.repoRoot,
+            project: expect.objectContaining({
+              graph: {closure: 'dependencies', roots: ['src']},
+              uri: 'threadnote://resources/repos/web',
+            }),
+            threadnoteHome: TEST_HOME,
+          }),
+        ]);
+      }).pipe(
+        Effect.ensuring(FileSystem.FileSystem.pipe(Effect.flatMap(fs => fs.remove(manifestPath).pipe(Effect.ignore)))),
+        provideTestLayer(harness.layer),
+      );
+    });
+  }
+
+  effectIt.effect('serves stale ready evidence with reconnect recovery and skips resume discovery', () => {
+    const stale = codeGraphStatus({ready: true, stale: true});
+    const refreshStatus = reconnectRefreshStatus();
+    const harness = analyzeHandlerHarness({
+      attachResults: [],
+      refresh: false,
+      refreshStatus,
+      statuses: [stale],
+    });
+
+    return Effect.gen(function* () {
+      const result = yield* harness.invokeInspect({
+        callerCwd: stale.identity.repoRoot,
+        operation: 'query',
+        query: 'value',
+        responseFormat: 'dual',
+      });
+
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        freshness: 'stale',
+        refresh: {failure: refreshStatus.failure, state: 'deferred'},
+        type: 'code-graph-inspection',
+      });
+      expect(JSON.stringify(result.structuredContent)).toMatch(/reconnect/i);
+      expect(harness.observation.scheduledResumeOptions).toEqual([]);
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
   effectIt.effect('reserves finalization time without scheduling a hidden stale-ready rebuild', () => {
     const ready = codeGraphStatus({ready: true, stale: true});
     const harness = analyzeHandlerHarness({
@@ -419,7 +534,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         .invokeInspect({callerCwd: ready.identity.repoRoot, operation: 'query', query: 'value'})
         .pipe(Effect.forkChild({startImmediately: true}));
       yield* started;
-      yield* TestClock.adjust('22 seconds');
+      yield* TestClock.adjust('52 seconds');
       const result = yield* Fiber.join(fiber);
 
       expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
@@ -611,6 +726,7 @@ interface AnalyzeHandlerHarnessInput {
   readonly manifestPath?: string;
   readonly refresh: boolean;
   readonly refreshStatus?: CodeGraphRefreshStatus;
+  readonly rejectTargetedWatcherStatus?: boolean;
   readonly statuses: readonly CodeGraphStatus[];
 }
 
@@ -624,6 +740,8 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   let analysisCalls = 0;
   let isolatedInspectCalls = 0;
   const isolatedRequests: Array<Record<string, unknown>> = [];
+  const watcherStatusTargets: Array<Parameters<CodeGraphWatcherShape['cachedStatus']>[1]> = [];
+  const scheduledResumeOptions: CodeGraphWatchOptions[] = [];
   let watcherStatusCalls = 0;
   let statusIndex = 0;
   let attachIndex = 0;
@@ -658,6 +776,11 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
     statusForPublishedIdentity: () => Effect.die('Unexpected published identity status.'),
   });
   const watcher = CodeGraphWatcher.of({
+    cachedStatus: (_key, target) =>
+      Effect.sync(() => {
+        watcherStatusTargets.push(target);
+        return Option.some(input.refreshStatus ?? deferredRefreshStatus());
+      }),
     ensure: options =>
       Effect.sync(() => {
         lifecycleEvents.push('watcher-ensure');
@@ -687,9 +810,16 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
           })
         : Effect.die('Unexpected graph request.');
     },
-    status: () =>
+    scheduleResume: options =>
+      Effect.sync(() => {
+        scheduledResumeOptions.push(options);
+      }),
+    status: (_key, target) =>
       Effect.sync(() => {
         watcherStatusCalls += 1;
+        if (input.rejectTargetedWatcherStatus && target !== undefined) {
+          throw new Error('Completed ready evidence must not wait for persisted watcher discovery.');
+        }
         return Option.some(input.refreshStatus ?? deferredRefreshStatus());
       }),
     watch: () => Effect.die('Unexpected graph watch.'),
@@ -855,10 +985,12 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
       isolatedRequests,
       lifecycleEvents,
       refreshOptions,
+      scheduledResumeOptions,
       statusOptions,
       get watcherStatusCalls() {
         return watcherStatusCalls;
       },
+      watcherStatusTargets,
     },
   };
 }
@@ -980,13 +1112,40 @@ function codeGraphInspectionResult(
   };
 }
 
-function deferredRefreshStatus(): CodeGraphRefreshStatus {
+function deferredRefreshStatus(): Extract<CodeGraphRefreshStatus, {readonly state: 'deferred'}> {
   return {
     failure: {
       code: 'busy',
       operation: 'refresh code graph',
       recovery: 'defer',
       retryable: true,
+    },
+    state: 'deferred',
+  };
+}
+
+function indexingRefreshStatus(): Extract<CodeGraphRefreshStatus, {readonly state: 'indexing'}> {
+  return {
+    state: 'indexing',
+    timing: {
+      buildId: 'fixture-build',
+      elapsedMilliseconds: 1_000,
+      lastProgressAgeMilliseconds: 100,
+      phaseElapsedMilliseconds: 1_000,
+      phaseStartedAtMilliseconds: 1,
+      startedAtMilliseconds: 1,
+      updatedAtMilliseconds: 1_001,
+    },
+  };
+}
+
+function reconnectRefreshStatus(): Extract<CodeGraphRefreshStatus, {readonly state: 'deferred'}> {
+  return {
+    failure: {
+      code: 'incompatible-schema',
+      operation: 'refresh code graph',
+      recovery: 'reconnect-runtime',
+      retryable: false,
     },
     state: 'deferred',
   };

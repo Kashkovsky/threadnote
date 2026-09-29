@@ -92,6 +92,7 @@ import {
   readThreadnoteIgnoreSources,
   type CompiledIgnoreRule,
 } from './threadnote_ignore.js';
+import {makeKeyedBackgroundScheduler} from './watcher_resume_scheduler.js';
 
 export interface CodeGraphWatchOptions {
   readonly admissionClass?: CodeGraphBuilderAdmissionClass;
@@ -103,7 +104,6 @@ export interface CodeGraphWatchOptions {
   readonly refreshDemandToken?: string;
   /** @internal A single-use durable registration bound to its observed target. */
   readonly refreshDemandPrepared?: CodeGraphPreparedRefreshDemand;
-  /** Optional configured graph view. Omission preserves the full-repository watch contract. */
   readonly project?: Pick<ProjectManifest, 'graph' | 'uri'> & {readonly name?: string};
   readonly threadnoteHome: string;
 }
@@ -151,11 +151,11 @@ export interface CodeGraphRefreshFailure {
   readonly retryable: boolean;
 }
 
-/** Privacy-safe, additive progress for durable background refresh coordination. */
 export interface CodeGraphRefreshContinuity {
   readonly type: 'code-graph-refresh-continuity';
   readonly version: 1;
   readonly state: 'active' | 'queued' | 'deferred' | 'idle';
+  readonly failure?: CodeGraphRefreshFailure;
   readonly queueToken?: string;
   readonly currentTargetToken?: string;
   readonly latestDesiredToken?: string;
@@ -195,6 +195,10 @@ export interface CodeGraphWatcherMetrics {
 }
 
 export interface CodeGraphWatcherShape {
+  readonly cachedStatus: (
+    key: string,
+    target?: Pick<CodeGraphWatchOptions, 'cwd' | 'project' | 'threadnoteHome'>,
+  ) => Effect.Effect<Option.Option<CodeGraphRefreshStatus>>;
   readonly ensure: (options: CodeGraphWatchOptions) => Effect.Effect<void>;
   readonly metrics: Effect.Effect<CodeGraphWatcherMetrics>;
   readonly refresh: (options: CodeGraphWatchOptions) => Effect.Effect<boolean>;
@@ -202,6 +206,7 @@ export interface CodeGraphWatcherShape {
   readonly request: (options: CodeGraphWatchOptions) => Effect.Effect<CodeGraphRefreshRequestReceipt, unknown>;
   /** Resumes existing durable background demand without creating new demand. */
   readonly resume?: (options: CodeGraphWatchOptions) => Effect.Effect<CodeGraphRefreshContinuity | undefined, unknown>;
+  readonly scheduleResume?: (options: CodeGraphWatchOptions) => Effect.Effect<void>;
   readonly status: (
     key: string,
     target?: Pick<CodeGraphWatchOptions, 'cwd' | 'project' | 'threadnoteHome'>,
@@ -212,7 +217,6 @@ export interface CodeGraphWatcherShape {
 export interface CodeGraphWatcherLifecycleOptions {
   readonly idleTimeoutMilliseconds?: number;
   readonly maximumWatchers?: number;
-  /** @internal Closed terminal observation for detached refresh work. */
   readonly onRefreshFailure?: (failure: CodeGraphRefreshFailure) => Effect.Effect<void>;
   readonly sweepIntervalMilliseconds?: number;
 }
@@ -527,6 +531,19 @@ export const handoffCodeGraphPreparedDemand = Effect.fn('codeGraph.handoffPrepar
       Effect.onError(() => input.defer.pipe(Effect.ignore)),
     ),
   );
+});
+
+export const makeCodeGraphResumeScheduler = Effect.fn('codeGraph.makeResumeScheduler')(function* (
+  resume: (options: CodeGraphWatchOptions) => Effect.Effect<unknown, unknown>,
+  onFailure: (failure: CodeGraphRefreshFailure) => Effect.Effect<void> = () => Effect.void,
+  beforeFork?: Effect.Effect<void>,
+) {
+  return yield* makeKeyedBackgroundScheduler({
+    ...(beforeFork === undefined ? {} : {beforeFork}),
+    key: options => withCodeGraphWatcherScopeKey(options).key,
+    onFailure: cause => onFailure(codeGraphRefreshFailureFromCause(cause)),
+    run: resume,
+  });
 });
 
 export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGraphWatcherShape>()(
@@ -1009,12 +1026,17 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             }),
           );
         });
+      const scheduleResume = yield* makeCodeGraphResumeScheduler(resumeBackgroundDemand, failure =>
+        observability.backgroundFailure(anonymousTelemetryComponent, {operation: 'graph-refresh', failure}),
+      );
       return CodeGraphWatcher.of({
         ...watcher,
+        cachedStatus: (key, target) => watcher.cachedStatus(key, target),
         request: requestBackgroundDemand,
         resume: resumeBackgroundDemand,
+        scheduleResume,
         status: (key, target) =>
-          watcher.status(target?.project?.graph === undefined ? key : `${key}\0${target.project.uri}`).pipe(
+          watcher.cachedStatus(key, target).pipe(
             Effect.filterOrElse(
               current => Option.isSome(current) || target === undefined,
               () =>
@@ -1418,8 +1440,19 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
           ),
     ),
   );
+  const cachedStatus: CodeGraphWatcherShape['cachedStatus'] = (key, target) => {
+    const routedKey = target === undefined ? key : withCodeGraphWatcherScopeKey({...target, key}).key;
+    return Effect.gen(function* () {
+      yield* touchWatch(routedKey);
+      const current = (yield* SynchronizedRef.get(refreshStatuses)).get(routedKey);
+      if (!current) return Option.none();
+      const now = yield* Clock.currentTimeMillis;
+      return Option.some(refreshStatusAt(current, now));
+    });
+  };
 
   return CodeGraphWatcher.of({
+    cachedStatus,
     ensure: options => startSessionWatch(withCodeGraphWatcherScopeKey(options)),
     metrics: Effect.gen(function* () {
       const watches = yield* SynchronizedRef.get(activeWatches);
@@ -1470,14 +1503,7 @@ export const makeCodeGraphWatcher = Effect.fn('codeGraph.makeWatcher')(function*
         };
       });
     },
-    status: key =>
-      Effect.gen(function* () {
-        yield* touchWatch(key);
-        const current = (yield* SynchronizedRef.get(refreshStatuses)).get(key);
-        if (!current) return Option.none();
-        const now = yield* Clock.currentTimeMillis;
-        return Option.some(refreshStatusAt(current, now));
-      }),
+    status: cachedStatus,
     watch: options => {
       const routed = withCodeGraphWatcherScopeKey(options);
       return requestRefreshAndWait({...routed, admissionClass: 'current-required'}).pipe(
