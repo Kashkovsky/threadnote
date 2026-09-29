@@ -960,7 +960,7 @@ async function runAppServerTurn(input: {
         {detail: 'full', limit: 100},
         input.timeoutMilliseconds,
       );
-      assertMcpInventory(inventory, input.expectedMcpServer);
+      assertMatchedEvaluationMcpInventoryV1(inventory, input.expectedMcpServer);
     }
     const turnResponse = await client.requestSelectedTurn(
       {
@@ -1546,18 +1546,26 @@ function assertEffectiveThread(response: Record<string, unknown>, input: Paramet
   }
 }
 
-function assertMcpInventory(value: unknown, serverName: string): void {
+export function assertMatchedEvaluationMcpInventoryV1(value: unknown, serverName: string): void {
   const inventory = object(value, 'MCP inventory');
   if (!Array.isArray(inventory.data) || inventory.nextCursor != null || inventory.data.length !== 1) {
     throw new Error('Codex MCP inventory must contain one unpaginated context server.');
   }
   const server = object(inventory.data[0], 'MCP server');
   if (server.name !== serverName) throw new Error('Codex MCP inventory contains an unexpected server.');
-  if (server.tools !== undefined && server.tools !== null) {
-    const tools = object(server.tools, 'MCP tools');
+  const tools = server.tools === undefined || server.tools === null ? undefined : object(server.tools, 'MCP tools');
+  if (tools && Object.keys(tools).length > 0) {
     if (Object.keys(tools).length !== 1 || !('context_brief' in tools)) {
-      throw new Error('Codex MCP inventory must expose only context_brief.');
+      throw new Error('Codex MCP inventory must expose only context_brief when tool metadata is available.');
     }
+    const tool = object(tools.context_brief, 'context_brief tool');
+    if (tool.name !== 'context_brief') throw new Error('Codex MCP inventory returned a rerouted tool name.');
+  }
+  if (Array.isArray(server.resources) && server.resources.length > 0) {
+    throw new Error('Context proxy exposed unexpected resources.');
+  }
+  if (Array.isArray(server.resourceTemplates) && server.resourceTemplates.length > 0) {
+    throw new Error('Context proxy exposed unexpected resource templates.');
   }
 }
 

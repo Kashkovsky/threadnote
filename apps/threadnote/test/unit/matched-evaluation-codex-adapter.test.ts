@@ -15,6 +15,7 @@ import {sha256HexSync} from '@threadnote/platform/sha256';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
+  assertMatchedEvaluationMcpInventoryV1,
   extractMatchedEvaluationProviderUsageV1,
   matchedEvaluationCodexEnvironmentPolicyHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
@@ -100,6 +101,39 @@ describe('matched evaluation Codex adapter', () => {
         ],
       }),
     ).toThrow('unsupported or missing fields');
+  });
+
+  it('accepts lossy one-server MCP inventory while rejecting rerouted or expanded metadata', () => {
+    const inventory = (server: Record<string, unknown>) => ({data: [server], nextCursor: null});
+    const base = {name: 'matched_evaluation_context', resourceTemplates: [], resources: []};
+
+    for (const server of [{...base}, {...base, tools: {}}]) {
+      expect(() => assertMatchedEvaluationMcpInventoryV1(inventory(server), base.name)).not.toThrow();
+    }
+    expect(() =>
+      assertMatchedEvaluationMcpInventoryV1(
+        inventory({...base, tools: {context_brief: {name: 'context_brief'}}}),
+        base.name,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedEvaluationMcpInventoryV1(
+        inventory({...base, tools: {recall_context: {name: 'recall_context'}}}),
+        base.name,
+      ),
+    ).toThrow('must expose only context_brief');
+    expect(() =>
+      assertMatchedEvaluationMcpInventoryV1(
+        inventory({...base, tools: {context_brief: {name: 'recall_context'}}}),
+        base.name,
+      ),
+    ).toThrow('rerouted tool name');
+    expect(() =>
+      assertMatchedEvaluationMcpInventoryV1(
+        inventory({...base, resources: [{uri: 'threadnote://unexpected'}]}),
+        base.name,
+      ),
+    ).toThrow('unexpected resources');
   });
 
   it('uses the last cumulative provider report and rejects inconsistent accounting', () => {
