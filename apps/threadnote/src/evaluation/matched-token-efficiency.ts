@@ -63,6 +63,7 @@ export interface MatchedTokenEfficiencyClusterV1 {
   readonly clusterId: string;
   readonly heldOut: true;
   readonly repositoryFixtureHash: string;
+  readonly repositoryIdentityHash: string;
   readonly repositoryUrl: string;
   readonly revision: string;
   readonly taskIds: readonly string[];
@@ -158,6 +159,8 @@ export interface MatchedTokenEfficiencyReportV1 {
   readonly comparisons: readonly MatchedTokenEfficiencyComparisonV1[];
   readonly corpusClusters: readonly {
     readonly clusterId: string;
+    readonly repositoryFixtureHash: string;
+    readonly repositoryIdentityHash: string;
     readonly repositoryUrl: string;
     readonly revision: string;
     readonly taskCount: number;
@@ -398,6 +401,8 @@ export function evaluateMatchedTokenEfficiencyV1(input: {
     comparisons,
     corpusClusters: study.clusters.map(cluster => ({
       clusterId: cluster.clusterId,
+      repositoryFixtureHash: cluster.repositoryFixtureHash,
+      repositoryIdentityHash: cluster.repositoryIdentityHash,
       repositoryUrl: cluster.repositoryUrl,
       revision: cluster.revision,
       taskCount: cluster.taskIds.length,
@@ -411,6 +416,7 @@ export function evaluateMatchedTokenEfficiencyV1(input: {
       'Threadnote-arm observations are admissible only when they attest the preregistered ready graph snapshot and pre-existing finalized memory-link receipts; files-only observations must not contain that context.',
       'Cluster bootstrap intervals resample the preregistered repository clusters and do not establish population validity beyond them.',
       'Provider prices are intentionally excluded; the primary outcome is provider-reported tokens.',
+      'Correctness scores depend on the preregistered blinded judge; they are model-based measurements unless a task also has a hidden deterministic verifier.',
       'Raw transcripts remain local artifacts and are not embedded in this report or Threadnote memory.',
     ],
     manifestHash: manifest.manifestHash,
@@ -456,6 +462,8 @@ export function renderMatchedTokenEfficiencyArticleEvidenceV1(report: MatchedTok
   for (const cluster of report.corpusClusters) {
     lines.push(
       `- ${cluster.clusterId}: ${cluster.repositoryUrl} at ${cluster.revision} (${cluster.taskCount} task${cluster.taskCount === 1 ? '' : 's'})`,
+      `  - Repository identity: ${cluster.repositoryIdentityHash}`,
+      `  - Repository fixture: ${cluster.repositoryFixtureHash}`,
     );
   }
   lines.push('', '## Comparisons', '');
@@ -933,7 +941,7 @@ function parseCluster(value: unknown, index: number): MatchedTokenEfficiencyClus
   const cluster = object(value, `study cluster ${index}`);
   exactKeys(
     cluster,
-    ['clusterId', 'heldOut', 'repositoryFixtureHash', 'repositoryUrl', 'revision', 'taskIds'],
+    ['clusterId', 'heldOut', 'repositoryFixtureHash', 'repositoryIdentityHash', 'repositoryUrl', 'revision', 'taskIds'],
     `study cluster ${index}`,
   );
   if (cluster.heldOut !== true) invalid(`study cluster ${index} must be held out`);
@@ -959,6 +967,11 @@ function parseCluster(value: unknown, index: number): MatchedTokenEfficiencyClus
       cluster.repositoryFixtureHash,
       HASH,
       `study cluster ${index} repository fixture hash`,
+    ),
+    repositoryIdentityHash: matchingString(
+      cluster.repositoryIdentityHash,
+      HASH,
+      `study cluster ${index} repository identity hash`,
     ),
     repositoryUrl,
     revision: matchingString(cluster.revision, GIT_REVISION, `study cluster ${index} revision`),

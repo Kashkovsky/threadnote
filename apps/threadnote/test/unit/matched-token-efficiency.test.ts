@@ -220,6 +220,7 @@ function studyInput(
       clusterId: `cluster_${(index + 1).toString(16).repeat(16)}`,
       heldOut: true,
       repositoryFixtureHash: task.repositoryFixtureHash,
+      repositoryIdentityHash: ((index + 11) % 16).toString(16).repeat(64),
       repositoryUrl: `https://example.invalid/held-out-repository-${index + 1}.git`,
       revision: (index + 1).toString(16).repeat(40),
       taskIds: [task.taskId],
@@ -375,7 +376,8 @@ function observation(runOrder: number, metrics: MatchedEvaluationMetricsV1): Mat
 function armDefinitions(): readonly MatchedEvaluationArmDefinitionV1[] {
   return MATCHED_EVALUATION_ARMS.map((arm, index) => ({
     adapterArtifactHash: String(index + 1).repeat(64),
-    adapterProtocol: 'matched-evaluation-adapter-v2',
+    adapterConfigurationHash: (index + 6).toString(16).repeat(64),
+    adapterProtocol: 'matched-evaluation-adapter-v3',
     arm,
     environmentPolicyHash:
       arm === 'reference-scope' ? matchedEvaluationReferenceEnvironmentPolicyHashV1() : 'e'.repeat(64),

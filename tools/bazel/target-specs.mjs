@@ -37,6 +37,9 @@ const recallQualityEntries = [
   'scripts/evaluate-context-brief-citations-runtime.ts',
   'scripts/evaluate-code-memory-link-bench.ts',
   'scripts/evaluate-recall-v2.ts',
+  'scripts/run-matched-evaluation.ts',
+  'scripts/matched-evaluation-codex-adapter.ts',
+  'scripts/matched-evaluation-context-proxy.ts',
 ];
 const windowsSmokeEntries = [
   'apps/threadnote/test/unit/windows-support.test.ts',

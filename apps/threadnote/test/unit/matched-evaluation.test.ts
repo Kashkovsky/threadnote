@@ -96,9 +96,18 @@ describe('matched Threadnote, reference, and files evaluation', () => {
       tasks: corpus.tasks.map((task, index) => (index === 0 ? {...task, prompt: `${task.prompt} Changed.`} : task)),
     };
     const changedTask = createManifest(changedCorpus);
+    const changedAdapterConfig = createMatchedEvaluationManifestV1({
+      arms: manifest.arms.map((arm, index) => (index === 0 ? {...arm, adapterConfigurationHash: '0'.repeat(64)} : arm)),
+      corpus,
+      model: manifest.model,
+      repetitions: manifest.repetitions,
+      repository: manifest.repository,
+      scheduleSeed: manifest.scheduleSeed,
+    });
 
     expect(changedModel.manifestHash).not.toBe(manifest.manifestHash);
     expect(changedTask.manifestHash).not.toBe(manifest.manifestHash);
+    expect(changedAdapterConfig.manifestHash).not.toBe(manifest.manifestHash);
     expect(manifest.arms.find(arm => arm.arm === 'reference-scope')).toMatchObject({
       environmentPolicyHash: matchedEvaluationReferenceEnvironmentPolicyHashV1(),
       tool: {name: 'reference-context-tool', version: 'pinned-v1'},
@@ -259,7 +268,8 @@ function createManifest(
 function armDefinitions(): readonly MatchedEvaluationArmDefinitionV1[] {
   return MATCHED_EVALUATION_ARMS.map((arm, index) => ({
     adapterArtifactHash: String(index + 1).repeat(64),
-    adapterProtocol: 'matched-evaluation-adapter-v2',
+    adapterConfigurationHash: (index + 6).toString(16).repeat(64),
+    adapterProtocol: 'matched-evaluation-adapter-v3',
     arm,
     environmentPolicyHash:
       arm === 'reference-scope' ? matchedEvaluationReferenceEnvironmentPolicyHashV1() : 'e'.repeat(64),

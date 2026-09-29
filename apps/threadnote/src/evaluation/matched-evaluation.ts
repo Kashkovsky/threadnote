@@ -1,7 +1,7 @@
 import {sha256HexSync} from '@threadnote/platform/sha256';
 
 export const MATCHED_EVALUATION_VERSION = 1 as const;
-export const MATCHED_EVALUATION_ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v2' as const;
+export const MATCHED_EVALUATION_ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v3' as const;
 export const MATCHED_EVALUATION_SCHEDULE_ALGORITHM = 'sha256-counterbalanced-v2' as const;
 export const MATCHED_EVALUATION_ARMS = [
   'files',
@@ -86,6 +86,7 @@ export interface MatchedEvaluationCorpusV1 {
 
 export interface MatchedEvaluationArmDefinitionV1 {
   readonly adapterArtifactHash: string;
+  readonly adapterConfigurationHash: string;
   readonly adapterProtocol: typeof MATCHED_EVALUATION_ADAPTER_PROTOCOL;
   readonly arm: MatchedEvaluationArm;
   readonly environmentPolicyHash: string;
@@ -554,7 +555,7 @@ function parseArmDefinitions(value: readonly unknown[]): readonly MatchedEvaluat
     const arm = object(entry, `arm definition ${index}`);
     exactKeys(
       arm,
-      ['adapterArtifactHash', 'adapterProtocol', 'arm', 'environmentPolicyHash', 'tool'],
+      ['adapterArtifactHash', 'adapterConfigurationHash', 'adapterProtocol', 'arm', 'environmentPolicyHash', 'tool'],
       `arm definition ${index}`,
     );
     const id = literal(arm.arm, MATCHED_EVALUATION_ARMS, `arm definition ${index} id`);
@@ -562,6 +563,11 @@ function parseArmDefinitions(value: readonly unknown[]): readonly MatchedEvaluat
     exactKeys(tool, ['artifactHash', 'lockIdentityHash', 'name', 'version'], `arm definition ${index} tool`);
     const definition: MatchedEvaluationArmDefinitionV1 = {
       adapterArtifactHash: matchingString(arm.adapterArtifactHash, HASH, `arm definition ${index} adapter hash`),
+      adapterConfigurationHash: matchingString(
+        arm.adapterConfigurationHash,
+        HASH,
+        `arm definition ${index} adapter configuration hash`,
+      ),
       adapterProtocol: literal(
         arm.adapterProtocol,
         [MATCHED_EVALUATION_ADAPTER_PROTOCOL] as const,

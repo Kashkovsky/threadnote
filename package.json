@@ -102,6 +102,7 @@
     "eval:code-memory-link-agent-trial": "bun scripts/run-code-memory-link-agent-trial.ts",
     "eval:matched": "bun scripts/run-matched-evaluation.ts",
     "eval:matched:claim": "bun scripts/run-matched-evaluation.ts",
+    "eval:matched:adapter:build": "bun build --compile scripts/matched-evaluation-codex-adapter.ts --outfile",
     "eval:code-memory-link-codex-client": "bun scripts/run-code-memory-link-codex-client.ts",
     "eval:code-memory-link-dogfood": "bun scripts/run-code-memory-link-dogfood.ts",
     "eval:code-memory-link-retain": "bun scripts/retain-code-memory-link-evidence.ts",

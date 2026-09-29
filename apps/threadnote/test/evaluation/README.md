@@ -39,9 +39,28 @@ treatment developers use Threadnote, both may provide any context they choose, a
 repository while retaining all provider tokens and task failures.
 
 Build the frozen corpus and manifest with `createMatchedEvaluationManifestV1`, then build each prepared context and the
-study with `createMatchedTokenEfficiencyTaskContextV1` and `createMatchedTokenEfficiencyStudyV1`. Pin the reviewed
-adapter, model parameters, Threadnote executable, lock identity, repository checkout, and environment in the existing
-runtime file. Run the experiment locally with canonical absolute paths:
+study with `createMatchedTokenEfficiencyTaskContextV1` and `createMatchedTokenEfficiencyStudyV1`. Runtime v3 binds one
+canonical clean checkout to every study cluster by cluster ID and repository identity hash; this lets one local run use
+the complete multi-repository held-out corpus instead of silently executing every task in one repository. Each arm also
+binds a reviewed adapter configuration hash separately from the adapter executable and environment policy.
+
+The production adapter is a standalone compiled executable because the same pinned artifact launches both the Codex
+app-server client and the single-tool context proxy. Build it to an absolute output path, create one immutable adapter
+configuration per arm, and use the executable and configuration SHA-256 values in the manifest:
+
+```sh
+bun run eval:matched:adapter:build -- /absolute/path/to/matched-evaluation-codex-adapter
+/absolute/path/to/matched-evaluation-codex-adapter --hash-prepared-home /absolute/path/to/reviewed-task-home
+```
+
+The adapter configuration pins the Codex app-server and Git executables, their hashes, agent and judge model settings,
+an owner-only Codex authentication file, safe executable paths, task budgets, and—only for Threadnote arms—the
+content-addressed prepared Threadnote home for every task. The runtime file lists the adapter executable and config file
+for each arm plus one `{clusterId, repositoryDirectory, repositoryIdentityHash}` entry for every study cluster. The
+runner stages and re-verifies those files before and after every attempt. It selects the checkout from the task's
+preregistered cluster and rejects missing, duplicate, dirty, or identity-mismatched repositories.
+
+Run the experiment locally with canonical absolute paths:
 
 ```sh
 bun run eval:matched:claim -- \
@@ -61,6 +80,10 @@ and incremental lifecycle setup cost. Missing usage or an incomplete matrix is i
 Provider usage covers the complete agent task window, including any adapter-internal retries or recovery calls, while
 the blinded judge's own tokens are evaluation overhead and remain outside the product-arm numerator. A pinned adapter
 must keep agent execution isolated from `judgeTask` gold evidence; adapter review is part of study admission.
+The bundled production adapter evaluates completion and correctness with a separately isolated rubric-guided LLM judge.
+That judge never sees the treatment label or agent workspace, but it is still a model-based measurement rather than a
+deterministic test oracle. Article claims must name that limitation; task-specific hidden executable checks should be
+added when the held-out task contract permits them.
 
 Raw transcripts stay local and must not be stored in Threadnote memory. After every completed experiment—including a
 failed or null result—review `article-evidence.md` and store one replace-in-place durable memory under the stable topic

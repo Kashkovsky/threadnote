@@ -39,28 +39,35 @@ import {
   assertMatchedEvaluationPinnedFileV1,
   assertMatchedEvaluationRepositoryV1,
   compareAndSwapMatchedEvaluationLedgerV1,
+  type MatchedEvaluationRepositoryObservationV1,
   stageMatchedEvaluationPinnedFileV1,
   withMatchedEvaluationArtifactLockV1,
 } from './matched-evaluation-runtime-integrity.js';
 
-export const MATCHED_EVALUATION_RUNTIME_VERSION = 2 as const;
+export const MATCHED_EVALUATION_RUNTIME_VERSION = 3 as const;
 
 export interface MatchedEvaluationRuntimeV1 {
   readonly arms: readonly MatchedEvaluationRuntimeArmV1[];
   readonly artifactDirectory: string;
-  readonly repositoryDirectory: string;
-  readonly repositoryIdentityHash: string;
+  readonly repositories: readonly MatchedEvaluationRuntimeRepositoryV1[];
   readonly timeoutMilliseconds: number;
   readonly version: typeof MATCHED_EVALUATION_RUNTIME_VERSION;
 }
 
 export interface MatchedEvaluationRuntimeArmV1 {
   readonly adapterArguments: readonly string[];
+  readonly adapterConfigFile: string;
   readonly adapterExecutable: string;
   readonly arm: MatchedEvaluationArm;
   readonly environmentKeys: readonly string[];
   readonly toolExecutable: string | null;
   readonly toolLockFile: string | null;
+}
+
+export interface MatchedEvaluationRuntimeRepositoryV1 {
+  readonly clusterId: string | null;
+  readonly repositoryDirectory: string;
+  readonly repositoryIdentityHash: string;
 }
 
 export function projectMatchedEvaluationAdapterTaskV1(
@@ -105,17 +112,28 @@ export function projectMatchedEvaluationAdapterTaskV1(
 
 interface ResolvedRuntimeArm {
   readonly config: MatchedEvaluationRuntimeArmV1;
+  readonly adapterConfigFile: string;
   readonly definition: MatchedEvaluationArmDefinitionV1;
   readonly toolExecutable: string | null;
 }
 
+export interface ResolvedRuntimeRepository {
+  readonly clusterId: string | null;
+  readonly expected: MatchedEvaluationRepositoryObservationV1;
+  readonly repositoryDirectory: string;
+}
+
 const HASH = /^[0-9a-f]{64}$/u;
+const CLUSTER_ID = /^cluster_[0-9a-f]{16,64}$/u;
 const ENVIRONMENT_KEY = /^[A-Z][A-Z0-9_]{0,63}$/u;
 const BLOCKED_ENVIRONMENT_KEYS = new Set([
   'DO_NOT_TRACK',
   'HOME',
   'LANG',
   'LC_ALL',
+  'MATCHED_EVALUATION_ADAPTER_CONFIG',
+  'MATCHED_EVALUATION_ADAPTER_EXECUTABLE',
+  'MATCHED_EVALUATION_TOOL',
   'PATH',
   'THREADNOTE_TELEMETRY',
   'TMPDIR',
@@ -146,14 +164,10 @@ export async function runMatchedEvaluationFromFilesV1(options: {
       : readJson(options.studyPath).then(parseMatchedTokenEfficiencyStudyV1),
   ]);
   if (study !== null) assertMatchedTokenEfficiencyStudyMatchesV1(study, corpus, manifest);
-  if (runtime.repositoryIdentityHash !== manifest.repository.identityHash) {
-    throw new Error('Runtime repository identity differs from the content-addressed manifest.');
-  }
-  await canonicalDirectory(runtime.repositoryDirectory, 'runtime repository directory');
-  await assertMatchedEvaluationRepositoryV1(runtime.repositoryDirectory, manifest.repository);
+  const repositories = await resolveMatchedEvaluationRuntimeRepositoriesV1(runtime, study, manifest.repository);
   await assertLocalArtifactDirectory(runtime.artifactDirectory);
   await withMatchedEvaluationArtifactLockV1(runtime.artifactDirectory, async () => {
-    await assertMatchedEvaluationRepositoryV1(runtime.repositoryDirectory, manifest.repository);
+    await assertResolvedRuntimeRepositories(repositories);
     const outcomesPath = resolve(runtime.artifactDirectory, 'outcomes.jsonl');
     const summaryPath = resolve(runtime.artifactDirectory, 'summary.json');
     let expectedLedgerText = await readOptionalText(outcomesPath, 16 * 1_024 * 1_024);
@@ -176,9 +190,16 @@ export async function runMatchedEvaluationFromFilesV1(options: {
       },
       corpus,
       execute: async request => {
-        await assertMatchedEvaluationRepositoryV1(runtime.repositoryDirectory, manifest.repository);
-        const result = await executeArm(runtime, requiredResolvedArm(resolved, request.arm), request, study);
-        await assertMatchedEvaluationRepositoryV1(runtime.repositoryDirectory, manifest.repository);
+        const repository = requiredRuntimeRepository(repositories, request.task.taskId, study);
+        await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected);
+        const result = await executeArm(
+          runtime,
+          requiredResolvedArm(resolved, request.arm),
+          repository,
+          request,
+          study,
+        );
+        await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected);
         return result;
       },
       manifest,
@@ -193,7 +214,7 @@ export async function runMatchedEvaluationFromFilesV1(options: {
       },
       outcomes: existing,
     });
-    await assertMatchedEvaluationRepositoryV1(runtime.repositoryDirectory, manifest.repository);
+    await assertResolvedRuntimeRepositories(repositories);
     const summary = summarizeMatchedEvaluationV1(manifest, outcomes);
     await atomicWrite(summaryPath, `${JSON.stringify(summary, undefined, 2)}\n`);
     const tokenEfficiencyReport =
@@ -226,25 +247,107 @@ export async function runMatchedEvaluationFromFilesV1(options: {
 
 export function parseMatchedEvaluationRuntimeV1(value: unknown): MatchedEvaluationRuntimeV1 {
   const runtime = object(value, 'runtime');
-  exactKeys(
-    runtime,
-    ['arms', 'artifactDirectory', 'repositoryDirectory', 'repositoryIdentityHash', 'timeoutMilliseconds', 'version'],
-    'runtime',
-  );
-  if (runtime.version !== MATCHED_EVALUATION_RUNTIME_VERSION) invalid('runtime version must be 2');
+  exactKeys(runtime, ['arms', 'artifactDirectory', 'repositories', 'timeoutMilliseconds', 'version'], 'runtime');
+  if (runtime.version !== MATCHED_EVALUATION_RUNTIME_VERSION) invalid('runtime version must be 3');
   const arms = array(runtime.arms, 'runtime arms').map((entry, index) => parseRuntimeArm(entry, index));
+  const repositories = array(runtime.repositories, 'runtime repositories').map((entry, index) =>
+    parseRuntimeRepository(entry, index),
+  );
+  if (repositories.length === 0 || repositories.length > 64) invalid('runtime repositories must contain 1-64 entries');
   unique(
     arms.map(arm => arm.arm),
     'runtime arm ids',
   );
+  unique(
+    repositories.map(repository => repository.clusterId ?? 'single-repository'),
+    'runtime repository cluster ids',
+  );
+  unique(
+    repositories.map(repository => repository.repositoryDirectory),
+    'runtime repository directories',
+  );
   return {
     arms,
     artifactDirectory: absolutePath(runtime.artifactDirectory, 'runtime artifact directory'),
-    repositoryDirectory: absolutePath(runtime.repositoryDirectory, 'runtime repository directory'),
-    repositoryIdentityHash: matchingString(runtime.repositoryIdentityHash, HASH, 'runtime repository identity hash'),
+    repositories,
     timeoutMilliseconds: boundedPositiveInteger(runtime.timeoutMilliseconds, 60_000, 7_200_000, 'runtime timeout'),
     version: MATCHED_EVALUATION_RUNTIME_VERSION,
   };
+}
+
+export async function resolveMatchedEvaluationRuntimeRepositoriesV1(
+  runtime: MatchedEvaluationRuntimeV1,
+  study: MatchedTokenEfficiencyStudyV1 | null,
+  manifestRepository: MatchedEvaluationRepositoryObservationV1,
+): Promise<ReadonlyMap<string | null, ResolvedRuntimeRepository>> {
+  const resolved = new Map<string | null, ResolvedRuntimeRepository>();
+  if (study === null) {
+    if (runtime.repositories.length !== 1 || runtime.repositories[0]?.clusterId !== null) {
+      throw new Error('A non-study matched evaluation requires one unclustered runtime repository.');
+    }
+    const repository = runtime.repositories[0];
+    if (repository.repositoryIdentityHash !== manifestRepository.identityHash) {
+      throw new Error('Runtime repository identity differs from the content-addressed manifest.');
+    }
+    await canonicalDirectory(repository.repositoryDirectory, 'runtime repository directory');
+    await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, manifestRepository);
+    resolved.set(null, {
+      clusterId: null,
+      expected: manifestRepository,
+      repositoryDirectory: repository.repositoryDirectory,
+    });
+    return resolved;
+  }
+  if (
+    runtime.repositories.length !== study.clusters.length ||
+    runtime.repositories.some(entry => entry.clusterId === null)
+  ) {
+    throw new Error('Token-efficiency runtime repositories do not exactly cover the held-out clusters.');
+  }
+  await Promise.all(
+    study.clusters.map(async cluster => {
+      const repository = runtime.repositories.find(candidate => candidate.clusterId === cluster.clusterId);
+      if (repository === undefined) throw new Error(`Runtime repository is missing cluster ${cluster.clusterId}.`);
+      if (repository.repositoryIdentityHash !== cluster.repositoryIdentityHash) {
+        throw new Error(`Runtime repository identity differs for cluster ${cluster.clusterId}.`);
+      }
+      const expected = {
+        dirty: false,
+        fixtureHash: cluster.repositoryFixtureHash,
+        identityHash: cluster.repositoryIdentityHash,
+        revision: cluster.revision,
+      } satisfies MatchedEvaluationRepositoryObservationV1;
+      await canonicalDirectory(repository.repositoryDirectory, `runtime repository ${cluster.clusterId}`);
+      await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, expected);
+      resolved.set(cluster.clusterId, {
+        clusterId: cluster.clusterId,
+        expected,
+        repositoryDirectory: repository.repositoryDirectory,
+      });
+    }),
+  );
+  return resolved;
+}
+
+async function assertResolvedRuntimeRepositories(
+  repositories: ReadonlyMap<string | null, ResolvedRuntimeRepository>,
+): Promise<void> {
+  await Promise.all(
+    [...repositories.values()].map(repository =>
+      assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected),
+    ),
+  );
+}
+
+function requiredRuntimeRepository(
+  repositories: ReadonlyMap<string | null, ResolvedRuntimeRepository>,
+  taskId: string,
+  study: MatchedTokenEfficiencyStudyV1 | null,
+): ResolvedRuntimeRepository {
+  const clusterId = study?.taskContexts.find(context => context.taskId === taskId)?.clusterId ?? null;
+  const repository = repositories.get(clusterId);
+  if (repository === undefined) throw new Error(`No runtime repository is bound to task ${taskId}.`);
+  return repository;
 }
 
 async function resolveRuntimeArm(
@@ -254,16 +357,30 @@ async function resolveRuntimeArm(
 ): Promise<ResolvedRuntimeArm | {readonly detail: string; readonly reason: MatchedEvaluationUnavailableReason}> {
   const config = runtime.arms.find(candidate => candidate.arm === arm);
   if (config === undefined) return {detail: `${arm} has no local runtime mapping`, reason: 'runtime-not-configured'};
-  const adapter = await optionalCanonicalRegularFile(config.adapterExecutable, true);
+  const [adapter, adapterConfigFile] = await Promise.all([
+    optionalCanonicalRegularFile(config.adapterExecutable, true),
+    optionalCanonicalRegularFile(config.adapterConfigFile, false),
+  ]);
   if (adapter === null) return {detail: `${arm} adapter executable is missing`, reason: 'adapter-missing'};
+  if (adapterConfigFile === null) {
+    return {detail: `${arm} adapter configuration is missing`, reason: 'adapter-config-missing'};
+  }
   if ((await sha256File(adapter)) !== definition.adapterArtifactHash) {
     throw new Error(`${arm} adapter executable differs from its pinned manifest identity.`);
+  }
+  if ((await sha256File(adapterConfigFile)) !== definition.adapterConfigurationHash) {
+    throw new Error(`${arm} adapter configuration differs from its pinned manifest identity.`);
   }
   if (definition.tool.artifactHash === null) {
     if (config.toolExecutable !== null || config.toolLockFile !== null) {
       throw new Error(`${arm} runtime unexpectedly configures a separate tool executable or lock.`);
     }
-    return {config: {...config, adapterExecutable: adapter}, definition, toolExecutable: null};
+    return {
+      adapterConfigFile,
+      config: {...config, adapterConfigFile, adapterExecutable: adapter},
+      definition,
+      toolExecutable: null,
+    };
   }
   if (config.toolExecutable === null || config.toolLockFile === null) {
     return {detail: `${arm} tool executable or lock identity is not configured`, reason: 'tool-missing'};
@@ -280,6 +397,7 @@ async function resolveRuntimeArm(
     throw new Error(`${arm} tool executable or lock differs from its pinned manifest identity.`);
   }
   return {
+    adapterConfigFile,
     config: {...config, adapterExecutable: adapter, toolExecutable: tool, toolLockFile: lock},
     definition,
     toolExecutable: tool,
@@ -289,6 +407,7 @@ async function resolveRuntimeArm(
 async function executeArm(
   runtime: MatchedEvaluationRuntimeV1,
   resolvedArm: ResolvedRuntimeArm,
+  repository: ResolvedRuntimeRepository,
   request: MatchedEvaluationRunRequestV1,
   study: MatchedTokenEfficiencyStudyV1 | null,
 ) {
@@ -313,7 +432,11 @@ async function executeArm(
     requestPath,
     `${JSON.stringify(
       {
+        adapterArtifactHash: stagedArm.definition.adapterArtifactHash,
         adapterProtocol: stagedArm.definition.adapterProtocol,
+        adapterConfigurationHash: stagedArm.definition.adapterConfigurationHash,
+        arm: request.arm,
+        environmentPolicyHash: stagedArm.definition.environmentPolicyHash,
         agentTask: projectedTask.agentTask,
         artifactPath,
         blindLabel: request.schedule.blindLabel,
@@ -324,11 +447,12 @@ async function executeArm(
         },
         manifestHash: request.manifest.manifestHash,
         model: request.manifest.model,
-        repository: request.manifest.repository,
+        repository: repository.expected,
         preparedContext: projectedTask.preparedContext,
         runNonce: request.schedule.runNonce,
         runOrder: request.schedule.runOrder,
         tool: {
+          artifactHash: stagedArm.definition.tool.artifactHash,
           detail:
             request.arm === 'threadnote-source'
               ? 'source'
@@ -338,6 +462,7 @@ async function executeArm(
                   ? 'graph-only'
                   : null,
           executable: stagedArm.toolExecutable,
+          lockIdentityHash: stagedArm.definition.tool.lockIdentityHash,
           name: stagedArm.definition.tool.name,
           version: stagedArm.definition.tool.version,
         },
@@ -355,7 +480,7 @@ async function executeArm(
       allowFailure: true,
       arguments: [...stagedArm.config.adapterArguments, '--request', requestPath, '--response', responsePath],
       command: stagedArm.config.adapterExecutable,
-      cwd: runtime.repositoryDirectory,
+      cwd: repository.repositoryDirectory,
       environment: runtimeEnvironment(stagedArm, runDirectory),
       label: `Matched evaluation ${request.arm}`,
       maxOutputBytes: 1 * 1_024 * 1_024,
@@ -390,16 +515,26 @@ async function stageResolvedRuntimeArmV1(
   resolvedArm: ResolvedRuntimeArm,
   stagedDirectory: string,
 ): Promise<ResolvedRuntimeArm> {
-  const adapterExecutable = await stageMatchedEvaluationPinnedFileV1(
-    resolvedArm.config.adapterExecutable,
-    resolve(stagedDirectory, 'adapter'),
-    resolvedArm.definition.adapterArtifactHash,
-    true,
-    `${resolvedArm.definition.arm} adapter executable`,
-  );
+  const [adapterExecutable, adapterConfigFile] = await Promise.all([
+    stageMatchedEvaluationPinnedFileV1(
+      resolvedArm.config.adapterExecutable,
+      resolve(stagedDirectory, 'adapter'),
+      resolvedArm.definition.adapterArtifactHash,
+      true,
+      `${resolvedArm.definition.arm} adapter executable`,
+    ),
+    stageMatchedEvaluationPinnedFileV1(
+      resolvedArm.adapterConfigFile,
+      resolve(stagedDirectory, 'adapter-config.json'),
+      resolvedArm.definition.adapterConfigurationHash,
+      false,
+      `${resolvedArm.definition.arm} adapter configuration`,
+    ),
+  ]);
   if (resolvedArm.definition.tool.artifactHash === null) {
     return {
-      config: {...resolvedArm.config, adapterExecutable},
+      adapterConfigFile,
+      config: {...resolvedArm.config, adapterConfigFile, adapterExecutable},
       definition: resolvedArm.definition,
       toolExecutable: null,
     };
@@ -428,19 +563,28 @@ async function stageResolvedRuntimeArmV1(
     ),
   ]);
   return {
-    config: {...resolvedArm.config, adapterExecutable, toolExecutable, toolLockFile},
+    adapterConfigFile,
+    config: {...resolvedArm.config, adapterConfigFile, adapterExecutable, toolExecutable, toolLockFile},
     definition: resolvedArm.definition,
     toolExecutable,
   };
 }
 
 async function assertResolvedRuntimeArmArtifactsV1(resolvedArm: ResolvedRuntimeArm): Promise<void> {
-  await assertMatchedEvaluationPinnedFileV1(
-    resolvedArm.config.adapterExecutable,
-    resolvedArm.definition.adapterArtifactHash,
-    true,
-    `${resolvedArm.definition.arm} adapter executable`,
-  );
+  await Promise.all([
+    assertMatchedEvaluationPinnedFileV1(
+      resolvedArm.config.adapterExecutable,
+      resolvedArm.definition.adapterArtifactHash,
+      true,
+      `${resolvedArm.definition.arm} adapter executable`,
+    ),
+    assertMatchedEvaluationPinnedFileV1(
+      resolvedArm.adapterConfigFile,
+      resolvedArm.definition.adapterConfigurationHash,
+      false,
+      `${resolvedArm.definition.arm} adapter configuration`,
+    ),
+  ]);
   if (resolvedArm.definition.tool.artifactHash === null) return;
   if (
     resolvedArm.config.toolExecutable === null ||
@@ -473,6 +617,8 @@ function runtimeEnvironment(resolvedArm: ResolvedRuntimeArm, runDirectory: strin
     PATH: '/usr/bin:/bin',
     TMPDIR: '/tmp',
   };
+  environment.MATCHED_EVALUATION_ADAPTER_CONFIG = resolvedArm.adapterConfigFile;
+  environment.MATCHED_EVALUATION_ADAPTER_EXECUTABLE = resolvedArm.config.adapterExecutable;
   for (const key of resolvedArm.config.environmentKeys) {
     const value = process.env[key];
     if (value !== undefined) environment[key] = value;
@@ -490,7 +636,15 @@ function parseRuntimeArm(value: unknown, index: number): MatchedEvaluationRuntim
   const arm = object(value, `runtime arm ${index}`);
   exactKeys(
     arm,
-    ['adapterArguments', 'adapterExecutable', 'arm', 'environmentKeys', 'toolExecutable', 'toolLockFile'],
+    [
+      'adapterArguments',
+      'adapterConfigFile',
+      'adapterExecutable',
+      'arm',
+      'environmentKeys',
+      'toolExecutable',
+      'toolLockFile',
+    ],
     `runtime arm ${index}`,
   );
   const environmentKeys = stringArray(arm.environmentKeys, 0, 32, 64, `runtime arm ${index} environment keys`);
@@ -500,6 +654,7 @@ function parseRuntimeArm(value: unknown, index: number): MatchedEvaluationRuntim
   }
   return {
     adapterArguments: stringArray(arm.adapterArguments, 0, 64, 4_096, `runtime arm ${index} adapter arguments`),
+    adapterConfigFile: absolutePath(arm.adapterConfigFile, `runtime arm ${index} adapter configuration`),
     adapterExecutable: absolutePath(arm.adapterExecutable, `runtime arm ${index} adapter executable`),
     arm: literal(arm.arm, MATCHED_EVALUATION_ARMS, `runtime arm ${index} id`),
     environmentKeys,
@@ -507,6 +662,23 @@ function parseRuntimeArm(value: unknown, index: number): MatchedEvaluationRuntim
       arm.toolExecutable === null ? null : absolutePath(arm.toolExecutable, `runtime arm ${index} tool executable`),
     toolLockFile:
       arm.toolLockFile === null ? null : absolutePath(arm.toolLockFile, `runtime arm ${index} tool lock file`),
+  };
+}
+
+function parseRuntimeRepository(value: unknown, index: number): MatchedEvaluationRuntimeRepositoryV1 {
+  const repository = object(value, `runtime repository ${index}`);
+  exactKeys(repository, ['clusterId', 'repositoryDirectory', 'repositoryIdentityHash'], `runtime repository ${index}`);
+  return {
+    clusterId:
+      repository.clusterId === null
+        ? null
+        : matchingString(repository.clusterId, CLUSTER_ID, `runtime repository ${index} cluster id`),
+    repositoryDirectory: absolutePath(repository.repositoryDirectory, `runtime repository ${index} directory`),
+    repositoryIdentityHash: matchingString(
+      repository.repositoryIdentityHash,
+      HASH,
+      `runtime repository ${index} identity hash`,
+    ),
   };
 }
 

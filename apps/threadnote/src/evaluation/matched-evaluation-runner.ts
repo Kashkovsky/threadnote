@@ -18,6 +18,7 @@ export const MATCHED_EVALUATION_OUTCOME_VERSION = 2 as const;
 export const MATCHED_EVALUATION_UNAVAILABLE_REASONS = [
   'runtime-not-configured',
   'adapter-missing',
+  'adapter-config-missing',
   'tool-missing',
   'unsupported-platform',
 ] as const;

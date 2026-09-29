@@ -12,6 +12,11 @@ import {
   withMatchedEvaluationArtifactLockV1,
 } from '../../../../scripts/matched-evaluation-runtime-integrity.js';
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
+import {
+  parseMatchedEvaluationRuntimeV1,
+  resolveMatchedEvaluationRuntimeRepositoriesV1,
+} from '../../../../scripts/run-matched-evaluation.js';
+import type {MatchedTokenEfficiencyStudyV1} from '@threadnote/threadnote/evaluation/matched-token-efficiency';
 
 describe('matched evaluation runtime integrity', () => {
   const roots: string[] = [];
@@ -123,6 +128,66 @@ describe('matched evaluation runtime integrity', () => {
       assertMatchedEvaluationPinnedFileV1(executable, expectedHash, true, 'fixture adapter'),
     ).rejects.toThrow('differs from its pinned manifest identity');
   });
+
+  it('binds every held-out cluster to its own clean repository checkout', async () => {
+    if (process.platform === 'win32') return;
+    const root = await temporaryRoot(roots);
+    const firstDirectory = join(root, 'first-repository');
+    const secondDirectory = join(root, 'second-repository');
+    const first = await repositoryFixture(firstDirectory, 'https://github.com/example/first-fixture.git', 'first');
+    const second = await repositoryFixture(secondDirectory, 'https://github.com/example/second-fixture.git', 'second');
+    const firstCluster = 'cluster_1111111111111111';
+    const secondCluster = 'cluster_2222222222222222';
+    const study = {
+      clusters: [
+        {
+          clusterId: firstCluster,
+          repositoryFixtureHash: first.fixtureHash,
+          repositoryIdentityHash: first.identityHash,
+          revision: first.revision,
+        },
+        {
+          clusterId: secondCluster,
+          repositoryFixtureHash: second.fixtureHash,
+          repositoryIdentityHash: second.identityHash,
+          revision: second.revision,
+        },
+      ],
+    } as unknown as MatchedTokenEfficiencyStudyV1;
+    const runtime = {
+      arms: [],
+      artifactDirectory: join(root, 'artifacts'),
+      repositories: [
+        {clusterId: secondCluster, repositoryDirectory: secondDirectory, repositoryIdentityHash: second.identityHash},
+        {clusterId: firstCluster, repositoryDirectory: firstDirectory, repositoryIdentityHash: first.identityHash},
+      ],
+      timeoutMilliseconds: 60_000,
+      version: 3 as const,
+    };
+
+    expect(parseMatchedEvaluationRuntimeV1(runtime)).toEqual(runtime);
+    const resolved = await resolveMatchedEvaluationRuntimeRepositoriesV1(runtime, study, first);
+
+    expect(resolved.get(firstCluster)).toMatchObject({repositoryDirectory: firstDirectory, expected: first});
+    expect(resolved.get(secondCluster)).toMatchObject({repositoryDirectory: secondDirectory, expected: second});
+    await expect(
+      resolveMatchedEvaluationRuntimeRepositoriesV1(
+        {
+          ...runtime,
+          repositories: runtime.repositories.map(repository =>
+            repository.clusterId === firstCluster
+              ? {...repository, repositoryIdentityHash: second.identityHash}
+              : repository,
+          ),
+        },
+        study,
+        first,
+      ),
+    ).rejects.toThrow(`Runtime repository identity differs for cluster ${firstCluster}`);
+    expect(() =>
+      parseMatchedEvaluationRuntimeV1({...runtime, repositories: [runtime.repositories[0], runtime.repositories[0]]}),
+    ).toThrow('runtime repository cluster ids must be unique');
+  });
 });
 
 async function temporaryRoot(roots: string[]): Promise<string> {
@@ -146,4 +211,16 @@ async function git(cwd: string, arguments_: readonly string[]): Promise<void> {
     maxOutputBytes: 64 * 1_024,
     timeoutMilliseconds: 10_000,
   });
+}
+
+async function repositoryFixture(directory: string, remote: string, value: string) {
+  await mkdir(directory);
+  await git(directory, ['init', '-q']);
+  await git(directory, ['config', 'user.email', 'evaluation@example.invalid']);
+  await git(directory, ['config', 'user.name', 'Evaluation Fixture']);
+  await git(directory, ['remote', 'add', 'origin', remote]);
+  await writeFile(join(directory, 'service.ts'), `export const value = ${JSON.stringify(value)};\n`);
+  await git(directory, ['add', 'service.ts']);
+  await git(directory, ['commit', '-qm', 'fixture']);
+  return await observeMatchedEvaluationRepositoryV1(directory);
 }
