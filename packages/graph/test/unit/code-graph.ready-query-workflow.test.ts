@@ -55,6 +55,7 @@ describe('governed large ready-query workflow', () => {
     });
     expect(job.environment).toBe('large-repository-evidence');
     expect(job.if).toContain("github.repository == 'Kashkovsky/threadnote'");
+    expect(job.if).toContain("github.repository == 'threadnote/threadnote'");
     expect(job.if).toContain("github.event_name == 'workflow_dispatch'");
     expect(job.if).toContain("github.ref == 'refs/heads/main'");
     expect(job.if).toContain('github.ref_protected == true');
@@ -88,11 +89,14 @@ describe('governed large ready-query workflow', () => {
       THREADNOTE_READY_QUERY_REPOSITORY: '${{ vars.THREADNOTE_READY_QUERY_REPOSITORY }}',
     });
     expect(command).toContain('--preflight');
-    expect(command).toContain('test "$GITHUB_REPOSITORY" = \'Kashkovsky/threadnote\'');
+    expect(command).toContain('Kashkovsky/threadnote|threadnote/threadnote');
     expect(command).toContain('test "$GITHUB_REPOSITORY_ID" = \'1230070449\'');
     expect(command).toContain('test "$GITHUB_JOB" = \'ready-query-evidence\'');
     expect(command).toContain('test "$GITHUB_REF" = \'refs/heads/main\'');
     expect(command).toContain('test "$GITHUB_REF_PROTECTED" = \'true\'');
+    expect(command).toContain(
+      'Kashkovsky/threadnote/.github/workflows/code-graph-ready-query-evidence.yml@refs/heads/main|threadnote/threadnote/.github/workflows/code-graph-ready-query-evidence.yml@refs/heads/main',
+    );
     expect(command).toContain('test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"');
     expect(command).toContain('test "$RUNNER_ENVIRONMENT" = \'self-hosted\'');
     expect(command).toContain('test "$RUNNER_OS" = \'Linux\'');

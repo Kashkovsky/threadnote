@@ -1,4 +1,15 @@
-export type PanelName = 'context' | 'doctor' | 'graph' | 'memory' | 'processes' | 'shares' | 'tools' | 'worksets';
+export type PanelName =
+  | 'context'
+  | 'context-health'
+  | 'doctor'
+  | 'graph'
+  | 'home'
+  | 'memory'
+  | 'processes'
+  | 'reviews'
+  | 'shares'
+  | 'tools'
+  | 'worksets';
 export type SelectId = 'agent' | 'kind' | 'status';
 export type ManagerMemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
 export type ManagerMemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';

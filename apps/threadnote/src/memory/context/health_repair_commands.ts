@@ -1,4 +1,4 @@
-import {Crypto, DateTime, Effect, FileSystem, Option, Path} from 'effect';
+import {Crypto, DateTime, Effect, FileSystem, Option, Path, Result} from 'effect';
 import {sha256HexSync} from '@threadnote/platform/sha256';
 import {shellQuote} from '@threadnote/platform/command';
 import {writeFinalCliOutput} from '../../effect/cli/output.js';
@@ -15,10 +15,16 @@ import {
   writeMemoryContentWithExpectedHash,
 } from '../../mcp/server/memory.js';
 import type {RuntimeConfig} from '@threadnote/workspace/config';
+import {memoryIdentityLockKey, memoryIdFromIdentityAlias} from '@threadnote/memory/identity-alias';
+import {captureMemoryCodeCitations} from '@threadnote/context/citation/capture';
+import type {ContextHealthReportV1} from '@threadnote/context/health';
+import type {ContextHealthFindingCategoryV1} from '@threadnote/context/health';
+import type {MemoryCodeCitationV1} from '@threadnote/memory/code/citation';
 import {collectContextHealth} from './health_commands.js';
 import {
   applyContextHealthRepairProposalV1,
   isAutomaticRelationRepairTargetV1,
+  memoryContentWithCitationReplacementsV1,
   previewContextHealthRepairPlanV1,
   type ContextHealthRepairApplyReceiptV1,
   type ContextHealthRepairConflictV1,
@@ -61,8 +67,10 @@ export interface RunContextHealthRepairPreviewOptionsV1 {
   readonly contradictionId?: string;
   readonly currentUri?: string;
   readonly findingCategory?: string;
+  readonly findingCategories?: readonly ContextHealthFindingCategoryV1[];
   readonly json?: boolean;
   readonly kind?: string;
+  readonly limit?: number;
   readonly project: string;
   readonly reportRevision?: string;
   readonly staleUri?: string;
@@ -103,6 +111,90 @@ export type ContextHealthRepairApplyCommandResultV1 =
       readonly version: 1;
     };
 
+export interface ContextHealthCitationRepairBatchItemV1 {
+  readonly findingId: string;
+  readonly status: 'applied' | 'conflict';
+  readonly error?: string;
+}
+
+export const applyContextHealthCitationRepairBatch = Effect.fn('memory.contextHealthRepair.applyCitationBatch')(
+  function* (
+    config: RuntimeConfig,
+    input: {readonly project: string; readonly proposals: readonly ContextHealthRepairProposalV1[]},
+  ) {
+    const groups = new Map<string, ContextHealthRepairProposalV1[]>();
+    for (const proposal of input.proposals) {
+      if (proposal.project !== input.project || proposal.mutation.kind !== 'replace-citation') continue;
+      const group = groups.get(proposal.mutation.subjectUri) ?? [];
+      group.push(proposal);
+      groups.set(proposal.mutation.subjectUri, group);
+    }
+    const fs = yield* FileSystem.FileSystem;
+    const groupedResults = yield* Effect.forEach(
+      [...groups.entries()],
+      ([subjectUri, proposals]) =>
+        withMemoryUriLocks(
+          fs,
+          config.agentContextHome,
+          [subjectUri],
+          Effect.gen(function* () {
+            const [source] = yield* readMemoryRecordsByUri(config, [subjectUri]);
+            if (source === undefined) return batchConflicts(proposals, 'The affected memory no longer exists.');
+            const invalid = proposals.find(proposal => {
+              const verification = applyContextHealthRepairProposalV1({
+                expectedRevision: proposal.revision,
+                proposal,
+                records: [source],
+              });
+              return verification.status !== 'applied';
+            });
+            if (invalid !== undefined) {
+              return batchConflicts(proposals, 'The memory or citation evidence changed after this preview.');
+            }
+            const content = memoryContentWithCitationReplacementsV1(
+              source,
+              proposals.flatMap(proposal =>
+                proposal.mutation.kind === 'replace-citation'
+                  ? [{citationId: proposal.mutation.citationId, replacement: proposal.mutation.replacement}]
+                  : [],
+              ),
+            );
+            if (content === undefined) {
+              return batchConflicts(proposals, 'The reviewed citations cannot be combined safely in this memory.');
+            }
+            const written = yield* writeMemoryContentWithExpectedHash(
+              config,
+              'threadnote-native',
+              source.uri,
+              content,
+              source.content,
+              {alreadyLocked: true},
+            );
+            return written.isError === true
+              ? batchConflicts(proposals, callResultText(written))
+              : proposals.map(proposal => ({findingId: proposal.findingId, status: 'applied' as const}));
+          }),
+        ).pipe(Effect.result),
+      {concurrency: 4},
+    );
+    return groupedResults.flatMap((result, index) =>
+      Result.isSuccess(result)
+        ? result.success
+        : batchConflicts(
+            [...groups.values()][index] ?? [],
+            'The affected memory could not be updated. Preview the repairs again.',
+          ),
+    );
+  },
+);
+
+function batchConflicts(
+  proposals: readonly ContextHealthRepairProposalV1[],
+  error: string,
+): readonly ContextHealthCitationRepairBatchItemV1[] {
+  return proposals.map(proposal => ({error, findingId: proposal.findingId, status: 'conflict'}));
+}
+
 interface ContextHealthRepairJournalV1 {
   readonly archive?: {
     readonly contentHash: string;
@@ -134,30 +226,102 @@ export const previewContextHealthRepairs = Effect.fn('memory.contextHealthRepair
     after: selector?.after,
     duplicateCorpus: activeRecords,
     ...(selector === undefined ? {} : {includeFindingCombination: 'all' as const}),
-    ...(selector?.findingCategory === undefined ? {} : {includeFindingCategories: [selector.findingCategory]}),
+    ...(directionInput.findingCategories === undefined
+      ? selector?.findingCategory === undefined
+        ? {}
+        : {includeFindingCategories: [selector.findingCategory]}
+      : {includeFindingCategories: directionInput.findingCategories}),
     ...(contextHealthSelectorFindingUris(selector, selectedRecords) === undefined
       ? {}
       : {includeFindingUris: contextHealthSelectorFindingUris(selector, selectedRecords)}),
     relationCorpus: records,
+    limit: directionInput.limit,
   });
-  const absentTargetUris = yield* storageAbsentUris(
-    config,
-    report.findings.flatMap(finding =>
-      finding.category === 'relation-target-missing' &&
-      finding.repair.subjectUri !== undefined &&
-      finding.repair.targetUri !== undefined &&
-      isAutomaticRelationRepairTargetV1(finding.repair.subjectUri, finding.repair.targetUri)
-        ? [finding.repair.targetUri]
-        : [],
-    ),
+  const repairTargetUris = report.findings.flatMap(finding =>
+    finding.category === 'relation-target-missing' &&
+    finding.repair.subjectUri !== undefined &&
+    finding.repair.targetUri !== undefined &&
+    isAutomaticRelationRepairTargetV1(finding.repair.subjectUri, finding.repair.targetUri)
+      ? [finding.repair.targetUri]
+      : [],
   );
+  const absentTargetUris = [
+    ...(yield* storageAbsentUris(
+      config,
+      repairTargetUris.filter(uri => memoryIdFromIdentityAlias(uri) === undefined),
+    )),
+    ...repairTargetUris.filter(uri => {
+      const memoryId = memoryIdFromIdentityAlias(uri);
+      return memoryId !== undefined && !records.some(record => record.metadata.memoryId === memoryId);
+    }),
+  ];
   const semanticDirection = semanticDirectionFromInput(directionInput);
+  const citationReplacements = yield* captureCitationReplacements(config, project, cwd, records, report);
   return previewContextHealthRepairPlanV1(report, records, {
     absentTargetUris,
+    citationReplacements,
+    limit: directionInput.limit,
     ...(selector === undefined ? {} : {selector}),
     ...(semanticDirection === undefined ? {} : {semanticDirection}),
   });
 });
+
+const captureCitationReplacements = Effect.fn('memory.contextHealthRepair.captureCitations')(function* (
+  config: RuntimeConfig,
+  project: string,
+  cwd: string,
+  records: readonly MemoryRecord[],
+  report: ContextHealthReportV1,
+) {
+  const recordsByUri = new Map(records.map(record => [record.uri, record]));
+  const candidates = report.findings.flatMap(finding => {
+    if (
+      finding.repair.kind !== 'repair-citation' ||
+      (finding.category !== 'citation-changed' &&
+        finding.category !== 'citation-missing' &&
+        finding.category !== 'citation-unknown')
+    ) {
+      return [];
+    }
+    const subjectUri = finding.repair.subjectUri;
+    const targetUri = finding.repair.targetUri;
+    if (subjectUri === undefined || targetUri === undefined) return [];
+    const citationId = targetUri.slice(targetUri.lastIndexOf('#') + 1);
+    const current = recordsByUri.get(subjectUri)?.metadata.codeCitations?.find(item => item.id === citationId);
+    if (current === undefined) return [];
+    return [{current, findingId: finding.id, reference: citationReference(current)}];
+  });
+  const references = [...new Set(candidates.map(candidate => candidate.reference))];
+  const batches = Array.from({length: Math.ceil(references.length / 8)}, (_, index) =>
+    references.slice(index * 8, index * 8 + 8),
+  );
+  const capturedBatches = yield* Effect.forEach(
+    batches,
+    refs =>
+      captureMemoryCodeCitations(config, {callerCwd: cwd, omitUnresolved: true, project, refs}).pipe(
+        Effect.orElseSucceed(() => [] as readonly MemoryCodeCitationV1[]),
+      ),
+    {concurrency: 4},
+  );
+  const capturedByReference = new Map(
+    capturedBatches.flat().map(citation => [citationReference(citation), citation] as const),
+  );
+  return new Map(
+    candidates.flatMap(candidate => {
+      const replacement = capturedByReference.get(candidate.reference);
+      return replacement !== undefined &&
+        replacement.id !== candidate.current.id &&
+        replacement.repositoryId === candidate.current.repositoryId &&
+        replacement.repositoryIdentityKind === candidate.current.repositoryIdentityKind
+        ? ([[candidate.findingId, replacement]] as const)
+        : [];
+    }),
+  );
+});
+
+function citationReference(citation: MemoryCodeCitationV1): string {
+  return citation.target.kind === 'symbol' ? citation.target.nodeId : citation.path;
+}
 
 export const runContextHealthRepairPreview = Effect.fn('memory.contextHealthRepair.previewCommand')(function* (
   config: RuntimeConfig,
@@ -412,13 +576,13 @@ function executeRepairMutation(
         }),
       );
     }
-    const lockedUris = [...proposal.preconditions.map(precondition => precondition.uri), mutation.targetUri];
+    const lockScope = contextHealthRepairLockScopeV1(proposal);
     return yield* withMemoryUriLocks(
       fs,
       config.agentContextHome,
-      lockedUris,
+      lockScope.lockKeys,
       Effect.gen(function* () {
-        const current = yield* readMemoryRecordsByUri(config, lockedUris);
+        const current = yield* readMemoryRecordsByUri(config, lockScope.recordUris);
         const lockedPlan = applyContextHealthRepairProposalV1({
           absentTargetUris: yield* proposalAbsentTargetUris(config, proposal),
           expectedRevision: proposal.revision,
@@ -444,6 +608,27 @@ function executeRepairMutation(
       }),
     );
   });
+}
+
+export function contextHealthRepairLockScopeV1(proposal: ContextHealthRepairProposalV1): {
+  readonly lockKeys: readonly string[];
+  readonly recordUris: readonly string[];
+} {
+  const recordUris = [
+    ...proposal.preconditions.map(precondition => precondition.uri),
+    ...(proposal.mutation.kind === 'remove-relations' &&
+    memoryIdFromIdentityAlias(proposal.mutation.targetUri) === undefined
+      ? [proposal.mutation.targetUri]
+      : []),
+  ];
+  const targetIdentityLockKey =
+    proposal.mutation.kind === 'remove-relations'
+      ? memoryIdentityLockKey(memoryIdFromIdentityAlias(proposal.mutation.targetUri))
+      : undefined;
+  return {
+    lockKeys: [...recordUris, ...(targetIdentityLockKey === undefined ? [] : [targetIdentityLockKey])],
+    recordUris,
+  };
 }
 
 function recoveredArchiveReceipt(
@@ -525,9 +710,15 @@ function memoryContentHash(content: string): string {
 }
 
 function proposalAbsentTargetUris(config: RuntimeConfig, proposal: ContextHealthRepairProposalV1) {
-  return proposal.mutation.kind === 'remove-relations' && proposal.mutation.targetPrecondition.state === 'absent'
-    ? storageAbsentUris(config, [proposal.mutation.targetUri])
-    : Effect.succeed([] as readonly string[]);
+  if (proposal.mutation.kind !== 'remove-relations' || proposal.mutation.targetPrecondition.state !== 'absent') {
+    return Effect.succeed([] as readonly string[]);
+  }
+  const targetUri = proposal.mutation.targetUri;
+  const targetMemoryId = memoryIdFromIdentityAlias(targetUri);
+  if (targetMemoryId === undefined) return storageAbsentUris(config, [targetUri]);
+  return readMaintenanceMemoryRecords(config).pipe(
+    Effect.map(records => (records.some(record => record.metadata.memoryId === targetMemoryId) ? [] : [targetUri])),
+  );
 }
 
 const storageAbsentUris = Effect.fn('memory.contextHealthRepair.storageAbsentUris')(function* (

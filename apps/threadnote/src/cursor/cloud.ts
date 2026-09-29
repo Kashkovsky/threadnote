@@ -725,7 +725,7 @@ export const cursorCloudRemoteHybridStatus = Effect.fn('cursorCloud.remoteHybrid
         Effect.map(status => ({
           detail:
             status.readySnapshot === undefined
-              ? 'not indexed yet; inspect_code_graph starts indexing on demand'
+              ? 'not indexed yet; ordinary graph reads return no-ready; run threadnote graph index explicitly'
               : status.stale
                 ? 'a ready snapshot exists but is stale'
                 : `ready snapshot ${status.readySnapshot.id}`,

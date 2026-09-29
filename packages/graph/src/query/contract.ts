@@ -42,7 +42,14 @@ export function codeGraphInspectionStartsRefresh(
   status: {readonly readySnapshot?: unknown; readonly stale: boolean},
   operation: CodeGraphStaleInspectionOperation,
 ): boolean {
-  return !status.readySnapshot || (status.stale && !codeGraphInspectionAllowsStaleReady(operation));
+  return !codeGraphInspectionAllowsStaleReady(operation) && (!status.readySnapshot || status.stale);
+}
+
+export function codeGraphInspectionNeedsReadyAttachment(status: {
+  readonly readySnapshot?: unknown;
+  readonly stale: boolean;
+}): boolean {
+  return status.readySnapshot === undefined || status.stale;
 }
 
 export function codeGraphInspectionObservation(

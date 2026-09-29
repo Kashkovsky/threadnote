@@ -3,7 +3,7 @@ import {writeFinalCliOutput} from '../effect/cli/output.js';
 import {SystemInfo} from '@threadnote/platform/system';
 import type {RuntimeConfig} from '@threadnote/workspace/config';
 import {compileContextBrief} from './index.js';
-import type {ContextBriefMode} from '@threadnote/context/types';
+import type {ContextBriefDetail, ContextBriefMode} from '@threadnote/context/types';
 
 export const CONTEXT_BRIEF_CWD_OPTION = {
   name: 'cwd',
@@ -13,6 +13,7 @@ export interface RunContextBriefOptionsV1 {
   readonly budgetTokens?: number;
   readonly codeRefs?: readonly string[];
   readonly cwd?: string;
+  readonly detail?: ContextBriefDetail;
   readonly json?: boolean;
   readonly mode?: ContextBriefMode;
   readonly project?: string;
@@ -30,6 +31,7 @@ export const runContextBrief = Effect.fn('contextBrief.command.compile')(functio
   const projected = yield* compileContextBrief(config, {
     ...(options.budgetTokens === undefined ? {} : {budgetTokens: options.budgetTokens}),
     codeRefs: options.codeRefs ?? [],
+    ...(options.detail === undefined ? {} : {detail: options.detail}),
     ...(options.mode === undefined ? {} : {mode: options.mode}),
     scope: workset
       ? {kind: 'workset', name: workset, ...(options.project?.trim() ? {project: options.project.trim()} : {})}

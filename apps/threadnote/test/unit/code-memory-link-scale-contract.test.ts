@@ -8,6 +8,7 @@ import {
   CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
   CODE_MEMORY_LINK_SCALE_APPROVED_FIXTURE_HASH,
   CODE_MEMORY_LINK_SCALE_GITHUB_JOB,
+  CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY,
   CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
   CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID,
   CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS,
@@ -204,6 +205,42 @@ describe('code-memory-link inverse-selector scale contract', () => {
         releaseRunnerBinding(),
       ),
     ).toEqual(artifact);
+  });
+
+  it('accepts legacy-repository evidence only when the workflow ref moves with it', () => {
+    const baselineIdentity = releaseIdentity();
+    const workflowRef = `${CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY}/.github/workflows/benchmarks.yml@refs/heads/release/5.0.0`;
+    const identity = {
+      ...baselineIdentity,
+      github: {
+        ...baselineIdentity.github,
+        repository: CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY,
+        workflowRef,
+      },
+    };
+    const baselineRunnerBinding = releaseRunnerBinding();
+    const runnerBinding = {
+      ...baselineRunnerBinding,
+      github: {
+        ...baselineRunnerBinding.github,
+        repository: CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY,
+        workflowRef,
+      },
+    };
+
+    const artifact = evaluateCodeMemoryLinkScaleCapture({
+      budget,
+      candidateBinding: releaseBinding(),
+      runnerBinding,
+      capture: releaseCapture(),
+      createdAt: '2026-08-29T00:00:00.000Z',
+      identity,
+    });
+
+    expect(artifact.gate.failures).not.toContainEqual(expect.stringContaining('GitHub repository'));
+    expect(artifact.gate.failures).not.toContain(
+      'GitHub workflow ref does not identify the governed benchmarks workflow at the claimed ref',
+    );
   });
 
   it('cannot relabel a small or dirty run as release-scale evidence', () => {

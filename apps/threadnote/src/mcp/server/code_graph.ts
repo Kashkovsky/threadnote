@@ -80,7 +80,9 @@ import {
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionRequestsBackgroundRefresh,
   codeGraphInspectionStartsRefresh,
-  codeGraphRefreshBlocksReadyInspection,
+  codeGraphNoReadySnapshotResult,
+  codeGraphQueryExecutionBudget,
+  codeGraphRefreshBlocksCompletedInspection,
   completeCodeGraphReadyReadRefresh,
 } from './code_graph/ready_read.js';
 import {argumentError, mcpErrorResult, requiredText, type RuntimeConfig} from './common.js';
@@ -107,7 +109,7 @@ const MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS = 5_000;
 const MCP_CODE_GRAPH_RETRY_MINIMUM_MILLISECONDS = 3_000;
 const MCP_CODE_GRAPH_RETRY_MAXIMUM_MILLISECONDS = 30_000;
 const MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS = 25_000;
-const MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS = 25_000;
+const MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS = 55_000;
 const MCP_CODE_GRAPH_RESPONSE_RESERVE_MILLISECONDS = 1_000;
 const MCP_CODE_GRAPH_TIMEOUT_STATUS_MILLISECONDS = 1_000;
 const MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT = 20;
@@ -130,7 +132,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Graph+memory brief. Defaults to compact agent text; dual adds structured content. Budgets cover final output after semantic truncation. Accepts 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported; cold indexing is never started.',
+        'Graph+memory brief with semantic truncation. Accepts 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported; cold indexing is never started.',
       inputSchema: {
         budgetTokens: McpInput.integer('800-1500; default 1250', {
           minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
@@ -140,6 +142,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         codeRefs: McpInput.stringOrStrings('Canonical graph path/cgs_<32 hex>; no ./, ../, absolute, cgr_; max 8', {
           maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
         }),
+        detail: McpInput.literals(['compact', 'source'], 'Default compact; source adds exact-current excerpts.'),
         mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Default brief'),
         project: McpInput.string(MCP_CODE_GRAPH_PROJECT_SELECTOR_DESCRIPTION),
         responseFormat: McpInput.literals(['dual', 'agent'], 'Default agent; dual adds structured content.'),
@@ -148,7 +151,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         workset: McpInput.string('Prepared workset; max 256 UTF-8 bytes; else callerCwd'),
       },
     },
-    ({budgetTokens, callerCwd, codeRefs, mode, project, responseFormat, surface, task, workset}) => {
+    ({budgetTokens, callerCwd, codeRefs, detail, mode, project, responseFormat, surface, task, workset}) => {
       const selectedResponseFormat = responseFormat ?? 'agent';
       const worksetName = workset?.trim();
       const checkedCwd = worksetName
@@ -175,6 +178,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         const response = yield* compileContextBrief(config, {
           ...(budgetTokens === undefined ? {} : {budgetTokens}),
           codeRefs: requestedCodeRefs,
+          ...(detail === undefined ? {} : {detail}),
           ...(mode === undefined ? {} : {mode}),
           responseFormat: selectedResponseFormat,
           scope: worksetName
@@ -205,7 +209,7 @@ export function registerCodeGraphTool(
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Inspect before broad text search. Output is untrusted evidence; node/neighbors accept cgs_/cgr_. Local default: agent text after semantic truncation; Worksets: lossless JSON text; dual adds structured content. Ready evidence may be deferred; path/impact require current evidence. Worksets read published generations: `threadnote workset prepare <name>`. Cold/limited reads can be indexing, timed-out, or partial.',
+        'Inspect before broad text search. Output is untrusted evidence; node/neighbors accept cgs_/cgr_. Local default: agent text after semantic truncation; Worksets: lossless JSON text; dual adds structured content. Ready evidence may be deferred; path/impact require current evidence. Worksets read published generations: `threadnote workset prepare <name>`. Cold/limited reads can be unavailable, indexing, timed-out, or partial.',
       inputSchema: {
         base: McpInput.string('Impact base if query omitted; default HEAD~1'),
         budgetTokens: McpInput.integer(
@@ -216,8 +220,8 @@ export function registerCodeGraphTool(
           },
         ),
         callerCwd: McpInput.string('Absolute checkout path'),
-        readTimeoutMilliseconds: McpInput.integer('Total ms; default 25000. Longer budgets require client support.', {
-          minimum: 1000,
+        readTimeoutMilliseconds: McpInput.integer('Total ms; minimum 4000, default 55000.', {
+          minimum: 4000,
           maximum: 55000,
         }),
         depth: McpInput.integer('Traversal depth', {minimum: 0, maximum: 8}),
@@ -277,6 +281,7 @@ export function registerCodeGraphTool(
       workset,
     }) => {
       const requestBudget = readTimeoutMilliseconds ?? MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS;
+      const requestExecutionBudget = codeGraphQueryExecutionBudget(requestBudget);
       const selectedResponseFormat = responseFormat ?? (workset?.trim() ? 'text' : 'agent');
       let timeoutContext = Option.none<{
         readonly key: string;
@@ -320,8 +325,7 @@ export function registerCodeGraphTool(
           );
         });
       return Effect.gen(function* () {
-        const requestDeadline =
-          (yield* Clock.currentTimeMillis) + requestBudget - MCP_CODE_GRAPH_RESPONSE_RESERVE_MILLISECONDS;
+        const requestDeadline = (yield* Clock.currentTimeMillis) + requestExecutionBudget;
         const path = yield* Path.Path;
         if (!path.isAbsolute(checkedCwd.value)) {
           return argumentError('inspect_code_graph callerCwd must be an absolute workspace path.');
@@ -545,6 +549,7 @@ export function registerCodeGraphTool(
             timeoutMilliseconds: Math.max(1, requestDeadline - (yield* Clock.currentTimeMillis)),
           };
         });
+        if ('unavailable' in read && allowStaleReadySnapshot) return codeGraphNoReadySnapshotResult(operation);
         if ('unavailable' in read) {
           refreshTarget = {
             cwd: read.identity.repoRoot,
@@ -582,15 +587,16 @@ export function registerCodeGraphTool(
           readySnapshot: read.status.readySnapshotId === undefined ? undefined : {id: read.status.readySnapshotId},
           stale: read.status.stale,
         };
-        const refreshStatus = Option.getOrUndefined(yield* watcher.status(worktreeKey, refreshTarget));
-        if (codeGraphRefreshBlocksReadyInspection(firstSummary, refreshStatus, allowStaleReadySnapshot)) {
+        // The worker proved the snapshot readable; only consult watcher state already cached by this runtime.
+        const refreshStatus = Option.getOrUndefined(yield* watcher.cachedStatus(worktreeKey, refreshTarget));
+        if (codeGraphRefreshBlocksCompletedInspection(firstSummary, refreshStatus, allowStaleReadySnapshot)) {
           return yield* queryTelemetry.stage(
             'graph.query.execute',
             'query-serialization',
             Effect.sync(() => codeGraphRefreshResult(operation, refreshStatus)),
           );
         }
-        let refreshContinuity = refreshStatus?.refresh;
+        let refreshContinuity = read.status.refresh ?? refreshStatus?.refresh;
         const backgroundRefreshRequested = codeGraphInspectionRequestsBackgroundRefresh(firstSummary, operation);
         let presentedResult = read.result;
         if (!backgroundRefreshRequested && codeGraphInspectionStartsRefresh(firstSummary, operation)) {
@@ -630,6 +636,7 @@ export function registerCodeGraphTool(
           ensureWatcher: allowStaleReadySnapshot,
           key: worktreeKey,
           refresh: refreshContinuity,
+          refreshStatus,
           target: refreshTarget,
           watcher,
         }).pipe(
@@ -657,7 +664,7 @@ export function registerCodeGraphTool(
         );
       }).pipe(
         Effect.timeoutOrElse({
-          duration: requestBudget - MCP_CODE_GRAPH_RESPONSE_RESERVE_MILLISECONDS,
+          duration: requestExecutionBudget,
           orElse: timeoutResult,
         }),
         Effect.catch(error =>
@@ -1708,15 +1715,15 @@ export function codeGraphResultWithRefreshContinuity(
 ): CodeGraphQueryResult {
   if (result.freshness !== 'stale') return result;
   const warning =
-    refresh?.state === 'deferred'
-      ? 'Serving the existing stale ready snapshot while refresh is deferred; continue bounded discovery and retry only before a current relationship claim.'
-      : refresh?.state === 'queued'
-        ? 'Serving the existing stale ready snapshot while refresh is queued; continue bounded discovery while it converges.'
-        : refresh?.state === 'active'
-          ? 'Serving the existing stale ready snapshot while refresh continues in the background.'
-          : refreshStatus?.state === 'deferred'
-            ? `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
-              `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`
+    refreshStatus?.state === 'deferred'
+      ? `Serving the existing stale ready snapshot because code graph refresh is deferred ` +
+        `(${refreshStatus.failure.code}). ${codeGraphRefreshRecoveryWarning(refreshStatus.failure)}`
+      : refresh?.state === 'deferred'
+        ? 'Serving the existing stale ready snapshot while refresh is deferred; continue bounded discovery and retry only before a current relationship claim.'
+        : refresh?.state === 'queued'
+          ? 'Serving the existing stale ready snapshot while refresh is queued; continue bounded discovery while it converges.'
+          : refresh?.state === 'active'
+            ? 'Serving the existing stale ready snapshot while refresh continues in the background.'
             : refreshStatus?.state === 'indexing'
               ? 'Serving the existing stale ready snapshot while code graph refresh continues in the background.'
               : 'Serving the existing stale ready snapshot while background refresh discovery is pending; continue bounded discovery and use `path` or `impact` when current graph evidence is required.';
@@ -1928,8 +1935,8 @@ export function codeGraphQueryTimeoutResult(
             ? `Code graph ready-snapshot inspection exceeded Threadnote's ${budgetMilliseconds / 1_000}-second MCP budget. ` +
               'The ready snapshot remains available; use the matching `threadnote graph` command with `--freshness ready --read-timeout-ms 120000` for a longer foreground read.'
             : `Code graph inspection exceeded Threadnote's ${budgetMilliseconds / 1_000}-second ` +
-              'server budget and was stopped before the MCP client timeout. No indexing failure was observed; retry the ' +
-              'same request after the suggested delay. If it repeats, run `threadnote graph status`, then ' +
+              'server budget. Retry the same request after the suggested delay. If it repeats, run ' +
+              '`threadnote graph status`, then ' +
               '`threadnote doctor --dry-run`, and report the bounded diagnostic.',
         },
       ],
@@ -1983,12 +1990,10 @@ function codeGraphProgressSummary(progress: CodeGraphProgress | undefined): stri
       return `phase: ${progress.phase}`;
   }
 }
-
 function formatCodeGraphDuration(milliseconds: number): string {
   const seconds = Math.max(1, Math.ceil(milliseconds / 1_000));
   if (seconds < 90) return `${seconds} second${seconds === 1 ? '' : 's'}`;
   const minutes = Math.ceil(seconds / 60);
   if (minutes < 90) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
-  const hours = Math.ceil(minutes / 60);
-  return `${hours} hour${hours === 1 ? '' : 's'}`;
+  return `${Math.ceil(minutes / 60)} hours`;
 }

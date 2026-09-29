@@ -395,6 +395,7 @@ function fixedCodeGraphMcpReceipt(result: CodeGraphQueryResult, refresh?: CodeGr
       ? {}
       : {
           refresh: {
+            ...(refresh.failure === undefined ? {} : {failure: refresh.failure}),
             ...(refresh.retryAfterMilliseconds === undefined
               ? {}
               : {retryAfterMilliseconds: refresh.retryAfterMilliseconds}),

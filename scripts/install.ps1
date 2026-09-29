@@ -10,7 +10,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repository = if ($env:THREADNOTE_REPOSITORY) { $env:THREADNOTE_REPOSITORY } else { 'Kashkovsky/threadnote' }
+$repository = if ($env:THREADNOTE_REPOSITORY) { $env:THREADNOTE_REPOSITORY } else { 'threadnote/threadnote' }
+$officialRepositories = @('Kashkovsky/threadnote', 'threadnote/threadnote')
 $channel = if ($Beta) { 'beta' } elseif ($env:THREADNOTE_CHANNEL) { $env:THREADNOTE_CHANNEL } else { 'latest' }
 $releaseSource = if ($env:THREADNOTE_RELEASE_SOURCE) {
   $env:THREADNOTE_RELEASE_SOURCE
@@ -568,7 +569,7 @@ try {
     throw "Release metadata does not match Threadnote $version."
   }
   $officialRelease = (
-    $repository -ceq 'Kashkovsky/threadnote' -and
+    $officialRepositories -ccontains $repository -and
     -not $env:THREADNOTE_RELEASE_SOURCE -and
     -not $env:THREADNOTE_RELEASE_DOWNLOAD_ROOT
   )

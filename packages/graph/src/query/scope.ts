@@ -8,7 +8,7 @@ import {
 import {extractorSetIdentity} from '../indexer.js';
 import {inventoryRepository} from '../inventory.js';
 import {codeGraphInventoryScopeEvidence} from '../inventory/scope.js';
-import type {ResolvedCodeGraphIndexScope} from '../index_scope.js';
+import {codeGraphIndexScopeMembershipDigest, type ResolvedCodeGraphIndexScope} from '../index_scope.js';
 import type {CodeGraphLanguagePackRegistryShape} from '../languages/registry.js';
 import type {CodeGraphLayout} from '../layout.js';
 import type {CodeGraphAnalysisResult} from '../analysis.js';
@@ -40,7 +40,9 @@ export interface CodeGraphQueryScope {
  * parent process; the isolated reader only needs these persisted identities.
  */
 export interface CodeGraphQueryScopeReceipt {
-  readonly scope: Pick<ResolvedCodeGraphIndexScope, 'closureDigest' | 'definitionDigest' | 'scopeKey'>;
+  readonly scope: Pick<ResolvedCodeGraphIndexScope, 'closureDigest' | 'definitionDigest' | 'scopeKey'> & {
+    readonly membershipDigest: string;
+  };
   readonly evidence: CodeGraphScopeApplicabilityEvidence;
 }
 
@@ -52,6 +54,7 @@ export function codeGraphQueryScopeReceipt(
     scope: {
       closureDigest: selection.scope.closureDigest,
       definitionDigest: selection.scope.definitionDigest,
+      membershipDigest: codeGraphIndexScopeMembershipDigest(selection.scope),
       scopeKey: selection.scope.scopeKey,
     },
     evidence: selection.evidence,
@@ -150,14 +153,25 @@ export const codeGraphQueryScopeSnapshotCompatible = Effect.fn('codeGraph.queryS
   databasePath: string,
   worktreeId: string,
   snapshot: CodeGraphSnapshot,
+  requireExactClosure = false,
 ) {
   if (selection?.scope === undefined) return snapshot.scopeId === undefined || snapshot.scopeId === 'full-repository';
   const active = yield* store.loadScopeApplicability(databasePath, worktreeId, selection.scope.scopeKey);
+  const receipt = yield* store.loadSnapshotScopeReceipt(databasePath, snapshot.id, selection.scope.scopeKey);
+  const membershipDigest =
+    'membershipDigest' in selection.scope
+      ? selection.scope.membershipDigest
+      : codeGraphIndexScopeMembershipDigest(selection.scope);
   return (
     active !== undefined &&
+    receipt !== undefined &&
     active.snapshotId === snapshot.id &&
+    receipt.snapshotId === snapshot.id &&
+    active.definitionDigest === receipt.definitionDigest &&
+    active.closureDigest === receipt.closureDigest &&
     active.definitionDigest === selection.scope.definitionDigest &&
-    active.closureDigest === selection.scope.closureDigest
+    codeGraphIndexScopeMembershipDigest(receipt) === membershipDigest &&
+    (!requireExactClosure || active.closureDigest === selection.scope.closureDigest)
   );
 });
 

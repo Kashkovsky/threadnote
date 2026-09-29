@@ -7,13 +7,13 @@
 
 # Threadnote
 
-[![release](https://img.shields.io/github/v/release/Kashkovsky/threadnote?include_prereleases&label=release)](https://github.com/Kashkovsky/threadnote/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kashkovsky/threadnote/ci.yml?branch=main&label=CI)](https://github.com/Kashkovsky/threadnote/actions/workflows/ci.yml) [![downloads](https://img.shields.io/github/downloads/Kashkovsky/threadnote/total?label=downloads)](https://github.com/Kashkovsky/threadnote/releases) [![license](https://img.shields.io/github/license/Kashkovsky/threadnote)](./LICENSE)
+[![release](https://img.shields.io/github/v/release/threadnote/threadnote?include_prereleases&label=release)](https://github.com/threadnote/threadnote/releases) [![CI](https://img.shields.io/github/actions/workflow/status/threadnote/threadnote/ci.yml?branch=main&label=CI)](https://github.com/threadnote/threadnote/actions/workflows/ci.yml) [![downloads](https://img.shields.io/github/downloads/threadnote/threadnote/total?label=downloads)](https://github.com/threadnote/threadnote/releases) [![license](https://img.shields.io/github/license/threadnote/threadnote)](./LICENSE)
 
-> Source-verifiable engineering context across coding-agent vendors.
+> Stop explaining the same codebase to every coding agent.
 
-Threadnote 5 helps coding agents start with the right decisions and current code evidence, then leave a reviewed
-Knowledge Delta for the next engineer. It works across [catalog-supported agent
-surfaces](https://threadnote.io/agents/) without making one chat history or vendor memory the source of truth.
+Threadnote 5 helps your next agent session pick up the decisions and unfinished work from the last one, with current
+code evidence to check against. It works across [catalog-supported agent surfaces](https://threadnote.io/agents/)
+without making one chat history or vendor memory the source of truth.
 
 Personal work stays local. Exact files in the current worktree remain authoritative. Only durable knowledge or
 reusable artifacts—including verified procedures—that you explicitly review and publish cross into a Git-backed team
@@ -50,13 +50,13 @@ Python service, database server, hosted organization account, or background daem
 Install on macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh
 ```
 
 On Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.ps1 | iex
 ```
 
 Then open the repository you want Threadnote to understand, choose a managed surface from the catalog, preview setup,

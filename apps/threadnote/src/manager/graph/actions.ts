@@ -44,7 +44,7 @@ export const runManagerExplicitCwdGraphIndex = Effect.fn('managerGraphActions.ru
       force: body.full === true,
       threadnoteHome: config.agentContextHome,
     }).pipe(
-      Effect.flatMap(summary =>
+      Effect.tap(summary =>
         Console.log(
           `Ready in an isolated process · ${summary.snapshot.fileCount.toLocaleString()} files · ` +
             `${summary.snapshot.symbolCount.toLocaleString()} symbols · ` +
@@ -53,5 +53,13 @@ export const runManagerExplicitCwdGraphIndex = Effect.fn('managerGraphActions.ru
       ),
     ),
   );
-  return {output: captured.output};
+  const result = {
+    output: captured.output,
+    snapshot: {
+      commit: captured.value.snapshot.commit,
+      dirty: captured.value.snapshot.dirty,
+      id: captured.value.snapshot.id,
+    },
+  };
+  return body.action === 'index-cwd' ? {output: result.output} : result;
 });

@@ -28,7 +28,7 @@ describe('LocalModelStore', () => {
 
     if (!coreModel || !nonCoreModel) throw TestError.make({message: 'Missing built-in model fixture.'});
     expect(modelDownloadUrl(coreModel)).toBe(
-      `https://github.com/Kashkovsky/threadnote/releases/download/v4.1.1/${coreModel.sha256}.gguf`,
+      `https://github.com/threadnote/threadnote/releases/download/v4.1.1/${coreModel.sha256}.gguf`,
     );
     expect(modelDownloadUrl(nonCoreModel)).toBe(
       `https://huggingface.co/ggml-org/bge-m3-Q8_0-GGUF/resolve/${nonCoreModel.revision}/bge-m3-q8_0.gguf`,

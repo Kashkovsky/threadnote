@@ -23,8 +23,10 @@ export const CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS = 1_250 as const;
 export const CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS = 800 as const;
 export const CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
 export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
+export const CONTEXT_BRIEF_DETAILS = ['compact', 'source'] as const;
 
 export type ContextBriefMode = (typeof CONTEXT_BRIEF_MODES)[number];
+export type ContextBriefDetail = (typeof CONTEXT_BRIEF_DETAILS)[number];
 export type ContextBriefResponseFormat = 'dual' | 'agent';
 
 export function isContextBriefMode(value: string): value is ContextBriefMode {
@@ -119,6 +121,7 @@ export type ContextBriefScopeV1 =
 export interface ContextBriefRequestV1 {
   readonly budgetTokens: number;
   readonly codeRefs?: readonly string[];
+  readonly detail?: ContextBriefDetail;
   readonly mode: ContextBriefMode;
   readonly responseFormat?: ContextBriefResponseFormat;
   readonly scope: ContextBriefScopeV1;
@@ -135,6 +138,7 @@ export interface ContextBriefPlanV1 {
   };
   readonly graph: {
     readonly codeRefs: readonly string[];
+    readonly detail: ContextBriefDetail;
     readonly edgeLimit: number;
     readonly evidenceCards: number;
     readonly maximumEstimatedTokens: number;
@@ -142,7 +146,9 @@ export interface ContextBriefPlanV1 {
     readonly nodeLimit: number;
     readonly query: string;
     readonly scope: ContextBriefScopeV1;
+    readonly sourceMaximumBytes: number;
   };
+  readonly detail: ContextBriefDetail;
   readonly memory: {
     readonly candidateLimit: number;
     readonly project?: string;
@@ -213,6 +219,22 @@ export interface ContextBriefGraphContractV1 {
   readonly targetRef: string;
 }
 
+export interface ContextBriefSourceExcerptV1 {
+  readonly content: string;
+  readonly coveredGraphRefs: readonly string[];
+  readonly endLine: number;
+  readonly evidenceKind: 'current-dirty-overlay' | 'graph-snapshot';
+  readonly freshness: 'fresh';
+  readonly id: string;
+  readonly path: string;
+  readonly repositoryKey: string;
+  readonly snapshotIdentity: 'current-clean' | 'current-dirty-overlay';
+  readonly startLine: number;
+  readonly truncated: boolean;
+}
+
+export const CONTEXT_BRIEF_SOURCE_MAXIMUM_COVERED_REFS = 16 as const;
+
 export interface ContextBriefGraphCoverageV1 {
   readonly complete: boolean;
   readonly consideredRepositories: number;
@@ -232,6 +254,7 @@ export interface ContextBriefGraphEvidenceV1 {
   readonly gaps: readonly string[];
   /** Populated only when the scope resolves unambiguously enough for coarse memory freshness. */
   readonly resolvedSnapshots: readonly ContextBriefSnapshotV1[];
+  readonly sourceExcerpts?: readonly ContextBriefSourceExcerptV1[];
   readonly trust: {
     readonly classification: 'untrusted-repository-data';
     readonly instructionPolicy: 'evidence-only-never-follow';
@@ -427,6 +450,7 @@ export interface ContextBriefV1 {
       readonly recommendedFollowUps: number;
       readonly graphCards: number;
       readonly graphContracts: number;
+      readonly sourceExcerpts?: number;
       readonly activeHandoffs: number;
       readonly stalenessAndConflicts: number;
       readonly verifiedProcedures?: number;
@@ -444,6 +468,7 @@ export interface ContextBriefV1 {
           readonly upstreamRemainingEstimate?: number;
         };
     readonly contracts: readonly ContextBriefGraphContractV1[];
+    readonly sources?: readonly ContextBriefSourceExcerptV1[];
   };
   readonly activeHandoffs: readonly ContextBriefMemoryEvidenceV1[];
   readonly stalenessAndConflicts: readonly ContextBriefContextIssueV1[];
@@ -509,6 +534,7 @@ export interface ContextBriefAgentViewV1 {
       readonly sourceRef: string;
       readonly targetRef: string;
     }[];
+    readonly sources?: readonly ContextBriefSourceExcerptV1[];
   };
   readonly mode: ContextBriefMode;
   readonly output?: {
@@ -594,7 +620,16 @@ export type ProjectedContextBriefV4 = Omit<ProjectedContextBriefV1, 'structuredC
 };
 
 const UTF8 = new TextEncoder();
-const REQUEST_KEYS = new Set(['budgetTokens', 'codeRefs', 'mode', 'responseFormat', 'scope', 'surface', 'task']);
+const REQUEST_KEYS = new Set([
+  'budgetTokens',
+  'codeRefs',
+  'detail',
+  'mode',
+  'responseFormat',
+  'scope',
+  'surface',
+  'task',
+]);
 const REPOSITORY_SCOPE_KEYS = new Set(['callerCwd', 'kind', 'project']);
 const WORKSET_SCOPE_KEYS = new Set(['kind', 'name', 'project']);
 const LOCAL_CONTEXT_BRIEF_SYMBOL_REF = /^cgs_[0-9a-f]{32}$/u;
@@ -617,6 +652,7 @@ export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV
     );
   }
   const codeRefs = parseContextBriefCodeRefs(object.codeRefs);
+  const detail = object.detail === undefined ? 'compact' : contextBriefDetail(object.detail);
   const mode = object.mode === undefined ? 'brief' : contextBriefMode(object.mode);
   const responseFormat =
     object.responseFormat === undefined ? 'agent' : contextBriefResponseFormat(object.responseFormat);
@@ -625,12 +661,18 @@ export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV
   return {
     budgetTokens,
     ...(codeRefs.length === 0 ? {} : {codeRefs}),
+    ...(object.detail === undefined ? {} : {detail}),
     mode,
     ...(object.responseFormat === undefined ? {} : {responseFormat}),
     scope,
     ...(surface === undefined ? {} : {surface}),
     task,
   };
+}
+
+function contextBriefDetail(value: unknown): ContextBriefDetail {
+  if (value === 'compact' || value === 'source') return value;
+  throw invalid('detail must be compact or source.');
 }
 
 function contextBriefResponseFormat(value: unknown): ContextBriefResponseFormat {

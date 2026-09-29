@@ -79,6 +79,7 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
     readonly includeFindingCategories?: Parameters<typeof buildContextHealthReport>[0]['includeFindingCategories'];
     readonly includeFindingCombination?: Parameters<typeof buildContextHealthReport>[0]['includeFindingCombination'];
     readonly includeFindingUris?: readonly string[];
+    readonly limit?: number;
     readonly relationCorpus?: Parameters<typeof buildContextHealthReport>[0]['records'];
   } = {},
 ) {
@@ -106,6 +107,7 @@ export const collectContextHealth = Effect.fn('memory.contextHealth.collect')(fu
     includeFindingCategories: options.includeFindingCategories,
     includeFindingCombination: options.includeFindingCombination,
     includeFindingUris: options.includeFindingUris,
+    limit: options.limit,
     now,
     project,
     records,

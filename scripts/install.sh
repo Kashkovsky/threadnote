@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPOSITORY="${THREADNOTE_REPOSITORY:-Kashkovsky/threadnote}"
+REPOSITORY="${THREADNOTE_REPOSITORY:-threadnote/threadnote}"
 CHANNEL="${THREADNOTE_CHANNEL:-latest}"
 RELEASES_API="${THREADNOTE_RELEASE_SOURCE:-https://api.github.com/repos/$REPOSITORY/releases?per_page=100}"
 INSTALL_LOCK_WAIT_SECONDS=600
@@ -31,6 +31,13 @@ die() {
 
 have() {
   command -v "$1" >/dev/null 2>&1
+}
+
+is_official_repository() {
+  case "$1" in
+    Kashkovsky/threadnote | threadnote/threadnote) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 require_command() {
@@ -625,7 +632,7 @@ tar -xzf "$archive" -C "$staged_root"
 grep -F "\"version\": \"$version\"" "$staged_root/release.json" >/dev/null ||
   die "Release metadata does not match $version."
 if [ "$platform" = "darwin" ] &&
-  [ "$REPOSITORY" = "Kashkovsky/threadnote" ] &&
+  is_official_repository "$REPOSITORY" &&
   [ -z "${THREADNOTE_RELEASE_SOURCE:-}" ] &&
   [ -z "${THREADNOTE_RELEASE_DOWNLOAD_ROOT:-}" ]; then
   require_command codesign

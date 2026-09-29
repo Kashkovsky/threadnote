@@ -67,7 +67,8 @@ jobs:
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      github.repository == 'Kashkovsky/threadnote' &&
+      (github.repository == 'Kashkovsky/threadnote' ||
+       github.repository == 'threadnote/threadnote') &&
       vars.THREADNOTE_TELEMETRY_GRAFANA_DIRECT_ENABLED == 'true'
     needs: validate
     runs-on: ubuntu-latest
@@ -165,7 +166,8 @@ jobs:
       needs.validate.result == 'success' &&
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
-      github.repository == 'Kashkovsky/threadnote' &&
+      (github.repository == 'Kashkovsky/threadnote' ||
+       github.repository == 'threadnote/threadnote') &&
       vars.THREADNOTE_TELEMETRY_GRAFANA_DIRECT_ENABLED == 'true' &&
       (github.event_name != 'push' ||
        (needs.deploy.result == 'success' && needs.deploy.outputs.stale != 'true'))

@@ -89,7 +89,7 @@ describe('agent instructions', () => {
     const normalizedContext = context.replace(/\s+/g, ' ');
     const normalizedGraph = graph.replace(/\s+/g, ' ');
     expect(context.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(400);
-    expect(graph.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(350);
+    expect(graph.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(425);
     expect(memory.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(500);
     for (const requiredText of [
       '`context_brief`',
@@ -100,6 +100,9 @@ describe('agent instructions', () => {
       '`read_context`',
       'Recall output is pointers, not evidence',
       '`inspect_code_graph` before broad text search',
+      '`inspect_code_graph({"callerCwd":"/abs/repo","operation":"query","query":"exclusive file lock"})`',
+      '`analyze_code_graph({"callerCwd":"/abs/repo","operation":"stats","freshness":"allow-stale"})`',
+      'Both tools require an absolute `callerCwd` and an `operation`',
       '`query`',
       '`node`',
       '`neighbors`',
@@ -128,6 +131,11 @@ describe('agent instructions', () => {
       '`apply_memory_candidates`',
       '`approve` (optionally with `editedText`), `defer`, or `reject`',
       '`remember_context(kind=handoff)`',
+      'Always write the required private handoff directly',
+      'Omit `keywords` and `regenerateKeywords` for handoff writes',
+      'Only when the session produced reusable durable knowledge',
+      'The Knowledge Delta and returned memory candidates are one optional review lifecycle, not separate writes',
+      'Without a user decision, leave candidates unapplied',
       '`citationPolicy: "defer"`',
       '`--defer-code-refs`',
       '`citationPolicy: "require-current"`',

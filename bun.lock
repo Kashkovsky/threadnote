@@ -107,6 +107,18 @@
         "smol-toml": "1.8.0",
         "yaml": "^2.9.1",
       },
+      "devDependencies": {
+        "@effect/sql-sqlite-bun": "4.0.0-rc.115",
+        "@effect/tsgo": "0.45.0",
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "fflate": "0.8.3",
+        "postgres": "3.4.9",
+        "react": "^19.3.0",
+        "react-dom": "^19.3.0",
+        "vitest": "5.0.1",
+      },
     },
     "apps/website": {
       "name": "@threadnote/website",
@@ -152,6 +164,7 @@
         "effect": "4.0.0-rc.115",
       },
       "devDependencies": {
+        "@effect/platform-bun": "4.0.0-rc.115",
         "@effect/vitest": "4.0.0-rc.115",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
@@ -163,6 +176,12 @@
       "dependencies": {
         "@threadnote/platform": "workspace:*",
         "effect": "4.0.0-rc.115",
+      },
+      "devDependencies": {
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "js-yaml": "^5.4.2",
+        "vitest": "5.0.1",
       },
     },
     "packages/graph": {
@@ -181,6 +200,13 @@
         "typescript-compiler": "npm:typescript@5.9.3",
         "unpdf": "1.8.1",
         "web-tree-sitter": "0.27.0",
+      },
+      "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@modelcontextprotocol/sdk": "1.30.0",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
       },
     },
     "packages/inference": {
@@ -221,6 +247,9 @@
         "three": "^0.186.0",
       },
       "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
         "vitest": "5.0.1",
       },
     },
@@ -258,6 +287,10 @@
         "effect": "4.0.0-rc.115",
         "jose": "6.2.12",
       },
+      "devDependencies": {
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
+      },
     },
     "packages/recall": {
       "name": "@threadnote/recall",
@@ -292,6 +325,12 @@
         "jose": "6.2.12",
         "postgres": "3.4.9",
       },
+      "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
+      },
     },
     "packages/store": {
       "name": "@threadnote/store",
@@ -321,6 +360,12 @@
         "@threadnote/store": "workspace:*",
         "effect": "4.0.0-rc.115",
         "js-yaml": "^5.4.2",
+      },
+      "devDependencies": {
+        "@effect/vitest": "4.0.0-rc.115",
+        "@threadnote/testing": "workspace:*",
+        "fast-check": "4.10.1",
+        "vitest": "5.0.1",
       },
     },
   },

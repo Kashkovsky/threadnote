@@ -139,6 +139,27 @@ describe('scoped graph retrieval', () => {
           refs: ['apps/b/index.ts'],
         }).pipe(Effect.result);
         expect(citation).toMatchObject({failure: {failureCode: 'outside-project-graph'}});
+        yield* write('apps/a/tsconfig.json', JSON.stringify({compilerOptions: {strict: true}}));
+        yield* git('add', '.');
+        yield* git('commit', '-qm', 'change A closure details');
+        const staleStatus = yield* query.status(home, root, {
+          project: 'a',
+          manifestPath,
+          requestMaintenance: false,
+        });
+        expect(staleStatus).toMatchObject({freshness: 'stale', stale: true});
+        expect(staleStatus.readySnapshot?.id).toBe(a.snapshot.id);
+        const staleQuery = yield* query.inspect({...options, operation: 'query', query: 'valueA'});
+        expect(staleQuery.freshness).toBe('stale');
+        expect(staleQuery.nodes.some(candidate => candidate.path === 'apps/a/index.ts')).toBe(true);
+        const repeatedStaleQuery = yield* query.inspect({...options, operation: 'query', query: 'valueA'});
+        expect(repeatedStaleQuery.freshness).toBe('stale');
+        expect(repeatedStaleQuery.snapshot.id).toBe(a.snapshot.id);
+        expect(
+          yield* query
+            .inspect({...options, operation: 'query', query: 'valueA', strictFreshness: true})
+            .pipe(Effect.result),
+        ).toMatchObject({failure: {_tag: 'CodeGraphSnapshotUnavailable'}, _tag: 'Failure'});
         yield* fs.writeFileString(
           manifestPath,
           JSON.stringify({

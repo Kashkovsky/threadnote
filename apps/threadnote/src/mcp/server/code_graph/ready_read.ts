@@ -1,4 +1,5 @@
 import {Effect} from 'effect';
+import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {codeGraphScopeAdmitsPath} from '@threadnote/graph/scope/applicability';
 import {
   codeGraphProjectCoverage,
@@ -24,8 +25,10 @@ import type {
   CodeGraphWatcherShape,
   CodeGraphWatchOptions,
 } from '@threadnote/graph/watcher';
+import {attachAnonymousTelemetryReportedOutcome} from '../../../telemetry/diagnostic.js';
 
 type CodeGraphInspectionOperation = CodeGraphQueryResult['operation'];
+const MCP_CODE_GRAPH_QUERY_RESERVE_MILLISECONDS = 3_000;
 
 export function codeGraphRefreshBlocksReadyInspection(
   status: {readonly readySnapshot?: unknown; readonly stale: boolean},
@@ -35,6 +38,17 @@ export function codeGraphRefreshBlocksReadyInspection(
   if (refreshStatus?.state === 'deferred' && refreshStatus.failure.recovery === 'reconnect-runtime') return true;
   const refreshBlocks = refreshStatus?.state === 'deferred' || refreshStatus?.state === 'indexing';
   return refreshBlocks && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
+}
+
+/** A successful stale-tolerant read is authoritative over refresh-process state. */
+export function codeGraphRefreshBlocksCompletedInspection(
+  status: {readonly readySnapshot?: unknown; readonly stale: boolean},
+  refreshStatus: CodeGraphRefreshStatus | undefined,
+  allowStaleReadySnapshot: boolean,
+): boolean {
+  return (
+    !allowStaleReadySnapshot && codeGraphRefreshBlocksReadyInspection(status, refreshStatus, allowStaleReadySnapshot)
+  );
 }
 
 export {
@@ -49,6 +63,34 @@ export function codeGraphInspectionRequestsBackgroundRefresh(
   operation: CodeGraphInspectionOperation,
 ): boolean {
   return status.readySnapshot !== undefined && status.stale && codeGraphInspectionAllowsStaleReady(operation);
+}
+
+export function codeGraphQueryExecutionBudget(requestBudget: number): number {
+  return Math.max(1, requestBudget - MCP_CODE_GRAPH_QUERY_RESERVE_MILLISECONDS);
+}
+
+export function codeGraphNoReadySnapshotResult(operation: CodeGraphInspectionOperation): CallToolResult {
+  return attachAnonymousTelemetryReportedOutcome(
+    {
+      content: [
+        {
+          type: 'text',
+          text:
+            'No compatible ready code graph snapshot is available for this repository. ' +
+            'Threadnote did not start a background build for this read-only inspection. ' +
+            'Run `threadnote graph index`, then retry inspect_code_graph.',
+        },
+      ],
+      structuredContent: {
+        operation,
+        reason: 'no-ready-snapshot',
+        state: 'unavailable',
+        type: 'code-graph-query-state',
+        version: 1,
+      },
+    },
+    'unavailable',
+  );
 }
 
 export function selectCodeGraphReadySnapshotForInspection<T>(
@@ -66,27 +108,33 @@ export const completeCodeGraphReadyReadRefresh = Effect.fn('codeGraph.completeRe
   readonly ensureWatcher: boolean;
   readonly key: string;
   readonly refresh?: CodeGraphRefreshContinuity;
+  readonly refreshStatus?: CodeGraphRefreshStatus;
   readonly target: Omit<CodeGraphWatchOptions, 'key'>;
   readonly watcher: CodeGraphWatcherShape;
 }) {
   if (input.ensureWatcher) yield* input.watcher.ensure({...input.target, key: input.key});
   if (!input.backgroundRefreshRequested) return input.refresh;
-  // A compatible ready read may establish a watcher, but never turns its
-  // successful response into new hidden build demand. It may resume a demand
-  // already admitted by a watcher on another process so abandoned work does
-  // not remain permanently claimed after that process exits.
-  const resumed =
-    input.watcher.resume === undefined
-      ? undefined
-      : yield* input.watcher.resume({...input.target, key: input.key}).pipe(Effect.orElseSucceed(() => undefined));
-  return (
-    resumed ??
-    input.refresh ?? {
+  const observedContinuity =
+    input.refresh ??
+    ({
       type: 'code-graph-refresh-continuity' as const,
       version: 1 as const,
-      state: 'deferred' as const,
+      state: input.refreshStatus?.state === 'indexing' ? ('active' as const) : ('deferred' as const),
+    } satisfies CodeGraphRefreshContinuity);
+  const failure = input.refreshStatus?.state === 'deferred' ? input.refreshStatus.failure : undefined;
+  const continuity =
+    failure === undefined ? observedContinuity : {...observedContinuity, failure, state: 'deferred' as const};
+  // Durable demand discovery is maintenance, not part of the evidence read.
+  // The watcher owns a keyed single-flight in its service scope so repeated
+  // stale reads return promptly without accumulating detached filesystem work.
+  if (failure?.retryable !== false) {
+    if (input.watcher.scheduleRequest !== undefined) {
+      yield* input.watcher.scheduleRequest({...input.target, key: input.key});
+    } else if (input.watcher.scheduleResume !== undefined) {
+      yield* input.watcher.scheduleResume({...input.target, key: input.key});
     }
-  );
+  }
+  return continuity;
 });
 
 export function selectCodeGraphReadyReadChangedPaths(

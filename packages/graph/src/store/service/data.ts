@@ -1,5 +1,9 @@
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../../index_scope.js';
-import {selectScopeApplicability, recordScopeApplicability} from '../scope/applicability.js';
+import {
+  selectScopeApplicability,
+  selectSnapshotScopeReceipt,
+  recordScopeApplicability,
+} from '../scope/applicability.js';
 import {DateTime, Effect} from 'effect';
 import {succeedUndefined} from '@threadnote/platform/optional';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
@@ -139,6 +143,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'markFailed'
   | 'readySnapshot'
   | 'loadScopeApplicability'
+  | 'loadSnapshotScopeReceipt'
   | 'recordScopeApplicability'
   | 'readySnapshotById'
   | 'currentLexicalReadySnapshotById'
@@ -730,6 +735,15 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
           exists ? useReadOnlyDatabase(databasePath, selectScopeApplicability(worktreeId, scopeId)) : succeedUndefined,
         ),
         Effect.mapError(cause => storeError('load code graph scope applicability', cause)),
+      ),
+    loadSnapshotScopeReceipt: (databasePath, snapshotId, scopeId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectSnapshotScopeReceipt(snapshotId, scopeId))
+            : succeedUndefined,
+        ),
+        Effect.mapError(cause => storeError('load code graph snapshot scope receipt', cause)),
       ),
     recordScopeApplicability: (databasePath, snapshotId, evidence, scope) =>
       withWriterGate(

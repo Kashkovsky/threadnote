@@ -7,7 +7,7 @@ import {tmpdir} from '@threadnote/testing/node-os';
 import {join} from '@threadnote/testing/node-path';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
-import {Deferred, Effect, FileSystem, PlatformError, Queue} from 'effect';
+import {Clock, Deferred, Effect, Fiber, FileSystem, PlatformError, Queue} from 'effect';
 import {TestClock, TestConsole} from 'effect/testing';
 import * as FC from 'fast-check';
 import {afterEach, beforeEach, describe} from 'vitest';
@@ -361,24 +361,33 @@ describe('process diagnostics', () => {
       const fileSystem = yield* FileSystem.FileSystem;
       const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-process-restore-registration-'});
       const config = {agentContextHome: home};
+      const registrationPath = join(home, 'runtime', 'processes', `${process.pid}.json`);
+      const publications = yield* Queue.unbounded<void>();
+      const observedFileSystem = FileSystem.FileSystem.of({
+        ...fileSystem,
+        link: (source, destination) =>
+          fileSystem
+            .link(source, destination)
+            .pipe(
+              Effect.tap(() => (destination === registrationPath ? Queue.offer(publications, undefined) : Effect.void)),
+            ),
+      });
       yield* withThreadnoteProcessRegistration(
         home,
         'mcp',
         Effect.gen(function* () {
-          const registrationPath = join(home, 'runtime', 'processes', `${process.pid}.json`);
+          yield* Queue.take(publications);
           expect(yield* fileSystem.exists(registrationPath)).toBe(true);
           yield* fileSystem.remove(registrationPath);
           expect(yield* fileSystem.exists(registrationPath)).toBe(false);
           yield* TestClock.adjust(30_000);
-          for (let attempt = 0; attempt < 100 && !(yield* fileSystem.exists(registrationPath)); attempt += 1) {
-            yield* Effect.yieldNow;
-          }
+          yield* Queue.take(publications);
           expect(yield* fileSystem.exists(registrationPath)).toBe(true);
           const listed = yield* readThreadnoteProcessDiagnostics(config);
           expect(listed.processes).toEqual([expect.objectContaining({processId: process.pid, role: 'mcp'})]);
         }),
         'mcp-server',
-      );
+      ).pipe(Effect.provideService(FileSystem.FileSystem, observedFileSystem));
     }).pipe(provideTestLayer(TestSystemInfoLayer), provideTestLayer(BunServices.layer), Effect.scoped),
   );
 
@@ -595,37 +604,53 @@ describe('process diagnostics', () => {
   it.effect('retries idle registration repair after a transient filesystem failure', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const clock = yield* Clock.Clock;
       const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-process-registration-retry-'});
       const file = join(home, 'runtime', 'processes', `${process.pid}.json`);
       let fail = false;
-      let failures = 0;
+      const attempts = yield* Queue.unbounded<'failed' | 'published'>();
+      const reconcileSleeps = yield* Queue.unbounded<void>();
+      const observedClock: Clock.Clock = {
+        ...clock,
+        sleep: duration =>
+          Effect.gen(function* () {
+            const fiber = yield* clock.sleep(duration).pipe(Effect.forkChild({startImmediately: true}));
+            yield* Queue.offer(reconcileSleeps, undefined);
+            yield* Fiber.join(fiber);
+          }),
+      };
       const flaky = FileSystem.FileSystem.of({
         ...fs,
         makeDirectory: (directory, options) => {
           if (fail) {
-            failures += 1;
-            return fs.makeDirectory(`${file}/missing`, {recursive: false});
+            return Queue.offer(attempts, 'failed').pipe(
+              Effect.andThen(fs.makeDirectory(`${file}/missing`, {recursive: false})),
+            );
           }
           return fs.makeDirectory(directory, options);
         },
+        link: (source, destination) =>
+          fs
+            .link(source, destination)
+            .pipe(Effect.tap(() => (destination === file ? Queue.offer(attempts, 'published') : Effect.void))),
       });
       yield* withThreadnoteProcessRegistration(
         home,
         'mcp',
         Effect.gen(function* () {
+          expect(yield* Queue.take(attempts)).toBe('published');
+          yield* Queue.take(reconcileSleeps);
           yield* fs.remove(file);
           fail = true;
           yield* TestClock.adjust(30_000);
-          for (let attempt = 0; attempt < 100 && failures === 0; attempt += 1) yield* fs.exists(file);
-          expect(failures).toBe(1);
+          expect(yield* Queue.take(attempts)).toBe('failed');
           fail = false;
-          yield* fs.exists(file);
-          yield* fs.exists(file);
+          yield* Queue.take(reconcileSleeps);
           yield* TestClock.adjust(30_000);
-          for (let attempt = 0; attempt < 100 && !(yield* fs.exists(file)); attempt += 1) yield* Effect.yieldNow;
+          expect(yield* Queue.take(attempts)).toBe('published');
           expect(JSON.parse(yield* fs.readFileString(file))).toMatchObject({processId: process.pid, role: 'mcp'});
         }),
-      ).pipe(Effect.provideService(FileSystem.FileSystem, flaky));
+      ).pipe(Effect.provideService(Clock.Clock, observedClock), Effect.provideService(FileSystem.FileSystem, flaky));
     }).pipe(provideTestLayer(TestSystemInfoLayer), provideTestLayer(BunServices.layer)),
   );
 

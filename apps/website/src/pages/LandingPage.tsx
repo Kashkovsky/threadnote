@@ -187,7 +187,7 @@ export default function LandingPage() {
             </a>
           </div>
           <div className="hero__install">
-            <code>curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh</code>
+            <code>curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh</code>
             <span>macOS & Linux · standalone runtime</span>
           </div>
         </div>
@@ -452,7 +452,7 @@ export default function LandingPage() {
           <h2>Give the next agent reviewed decisions and current evidence—not another transcript.</h2>
           <CodeBlock
             label="macOS & Linux"
-            code="curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh"
+            code="curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh"
           />
           <div className="cta-panel__actions">
             <a className="button" href={siteHref('docs/')}>

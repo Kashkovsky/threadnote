@@ -24,6 +24,7 @@ import {
   contextBriefResolvedPathTraceSeed,
   mergeContextBriefAnchoredRepositoryGraphResults,
 } from './anchor_evidence.js';
+import type {ContextBriefSourceEvidenceRequest, ContextBriefSourceEvidenceResult} from './source_evidence.js';
 
 const TRUST = {
   classification: 'untrusted-repository-data',
@@ -41,13 +42,16 @@ interface ContextBriefGraphRetryBudget {
 }
 
 /** Read only ready graph state. This boundary may borrow compatible shared evidence, but never builds or requests maintenance. */
-export const retrieveContextBriefGraphEvidence = Effect.fn('contextBrief.retrieveGraphEvidence')(function* (
+export const retrieveContextBriefGraphEvidence = Effect.fn('contextBrief.retrieveGraphEvidence')(function* <R = never>(
   config: RuntimeConfig,
   plan: ContextBriefPlanV1['graph'],
+  sourceEvidence?: (
+    request: ContextBriefSourceEvidenceRequest,
+  ) => Effect.Effect<ContextBriefSourceEvidenceResult, unknown, R>,
 ) {
   return plan.scope.kind === 'workset'
     ? yield* retrieveWorksetGraphEvidence(config, plan)
-    : yield* retrieveRepositoryGraphEvidence(config, plan);
+    : yield* retrieveRepositoryGraphEvidence(config, plan, sourceEvidence);
 });
 
 const retrieveWorksetGraphEvidence = Effect.fn('contextBrief.retrieveWorksetGraphEvidence')(function* (
@@ -64,12 +68,16 @@ const retrieveWorksetGraphEvidence = Effect.fn('contextBrief.retrieveWorksetGrap
     worksetName: plan.scope.name,
   };
   const result = yield* queryCodeGraphWorksetV2(config, options);
-  return fromWorksetProjection(result.structuredContent);
+  const evidence = fromWorksetProjection(result.structuredContent);
+  return plan.detail === 'source' ? withSourceGap(evidence, 'graph-source-scope-unsupported') : evidence;
 });
 
-const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveRepositoryGraphEvidence')(function* (
+const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveRepositoryGraphEvidence')(function* <R = never>(
   config: RuntimeConfig,
   plan: ContextBriefPlanV1['graph'],
+  sourceEvidence?: (
+    request: ContextBriefSourceEvidenceRequest,
+  ) => Effect.Effect<ContextBriefSourceEvidenceResult, unknown, R>,
 ) {
   if (plan.scope.kind !== 'repository') throw new Error('Context Brief repository graph plan has the wrong scope.');
   const callerCwd = plan.scope.callerCwd;
@@ -84,12 +92,15 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
   }
   const readySnapshot = status.readySnapshot;
   if (readySnapshot === undefined) {
-    return {
-      ...unavailableContextBriefGraphEvidence('graph-ready-snapshot-missing', 1, {
-        missing: 1,
-      }),
-      ...(status.projectCoverage === undefined ? {} : {projectCoverage: status.projectCoverage}),
-    };
+    return withSourceGapIfRequested(
+      {
+        ...unavailableContextBriefGraphEvidence('graph-ready-snapshot-missing', 1, {
+          missing: 1,
+        }),
+        ...(status.projectCoverage === undefined ? {} : {projectCoverage: status.projectCoverage}),
+      },
+      plan,
+    );
   }
   const anchoredRequests = contextBriefAnchoredRepositoryGraphRequests(plan);
   if (anchoredRequests.length > 0) {
@@ -189,15 +200,21 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
     const exact = outcomes.flatMap(outcome => (outcome.result === undefined ? [] : [outcome.result]));
     const readFailed = outcomes.some(outcome => outcome.readFailed);
     if (exact.length === 0) {
-      return unavailableReadyRepositoryGraphEvidence(
-        status,
-        readFailed ? ['graph-query-unavailable', 'graph-repository-read-failed'] : ['graph-query-unavailable'],
-        readFailed ? [CONTEXT_BRIEF_GRAPH_READ_FAILED_WARNING] : [],
+      return withSourceGapIfRequested(
+        unavailableReadyRepositoryGraphEvidence(
+          status,
+          readFailed ? ['graph-query-unavailable', 'graph-repository-read-failed'] : ['graph-query-unavailable'],
+          readFailed ? [CONTEXT_BRIEF_GRAPH_READ_FAILED_WARNING] : [],
+        ),
+        plan,
       );
     }
     const complete = outcomes.filter(outcome => outcome.complete).length;
-    const evidence = fromRepositoryQuery(
+    const evidence = yield* repositoryEvidenceWithSources(
       mergeContextBriefAnchoredRepositoryGraphResults(plan, exact, anchoredRequests.length - complete),
+      status,
+      plan,
+      sourceEvidence,
     );
     return complete === anchoredRequests.length
       ? evidence
@@ -234,20 +251,62 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
     ),
   );
   if (Result.isFailure(result)) {
-    return unavailableReadyRepositoryGraphEvidence(
-      status,
-      ['graph-query-unavailable', 'graph-repository-read-failed'],
-      [CONTEXT_BRIEF_GRAPH_QUERY_READ_FAILED_WARNING],
+    return withSourceGapIfRequested(
+      unavailableReadyRepositoryGraphEvidence(
+        status,
+        ['graph-query-unavailable', 'graph-repository-read-failed'],
+        [CONTEXT_BRIEF_GRAPH_QUERY_READ_FAILED_WARNING],
+      ),
+      plan,
     );
   }
   if (
     result.success.repository.repositoryId !== status.identity.repositoryId ||
     result.success.snapshot.id !== readySnapshot.id
   ) {
-    return unavailableReadyRepositoryGraphEvidence(status, ['graph-query-unavailable'], []);
+    return withSourceGapIfRequested(
+      unavailableReadyRepositoryGraphEvidence(status, ['graph-query-unavailable'], []),
+      plan,
+    );
   }
-  return fromRepositoryQuery(result.success);
+  return yield* repositoryEvidenceWithSources(result.success, status, plan, sourceEvidence);
 });
+
+const repositoryEvidenceWithSources = Effect.fn('contextBrief.repositoryEvidenceWithSources')(function* <R = never>(
+  result: CodeGraphQueryResult,
+  status: CodeGraphStatus,
+  plan: ContextBriefPlanV1['graph'],
+  sourceEvidence?: (
+    request: ContextBriefSourceEvidenceRequest,
+  ) => Effect.Effect<ContextBriefSourceEvidenceResult, unknown, R>,
+) {
+  const evidence = fromRepositoryQuery(result);
+  if (plan.detail !== 'source') return evidence;
+  if (result.freshness !== 'current') return withSourceGap(evidence, 'graph-source-snapshot-not-current');
+  if (sourceEvidence === undefined) return withSourceGap(evidence, 'graph-source-reader-unavailable');
+  const source = yield* sourceEvidence({
+    identity: status.identity,
+    maximumContentBytes: plan.sourceMaximumBytes,
+    repositoryKey: result.repository.displayName,
+    result,
+  }).pipe(Effect.orElseSucceed(() => ({excerpts: [], gaps: ['graph-source-read-failed']}) as const));
+  return {
+    ...evidence,
+    gaps: stableGraphStrings([...evidence.gaps, ...source.gaps]),
+    ...(source.excerpts.length === 0 ? {} : {sourceExcerpts: source.excerpts}),
+  };
+});
+
+function withSourceGapIfRequested(
+  evidence: ContextBriefGraphEvidenceV1,
+  plan: ContextBriefPlanV1['graph'],
+): ContextBriefGraphEvidenceV1 {
+  return plan.detail === 'source' ? withSourceGap(evidence, 'graph-source-evidence-unavailable') : evidence;
+}
+
+function withSourceGap(evidence: ContextBriefGraphEvidenceV1, gap: string): ContextBriefGraphEvidenceV1 {
+  return {...evidence, gaps: stableGraphStrings([...evidence.gaps, gap])};
+}
 
 function matchesReadyGraph(
   result: CodeGraphQueryResult,

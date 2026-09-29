@@ -13,12 +13,12 @@
       "id": "threadnote-owned-fictional-examples-v1",
       "kind": "self_authored_synthetic",
       "license": "AGPL-3.0-or-later",
-      "licenseUrl": "https://github.com/Kashkovsky/threadnote/blob/main/LICENSE",
+      "licenseUrl": "https://github.com/threadnote/threadnote/blob/main/LICENSE",
       "privacyBasis": "self_authored",
       "provenance": "Original fictional examples authored for the reviewed-dataset import template; contains no user, customer, memory, or repository data.",
       "redistributionApproved": true,
       "revision": "dataset-preparation-example-v1",
-      "sourceUri": "https://github.com/Kashkovsky/threadnote/blob/main/training/recall-reranker/dataset-tools/groups.example.jsonl",
+      "sourceUri": "https://github.com/threadnote/threadnote/blob/main/training/recall-reranker/dataset-tools/groups.example.jsonl",
       "trainingApproved": true
     }
   ]

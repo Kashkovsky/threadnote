@@ -32,7 +32,7 @@ import {
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from '../memory/index.js';
 import {isLegacyHomeMigrationPending, isThreadnoteHomeMigrationPending} from '../migration/home.js';
 import {whatsNewLinesForVersionRange} from './notes.js';
-import {GITHUB_RELEASES_URL, githubReleaseHeaders} from './github_auth.js';
+import {GITHUB_RELEASES_URL, githubReleaseHeaders, isOfficialGitHubReleasesUrl} from './github_auth.js';
 import {redactSensitiveText} from '@threadnote/platform/scrubber';
 import {sendSystemNotification} from '../system_notification.js';
 import {readTelemetryConsentRenewal} from '../telemetry/config.js';
@@ -430,7 +430,7 @@ export const verifyOfficialPlatformSignature = Effect.fn('update.verifyOfficialP
   source: string,
   system: SystemInfoShape,
 ) {
-  if (source !== DEFAULT_RELEASE_SOURCE || system.platform === 'linux') return;
+  if (!isOfficialGitHubReleasesUrl(source) || system.platform === 'linux') return;
   const executable = path.join(releaseRoot, system.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
   if (system.platform === 'darwin') {
     for (const file of yield* findFilesRecursively(fs, path, path.join(releaseRoot, 'runtime'))) {
@@ -1345,7 +1345,7 @@ export function resolveReleaseSource(
     source ?? environment[RELEASE_SOURCE_ENV] ?? DEFAULT_RELEASE_SOURCE,
     untrustedSourceAllowed,
   );
-  if (normalized !== DEFAULT_RELEASE_SOURCE && !untrustedSourceAllowed) {
+  if (!isOfficialGitHubReleasesUrl(normalized) && !untrustedSourceAllowed) {
     throw UpdateOperationError.make({
       message: `Refusing custom release source ${normalized}. Use the official GitHub releases API, pass --allow-untrusted-source, or set ${ALLOW_UNTRUSTED_SOURCE_ENV}=1 only for an approved mirror.`,
     });

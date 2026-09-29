@@ -1,16 +1,16 @@
 {
   "name": "threadnote",
-  "version": "5.0.4",
+  "version": "5.0.7",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://threadnote.io/",
   "bugs": {
-    "url": "https://github.com/Kashkovsky/threadnote/issues"
+    "url": "https://github.com/threadnote/threadnote/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Kashkovsky/threadnote.git"
+    "url": "git+https://github.com/threadnote/threadnote.git"
   },
   "packageManager": "bun@1.4.2",
   "keywords": [
@@ -100,6 +100,7 @@
     "eval:code-memory-link-agent-matrix": "bun scripts/run-code-memory-link-agent-matrix.ts",
     "eval:code-memory-link-agent-calibration-client": "bun scripts/run-code-memory-link-calibration-client.ts",
     "eval:code-memory-link-agent-trial": "bun scripts/run-code-memory-link-agent-trial.ts",
+    "eval:matched": "bun scripts/run-matched-evaluation.ts",
     "eval:code-memory-link-codex-client": "bun scripts/run-code-memory-link-codex-client.ts",
     "eval:code-memory-link-dogfood": "bun scripts/run-code-memory-link-dogfood.ts",
     "eval:code-memory-link-retain": "bun scripts/retain-code-memory-link-evidence.ts",

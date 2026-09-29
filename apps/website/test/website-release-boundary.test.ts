@@ -714,7 +714,7 @@ describe('website and standalone release boundary', () => {
       );
       expect(released.map(release => release.version)).toEqual(['v4.1.1', 'v4.0.0']);
       expect(released[0]).toMatchObject({
-        releaseUrl: 'https://github.com/Kashkovsky/threadnote/releases/tag/v4.1.1',
+        releaseUrl: 'https://github.com/threadnote/threadnote/releases/tag/v4.1.1',
         summary: 'Threadnote 4.1.1 is ready.',
         publishedAt: '2026-08-13T09:00:00Z',
       });

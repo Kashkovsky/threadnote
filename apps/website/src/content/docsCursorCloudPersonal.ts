@@ -77,7 +77,7 @@ https://github.com/you/threadnote-docs-memory.git`,
           language: 'sh',
           code: `set -eu
 
-curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | \\
+curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | \\
   sh -s -- --no-start
 
 "$HOME/.local/bin/threadnote" cloud cursor bootstrap \\
@@ -95,7 +95,6 @@ curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/
 test -x "$HOME/.local/bin/threadnote-mcp-server"
 test -f "$HOME/.cursor/rules/threadnote.mdc"
 test -f "$HOME/.cursor/skills/threadnote-context/SKILL.md"
-test -f "$HOME/.cursor/skills/threadnote-code-graph/SKILL.md"
 test -f "$HOME/.cursor/skills/threadnote-memory/SKILL.md"`,
         },
         {

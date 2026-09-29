@@ -589,6 +589,45 @@ describe('manager catalog', () => {
     expect(result.node.isSystem).toBe(false);
   });
 
+  it('resolves a stable memory identity to the canonical Library node', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const canonicalPath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+      'manager-ui.md',
+    );
+    await writeFile(
+      canonicalPath,
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: threadnote',
+        'topic: manager-ui',
+        'source_agent_client: codex',
+        'timestamp: 2026-06-05T00:00:00.000Z',
+        'schema_version: 5',
+        'memory_id: tn_manager_ui',
+        '',
+        'Manager UI feature notes.',
+      ].join('\n'),
+    );
+
+    const result = await runEffect(readManagedMemory(config, 'threadnote://memory/tn_manager_ui'));
+
+    expect(result.node.uri).toBe('threadnote://user/denys/memories/durable/projects/threadnote/manager-ui.md');
+    expect(result.record?.metadata.memoryId).toBe('tn_manager_ui');
+    expect(result.content).toContain('Manager UI feature notes.');
+  });
+
   it('skips symlinked memory entries and rejects direct symlink reads', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);

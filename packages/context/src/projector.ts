@@ -32,23 +32,31 @@ import {
 } from './types.js';
 import {isMemoryId, memoryIdentityAlias} from '@threadnote/memory/identity-alias';
 import {parseVerifiedProcedureEvidenceList} from './procedure/selection.js';
+import {contextBriefRelationshipMemoryByUri, withStableContextBriefMemoryIdentityGap} from './memory_projection.js';
+import {
+  CONTEXT_BRIEF_PROJECTION_LANES as PROJECTION_LANES,
+  contextBriefProjectionLanePriority as lanePriority,
+  type ContextBriefProjectionLane as ProjectionLane,
+} from './projection_lanes.js';
+import {
+  CONTEXT_BRIEF_SOURCE_EXCERPT_BUDGET_GAP,
+  contextBriefSourceExcerptOmissionCount,
+  contextBriefAnswerWithSourceReadSignal,
+  contextBriefSourceProjectionItems,
+  requiredContextBriefSourceProjectionItems,
+  selectContextBriefProjectedSources,
+  validateContextBriefSourceExcerpt,
+  withAdjustedContextBriefSourceExcerpt,
+} from './source_projection.js';
+import {compactContextBriefTask, jsonStringPrefix, utf8Prefix} from './projection_text.js';
 
-const STABLE_MEMORY_IDENTITY_UNAVAILABLE_GAP = 'stable-memory-identity-unavailable';
+export {CONTEXT_BRIEF_AGENT_VIEW_SOURCE_EXCERPT_FIELD_POLICY} from './source_projection.js';
+
 const UnknownArraySchema = Schema.Array(Schema.Unknown);
 const isUnknownArray = Schema.is(UnknownArraySchema);
 const isBoundedPublicCodeRelations = Schema.is(
   UnknownArraySchema.check(Schema.isMaxLength(CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS)),
 );
-
-type ProjectionLane =
-  | 'coverage-gap'
-  | 'durable-decision'
-  | 'follow-up'
-  | 'graph-card'
-  | 'graph-contract'
-  | 'handoff'
-  | 'issue'
-  | 'verified-procedure';
 
 interface ProjectionItem {
   readonly id: string;
@@ -236,6 +244,10 @@ function preservesBaselineEvidence(candidate: ContextBriefV1, baseline: ContextB
       baseline.graph.contracts.map(contract => contract.id),
     ) &&
     contains(
+      (candidate.graph.sources ?? []).map(source => source.id),
+      (baseline.graph.sources ?? []).map(source => source.id),
+    ) &&
+    contains(
       candidate.recommendedFollowUps.map(followUp => followUp.id),
       baseline.recommendedFollowUps.map(followUp => followUp.id),
     ) &&
@@ -256,7 +268,7 @@ function projectContextBriefCore(
   maximumEstimatedTokens: number,
   responseFormat: ContextBriefResponseFormat,
 ): ProjectedContextBriefV1 {
-  logical = withStableMemoryIdentityGap(logical);
+  logical = withStableContextBriefMemoryIdentityGap(logical);
   const maximumBytes = projectionMaximumBytes(maximumEstimatedTokens);
   const items = projectionItems(logical, responseFormat);
   const graphRecoveryItem = requiredGraphRecoveryItem(logical, items);
@@ -265,6 +277,7 @@ function projectContextBriefCore(
       requiredCoverageGapItem(logical, items),
       ...requiredAgentGraphEvidenceItems(logical, items, responseFormat, graphRecoveryItem),
       requiredAgentExplanationMemoryItem(logical, items, responseFormat),
+      ...requiredContextBriefSourceProjectionItems(logical, items),
       ...requiredAgentWorksetRecoveryItems(logical, items, responseFormat),
       graphRecoveryItem,
     ].filter((item): item is ProjectionItem => item !== undefined),
@@ -288,7 +301,10 @@ function projectContextBriefCore(
     : requiredLanePredecessorExclusions(items, requiredItems, fixedCore.allCohortKeys);
   const suppressOptional = !admitFixedCore && fixedCoreHasExtras;
   const suppressOptionalAgentLocate =
-    responseFormat === 'agent' && logical.mode === 'locate' && logical.coverage.memory.codeAnchors === undefined;
+    responseFormat === 'agent' &&
+    logical.mode === 'locate' &&
+    logical.coverage.memory.codeAnchors === undefined &&
+    (logical.graph.sourceExcerpts?.length ?? 0) === 0;
   const requiredKeys = new Set(requiredItems.map(projectionItemKey));
   const optionalItems =
     suppressOptional || suppressOptionalAgentLocate
@@ -310,6 +326,17 @@ function projectContextBriefCore(
     if (measurement.totalBytes <= maximumBytes) selectedCount = count;
   }
   if (selectedCount === undefined) {
+    const sourceAdjusted = fitRequiredSourceProjection({
+      compactMemoryUris,
+      logical,
+      maximumBytes,
+      protectedMemoryUri,
+      requiredItems,
+      responseFormat,
+    });
+    if (sourceAdjusted !== logical) {
+      return projectContextBriefCore(sourceAdjusted, maximumEstimatedTokens, responseFormat);
+    }
     const structuredContent = parseContextBriefV1(renderMinimumProjection(logical, baseRequiredItems));
     const text = renderContextBriefForFormat(structuredContent, responseFormat);
     const measurement = measureContextBriefResponse(structuredContent, responseFormat);
@@ -323,6 +350,46 @@ function projectContextBriefCore(
   const text = renderContextBriefForFormat(structuredContent, responseFormat);
   const measurement = measureContextBriefResponse(structuredContent, responseFormat);
   return {maximumBytes, measurement, structuredContent, text};
+}
+
+function fitRequiredSourceProjection(input: {
+  readonly compactMemoryUris: ReadonlySet<string>;
+  readonly logical: ContextBriefLogicalResultV1;
+  readonly maximumBytes: number;
+  readonly protectedMemoryUri?: string;
+  readonly requiredItems: readonly ProjectionItem[];
+  readonly responseFormat: ContextBriefResponseFormat;
+}): ContextBriefLogicalResultV1 {
+  const requiredSourceId = input.requiredItems.find(item => item.lane === 'source-excerpt')?.id;
+  const source = input.logical.graph.sourceExcerpts?.find(candidate => candidate.id === requiredSourceId);
+  if (source === undefined) return input.logical;
+  const lines = source.content.split('\n');
+  for (let lineCount = lines.length - 1; lineCount >= 1; lineCount -= 1) {
+    const adjusted = withAdjustedContextBriefSourceExcerpt(input.logical, source.id, {
+      ...source,
+      content: lines.slice(0, lineCount).join('\n'),
+      endLine: Math.min(source.endLine, source.startLine + lineCount - 1),
+      truncated: true,
+    });
+    const projection = renderProjection(
+      adjusted,
+      input.requiredItems,
+      input.protectedMemoryUri,
+      input.compactMemoryUris,
+    );
+    if (measureContextBriefResponse(projection, input.responseFormat).totalBytes <= input.maximumBytes) return adjusted;
+  }
+  return {
+    ...input.logical,
+    coverage: {
+      ...input.logical.coverage,
+      gaps: [
+        CONTEXT_BRIEF_SOURCE_EXCERPT_BUDGET_GAP,
+        ...input.logical.coverage.gaps.filter(gap => gap !== CONTEXT_BRIEF_SOURCE_EXCERPT_BUDGET_GAP),
+      ],
+    },
+    graph: {...input.logical.graph, sourceExcerpts: []},
+  };
 }
 
 function renderContextBriefForFormat(brief: ContextBriefV1, responseFormat: ContextBriefResponseFormat): string {
@@ -358,6 +425,7 @@ export function projectContextBriefAgentView(brief: ContextBriefV1, includeAnswe
     sourceRef: contract.sourceRef,
     targetRef: contract.targetRef,
   }));
+  const sources = brief.graph.sources;
   const nonZeroOmissions = Object.fromEntries(
     Object.entries(brief.coverage.omissions).filter(([, count]) => count > 0),
   ) as Partial<ContextBriefV1['coverage']['omissions']>;
@@ -385,13 +453,14 @@ export function projectContextBriefAgentView(brief: ContextBriefV1, includeAnswe
     ...(brief.durableDecisions.length === 0
       ? {}
       : {durableDecisions: brief.durableDecisions.map(projectAgentViewMemory)}),
-    ...(cards.length === 0 && contracts.length === 0 && brief.graph.continuation === undefined
+    ...(cards.length === 0 && contracts.length === 0 && sources === undefined && brief.graph.continuation === undefined
       ? {}
       : {
           graph: {
             ...(cards.length === 0 ? {} : {cards}),
             ...(brief.graph.continuation === undefined ? {} : {continuation: brief.graph.continuation}),
             ...(contracts.length === 0 ? {} : {contracts}),
+            ...(sources === undefined ? {} : {sources}),
           },
         }),
     mode: brief.mode,
@@ -424,18 +493,36 @@ function projectAgentAnswer(
     if (rationale !== undefined) {
       const label =
         rationale.freshness === 'fresh' ? 'Rationale' : `Candidate rationale (${rationale.freshness} memory)`;
-      return utf8Prefix(`${label}: ${rationale.excerpt}`, 128);
+      return contextBriefAnswerWithSourceReadSignal(
+        brief,
+        utf8Prefix(`${label}: ${rationale.excerpt}`, 128),
+        utf8Prefix,
+      );
     }
-    return projectMissingAgentAnswer(brief, 'No rationale memory retained', cards[0]);
+    return contextBriefAnswerWithSourceReadSignal(
+      brief,
+      projectMissingAgentAnswer(brief, 'No rationale memory retained', cards[0]),
+      utf8Prefix,
+    );
   }
   if (brief.mode === 'trace' || brief.mode === 'impact') {
     const contract = brief.graph.contracts[0];
-    if (contract === undefined) return projectMissingAgentAnswer(brief, 'No direct relationship retained', cards[0]);
+    if (contract === undefined) {
+      return contextBriefAnswerWithSourceReadSignal(
+        brief,
+        projectMissingAgentAnswer(brief, 'No direct relationship retained', cards[0]),
+        utf8Prefix,
+      );
+    }
     const label =
       brief.scope.freshness === 'fresh' ? 'Relationship' : `Candidate relationship (${brief.scope.freshness} graph)`;
-    return utf8Prefix(
-      `${label}: ${contract.relation} at ${utf8Prefix(contract.evidence.path, 56)}:${contract.evidence.line}.`,
-      128,
+    return contextBriefAnswerWithSourceReadSignal(
+      brief,
+      utf8Prefix(
+        `${label}: ${contract.relation} at ${utf8Prefix(contract.evidence.path, 56)}:${contract.evidence.line}.`,
+        128,
+      ),
+      utf8Prefix,
     );
   }
   if (cards.length > 0) {
@@ -451,9 +538,13 @@ function projectAgentAnswer(
         : brief.mode === 'locate'
           ? `Candidate locations (${brief.scope.freshness} graph)`
           : `Candidate source evidence (${brief.scope.freshness} graph)`;
-    return utf8Prefix(`${label}: ${locations}.`, 128);
+    return contextBriefAnswerWithSourceReadSignal(brief, utf8Prefix(`${label}: ${locations}.`, 128), utf8Prefix);
   }
-  return projectMissingAgentAnswer(brief, 'No direct source evidence retained');
+  return contextBriefAnswerWithSourceReadSignal(
+    brief,
+    projectMissingAgentAnswer(brief, 'No direct source evidence retained'),
+    utf8Prefix,
+  );
 }
 
 function projectMissingAgentAnswer(
@@ -576,15 +667,21 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
   }
   if (value.graph !== undefined) {
     if (!Predicate.isObject(value.graph)) throw invalid('graph must be an object');
-    assertAgentViewKeys(value.graph, ['cards', 'continuation', 'contracts'], 'graph');
+    assertAgentViewKeys(value.graph, ['cards', 'continuation', 'contracts', 'sources'], 'graph');
     if (value.graph.cards !== undefined && !Array.isArray(value.graph.cards))
       throw invalid('graph.cards must be an array');
     if (value.graph.contracts !== undefined && !Array.isArray(value.graph.contracts)) {
       throw invalid('graph.contracts must be an array');
     }
+    if (value.graph.sources !== undefined && !Array.isArray(value.graph.sources)) {
+      throw invalid('graph.sources must be an array');
+    }
     for (const [index, card] of (value.graph.cards ?? []).entries()) validateAgentViewGraphCard(card, index);
     for (const [index, contract] of (value.graph.contracts ?? []).entries()) {
       validateAgentViewGraphContract(contract, index);
+    }
+    for (const [index, source] of (value.graph.sources ?? []).entries()) {
+      validateContextBriefSourceExcerpt(source, index);
     }
     if (value.graph.continuation !== undefined) validateAgentViewContinuation(value.graph.continuation);
   }
@@ -947,6 +1044,12 @@ export function parseContextBriefV1(value: unknown): ContextBriefV1 {
   ) {
     throw invalid('graph must contain card and contract arrays');
   }
+  if (object.graph.sources !== undefined) {
+    if (!Array.isArray(object.graph.sources)) throw invalid('graph.sources must be an array');
+    for (const [index, source] of object.graph.sources.entries()) {
+      validateContextBriefSourceExcerpt(source, index);
+    }
+  }
   if (!Predicate.isObject(object.coverage) || !Predicate.isObject(object.trust) || !Predicate.isObject(object.output)) {
     throw invalid('coverage, trust, and output are required');
   }
@@ -983,6 +1086,11 @@ function renderProjection(
   const contracts = selectById(logical.graph.contracts, selectedByLane.get('graph-contract')).map(
     compactProjectedGraphContract,
   );
+  const retainedGraphRefs = new Set([
+    ...cards.map(card => card.ref),
+    ...contracts.flatMap(contract => [contract.sourceRef, contract.targetRef]),
+  ]);
+  const sources = selectContextBriefProjectedSources(logical, selectedByLane.get('source-excerpt'), retainedGraphRefs);
   const durableDecisions = selectById(logical.durableDecisions, selectedByLane.get('durable-decision'), 'uri').map(
     memory =>
       compactProjectedMemory(
@@ -1013,12 +1121,14 @@ function renderProjection(
   );
   const selectedGapIds = selectedByLane.get('coverage-gap');
   const gaps = logical.coverage.gaps.filter(gap => selectedGapIds?.has(coverageGapProjectionId(gap)) === true);
+  const sourceExcerpts = contextBriefSourceExcerptOmissionCount(logical, sources.length);
   const omissions = {
     activeHandoffs: logical.activeHandoffs.length - activeHandoffs.length,
     coverageGaps: logical.coverage.gaps.length - gaps.length,
     durableDecisions: logical.durableDecisions.length - durableDecisions.length,
     graphCards: logical.graph.cards.length - cards.length,
     graphContracts: logical.graph.contracts.length - contracts.length,
+    ...(sourceExcerpts === 0 ? {} : {sourceExcerpts}),
     recommendedFollowUps: logical.recommendedFollowUps.length - recommendedFollowUps.length,
     stalenessAndConflicts: logical.stalenessAndConflicts.length - stalenessAndConflicts.length,
     ...(logicalVerifiedProcedures.length === 0
@@ -1026,7 +1136,7 @@ function renderProjection(
       : {verifiedProcedures: logicalVerifiedProcedures.length - verifiedProcedures.length}),
   };
   const omittedItems = Object.values(omissions).reduce((total, value) => total + value, 0);
-  const task = compactTask(logical.task);
+  const task = compactContextBriefTask(logical.task);
   return {
     activeHandoffs,
     coverage: {...logical.coverage, gaps, omissions},
@@ -1053,6 +1163,7 @@ function renderProjection(
               },
             }),
       contracts,
+      ...(sources.length === 0 ? {} : {sources}),
     },
     mode: logical.mode,
     output: {
@@ -1100,12 +1211,14 @@ function renderMinimumProjection(
   );
   const recommendedFollowUps = logical.recommendedFollowUps.filter(followUp => recoveryIds.has(followUp.id));
   const gaps = logical.coverage.gaps.slice(0, 1);
+  const sourceExcerpts = contextBriefSourceExcerptOmissionCount(logical);
   const omissions = {
     activeHandoffs: logical.activeHandoffs.length,
     coverageGaps: logical.coverage.gaps.length - gaps.length,
     durableDecisions: logical.durableDecisions.length,
     graphCards: logical.graph.cards.length,
     graphContracts: logical.graph.contracts.length,
+    ...(sourceExcerpts === 0 ? {} : {sourceExcerpts}),
     recommendedFollowUps: logical.recommendedFollowUps.length - recommendedFollowUps.length,
     stalenessAndConflicts: logical.stalenessAndConflicts.length,
     ...(logical.verifiedProcedures === undefined ? {} : {verifiedProcedures: logical.verifiedProcedures.length}),
@@ -1263,6 +1376,7 @@ function projectionItems(
             ? 2
             : 0,
     })),
+    ...contextBriefSourceProjectionItems(logical),
     ...logical.stalenessAndConflicts.map(issue => ({
       id: issue.id,
       lane: 'issue' as const,
@@ -1624,17 +1738,6 @@ function requiredLanePredecessorExclusions(
   return excluded;
 }
 
-const PROJECTION_LANES: readonly ProjectionLane[] = [
-  'coverage-gap',
-  'handoff',
-  'durable-decision',
-  'graph-card',
-  'graph-contract',
-  'issue',
-  'follow-up',
-  'verified-procedure',
-];
-
 function laneOrderedItems(items: readonly ProjectionItem[], lane: ProjectionLane): readonly ProjectionItem[] {
   return items
     .filter(item => item.lane === lane)
@@ -1697,27 +1800,6 @@ function uniqueProjectionItems(items: readonly ProjectionItem[]): readonly Proje
   });
 }
 
-function lanePriority(lane: ProjectionLane): number {
-  switch (lane) {
-    case 'coverage-gap':
-      return 0;
-    case 'handoff':
-      return 1;
-    case 'durable-decision':
-      return 2;
-    case 'graph-card':
-      return 3;
-    case 'graph-contract':
-      return 4;
-    case 'issue':
-      return 5;
-    case 'follow-up':
-      return 6;
-    case 'verified-procedure':
-      return 7;
-  }
-}
-
 function coverageGapProjectionId(gap: string): string {
   return `gap:${gap}`;
 }
@@ -1759,26 +1841,9 @@ function selectById<T extends {readonly id?: string; readonly rank: number; read
     });
 }
 
-function compactTask(task: string): ContextBriefV1['task'] {
-  const summary = jsonStringPrefix(task, 162);
-  return {summary, truncated: summary !== task};
-}
-
 function compactScope(scope: ContextBriefLogicalResultV1['scope']): ContextBriefV1['scope'] {
   const name = jsonStringPrefix(scope.name, 66);
   return {...scope, name, ...(name === scope.name ? {} : {nameTruncated: true as const})};
-}
-
-/** Bound the serialized JSON string, including quotes and escape expansion. */
-function jsonStringPrefix(value: string, maximumBytes: number): string {
-  const encoder = new TextEncoder();
-  if (encoder.encode(JSON.stringify(value)).byteLength <= maximumBytes) return value;
-  let prefix = '';
-  for (const character of value) {
-    if (encoder.encode(JSON.stringify(`${prefix}${character}…`)).byteLength > maximumBytes) break;
-    prefix += character;
-  }
-  return `${prefix}…`;
 }
 
 function compactProjectedMemory(
@@ -1854,7 +1919,7 @@ function compactProjectedFollowUp(
   allowIdentityAlias: boolean,
 ): ContextBriefLogicalResultV1['recommendedFollowUps'][number] {
   if (followUp.operation !== 'read-memory') return followUp;
-  const memory = relationshipMemoryByUri(logical, followUp.uri);
+  const memory = contextBriefRelationshipMemoryByUri(logical, followUp.uri);
   return allowIdentityAlias && memory?.memoryId !== undefined && isMemoryId(memory.memoryId)
     ? {...followUp, uri: memoryIdentityAlias(memory.memoryId)}
     : followUp;
@@ -1868,37 +1933,11 @@ function compactProjectedIssue(
   return {
     ...issue,
     uris: issue.uris.map(uri => {
-      const memory = relationshipMemoryByUri(logical, uri);
+      const memory = contextBriefRelationshipMemoryByUri(logical, uri);
       return allowIdentityAlias && memory?.memoryId !== undefined && isMemoryId(memory.memoryId)
         ? memoryIdentityAlias(memory.memoryId)
         : uri;
     }),
-  };
-}
-
-function relationshipMemoryByUri(
-  logical: ContextBriefLogicalResultV1,
-  uri: string,
-): ContextBriefMemoryEvidenceV1 | undefined {
-  return [...logical.activeHandoffs, ...logical.durableDecisions].find(memory => memory.uri === uri);
-}
-
-function withStableMemoryIdentityGap(logical: ContextBriefLogicalResultV1): ContextBriefLogicalResultV1 {
-  if (logical.coverage.memory.codeAnchors === undefined) return logical;
-  if (logical.mode !== 'trace' && logical.mode !== 'impact') return logical;
-  const primary = [...logical.activeHandoffs, ...logical.durableDecisions].find(
-    memory => memory.selectionBasis === 'code-citation',
-  );
-  if (primary === undefined || (primary.memoryId !== undefined && isMemoryId(primary.memoryId))) return logical;
-  return {
-    ...logical,
-    coverage: {
-      ...logical.coverage,
-      gaps: [
-        STABLE_MEMORY_IDENTITY_UNAVAILABLE_GAP,
-        ...logical.coverage.gaps.filter(gap => gap !== STABLE_MEMORY_IDENTITY_UNAVAILABLE_GAP),
-      ],
-    },
   };
 }
 
@@ -1920,17 +1959,6 @@ function compactProjectedGraphContract(contract: ContextBriefGraphContractV1): C
       ...(repositoryKey === contract.evidence.repositoryKey ? {} : {repositoryKeyTruncated: true as const}),
     },
   };
-}
-
-function utf8Prefix(value: string, maximumBytes: number): string {
-  const encoder = new TextEncoder();
-  if (encoder.encode(value).byteLength <= maximumBytes) return value;
-  let prefix = '';
-  for (const character of value) {
-    if (encoder.encode(`${prefix}${character}…`).byteLength > maximumBytes) break;
-    prefix += character;
-  }
-  return `${prefix}…`;
 }
 
 function projectionMaximumBytes(tokens: number): number {

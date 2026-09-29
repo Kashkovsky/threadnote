@@ -133,6 +133,20 @@ describe('code graph index scope', () => {
     ).toThrow(CodeGraphIndexScopeResolutionError);
   });
 
+  it('rejects unpersistable project membership before a graph build can start', () => {
+    const oversizedId = (index: number) => `${index.toString().padStart(6, '0')}${'x'.repeat(4_090)}`;
+    const dependencyIds = Array.from({length: 1_024}, (_, index) => oversizedId(index + 1));
+    const root = project(oversizedId(0), 'apps/app', dependencyIds);
+    const dependencies = dependencyIds.map((id, index) => project(id, `packages/dependency-${index}`));
+
+    expect(() =>
+      resolveCodeGraphIndexScope(
+        {graph: {closure: 'dependencies', roots: ['apps/app']}, uri: 'threadnote://resources/repos/app'},
+        catalog([root, ...dependencies]),
+      ),
+    ).toThrow(CodeGraphIndexScopeResolutionError);
+  });
+
   it('binds effective control paths and completeness evidence into the closure digest', () => {
     const app = project('app', 'apps/app');
     const complete = resolveCodeGraphIndexScope(

@@ -32,7 +32,14 @@ const stableVersionArbitrary = fc
   .tuple(fc.integer({max: 20, min: 0}), fc.integer({max: 40, min: 0}), fc.integer({max: 80, min: 0}))
   .map(([major, minor, patch]) => `${major}.${minor}.${patch}`);
 
-const numberedBetaArbitrary = fc.integer({min: 1, max: 100_000}).map(number => `5.0.0-beta.${number}`);
+const numberedBetaArbitrary = fc
+  .tuple(
+    fc.integer({max: 20, min: 0}),
+    fc.integer({max: 40, min: 0}),
+    fc.integer({max: 80, min: 0}),
+    fc.integer({min: 1, max: 100_000}),
+  )
+  .map(([major, minor, patch, number]) => `${major}.${minor}.${patch}-beta.${number}`);
 
 describe('prepare-release', () => {
   it('requires exactly one version selector', () => {
@@ -48,7 +55,8 @@ describe('prepare-release', () => {
       patch: false,
       version: '4.6.7',
     });
-    expect(parsePrepareReleaseArguments(['--version', '5.0.0-beta.1'])).toMatchObject({version: '5.0.0-beta.1'});
+    expect(parsePrepareReleaseArguments(['--version', '5.0.7-beta.1'])).toMatchObject({version: '5.0.7-beta.1'});
+    expect(parsePrepareReleaseArguments(['--version', '6.0.0-beta.42'])).toMatchObject({version: '6.0.0-beta.42'});
     expect(() => parsePrepareReleaseArguments([])).toThrow('Pass exactly one of --patch or --version');
     expect(() => parsePrepareReleaseArguments(['--patch', '--version', '4.6.7'])).toThrow(
       'Pass exactly one of --patch or --version',
@@ -78,7 +86,7 @@ describe('prepare-release', () => {
     expect(() => validateReleaseNotes('## Changes\nNope.', '4.6.7')).toThrow("must start with ## What's new");
   });
 
-  it('accepts only stable versions and numbered Threadnote 5 beta versions', () => {
+  it('accepts canonical safe-integer stable versions and numbered beta versions for any base version', () => {
     fc.assert(
       fc.property(stableVersionArbitrary, numberedBetaArbitrary, (stableVersion, betaVersion) => {
         expect(isSupportedReleaseVersion(stableVersion)).toBe(true);
@@ -95,11 +103,17 @@ describe('prepare-release', () => {
       '9007199254740992.0.0',
       '0.9007199254740992.0',
       '0.0.9007199254740992',
-      '5.0.0-beta',
-      '5.0.0-beta.0',
-      '5.0.0-beta.01',
+      '5.0.7-beta',
+      '5.0.7-beta.0',
+      '5.0.7-beta.01',
+      '05.0.7-beta.1',
+      '5.00.7-beta.1',
+      '5.0.07-beta.1',
+      '9007199254740992.0.0-beta.1',
+      '0.9007199254740992.0-beta.1',
+      '0.0.9007199254740992-beta.1',
+      '0.0.0-beta.9007199254740992',
       '5.0.0-rc.1',
-      '4.6.7-beta.1',
       'x',
     ]) {
       expect(isSupportedReleaseVersion(version)).toBe(false);
@@ -141,9 +155,10 @@ describe('prepare-release', () => {
       expect(written.wrotePackageVersion).toBe(true);
       expect(JSON.parse(yield* fs.readFileString(packageFile))).toMatchObject({version: '4.6.7'});
 
-      yield* fs.writeFileString(path.join(root, '.github', 'release-notes', 'v5.0.0-beta.1.md'), validNotes);
-      const beta = yield* prepareRelease({dryRun: true, json: true, patch: false, version: '5.0.0-beta.1'}, root);
-      expect(beta.nextSteps.join('\n')).toContain('protected release/5.0.0');
+      yield* fs.writeFileString(path.join(root, '.github', 'release-notes', 'v6.2.3-beta.1.md'), validNotes);
+      const beta = yield* prepareRelease({dryRun: true, json: true, patch: false, version: '6.2.3-beta.1'}, root);
+      expect(beta.nextSteps.join('\n')).toContain('protected main');
+      expect(beta.nextSteps.join('\n')).not.toContain('release/5.0.0');
     }).pipe(provideTestLayer(PrepareReleaseTestLayer)),
   );
 });

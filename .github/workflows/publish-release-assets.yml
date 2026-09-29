@@ -11,10 +11,6 @@ on:
         description: Exact tag-event Git object whose verified source produced the platform artifacts
         required: true
         type: string
-    secrets:
-      release_coordinator_token:
-        description: Read-only repository-administration token used to verify the beta publication freeze
-        required: false
 
 permissions:
   contents: read
@@ -48,73 +44,24 @@ jobs:
       - name: Create release only after every artifact is ready
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_COORDINATOR_TOKEN: ${{ startsWith(inputs.release_tag, 'v5.0.0-beta.') && secrets.release_coordinator_token || '' }}
           RELEASE_SHA: ${{ inputs.release_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$RELEASE_TAG" =~ ^v5\.0\.0-beta\.[1-9][0-9]*$ ]]; then
-            :
-          elif bun -e '
-            const tag = process.env.RELEASE_TAG;
-            const match = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(tag ?? "");
-            process.exit(match !== null && match.slice(1).every(component => Number.isSafeInteger(Number(component))) ? 0 : 1);
+          if bun -e '
+            const tag = process.env.RELEASE_TAG ?? "";
+            const {isSupportedReleaseVersion} = await import("./scripts/release-version.ts");
+            process.exit(tag.startsWith("v") && isSupportedReleaseVersion(tag.slice(1)) ? 0 : 1);
           '; then
             :
           else
-            echo "::error::Release tags must be canonical safe-integer stable vX.Y.Z or numbered v5.0.0-beta.N."
+            echo "::error::Release tags must be canonical safe-integer stable vX.Y.Z or numbered beta vX.Y.Z-beta.N."
             exit 1
           fi
-          verify_beta_release_freeze() {
-            local freeze_ruleset_id freeze_ruleset repository_is_fork
-            if [[ -z "$RELEASE_COORDINATOR_TOKEN" ]]; then
-              echo "::error::The beta publisher requires a release coordinator token with read access to repository rulesets."
-              exit 1
-            fi
-            repository_is_fork="$(gh api "/repos/${GITHUB_REPOSITORY}" --jq '.fork')" || {
-              echo "::error::Could not establish repository fork status for the beta publication freeze; refusing publication."
-              exit 1
-            }
-            if [[ "$repository_is_fork" != "false" ]]; then
-              echo "::error::The beta publication freeze requires a non-fork repository."
-              exit 1
-            fi
-            freeze_ruleset_id="$(
-              GH_TOKEN="$RELEASE_COORDINATOR_TOKEN" gh api "/repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" \
-                --jq '.[] | select(.name == "Threadnote 5.0 beta publication freeze" and .target == "branch" and .enforcement == "active") | .id' |
-                head -n 1
-            )" || {
-              echo "::error::Could not inspect the required beta publication freeze ruleset; refusing publication."
-              exit 1
-            }
-            if [[ ! "$freeze_ruleset_id" =~ ^[0-9]+$ ]]; then
-              echo "::error::The required active no-bypass beta publication freeze ruleset is missing."
-              exit 1
-            fi
-            freeze_ruleset="$(GH_TOKEN="$RELEASE_COORDINATOR_TOKEN" gh api "/repos/${GITHUB_REPOSITORY}/rulesets/${freeze_ruleset_id}")" || {
-              echo "::error::Could not read the required beta publication freeze ruleset; refusing publication."
-              exit 1
-            }
-            RELEASE_FREEZE_RULESET="$freeze_ruleset" bun -e '
-              const ruleset = JSON.parse(process.env.RELEASE_FREEZE_RULESET ?? "");
-              const appliesToReleaseBranch = ruleset.conditions?.ref_name?.include?.includes("refs/heads/release/5.0.0") &&
-                ruleset.conditions?.ref_name?.exclude?.length === 0;
-              // GitHub omits update parameters when false. This default is safe only after the non-fork assertion above.
-              const hasNoBypassUpdateLock = ruleset.bypass_actors?.length === 0 && ruleset.rules?.some(rule =>
-                rule.type === "update" && rule.parameters?.update_allows_fetch_and_merge !== true,
-              );
-              process.exit(ruleset.enforcement === "active" && ruleset.target === "branch" && appliesToReleaseBranch && hasNoBypassUpdateLock ? 0 : 1);
-            ' || {
-              echo "::error::The beta publication freeze must actively no-bypass lock updates to release/5.0.0."
-              exit 1
-            }
-          }
           verify_release_source() {
-            if [[ "$RELEASE_TAG" == v5.0.0-beta.* ]]; then
-              verify_beta_release_freeze
-            fi
             git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/threadnote-release-tag"
+            git fetch --force --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
             verified_commit="$(git rev-parse "${RELEASE_SHA}^{commit}")"
             remote_tag_commit="$(git rev-parse 'refs/threadnote-release-tag^{commit}')"
             checkout_commit="$(git rev-parse 'HEAD^{commit}')"
@@ -122,17 +69,9 @@ jobs:
               echo "::error::Release tag moved away from the exact verified source commit."
               exit 1
             fi
-            if [[ "$RELEASE_TAG" == v5.0.0-beta.* ]]; then
-              git fetch --force --no-tags origin '+refs/heads/release/5.0.0:refs/remotes/origin/release/5.0.0'
-              if ! git rev-parse --verify refs/remotes/origin/release/5.0.0 >/dev/null; then
-                echo "::error::The protected origin/release/5.0.0 publication branch is missing."
-                exit 1
-              fi
-              release_tip="$(git rev-parse 'refs/remotes/origin/release/5.0.0^{commit}')"
-              if [[ "$verified_commit" != "$release_tip" ]]; then
-                echo "::error::origin/release/5.0.0 moved after beta verification; refusing publication."
-                exit 1
-              fi
+            if ! git rev-parse --verify refs/remotes/origin/main >/dev/null || ! git merge-base --is-ancestor "$verified_commit" refs/remotes/origin/main; then
+              echo "::error::Release source is no longer present on protected origin/main; refusing publication."
+              exit 1
             fi
           }
           verify_release_source
@@ -142,9 +81,8 @@ jobs:
           if [[ "$RELEASE_TAG" == *-* ]]; then
             release_flags+=(--prerelease)
           fi
-          # This is the final practical gate. The release branch is frozen while beta publication runs.
+          # This is the final practical gate: revalidate the immutable tag source and protected-main provenance.
           verify_release_source
-          unset RELEASE_COORDINATOR_TOKEN
           gh release create "$RELEASE_TAG" artifacts/* "${release_flags[@]}" --notes "$release_notes"
 
       - name: Verify release immutability

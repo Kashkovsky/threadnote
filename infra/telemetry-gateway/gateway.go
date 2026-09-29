@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Kashkovsky/threadnote/infra/telemetry-gateway/internal/budget"
+	"github.com/threadnote/threadnote/infra/telemetry-gateway/internal/budget"
 )
 
 const (

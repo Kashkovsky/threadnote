@@ -48,6 +48,8 @@ export function codeGraphCitationSourceKey(
  * can abstain per citation; capture treats a missing requested entry atomically.
  */
 export const readCodeGraphCitationSources = Effect.fn('codeGraph.readCitationSources')(function* (input: {
+  /** Refuse snapshot blobs when the caller requires bytes from the current worktree. */
+  readonly allowCommitFallback?: boolean;
   readonly objectFormat: RepositoryIdentity['objectFormat'];
   /** @internal Narrower bound used by focused admission tests. */
   readonly retainedBytesLimit?: number;
@@ -57,7 +59,6 @@ export const readCodeGraphCitationSources = Effect.fn('codeGraph.readCitationSou
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const system = yield* SystemInfo;
   const requestedRetainedBytesLimit = input.retainedBytesLimit ?? CODE_GRAPH_CITATION_SOURCE_MAXIMUM_TOTAL_BYTES;
   if (!Number.isSafeInteger(requestedRetainedBytesLimit) || requestedRetainedBytesLimit < 0) {
     return yield* CodeGraphCitationSourceError.make({message: 'Citation retained-byte bound is invalid.'});
@@ -141,8 +142,9 @@ export const readCodeGraphCitationSources = Effect.fn('codeGraph.readCitationSou
       commitFallback.push(source);
     }
   }
-  if (commitFallback.length === 0) return resolved;
+  if (commitFallback.length === 0 || input.allowCommitFallback === false) return resolved;
 
+  const system = yield* SystemInfo;
   const expressions = commitFallback.map(source => `${input.sourceCommit}:${source.repositoryPath}`);
   const checkInput = nulTerminated(expressions);
   if (checkInput.byteLength > CODE_GRAPH_CITATION_SOURCE_BATCH_INPUT_BYTES) {

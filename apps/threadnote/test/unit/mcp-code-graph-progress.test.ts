@@ -24,11 +24,18 @@ import {
   compactCodeGraphMcpTiming,
   selectCodeGraphReadySnapshotForInspection,
 } from '@threadnote/threadnote/mcp/server/index';
-import {completeCodeGraphReadyReadRefresh} from '@threadnote/threadnote/mcp/server/code_graph/ready_read';
+import {
+  codeGraphQueryExecutionBudget,
+  completeCodeGraphReadyReadRefresh,
+  codeGraphRefreshBlocksCompletedInspection,
+} from '@threadnote/threadnote/mcp/server/code_graph/ready_read';
 import {analyzeCodeGraph} from '@threadnote/graph/analysis';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '@threadnote/graph/types';
 import type {CodeGraphRefreshStatus, CodeGraphWatcherShape} from '@threadnote/graph/watcher';
-import type {CodeGraphStatusObservation} from '@threadnote/graph/query/contract';
+import {
+  codeGraphInspectionNeedsReadyAttachment,
+  type CodeGraphStatusObservation,
+} from '@threadnote/graph/query/contract';
 import {measureAgentToolResponse} from '@threadnote/protocol/agent-response';
 import {formatCodeGraphMcpResponse} from '@threadnote/threadnote/mcp/code_graph_projection';
 import {
@@ -116,65 +123,88 @@ describe('MCP code graph indexing progress', () => {
     }
   });
 
-  effectIt.effect(
-    'never registers a build demand after a successful ready read and preserves observed continuity',
-    () =>
-      Effect.gen(function* () {
-        let ensured = 0;
-        let requested = 0;
-        let resumed = 0;
-        const watcher = {
-          ensure: () =>
-            Effect.sync(() => {
-              ensured += 1;
-            }),
-          request: () =>
-            Effect.sync(() => {
-              requested += 1;
-              return {
-                refresh: {
-                  state: 'active' as const,
-                  type: 'code-graph-refresh-continuity' as const,
-                  version: 1 as const,
-                },
-                requestState: 'started' as const,
-              };
-            }),
-          resume: () =>
-            Effect.sync(() => {
-              resumed += 1;
-              return undefined;
-            }),
-        } as unknown as CodeGraphWatcherShape;
+  effectIt.effect('schedules durable demand off the response path after a stale ready read', () =>
+    Effect.gen(function* () {
+      let ensured = 0;
+      let requested = 0;
+      let scheduledRequests = 0;
+      let scheduledResumes = 0;
+      const watcher = {
+        ensure: () =>
+          Effect.sync(() => {
+            ensured += 1;
+          }),
+        request: () =>
+          Effect.sync(() => {
+            requested += 1;
+            return {
+              refresh: {
+                state: 'active' as const,
+                type: 'code-graph-refresh-continuity' as const,
+                version: 1 as const,
+              },
+              requestState: 'started' as const,
+            };
+          }),
+        scheduleRequest: () =>
+          Effect.sync(() => {
+            scheduledRequests += 1;
+          }),
+        scheduleResume: () =>
+          Effect.sync(() => {
+            scheduledResumes += 1;
+          }),
+      } as unknown as CodeGraphWatcherShape;
 
-        const continuity = yield* completeCodeGraphReadyReadRefresh({
-          backgroundRefreshRequested: true,
-          ensureWatcher: true,
-          key: 'worktree',
-          target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
-          watcher,
-        });
+      const continuity = yield* completeCodeGraphReadyReadRefresh({
+        backgroundRefreshRequested: true,
+        ensureWatcher: true,
+        key: 'worktree',
+        target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
+        watcher,
+      });
 
-        expect(continuity).toEqual({state: 'deferred', type: 'code-graph-refresh-continuity', version: 1});
-        const active = {
-          currentTargetToken: `cgdq_${'1'.repeat(32)}`,
-          state: 'active' as const,
-          type: 'code-graph-refresh-continuity' as const,
-          version: 1 as const,
-        };
-        const preserved = yield* completeCodeGraphReadyReadRefresh({
-          backgroundRefreshRequested: true,
-          ensureWatcher: true,
-          key: 'worktree',
-          refresh: active,
-          target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
-          watcher,
-        });
-        expect(preserved).toEqual(active);
-        expect(ensured).toBe(2);
-        expect(requested).toBe(0);
-        expect(resumed).toBe(2);
-      }),
+      expect(continuity).toEqual({state: 'deferred', type: 'code-graph-refresh-continuity', version: 1});
+      const active = {
+        currentTargetToken: `cgdq_${'1'.repeat(32)}`,
+        state: 'active' as const,
+        type: 'code-graph-refresh-continuity' as const,
+        version: 1 as const,
+      };
+      const preserved = yield* completeCodeGraphReadyReadRefresh({
+        backgroundRefreshRequested: true,
+        ensureWatcher: true,
+        key: 'worktree',
+        refresh: active,
+        target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
+        watcher,
+      });
+      expect(preserved).toEqual(active);
+      expect(ensured).toBe(2);
+      expect(requested).toBe(0);
+      expect(scheduledRequests).toBe(2);
+      expect(scheduledResumes).toBe(0);
+
+      yield* completeCodeGraphReadyReadRefresh({
+        backgroundRefreshRequested: true,
+        ensureWatcher: false,
+        key: 'worktree',
+        refreshStatus: deferredStatus('no-space'),
+        target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
+        watcher,
+      });
+      expect(scheduledRequests).toBe(2);
+
+      yield* completeCodeGraphReadyReadRefresh({
+        backgroundRefreshRequested: true,
+        ensureWatcher: false,
+        key: 'worktree',
+        refreshStatus: deferredStatus('transient-io'),
+        target: {cwd: '/fixture/repository', threadnoteHome: '/fixture/home'},
+        watcher,
+      });
+      expect(scheduledRequests).toBe(3);
+    }),
   );
 
   fcProp(
@@ -199,7 +229,7 @@ describe('MCP code graph indexing progress', () => {
 
   fcProp(
     it,
-    'starts refresh only for stale cold or current-required inspections',
+    'starts refresh only for current-required inspections without current evidence',
     {
       operation: FC.constantFrom(
         'query' as const,
@@ -215,7 +245,22 @@ describe('MCP code graph indexing progress', () => {
     ({operation, ready, stale}) => {
       expect(
         codeGraphInspectionStartsRefresh({readySnapshot: ready ? {id: 'ready'} : undefined, stale}, operation),
-      ).toBe(!ready || (stale && (operation === 'path' || operation === 'impact')));
+      ).toBe((!ready || stale) && (operation === 'path' || operation === 'impact'));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  fcProp(
+    it,
+    'attaches a compatible ready snapshot whenever the observed pointer is missing or stale',
+    {
+      ready: FC.boolean(),
+      stale: FC.boolean(),
+    },
+    ({ready, stale}) => {
+      expect(codeGraphInspectionNeedsReadyAttachment({readySnapshot: ready ? {id: 'ready'} : undefined, stale})).toBe(
+        !ready || stale,
+      );
     },
     {fastCheck: {numRuns: 100}},
   );
@@ -312,6 +357,9 @@ describe('MCP code graph indexing progress', () => {
       const usable = !stale || allowStale;
 
       expect(selected).toBe(usable ? observed : undefined);
+      expect(codeGraphRefreshBlocksCompletedInspection({readySnapshot: observed, stale}, refresh, allowStale)).toBe(
+        !allowStale && !usable,
+      );
       if (!verifiedPromotion) expect(selected).not.toBe(candidate);
     },
     {fastCheck: {numRuns: 250}},
@@ -419,6 +467,9 @@ describe('MCP code graph indexing progress', () => {
     expect(codeGraphRefreshBlocksReadyInspection({readySnapshot: {id: 'stale'}, stale: true}, runtimeSkew, true)).toBe(
       true,
     );
+    expect(
+      codeGraphRefreshBlocksCompletedInspection({readySnapshot: {id: 'stale'}, stale: true}, runtimeSkew, true),
+    ).toBe(false);
 
     const inspection = codeGraphQueryTimeoutResult('query', runtimeSkew);
     expect(inspection.structuredContent).toMatchObject({
@@ -455,6 +506,33 @@ describe('MCP code graph indexing progress', () => {
     expect(codeGraphRetryAfterMilliseconds(indexingStatus(60 * 60_000))).toBe(30_000);
   });
 
+  it('reserves three seconds for query cleanup and response finalization', () => {
+    expect(
+      [4_000, 4_001, 25_000, 55_000].map(requestBudget => [
+        requestBudget,
+        codeGraphQueryExecutionBudget(requestBudget),
+      ]),
+    ).toEqual([
+      [4_000, 1_000],
+      [4_001, 1_001],
+      [25_000, 22_000],
+      [55_000, 52_000],
+    ]);
+  });
+
+  fcProp(
+    it,
+    'keeps every accepted query budget above the cleanup reserve',
+    {requestBudget: FC.integer({min: 4_000, max: 55_000})},
+    ({requestBudget}) => {
+      const executionBudget = codeGraphQueryExecutionBudget(requestBudget);
+      expect(executionBudget).toBeGreaterThanOrEqual(1_000);
+      expect(executionBudget).toBeLessThanOrEqual(requestBudget);
+      expect(requestBudget - executionBudget).toBe(3_000);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it('keeps elapsed query, active indexing, and deferred refresh states explicit', () => {
     const timedOut = codeGraphQueryTimeoutResult('query');
     expect(timedOut.isError).not.toBe(true);
@@ -474,7 +552,7 @@ describe('MCP code graph indexing progress', () => {
     });
     expect(JSON.stringify(readyReadTimedOut.structuredContent)).not.toContain('retryAfterMilliseconds');
     const readyReadTimeoutText = (readyReadTimedOut.content[0] as {readonly text: string}).text;
-    expect(readyReadTimeoutText).toContain('25-second MCP budget');
+    expect(readyReadTimeoutText).toContain('55-second MCP budget');
     expect(readyReadTimeoutText).toContain('--freshness ready --read-timeout-ms 120000');
     expect(readAnonymousTelemetryReportedOutcome(readyReadTimedOut)).toBe('timed-out');
 

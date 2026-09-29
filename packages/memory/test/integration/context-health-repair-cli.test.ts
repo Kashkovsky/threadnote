@@ -122,15 +122,19 @@ describe('context health repair CLI', () => {
     expect(updated?.metadata.relations).toEqual([{type: 'references', uri: 'threadnote://memory/tn_active'}]);
   });
 
-  it('keeps malformed direct targets and missing stable aliases review-only', async () => {
+  it('keeps malformed direct targets review-only and removes missing or inactive stable aliases', async () => {
     const home = await makeHome();
     const malformedUri = 'threadnote://user/local/memories/durable/projects/project-a/malformed-target.md';
-    await storedMemory(home, 'source', {
+    const missingAlias = 'threadnote://memory/tn_missing_alias';
+    const inactiveAlias = 'threadnote://memory/tn_inactive_alias';
+    const sourcePath = await storedMemory(home, 'source', {
       relations: [
         {type: 'depends_on', uri: malformedUri},
-        {type: 'references', uri: 'threadnote://memory/tn_missing_alias'},
+        {type: 'references', uri: missingAlias},
+        {type: 'references', uri: inactiveAlias},
       ],
     });
+    await storedMemory(home, 'inactive', {memoryId: 'tn_inactive_alias', status: 'archived'});
     const malformedPath = join(
       home,
       'data',
@@ -148,14 +152,26 @@ describe('context health repair CLI', () => {
     const preview = JSON.parse(
       (await runCli(['context', 'repair', 'preview', '--project', 'project-a', '--json'], home)).stdout,
     ) as RepairPlan;
-    const relationProposals = preview.proposals.filter(item => item.category === 'relation-target-missing');
+    const malformed = preview.proposals.find(item => item.mutation.targetUri === malformedUri);
+    const missing = preview.proposals.find(item => item.mutation.targetUri === missingAlias);
+    const inactive = preview.proposals.find(item => item.mutation.targetUri === inactiveAlias);
 
-    expect(relationProposals).toHaveLength(2);
-    expect(relationProposals.every(item => item.mutation.kind === 'review-only')).toBe(true);
-    expect(relationProposals.some(item => item.mutation.targetUri === malformedUri)).toBe(true);
-    expect(relationProposals.some(item => item.mutation.targetUri === 'threadnote://memory/tn_missing_alias')).toBe(
-      true,
+    expect(malformed).toMatchObject({category: 'relation-target-missing', mutation: {kind: 'review-only'}});
+    expect(missing).toMatchObject({category: 'relation-target-missing', mutation: {kind: 'remove-relations'}});
+    expect(inactive).toMatchObject({category: 'relation-target-inactive', mutation: {kind: 'remove-relations'}});
+    await applyProposal(home, missing);
+
+    const refreshed = JSON.parse(
+      (await runCli(['context', 'repair', 'preview', '--project', 'project-a', '--json'], home)).stdout,
+    ) as RepairPlan;
+    await applyProposal(
+      home,
+      refreshed.proposals.find(item => item.mutation.targetUri === inactiveAlias),
     );
+
+    const updated = parseMemoryDocument('threadnote://memory/source', await readFile(sourcePath, 'utf8'));
+    expect(updated?.metadata.memoryId).toBe('tn_source');
+    expect(updated?.metadata.relations).toEqual([{type: 'depends_on', uri: malformedUri}]);
   });
 
   it('resumes an applying archive journal by reusing its exact revision-addressed archive', async () => {
@@ -360,4 +376,29 @@ function runCli(args: readonly string[], home: string) {
       env: {...process.env, NO_COLOR: '1', THREADNOTE_HOME: home, THREADNOTE_USER: 'local'},
     },
   );
+}
+
+async function applyProposal(home: string, proposal: RepairPlan['proposals'][number] | undefined): Promise<void> {
+  expect(proposal).toBeDefined();
+  const result = JSON.parse(
+    (
+      await runCli(
+        [
+          'context',
+          'repair',
+          'apply',
+          '--project',
+          'project-a',
+          '--proposal-id',
+          proposal?.proposalId ?? '',
+          '--revision',
+          proposal?.revision ?? '',
+          '--approved',
+          '--json',
+        ],
+        home,
+      )
+    ).stdout,
+  );
+  expect(result).toMatchObject({status: 'applied', version: 1});
 }

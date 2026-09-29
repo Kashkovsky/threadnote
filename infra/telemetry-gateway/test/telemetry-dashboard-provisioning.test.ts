@@ -969,6 +969,7 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(deployment.if).toContain("github.event_name == 'push'");
     expect(deployment.if).toContain("github.ref == 'refs/heads/main'");
     expect(deployment.if).toContain("github.repository == 'Kashkovsky/threadnote'");
+    expect(deployment.if).toContain("github.repository == 'threadnote/threadnote'");
     expect(deployment.if).toContain("THREADNOTE_TELEMETRY_GRAFANA_DIRECT_ENABLED == 'true'");
     expect(deploymentText).toContain('THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN');
     expect(deploymentText).not.toContain('THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN');
@@ -990,6 +991,7 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(verification.if).toContain("github.event_name != 'pull_request'");
     expect(verification.if).toContain("github.ref == 'refs/heads/main'");
     expect(verification.if).toContain("github.repository == 'Kashkovsky/threadnote'");
+    expect(verification.if).toContain("github.repository == 'threadnote/threadnote'");
     expect(verificationText).toContain('THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN');
     expect(verificationText).not.toContain('THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN');
     expect(verificationText).toContain('secrets.THREADNOTE_TELEMETRY_GRAFANA_URL');

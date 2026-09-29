@@ -383,7 +383,7 @@ export default function DocsPage() {
               </div>
             ))}
           </nav>
-          <a className="docs-sidebar__github" href="https://github.com/Kashkovsky/threadnote">
+          <a className="docs-sidebar__github" href="https://github.com/threadnote/threadnote">
             Edit or report an issue <span aria-hidden="true">↗</span>
           </a>
         </aside>
@@ -470,7 +470,7 @@ export default function DocsPage() {
           <div className="docs-outline__help">
             <span className="status-dot" />
             <strong>Something unclear?</strong>
-            <a href="https://github.com/Kashkovsky/threadnote/issues/new">Open a documentation issue</a>
+            <a href="https://github.com/threadnote/threadnote/issues/new">Open a documentation issue</a>
           </div>
         </aside>
       </div>

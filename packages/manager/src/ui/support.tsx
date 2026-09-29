@@ -519,14 +519,20 @@ function tabTitle(name: PanelName): string {
   switch (name) {
     case 'context':
       return 'Context';
+    case 'context-health':
+      return 'Context Health';
     case 'doctor':
       return 'Health';
     case 'graph':
       return 'Graph';
+    case 'home':
+      return 'Home';
     case 'memory':
       return 'Library';
     case 'processes':
       return 'Processes';
+    case 'reviews':
+      return 'Reviews';
     case 'shares':
       return 'Sharing';
     case 'tools':
@@ -540,14 +546,20 @@ function panelIcon(name: PanelName): string {
   switch (name) {
     case 'context':
       return '◎';
+    case 'context-health':
+      return '♡';
     case 'doctor':
       return '✓';
     case 'graph':
       return '◉';
+    case 'home':
+      return '⌂';
     case 'memory':
       return '◇';
     case 'processes':
       return '▣';
+    case 'reviews':
+      return '☷';
     case 'shares':
       return '⇄';
     case 'tools':
@@ -561,14 +573,20 @@ function panelNavDescription(name: PanelName): string {
   switch (name) {
     case 'context':
       return 'Briefs and recall';
+    case 'context-health':
+      return 'Memory quality findings';
     case 'doctor':
       return 'Runtime diagnostics';
     case 'graph':
       return 'Explore architecture';
+    case 'home':
+      return 'Project attention and next steps';
     case 'memory':
       return 'Memories and resources';
     case 'processes':
       return 'Verified runtimes';
+    case 'reviews':
+      return 'Knowledge awaiting review';
     case 'shares':
       return 'Team repositories';
     case 'tools':
@@ -582,14 +600,20 @@ function panelDescription(name: PanelName): string {
   switch (name) {
     case 'context':
       return 'Compose Context Briefs and read ranked memory';
+    case 'context-health':
+      return 'Inspect actionable quality findings for project context';
     case 'doctor':
       return 'Diagnostics and runtime repair';
     case 'graph':
       return 'Repository architecture explorer';
+    case 'home':
+      return 'Review project attention and continue local work';
     case 'memory':
       return 'Browse, edit, and consolidate context';
     case 'processes':
       return 'Inspect and safely terminate registered Threadnote runtimes';
+    case 'reviews':
+      return 'Inspect proposed memories that need a decision';
     case 'shares':
       return 'Manage synchronized team context';
     case 'tools':

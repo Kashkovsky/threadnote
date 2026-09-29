@@ -20,6 +20,7 @@ import {
   type KnowledgeDeltaItemV1,
   type KnowledgeDeltaV1,
 } from '@threadnote/memory/knowledge_delta';
+import {formatMemoryCodeCitation, type MemoryCodeCitationV1} from '@threadnote/memory/code/citation';
 import type {ContextHealthSelectorV1} from './health_selector.js';
 
 export const CONTEXT_HEALTH_REPAIR_VERSION = 1 as const;
@@ -35,6 +36,13 @@ export interface ContextHealthRepairRecordPreconditionV1 {
 }
 
 export type ContextHealthRepairMutationV1 =
+  | {
+      readonly citationId: string;
+      readonly expectedResultContentHash: string;
+      readonly kind: 'replace-citation';
+      readonly replacement: MemoryCodeCitationV1;
+      readonly subjectUri: string;
+    }
   | {
       readonly kind: 'archive-memory';
       readonly subjectUri: string;
@@ -164,6 +172,7 @@ export function previewContextHealthRepairPlanV1(
   records: readonly MemoryRecord[],
   options: {
     readonly absentTargetUris?: readonly string[];
+    readonly citationReplacements?: ReadonlyMap<string, MemoryCodeCitationV1>;
     readonly limit?: number;
     readonly selector?: ContextHealthSelectorV1;
     readonly semanticDirection?: ContextHealthSemanticDirectionV1;
@@ -176,7 +185,15 @@ export function previewContextHealthRepairPlanV1(
   const proposals = [...report.findings]
     .sort((left, right) => compareText(left.id, right.id))
     .map(finding =>
-      proposalForFinding(report.project, finding, recordsByUri, absentTargetUris, semanticDirection, options.selector),
+      proposalForFinding(
+        report.project,
+        finding,
+        recordsByUri,
+        absentTargetUris,
+        options.citationReplacements ?? new Map(),
+        semanticDirection,
+        options.selector,
+      ),
     )
     .sort((left, right) => compareText(left.proposalId, right.proposalId));
   const limit = proposalLimit(options.limit);
@@ -250,6 +267,20 @@ export function applyContextHealthRepairProposalV1(
       };
     }
   }
+  if (mutation.kind === 'replace-citation' && subject !== undefined) {
+    const citations = subject.metadata.codeCitations ?? [];
+    if (
+      !citations.some(citation => citation.id === mutation.citationId) &&
+      citations.some(citation => citation.id === mutation.replacement.id) &&
+      memoryContentHash(subject.content) === mutation.expectedResultContentHash
+    ) {
+      return {
+        records,
+        receipt: applyReceipt(proposal, mutation.expectedResultContentHash),
+        status: 'already-applied',
+      };
+    }
+  }
   if (subject === undefined) {
     return conflict(input, 'subject-missing', `Repair subject ${subjectUri} is missing from the current snapshot.`);
   }
@@ -282,16 +313,19 @@ export function applyContextHealthRepairProposalV1(
     };
   }
 
-  const nextContent = relationRepairContent(subject, mutation.targetUri);
+  const nextContent =
+    mutation.kind === 'remove-relations'
+      ? relationRepairContent(subject, mutation.targetUri)
+      : citationRepairContent(subject, mutation.citationId, mutation.replacement);
   if (nextContent === undefined) {
-    return conflict(input, 'invalid-proposal', 'The relation repair cannot safely rewrite this memory schema.');
+    return conflict(input, 'invalid-proposal', 'The repair cannot safely rewrite this memory schema.');
   }
   if (memoryContentHash(nextContent) !== mutation.expectedResultContentHash) {
-    return conflict(input, 'precondition-failed', 'The relation repair postcondition no longer matches its preview.');
+    return conflict(input, 'precondition-failed', 'The repair postcondition no longer matches its preview.');
   }
   const nextRecord = parseMemoryDocument(subject.uri, nextContent);
   if (nextRecord === undefined || nextRecord.metadata.project !== proposal.project) {
-    return conflict(input, 'invalid-proposal', 'The relation repair would produce an invalid project memory.');
+    return conflict(input, 'invalid-proposal', 'The repair would produce an invalid project memory.');
   }
   return {
     records: records.map(record => (record === subject ? nextRecord : record)),
@@ -408,10 +442,18 @@ function proposalForFinding(
   finding: ContextHealthFindingV1,
   recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
   absentTargetUris: ReadonlySet<string>,
+  citationReplacements: ReadonlyMap<string, MemoryCodeCitationV1>,
   semanticDirection: ContextHealthSemanticDirectionV1 | undefined,
   selector: ContextHealthSelectorV1 | undefined,
 ): ContextHealthRepairProposalV1 {
-  const mutation = mutationForFinding(project, finding, recordsByUri, absentTargetUris, semanticDirection);
+  const mutation = mutationForFinding(
+    project,
+    finding,
+    recordsByUri,
+    absentTargetUris,
+    citationReplacements,
+    semanticDirection,
+  );
   const preconditions = mutationPreconditions(project, mutation, recordsByUri);
   const base = {
     category: finding.category,
@@ -433,6 +475,7 @@ function mutationForFinding(
   finding: ContextHealthFindingV1,
   recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
   absentTargetUris: ReadonlySet<string>,
+  citationReplacements: ReadonlyMap<string, MemoryCodeCitationV1>,
   semanticDirection: ContextHealthSemanticDirectionV1 | undefined,
 ): ContextHealthRepairMutationV1 {
   const directedFinding =
@@ -494,6 +537,37 @@ function mutationForFinding(
     };
   }
   if (
+    finding.repair.kind === 'repair-citation' &&
+    (finding.category === 'citation-changed' ||
+      finding.category === 'citation-missing' ||
+      finding.category === 'citation-unknown') &&
+    subject !== undefined &&
+    subject.metadata.project === project &&
+    subject.metadata.status === 'active' &&
+    targetUri !== undefined
+  ) {
+    const citationId = citationIdFromTargetUri(targetUri);
+    const replacement = citationReplacements.get(finding.id);
+    const current = subject.metadata.codeCitations?.find(citation => citation.id === citationId);
+    if (
+      citationId !== undefined &&
+      replacement !== undefined &&
+      current?.repositoryId === replacement.repositoryId &&
+      current.repositoryIdentityKind === replacement.repositoryIdentityKind
+    ) {
+      const resultContent = citationRepairContent(subject, citationId, replacement);
+      if (resultContent !== undefined) {
+        return {
+          citationId,
+          expectedResultContentHash: memoryContentHash(resultContent),
+          kind: 'replace-citation',
+          replacement,
+          subjectUri: subject.uri,
+        };
+      }
+    }
+  }
+  if (
     subject !== undefined &&
     (finding.repair.kind === 'archive-memory' || finding.repair.kind === 'deduplicate-memory') &&
     archiveRewriteBlocker(subject) !== undefined
@@ -552,9 +626,14 @@ function mutationForFinding(
     subject.metadata.status === 'active' &&
     subject.metadata.relations?.some(relation => relation.uri === targetUri) === true
   ) {
-    const target = recordsByUri.get(targetUri);
+    const target = relationTargetRecord(recordsByUri, targetUri);
+    const targetAliasMemoryId = memoryIdFromIdentityAlias(targetUri);
+    const targetIdentityIsAbsent =
+      targetAliasMemoryId === undefined
+        ? !recordsByUri.has(targetUri)
+        : ![...recordsByUri.values()].some(record => record?.metadata.memoryId === targetAliasMemoryId);
     const targetPrecondition =
-      finding.category === 'relation-target-missing' && !recordsByUri.has(targetUri) && absentTargetUris.has(targetUri)
+      finding.category === 'relation-target-missing' && targetIdentityIsAbsent && absentTargetUris.has(targetUri)
         ? ({state: 'absent'} as const)
         : finding.category === 'relation-target-inactive' && target !== undefined && target.metadata.status !== 'active'
           ? ({expectedContentHash: memoryContentHash(target.content), state: 'inactive'} as const)
@@ -598,13 +677,10 @@ function mutationForFinding(
   };
 }
 
-/** True only for the direct, same-user personal memory targets that automatic relation repair may inspect. */
+/** True only for personal targets whose absence can be proven from storage or stable identity. */
 export function isAutomaticRelationRepairTargetV1(subjectUri: string, targetUri: string): boolean {
-  return (
-    memoryIdFromIdentityAlias(targetUri) === undefined &&
-    !isSharedMemoryUri(targetUri) &&
-    isSamePersonalMemoryScope(subjectUri, targetUri)
-  );
+  if (isSharedMemoryUri(subjectUri) || isSharedMemoryUri(targetUri)) return false;
+  return memoryIdFromIdentityAlias(targetUri) !== undefined || isSamePersonalMemoryScope(subjectUri, targetUri);
 }
 
 function mutationPreconditions(
@@ -623,10 +699,15 @@ function mutationPreconditions(
       })
       .sort((left, right) => compareText(left.uri, right.uri));
   }
-  const uris =
-    mutation.kind === 'archive-memory' && mutation.survivorUri !== undefined
-      ? [mutation.subjectUri, mutation.survivorUri]
-      : [mutation.subjectUri];
+  const inactiveRelationTarget =
+    mutation.kind === 'remove-relations' && mutation.targetPrecondition.state === 'inactive'
+      ? relationTargetRecord(recordsByUri, mutation.targetUri)?.uri
+      : undefined;
+  const uris = [
+    mutation.subjectUri,
+    ...(mutation.kind === 'archive-memory' && mutation.survivorUri !== undefined ? [mutation.survivorUri] : []),
+    ...(inactiveRelationTarget === undefined ? [] : [inactiveRelationTarget]),
+  ];
   return uris
     .flatMap(uri => {
       const record = recordsByUri.get(uri);
@@ -645,6 +726,17 @@ function uniqueRecordsByUri(records: readonly MemoryRecord[]): ReadonlyMap<strin
   return new Map([...grouped].map(([uri, matches]) => [uri, matches.length === 1 ? matches[0] : undefined]));
 }
 
+function relationTargetRecord(
+  recordsByUri: ReadonlyMap<string, MemoryRecord | undefined>,
+  targetUri: string,
+): MemoryRecord | undefined {
+  const direct = recordsByUri.get(targetUri);
+  if (direct !== undefined) return direct;
+  const targetMemoryId = memoryIdFromIdentityAlias(targetUri);
+  if (targetMemoryId === undefined) return undefined;
+  return [...recordsByUri.values()].find(record => record?.metadata.memoryId === targetMemoryId);
+}
+
 function memoryContentWithoutTargetRelations(record: MemoryRecord, targetUri: string): string {
   const relations = (record.metadata.relations ?? []).filter(relation => relation.uri !== targetUri);
   if (relations.length === (record.metadata.relations ?? []).length)
@@ -655,6 +747,90 @@ function memoryContentWithoutTargetRelations(record: MemoryRecord, targetUri: st
 function relationRepairContent(record: MemoryRecord, targetUri: string): string | undefined {
   try {
     return memoryContentWithoutTargetRelations(record, targetUri);
+  } catch {
+    return undefined;
+  }
+}
+
+function citationIdFromTargetUri(targetUri: string): string | undefined {
+  const marker = targetUri.lastIndexOf('#');
+  const citationId = marker === -1 ? '' : targetUri.slice(marker + 1);
+  return /^tncc_[0-9a-f]{40}$/u.test(citationId) ? citationId : undefined;
+}
+
+function citationRepairContent(
+  record: MemoryRecord,
+  citationId: string,
+  replacement: MemoryCodeCitationV1,
+): string | undefined {
+  try {
+    assertMemoryDocumentSchemaWritable(record.content);
+    if ((record.metadata.citationErrors?.length ?? 0) > 0) return undefined;
+    const citations = record.metadata.codeCitations ?? [];
+    if (citations.filter(citation => citation.id === citationId).length !== 1) return undefined;
+    const next = citations.map(citation => (citation.id === citationId ? replacement : citation));
+    if (new Set(next.map(citation => citation.id)).size !== next.length) return undefined;
+    const current = citations.find(citation => citation.id === citationId);
+    if (current === undefined) return undefined;
+    const canonical = canonicalMemoryDocumentContent(record.content).replace(/\r\n?/gu, '\n');
+    const separatorIndex = canonical.indexOf('\n\n');
+    const header = separatorIndex === -1 ? canonical : canonical.slice(0, separatorIndex);
+    const body = separatorIndex === -1 ? '' : canonical.slice(separatorIndex + 2);
+    const currentLine = `code_citation: ${formatMemoryCodeCitation(current)}`;
+    const replacementLine = `code_citation: ${formatMemoryCodeCitation(replacement)}`;
+    let replacements = 0;
+    const headerLines = header.split('\n').map(line => {
+      if (line !== currentLine) return line;
+      replacements += 1;
+      return replacementLine;
+    });
+    return replacements === 1 ? [...headerLines, '', body].join('\n').trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Rewrite several independently reviewed citations in one memory revision. */
+export function memoryContentWithCitationReplacementsV1(
+  record: MemoryRecord,
+  replacements: readonly {readonly citationId: string; readonly replacement: MemoryCodeCitationV1}[],
+): string | undefined {
+  try {
+    assertMemoryDocumentSchemaWritable(record.content);
+    if (replacements.length === 0 || (record.metadata.citationErrors?.length ?? 0) > 0) return undefined;
+    const citations = record.metadata.codeCitations ?? [];
+    const replacementById = new Map(replacements.map(item => [item.citationId, item.replacement] as const));
+    if (replacementById.size !== replacements.length) return undefined;
+    if ([...replacementById.keys()].some(id => citations.filter(citation => citation.id === id).length !== 1)) {
+      return undefined;
+    }
+    const next = citations.map(citation => replacementById.get(citation.id) ?? citation);
+    if (new Set(next.map(citation => citation.id)).size !== next.length) return undefined;
+    const canonical = canonicalMemoryDocumentContent(record.content).replace(/\r\n?/gu, '\n');
+    const separatorIndex = canonical.indexOf('\n\n');
+    const header = separatorIndex === -1 ? canonical : canonical.slice(0, separatorIndex);
+    const body = separatorIndex === -1 ? '' : canonical.slice(separatorIndex + 2);
+    const currentLines = new Map<string, string>(
+      citations.flatMap(citation => {
+        const replacement = replacementById.get(citation.id);
+        return replacement === undefined
+          ? []
+          : [
+              [
+                `code_citation: ${formatMemoryCodeCitation(citation)}`,
+                `code_citation: ${formatMemoryCodeCitation(replacement)}`,
+              ] as const,
+            ];
+      }),
+    );
+    const seen = new Set<string>();
+    const headerLines = header.split('\n').map(line => {
+      const replacement = currentLines.get(line);
+      if (replacement === undefined) return line;
+      seen.add(line);
+      return replacement;
+    });
+    return seen.size === currentLines.size ? [...headerLines, '', body].join('\n').trim() : undefined;
   } catch {
     return undefined;
   }
@@ -696,7 +872,14 @@ function contextHealthRepairProposalIdV1(
                 subjectUri: mutation.subjectUri,
                 survivorUri: mutation.survivorUri ?? null,
               }
-            : {kind: mutation.kind, subjectUri: mutation.subjectUri, targetUri: mutation.targetUri},
+            : mutation.kind === 'remove-relations'
+              ? {kind: mutation.kind, subjectUri: mutation.subjectUri, targetUri: mutation.targetUri}
+              : {
+                  citationId: mutation.citationId,
+                  kind: mutation.kind,
+                  replacementId: mutation.replacement.id,
+                  subjectUri: mutation.subjectUri,
+                },
       project: proposal.project,
       selector: proposal.selector ?? null,
       version: proposal.version,
@@ -741,6 +924,15 @@ function canonicalMutation(mutation: ContextHealthRepairMutationV1) {
       subjectUri: mutation.subjectUri,
       targetPrecondition: mutation.targetPrecondition,
       targetUri: mutation.targetUri,
+    };
+  }
+  if (mutation.kind === 'replace-citation') {
+    return {
+      citationId: mutation.citationId,
+      expectedResultContentHash: mutation.expectedResultContentHash,
+      kind: mutation.kind,
+      replacement: mutation.replacement,
+      subjectUri: mutation.subjectUri,
     };
   }
   return {
@@ -840,7 +1032,8 @@ function applyReceipt(proposal: ContextHealthRepairProposalV1, resultHash: strin
 }
 
 function expectedReceiptResultHash(proposal: ContextHealthRepairProposalV1): string {
-  if (proposal.mutation.kind === 'remove-relations') return proposal.mutation.expectedResultContentHash;
+  if (proposal.mutation.kind === 'remove-relations' || proposal.mutation.kind === 'replace-citation')
+    return proposal.mutation.expectedResultContentHash;
   if (proposal.mutation.kind === 'archive-memory') {
     return (
       proposal.preconditions.find(precondition => precondition.uri === proposal.mutation.subjectUri)
@@ -885,9 +1078,14 @@ function relationTargetPreconditionMatches(
   records: readonly MemoryRecord[],
   absentTargetUris: ReadonlySet<string>,
 ): boolean {
-  const matches = records.filter(record => record.uri === mutation.targetUri);
+  const targetMemoryId = memoryIdFromIdentityAlias(mutation.targetUri);
+  const matches = records.filter(record =>
+    targetMemoryId === undefined ? record.uri === mutation.targetUri : record.metadata.memoryId === targetMemoryId,
+  );
   if (mutation.targetPrecondition.state === 'absent') {
-    return matches.length === 0 && absentTargetUris.has(mutation.targetUri);
+    const identityMatches =
+      targetMemoryId === undefined ? matches : records.filter(record => record.metadata.memoryId === targetMemoryId);
+    return identityMatches.length === 0 && absentTargetUris.has(mutation.targetUri);
   }
   if (matches.length !== 1) return false;
   const target = matches[0];
@@ -899,7 +1097,10 @@ function relationTargetPreconditionMatches(
 }
 
 function observedRelationTarget(targetUri: string, records: readonly MemoryRecord[]) {
-  const matches = records.filter(record => record.uri === targetUri);
+  const targetMemoryId = memoryIdFromIdentityAlias(targetUri);
+  const matches = records.filter(record =>
+    targetMemoryId === undefined ? record.uri === targetUri : record.metadata.memoryId === targetMemoryId,
+  );
   return {
     matches: matches.map(record => ({
       contentHash: memoryContentHash(record.content),

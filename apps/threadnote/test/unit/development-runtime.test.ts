@@ -666,6 +666,7 @@ describe('exact-head development runtime', () => {
           ]);
           const testSystem = SystemInfo.of({
             ...baseSystem,
+            canonicalProcessStartIdentity: processId => Effect.succeed(identities.get(processId)),
             environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
             isProcessRunning: processId => identities.has(processId),
             processStartIdentity: processId => Effect.succeed(identities.get(processId)),
