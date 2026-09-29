@@ -597,9 +597,22 @@ describe('Threadnote MCP toolsets', () => {
           });
           expect(JSON.stringify(codeReferenceTool?.inputSchema)).toContain('Graph-indexed repository-relative path');
         }
-        expect(tools.tools.find(tool => tool.name === 'remember_context')?.inputSchema).toMatchObject({
+        const remember = tools.tools.find(tool => tool.name === 'remember_context');
+        expect(remember?.description).toContain('For kind=handoff or smoke, omit keywords and regenerateKeywords');
+        expect(remember?.inputSchema).toMatchObject({
           properties: {
             citationPolicy: {enum: ['require-current', 'defer'], type: 'string'},
+            clearKeywords: {
+              description: expect.stringContaining('only keyword control supported for handoff and smoke'),
+              type: 'boolean',
+            },
+            keywords: {
+              description: expect.stringContaining('unsupported for handoff and smoke'),
+            },
+            regenerateKeywords: {
+              description: expect.stringContaining('unsupported for handoff and smoke'),
+              type: 'boolean',
+            },
             relations: {
               items: {
                 additionalProperties: true,
@@ -659,6 +672,12 @@ describe('Threadnote MCP toolsets', () => {
           text: 'Inactive memories cannot own pending anchors.',
         });
         expect(inactiveDeferred).toContain('citationPolicy=defer requires status=active');
+        const handoffKeywords = await callErrorText(client, 'remember_context', {
+          keywords: ['invalid handoff keyword'],
+          kind: 'handoff',
+          text: 'Handoff keyword schema guidance regression.',
+        });
+        expect(handoffKeywords).toContain('Keyword authoring is not supported for handoff memories');
       },
       {toolset: 'core'},
     );

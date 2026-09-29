@@ -59,7 +59,7 @@ export function registerStoreTool(
     name,
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
-      description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
+      description: `${description} For kind=handoff or smoke, omit keywords and regenerateKeywords; clearKeywords is supported only to drop preserved keywords during replacement. Never store secrets, credentials, customer data, or raw logs.`,
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd'),
         codeRefs: McpInput.stringOrStrings(
@@ -67,9 +67,11 @@ export function registerStoreTool(
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
         citationPolicy: McpInput.literals(['require-current', 'defer'], 'codeRefs policy'),
-        clearKeywords: McpInput.boolean('Drop preserved keywords'),
+        clearKeywords: McpInput.boolean(
+          'Drop preserved keywords during replacement; the only keyword control supported for handoff and smoke memories',
+        ),
         kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke']),
-        keywords: McpInput.stringOrStrings('Search keywords; repeatable', {
+        keywords: McpInput.stringOrStrings('Search keywords; repeatable; unsupported for handoff and smoke memories', {
           maximumItems: 32,
         }),
         project: McpInput.string(),
@@ -87,7 +89,9 @@ export function registerStoreTool(
             }),
         ),
         replaceUri: McpInput.string('Replaced memory URI'),
-        regenerateKeywords: McpInput.boolean('Regenerate keywords; personal only'),
+        regenerateKeywords: McpInput.boolean(
+          'Regenerate keywords; personal only; unsupported for handoff and smoke memories',
+        ),
         text: McpInput.string(),
         sourceAgentClient: McpInput.string(),
         status: McpInput.literals(['active', 'archived', 'expired', 'superseded']),

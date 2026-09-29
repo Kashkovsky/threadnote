@@ -7,12 +7,25 @@ description: Preserve reusable Threadnote decisions and concise work handoffs af
 
 # Threadnote memory
 
-At closeout, write the required private `remember_context(kind=handoff)` separately. For optional durable knowledge,
-review a five-field Knowledge Delta (`decisions` + `rationale`, `constraints`, `verificationPerformed`,
-`knowledgeInvalidated`, `unresolvedRisks`) with `review_session_context`; apply candidates only after explicit
-`approve` (optionally with `editedText`), `defer`, or `reject` via `apply_memory_candidates`. Never auto-apply or
-auto-share proposals. Use `kind: durable` for reusable decisions and `kind: handoff` for status, checks, blockers, and
-next steps; stable project/topic identities and `replaceUri` prevent duplicates. Confirm before durable sharing.
+Close out in this order:
+
+1. Always write the required private handoff directly with `remember_context(kind=handoff)`, for example
+   `remember_context({"kind":"handoff","project":"threadnote","topic":"active-task","callerCwd":"/abs/repo","text":"Status, checks, blockers, and next steps."})`.
+   Use a stable project/topic and `replaceUri` when updating an existing handoff.
+   Omit `keywords` and `regenerateKeywords` for handoff writes. On replacement, `clearKeywords` is the only supported
+   keyword control and removes preserved legacy keywords.
+2. Only when the session produced reusable durable knowledge, preview a five-field Knowledge Delta (`decisions` +
+   `rationale`, `constraints`, `verificationPerformed`, `knowledgeInvalidated`, `unresolvedRisks`) with
+   `review_session_context` using a complete call:
+   `review_session_context({"task":"<task>","outcome":"<outcome>","project":"threadnote","callerCwd":"/abs/repo","sourceCommit":"<commit>","decisions":["<decision>"],"rationale":"<why>","constraints":[],"verificationPerformed":["<check>"],"knowledgeInvalidated":[],"unresolvedRisks":[]})`.
+   Candidate material requires evidence such as `sourceCommit`, `sourceSessionId`, or an evidence pointer.
+3. The Knowledge Delta and returned memory candidates are one optional review lifecycle, not separate writes. Present
+   candidates to the user and call `apply_memory_candidates` only after an explicit `approve` (optionally with
+   `editedText`), `defer`, or `reject`. Without a user decision, leave candidates unapplied. If there is no reusable
+   durable delta, stop after the handoff. Never auto-apply or auto-share proposals.
+
+Use `kind: durable` for reusable decisions and contracts; keep status, checks, blockers, and next steps in
+`kind: handoff`. Stable project/topic identities and `replaceUri` prevent duplicates. Confirm before durable sharing.
 Author `relations` only from memories you read or explicit review evidence; a replacement supplies the complete set, so
 carry forward every still-valid relation when using `replaceUri`.
 
