@@ -2,9 +2,28 @@
 
 import {createHash, randomUUID} from 'node:crypto';
 import type {Stats} from 'node:fs';
-import {chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, writeFile} from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import {basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
 import {matchedEvaluationReferenceEnvironmentPolicyHashV1} from '@threadnote/threadnote/evaluation/matched-evaluation';
+import {
+  createMatchedEvaluationVerificationReceiptV1,
+  parseMatchedEvaluationVerificationPlanV1,
+  type MatchedEvaluationVerificationPlanV1,
+  type MatchedEvaluationVerificationReceiptV1,
+} from '@threadnote/threadnote/evaluation/matched-verification';
 import {
   MATCHED_EVALUATION_CONTEXT_PACKET_ENV,
   MATCHED_EVALUATION_CONTEXT_SERVER_NAME,
@@ -20,7 +39,7 @@ import {
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
 import {assertMatchedEvaluationRepositoryV1} from './matched-evaluation-runtime-integrity.js';
 
-export const MATCHED_EVALUATION_CODEX_ADAPTER_VERSION = 1 as const;
+export const MATCHED_EVALUATION_CODEX_ADAPTER_VERSION = 2 as const;
 export const MATCHED_EVALUATION_ADAPTER_CONFIG_ENV = 'MATCHED_EVALUATION_ADAPTER_CONFIG' as const;
 export const MATCHED_EVALUATION_ADAPTER_EXECUTABLE_ENV = 'MATCHED_EVALUATION_ADAPTER_EXECUTABLE' as const;
 export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
@@ -35,8 +54,8 @@ export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
   workspace: 'isolated-worktree',
 });
 
-const ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v3' as const;
-const RUNTIME_VERSION = 3 as const;
+const ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v4' as const;
+const RUNTIME_VERSION = 4 as const;
 const HASH = /^[0-9a-f]{64}$/u;
 const TASK_ID = /^tsk_[0-9a-f]{16,64}$/u;
 const RUN_NONCE = /^run_[0-9a-f]{32}$/u;
@@ -45,6 +64,7 @@ const ARMS = ['files', 'threadnote-graph', 'threadnote-compact', 'threadnote-sou
 const MAXIMUM_PATCH_BYTES = 6 * 1_024 * 1_024;
 const MAXIMUM_TRANSCRIPT_BYTES = 48 * 1_024 * 1_024;
 const MAXIMUM_PREPARED_HOME_BYTES = 2 * 1_024 * 1_024 * 1_024;
+const MAXIMUM_VERIFIER_ENVIRONMENT_BYTES = 1 * 1_024 * 1_024 * 1_024;
 
 type MatchedEvaluationArm = (typeof ARMS)[number];
 
@@ -73,6 +93,7 @@ export interface MatchedEvaluationCodexAdapterConfigV1 {
   readonly safeExecutablePath: string;
   readonly taskBudget: {readonly steps: number; readonly tokens: number};
   readonly temporaryRoot: string;
+  readonly verificationPlan: MatchedEvaluationVerificationPlanV1 | null;
   readonly version: typeof MATCHED_EVALUATION_CODEX_ADAPTER_VERSION;
 }
 
@@ -150,6 +171,7 @@ interface AdapterRequest {
     readonly version: string;
   };
   readonly transcriptPath: string;
+  readonly verificationPlanHash: string | null;
   readonly version: typeof RUNTIME_VERSION;
 }
 
@@ -257,6 +279,17 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       version: MATCHED_EVALUATION_CODEX_ADAPTER_VERSION,
     } as const;
     await writeBoundedJson(request.artifactPath, artifact, MAXIMUM_PATCH_BYTES + 1_024 * 1_024);
+    const artifactHash = await sha256File(request.artifactPath);
+    const verification =
+      config.verificationPlan === null
+        ? null
+        : await runMatchedEvaluationDeterministicVerifierV1({
+            artifactHash,
+            plan: config.verificationPlan,
+            repositoryRoot,
+            root: join(root, 'verifier-runtime'),
+            taskId: request.agentTask.taskId,
+          });
     const judgeWorkspace = join(root, 'judge-workspace');
     await mkdir(judgeWorkspace, {recursive: true, mode: 0o700});
     const judgeIsolation = await createCodexIsolation({
@@ -298,10 +331,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       .map(value => JSON.stringify(value))
       .join('\n');
     await writeBoundedText(request.transcriptPath, `${transcript}\n`, MAXIMUM_TRANSCRIPT_BYTES);
-    const [artifactHash, transcriptHash] = await Promise.all([
-      sha256File(request.artifactPath),
-      sha256File(request.transcriptPath),
-    ]);
+    const transcriptHash = await sha256File(request.transcriptPath);
     const observation = {
       artifactHash,
       metrics: {
@@ -309,9 +339,13 @@ export async function runMatchedEvaluationCodexAdapter(input: {
           citations: judge.citations.length,
           resolvableCitations: await countResolvableCitations(repositoryRoot, judge.citations),
         },
-        completion: {completed: judge.completed},
+        completion: {completed: verification === null ? judge.completed : verification.status === 'passed'},
         context: observationContext(request, context),
-        correctness: {judge: 'blinded-rubric-v1' as const, scoreMilli: judge.scoreMilli},
+        correctness: {
+          judge: 'blinded-rubric-v1' as const,
+          judgeCompleted: judge.completed,
+          scoreMilli: judge.scoreMilli,
+        },
         drift: {falseCurrentOutcomes: judge.falseCurrentOutcomes},
         providerCostMicros: providerCost(config, agentTurn.usage),
         retrieval: {recalledEvidence, requiredEvidence: requiredEvidenceIds.size},
@@ -332,9 +366,10 @@ export async function runMatchedEvaluationCodexAdapter(input: {
           failureCount: judge.failureReasons.length + (contextProtocolFailure ? 1 : 0),
           valid: judge.failureReasons.length === 0 && !contextProtocolFailure,
         },
+        verification,
       },
       transcriptHash,
-      version: 2 as const,
+      version: 3 as const,
     };
     await writeBoundedJson(input.responsePath, observation, 1 * 1_024 * 1_024);
   } catch (cause) {
@@ -382,9 +417,10 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     'safeExecutablePath',
     'taskBudget',
     'temporaryRoot',
+    'verificationPlan',
     'version',
   ]);
-  if (config.version !== MATCHED_EVALUATION_CODEX_ADAPTER_VERSION) invalid('adapter config version must be 1');
+  if (config.version !== MATCHED_EVALUATION_CODEX_ADAPTER_VERSION) invalid('adapter config version must be 2');
   const appServer = object(config.appServer, 'app server');
   exactKeys(appServer, [
     'argumentsAfterSubcommand',
@@ -452,6 +488,8 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
       tokens: integer(taskBudget.tokens, 1, 10_000_000, 'task token budget'),
     },
     temporaryRoot: absolutePath(config.temporaryRoot, 'temporary root'),
+    verificationPlan:
+      config.verificationPlan === null ? null : parseMatchedEvaluationVerificationPlanV1(config.verificationPlan),
     version: MATCHED_EVALUATION_CODEX_ADAPTER_VERSION,
   };
 }
@@ -490,6 +528,229 @@ export async function matchedEvaluationPreparedHomeFixtureHashV1(rootInput: stri
     });
   });
   return sha256(Buffer.from(`matched-evaluation-prepared-home-v1\n${JSON.stringify(entries)}`));
+}
+
+export async function matchedEvaluationVerifierEnvironmentHashV1(rootInput: string): Promise<string> {
+  const root = await realpath(rootInput);
+  const entries: Array<{
+    readonly hash: string | null;
+    readonly kind: 'directory' | 'file' | 'symlink';
+    readonly mode: number;
+    readonly path: string;
+    readonly resolvedHash: string | null;
+    readonly resolvedMode: number | null;
+    readonly resolvedPath: string | null;
+    readonly resolvedSize: number | null;
+    readonly size: number;
+    readonly target: string | null;
+  }> = [];
+  let totalBytes = 0;
+  await walkVerifierEnvironment(root, root, async (absolute, path, metadata) => {
+    if (metadata.isDirectory()) {
+      entries.push({
+        hash: null,
+        kind: 'directory',
+        mode: metadata.mode & 0o777,
+        path,
+        resolvedHash: null,
+        resolvedMode: null,
+        resolvedPath: null,
+        resolvedSize: null,
+        size: 0,
+        target: null,
+      });
+      return;
+    }
+    if (metadata.isSymbolicLink()) {
+      const target = await readlink(absolute);
+      const resolvedPath = await realpath(absolute);
+      const resolvedMetadata = await lstat(resolvedPath);
+      if (!resolvedMetadata.isFile() || resolvedMetadata.isSymbolicLink()) {
+        throw new Error(`Verifier environment symlink must resolve to one regular file: ${path}`);
+      }
+      const resolvedBytes = await readFile(resolvedPath);
+      totalBytes += Buffer.byteLength(target) + resolvedBytes.byteLength;
+      if (totalBytes > MAXIMUM_VERIFIER_ENVIRONMENT_BYTES) {
+        throw new Error('Verifier environment exceeds 1 GiB.');
+      }
+      entries.push({
+        hash: null,
+        kind: 'symlink',
+        mode: metadata.mode & 0o777,
+        path,
+        resolvedHash: sha256(resolvedBytes),
+        resolvedMode: resolvedMetadata.mode & 0o777,
+        resolvedPath,
+        resolvedSize: resolvedMetadata.size,
+        size: metadata.size,
+        target,
+      });
+      return;
+    }
+    totalBytes += metadata.size;
+    if (totalBytes > MAXIMUM_VERIFIER_ENVIRONMENT_BYTES) {
+      throw new Error('Verifier environment exceeds 1 GiB.');
+    }
+    entries.push({
+      hash: sha256(await readFile(absolute)),
+      kind: 'file',
+      mode: metadata.mode & 0o777,
+      path,
+      resolvedHash: null,
+      resolvedMode: null,
+      resolvedPath: null,
+      resolvedSize: null,
+      size: metadata.size,
+      target: null,
+    });
+  });
+  return sha256(Buffer.from(`matched-evaluation-verifier-environment-v1\n${JSON.stringify(entries)}`));
+}
+
+export async function runMatchedEvaluationDeterministicVerifierV1(input: {
+  readonly artifactHash: string;
+  readonly plan: MatchedEvaluationVerificationPlanV1;
+  readonly repositoryRoot: string;
+  readonly root: string;
+  readonly taskId: string;
+}): Promise<MatchedEvaluationVerificationReceiptV1> {
+  const task = input.plan.tasks.find(candidate => candidate.taskId === input.taskId);
+  if (task === undefined) throw new Error(`Verification plan has no task ${input.taskId}.`);
+  await assertVerifierPlanArtifacts(input.plan);
+  await mkdir(input.root, {recursive: true, mode: 0o700});
+  const home = join(input.root, 'home');
+  const temporary = join(input.root, 'tmp');
+  await Promise.all([mkdir(home, {mode: 0o700}), mkdir(temporary, {mode: 0o700})]);
+  const profilePath = join(input.root, 'profile.sb');
+  await writeFile(
+    profilePath,
+    renderVerifierSeatbeltProfile({
+      environmentDirectory: input.plan.environmentDirectory,
+      repositoryRoot: input.repositoryRoot,
+      root: input.root,
+      runner: input.plan.runner,
+    }),
+    {flag: 'wx', mode: 0o600},
+  );
+  const startedAt = Date.now();
+  const result = await captureCodeMemoryLinkProcessGroup({
+    allowFailure: true,
+    arguments: ['-f', profilePath, input.plan.interpreter, input.plan.runner, task.selector, input.repositoryRoot],
+    command: input.plan.sandbox.executable,
+    cwd: input.repositoryRoot,
+    environment: {
+      HOME: home,
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      PATH: `${dirname(input.plan.interpreter)}:/usr/bin:/bin`,
+      PYTHONDONTWRITEBYTECODE: '1',
+      PYTHONNOUSERSITE: '1',
+      TMPDIR: temporary,
+    },
+    label: `Matched evaluation verifier ${task.verificationId}`,
+    maxOutputBytes: 64 * 1_024,
+    timeoutMilliseconds: input.plan.timeoutMilliseconds,
+  });
+  if (result.exitCode !== 0 && result.exitCode !== 1) {
+    throw new Error(
+      `Deterministic verifier infrastructure failed for ${task.verificationId} with exit code ${result.exitCode}.`,
+    );
+  }
+  const expectedPass = `${task.selector} verifier passed`;
+  const expectedFailurePrefix = `${task.selector} verifier failed:`;
+  if (
+    (result.exitCode === 0 && (result.stdout.trim() !== expectedPass || result.stderr !== '')) ||
+    (result.exitCode === 1 && (result.stdout !== '' || !result.stderr.startsWith(expectedFailurePrefix)))
+  ) {
+    throw new Error(
+      `Deterministic verifier infrastructure returned an invalid diagnostic protocol for ${task.verificationId}.`,
+    );
+  }
+  const diagnosticHash = sha256(
+    Buffer.from(
+      `matched-evaluation-verifier-diagnostic-v1\0${JSON.stringify({
+        exitCode: result.exitCode,
+        stderr: result.stderr,
+        stdout: result.stdout,
+      })}`,
+    ),
+  );
+  return createMatchedEvaluationVerificationReceiptV1({
+    artifactHash: input.artifactHash,
+    diagnosticHash,
+    durationMilliseconds: Math.max(0, Date.now() - startedAt),
+    environmentHash: input.plan.environmentHash,
+    exitCode: result.exitCode,
+    interpreterHash: input.plan.interpreterHash,
+    planHash: input.plan.planHash,
+    runnerHash: input.plan.runnerHash,
+    sandboxExecutableHash: input.plan.sandbox.executableHash,
+    status: result.exitCode === 0 ? 'passed' : 'task-failed',
+    taskId: input.taskId,
+    verificationId: task.verificationId,
+  });
+}
+
+async function assertVerifierPlanArtifacts(plan: MatchedEvaluationVerificationPlanV1): Promise<void> {
+  if (!contained(plan.environmentDirectory, plan.interpreter)) {
+    throw new Error('Verification interpreter must be inside the pinned environment.');
+  }
+  await Promise.all([
+    assertPinnedLinkedExecutable(plan.interpreter, plan.interpreterHash, 'verification interpreter'),
+    assertPinnedFile(plan.runner, plan.runnerHash, false, 'verification runner'),
+    assertPinnedFile(plan.sandbox.executable, plan.sandbox.executableHash, true, 'verification sandbox executable'),
+    assertVerifierEnvironment(plan.environmentDirectory, plan.environmentHash),
+  ]);
+}
+
+async function assertVerifierEnvironment(path: string, expectedHash: string): Promise<void> {
+  const canonical = await realpath(path);
+  const metadata = await lstat(canonical);
+  if (canonical !== path || !metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error('Verification environment is not one canonical directory.');
+  }
+  if ((await matchedEvaluationVerifierEnvironmentHashV1(canonical)) !== expectedHash) {
+    throw new Error('Verification environment differs from its pinned hash.');
+  }
+}
+
+async function assertPinnedLinkedExecutable(path: string, expectedHash: string, label: string): Promise<void> {
+  const link = await lstat(path);
+  if (!link.isSymbolicLink() && !link.isFile()) throw new Error(`${label} is not a file or symbolic link.`);
+  const target = await realpath(path);
+  const metadata = await lstat(target);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o111) === 0) {
+    throw new Error(`${label} does not resolve to one executable regular file.`);
+  }
+  if ((await sha256File(target)) !== expectedHash) throw new Error(`${label} differs from its pinned hash.`);
+}
+
+function renderVerifierSeatbeltProfile(input: {
+  readonly environmentDirectory: string;
+  readonly repositoryRoot: string;
+  readonly root: string;
+  readonly runner: string;
+}): string {
+  const literal = (value: string) => JSON.stringify(value);
+  return [
+    '(version 1)',
+    '(deny default)',
+    '(allow process*)',
+    '(allow signal (target self))',
+    '(allow sysctl-read)',
+    '(allow mach-lookup)',
+    '(allow ipc-posix*)',
+    '(allow file-read-metadata)',
+    `(allow file-read* (literal ${literal('/')}) (subpath ${literal('/System')}) (subpath ${literal('/usr')}) (subpath ${literal('/Library')}) (subpath ${literal('/opt/homebrew')}) (subpath ${literal('/dev')}) (subpath ${literal('/private/etc')}) (subpath ${literal(input.environmentDirectory)}) (subpath ${literal(input.repositoryRoot)}) (literal ${literal(input.runner)}) (subpath ${literal(input.root)}))`,
+    `(allow file-write* (subpath ${literal(input.root)}) (literal ${literal('/dev/null')}))`,
+    '(deny network*)',
+    '',
+  ].join('\n');
+}
+
+function contained(parent: string, child: string): boolean {
+  const path = relative(parent, child);
+  return path !== '' && path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 }
 
 export function extractMatchedEvaluationProviderUsageV1(events: readonly Record<string, unknown>[]): ProviderTokens {
@@ -916,9 +1177,10 @@ function parseAdapterRequest(value: unknown): AdapterRequest {
     'runOrder',
     'tool',
     'transcriptPath',
+    'verificationPlanHash',
     'version',
   ]);
-  if (request.version !== RUNTIME_VERSION) invalid('request version must be 3');
+  if (request.version !== RUNTIME_VERSION) invalid('request version must be 4');
   const agentTask = object(request.agentTask, 'agent task');
   exactKeys(agentTask, ['category', 'memoryFixtures', 'prompt', 'repositoryFixtureHash', 'taskId', 'variant']);
   if (!Array.isArray(agentTask.memoryFixtures) || agentTask.memoryFixtures.length !== 0) {
@@ -985,6 +1247,10 @@ function parseAdapterRequest(value: unknown): AdapterRequest {
       version: boundedText(tool.version, 1, 128, 'tool version'),
     },
     transcriptPath: absolutePath(request.transcriptPath, 'transcript path'),
+    verificationPlanHash:
+      request.verificationPlanHash === null
+        ? null
+        : matching(request.verificationPlanHash, HASH, 'verification plan hash'),
     version: RUNTIME_VERSION,
   };
 }
@@ -1003,6 +1269,9 @@ function assertRequestMatchesConfig(request: AdapterRequest, config: MatchedEval
   }
   if (request.agentTask.repositoryFixtureHash !== request.repository.fixtureHash) {
     throw new Error('Task repository fixture differs from the selected runtime repository.');
+  }
+  if (request.verificationPlanHash !== (config.verificationPlan?.planHash ?? null)) {
+    throw new Error('Adapter request and configuration disagree on the sealed verification plan.');
   }
   const context = contextForRequest(request);
   if ((context === null) !== (config.arm === 'files' || config.arm === 'reference-scope')) {
@@ -1033,6 +1302,31 @@ async function assertAdapterArtifacts(
     assertPrivateAuthFile(config.authSourcePath),
     canonicalDirectory(config.temporaryRoot, 'temporary root'),
     assertPinnedFile(selfExecutable, request.adapterArtifactHash, true, 'adapter executable'),
+    ...(config.verificationPlan === null
+      ? []
+      : [
+          assertPinnedLinkedExecutable(
+            config.verificationPlan.interpreter,
+            config.verificationPlan.interpreterHash,
+            'verification interpreter',
+          ),
+          assertPinnedFile(
+            config.verificationPlan.runner,
+            config.verificationPlan.runnerHash,
+            false,
+            'verification runner',
+          ),
+          assertPinnedFile(
+            config.verificationPlan.sandbox.executable,
+            config.verificationPlan.sandbox.executableHash,
+            true,
+            'verification sandbox executable',
+          ),
+          assertVerifierEnvironment(
+            config.verificationPlan.environmentDirectory,
+            config.verificationPlan.environmentHash,
+          ),
+        ]),
   ]);
   if (request.tool.executable !== null && request.tool.artifactHash !== null) {
     await assertPinnedFile(request.tool.executable, request.tool.artifactHash, true, 'Threadnote executable');
@@ -1457,6 +1751,26 @@ async function walk(
       await walk(root, absolute, visit);
     } else if (metadata.isFile() && metadata.nlink === 1) await visit(absolute, path, metadata);
     else throw new Error('Prepared Threadnote home contains an unsupported filesystem entry.');
+  }
+}
+
+async function walkVerifierEnvironment(
+  root: string,
+  directory: string,
+  visit: (absolute: string, path: string, metadata: Stats) => Promise<void>,
+): Promise<void> {
+  for (const name of (await readdir(directory)).sort()) {
+    const absolute = join(directory, name);
+    const metadata = await lstat(absolute);
+    const path = relative(root, absolute).replaceAll('\\', '/');
+    if (metadata.isDirectory()) {
+      await visit(absolute, path, metadata);
+      await walkVerifierEnvironment(root, absolute, visit);
+    } else if (metadata.isFile() || metadata.isSymbolicLink()) {
+      await visit(absolute, path, metadata);
+    } else {
+      throw new Error('Verifier environment contains an unsupported filesystem entry.');
+    }
   }
 }
 

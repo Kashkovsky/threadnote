@@ -13,8 +13,12 @@ import {
   type MatchedEvaluationScheduleEntryV1,
   MATCHED_EVALUATION_ARMS,
 } from './matched-evaluation.js';
+import {
+  parseMatchedEvaluationVerificationReceiptV1,
+  type MatchedEvaluationVerificationReceiptV1,
+} from './matched-verification.js';
 
-export const MATCHED_EVALUATION_OUTCOME_VERSION = 2 as const;
+export const MATCHED_EVALUATION_OUTCOME_VERSION = 3 as const;
 export const MATCHED_EVALUATION_UNAVAILABLE_REASONS = [
   'runtime-not-configured',
   'adapter-missing',
@@ -52,6 +56,7 @@ export interface MatchedEvaluationMetricsV1 {
   };
   readonly correctness: {
     readonly judge: 'blinded-rubric-v1';
+    readonly judgeCompleted: boolean;
     readonly scoreMilli: number;
   };
   readonly drift: {
@@ -88,6 +93,8 @@ export interface MatchedEvaluationMetricsV1 {
     readonly failureCount: number;
     readonly valid: boolean;
   };
+  /** Null for generic evaluations without a sealed deterministic verifier. */
+  readonly verification: MatchedEvaluationVerificationReceiptV1 | null;
 }
 
 export interface MatchedEvaluationObservationV1 {
@@ -166,7 +173,7 @@ const MAXIMUM_LEDGER_BYTES = 16 * 1_024 * 1_024;
 export function parseMatchedEvaluationObservationV1(value: unknown): MatchedEvaluationObservationV1 {
   const observation = object(value, 'observation');
   exactKeys(observation, ['artifactHash', 'metrics', 'transcriptHash', 'version'], 'observation');
-  if (observation.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('observation version must be 2');
+  if (observation.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('observation version must be 3');
   return {
     artifactHash: matchingString(observation.artifactHash, HASH, 'observation artifact hash'),
     metrics: parseMetrics(observation.metrics),
@@ -182,6 +189,15 @@ export function createMatchedEvaluationCompletedOutcomeV1(input: {
   readonly schedule: MatchedEvaluationScheduleEntryV1;
 }): MatchedEvaluationOutcomeV1 {
   const observation = parseMatchedEvaluationObservationV1(input.observation);
+  if (observation.metrics.verification !== null && observation.metrics.verification.taskId !== input.schedule.taskId) {
+    invalid('verification receipt task differs from the immutable schedule');
+  }
+  if (
+    observation.metrics.verification !== null &&
+    observation.metrics.verification.artifactHash !== observation.artifactHash
+  ) {
+    invalid('verification receipt artifact differs from the observed artifact');
+  }
   return createOutcome({
     artifactHash: observation.artifactHash,
     manifestHash: input.manifest.manifestHash,
@@ -423,7 +439,7 @@ export function summarizeMatchedEvaluationV1(
     manifestHash: manifest.manifestHash,
     proxyDeclarations: {
       auditability: 'Resolvable cited evidence divided by all cited evidence.',
-      correctness: 'Score assigned by the blinded rubric adapter; a score of 1.0 is a pass.',
+      correctness: 'Score assigned by the blinded rubric adapter; deterministic completion is reported separately.',
       drift: 'Count of claims presented as current when the blinded rubric marks their evidence stale or absent.',
       retrieval: 'Required evidence items recalled divided by required evidence items in the sealed rubric.',
       sourceSupport: 'Required claims supported by exact source evidence divided by required claims.',
@@ -461,7 +477,7 @@ function createOutcome(input: {
 }
 
 function matchedEvaluationOutcomeHashV1(input: Omit<MatchedEvaluationOutcomeV1, 'outcomeHash'>): string {
-  return sha256HexSync(`matched-evaluation-outcome-v2\0${JSON.stringify(input)}\n`);
+  return sha256HexSync(`matched-evaluation-outcome-v3\0${JSON.stringify(input)}\n`);
 }
 
 function assertCorpusMatchesManifest(corpus: MatchedEvaluationCorpusV1, manifest: MatchedEvaluationManifestV1): void {
@@ -560,6 +576,7 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
       'timing',
       'usage',
       'validity',
+      'verification',
     ],
     'observation metrics',
   );
@@ -568,7 +585,8 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
   exactKeys(completion, ['completed'], 'completion metrics');
   if (typeof completion.completed !== 'boolean') invalid('completion flag must be boolean');
   const correctness = object(metrics.correctness, 'correctness metrics');
-  exactKeys(correctness, ['judge', 'scoreMilli'], 'correctness metrics');
+  exactKeys(correctness, ['judge', 'judgeCompleted', 'scoreMilli'], 'correctness metrics');
+  if (typeof correctness.judgeCompleted !== 'boolean') invalid('judge completion flag must be boolean');
   const scoreMilli = nonNegativeInteger(correctness.scoreMilli, 'correctness score');
   if (scoreMilli > 1_000) invalid('correctness score must be at most 1000');
   const drift = object(metrics.drift, 'drift metrics');
@@ -601,12 +619,18 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
   const providerCostMicros =
     metrics.providerCostMicros === null ? null : nonNegativeInteger(metrics.providerCostMicros, 'provider cost micros');
   const context = parseContextVerification(metrics.context);
+  const verification =
+    metrics.verification === null ? null : parseMatchedEvaluationVerificationReceiptV1(metrics.verification);
+  if (verification !== null && completion.completed !== (verification.status === 'passed')) {
+    invalid('deterministic completion flag and verification receipt disagree');
+  }
   return {
     auditability: {citations: auditability.total, resolvableCitations: auditability.subset},
     completion: {completed: completion.completed},
     context,
     correctness: {
       judge: literal(correctness.judge, ['blinded-rubric-v1'] as const, 'correctness judge'),
+      judgeCompleted: correctness.judgeCompleted,
       scoreMilli,
     },
     drift: {falseCurrentOutcomes: nonNegativeInteger(drift.falseCurrentOutcomes, 'false-current outcomes')},
@@ -626,6 +650,7 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
       toolTurns: nonNegativeInteger(usage.toolTurns, 'tool turns'),
     },
     validity: {failureCount, valid: validity.valid},
+    verification,
   };
 }
 

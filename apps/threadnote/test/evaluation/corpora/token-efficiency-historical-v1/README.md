@@ -12,7 +12,7 @@ One linked memory per task was authored by a source-only reviewer using a Git ar
 
 Ignored local artifacts live under `.context/token-efficiency-corpus-v1`: clean checkouts, graph databases, managed memories, homes, credentials, binaries, and outcomes. The committed corpus contains no credentials or transcripts.
 
-Run a hidden verifier with the pinned verifier environment:
+The preparer calibrates the hidden verifier with the pinned verifier environment:
 
 ```sh
 .context/token-efficiency-corpus-v1/verifier-venv/bin/python \
@@ -20,6 +20,12 @@ Run a hidden verifier with the pinned verifier environment:
   <h11|hpack|attrs|click|werkzeug|packaging> /absolute/path/to/checkout
 ```
 
-Admission requires exit 1 at the pinned base and exit 0 at the known fix. The experiment runs from the base; fix checkouts are never mounted into the agent or judge environment.
+Admission requires exit 1 at the pinned base and exit 0 at the known fix. Preparation emits a hash-closed `verification-plan.json` bound into the study, runtime, adapter configurations, requests, observations, outcome ledger, and report. After each candidate patch is captured, the adapter reruns the task verifier in a credential-free, network-denied Seatbelt sandbox. Exit 0 is a deterministic completion; the verifier's explicit exit-1 diagnostic is a task failure and keeps its token cost; timeout, output overflow, sandbox denial, artifact drift, or any malformed diagnostic is an infrastructure failure that aborts before the immutable outcome ledger advances.
 
-`provenance.json` records identities, revisions, prompt sources, licensing, context assessments, and verifier selectors. `corpus.json` is the exact evaluator input. The local preparation plan is generated only after the final Threadnote 5.0.6 release commit, exact local binary, ready graph homes, and managed memory IDs are known.
+The macOS verifier sandbox permits host file metadata plus read-only access to the pinned Python environment, candidate checkout, verifier runner, and required system runtime trees. It denies network access and restricts writes to a fresh per-run verifier directory. Receipts bind the verifier environment—including resolved symlink target bytes—interpreter, runner, sandbox executable, plan, candidate artifact, diagnostic, and task identity; the claim is therefore scoped to that sealed local runtime rather than cross-operating-system bitwise reproducibility.
+
+The blinded rubric judge remains a secondary sensitivity measure. Publication gates require non-inferiority for both deterministic completion and the hybrid verifier-plus-judge completion rate, and the report exposes both verifier-pass/judge-fail and verifier-fail/judge-pass disagreement cells.
+
+The experiment runs from the base; fix checkouts are used only during preparation calibration and are never mounted into the agent or judge environment.
+
+`provenance.json` records identities, revisions, prompt sources, licensing, context assessments, and verifier selectors. `corpus.json` is the exact evaluator input. The local preparation plan is generated only after the final Threadnote 5.0.6 release commit, exact local binary, ready graph homes, managed memory IDs, known-fix checkouts, and the pinned verifier environment are known.

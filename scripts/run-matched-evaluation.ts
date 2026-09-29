@@ -44,13 +44,14 @@ import {
   withMatchedEvaluationArtifactLockV1,
 } from './matched-evaluation-runtime-integrity.js';
 
-export const MATCHED_EVALUATION_RUNTIME_VERSION = 3 as const;
+export const MATCHED_EVALUATION_RUNTIME_VERSION = 4 as const;
 
 export interface MatchedEvaluationRuntimeV1 {
   readonly arms: readonly MatchedEvaluationRuntimeArmV1[];
   readonly artifactDirectory: string;
   readonly repositories: readonly MatchedEvaluationRuntimeRepositoryV1[];
   readonly timeoutMilliseconds: number;
+  readonly verificationPlanHash: string | null;
   readonly version: typeof MATCHED_EVALUATION_RUNTIME_VERSION;
 }
 
@@ -164,6 +165,9 @@ export async function runMatchedEvaluationFromFilesV1(options: {
       : readJson(options.studyPath).then(parseMatchedTokenEfficiencyStudyV1),
   ]);
   if (study !== null) assertMatchedTokenEfficiencyStudyMatchesV1(study, corpus, manifest);
+  if (runtime.verificationPlanHash !== (study?.verificationPlanHash ?? null)) {
+    throw new Error('Runtime and study disagree on the sealed verification plan.');
+  }
   const repositories = await resolveMatchedEvaluationRuntimeRepositoriesV1(runtime, study, manifest.repository);
   await assertLocalArtifactDirectory(runtime.artifactDirectory);
   await withMatchedEvaluationArtifactLockV1(runtime.artifactDirectory, async () => {
@@ -247,8 +251,12 @@ export async function runMatchedEvaluationFromFilesV1(options: {
 
 export function parseMatchedEvaluationRuntimeV1(value: unknown): MatchedEvaluationRuntimeV1 {
   const runtime = object(value, 'runtime');
-  exactKeys(runtime, ['arms', 'artifactDirectory', 'repositories', 'timeoutMilliseconds', 'version'], 'runtime');
-  if (runtime.version !== MATCHED_EVALUATION_RUNTIME_VERSION) invalid('runtime version must be 3');
+  exactKeys(
+    runtime,
+    ['arms', 'artifactDirectory', 'repositories', 'timeoutMilliseconds', 'verificationPlanHash', 'version'],
+    'runtime',
+  );
+  if (runtime.version !== MATCHED_EVALUATION_RUNTIME_VERSION) invalid('runtime version must be 4');
   const arms = array(runtime.arms, 'runtime arms').map((entry, index) => parseRuntimeArm(entry, index));
   const repositories = array(runtime.repositories, 'runtime repositories').map((entry, index) =>
     parseRuntimeRepository(entry, index),
@@ -271,6 +279,10 @@ export function parseMatchedEvaluationRuntimeV1(value: unknown): MatchedEvaluati
     artifactDirectory: absolutePath(runtime.artifactDirectory, 'runtime artifact directory'),
     repositories,
     timeoutMilliseconds: boundedPositiveInteger(runtime.timeoutMilliseconds, 60_000, 7_200_000, 'runtime timeout'),
+    verificationPlanHash:
+      runtime.verificationPlanHash === null
+        ? null
+        : matchingString(runtime.verificationPlanHash, HASH, 'runtime verification plan hash'),
     version: MATCHED_EVALUATION_RUNTIME_VERSION,
   };
 }
@@ -467,6 +479,7 @@ async function executeArm(
           version: stagedArm.definition.tool.version,
         },
         transcriptPath,
+        verificationPlanHash: study?.verificationPlanHash ?? null,
         version: MATCHED_EVALUATION_RUNTIME_VERSION,
       },
       undefined,

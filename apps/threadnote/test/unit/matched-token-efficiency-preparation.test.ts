@@ -110,6 +110,16 @@ describe('matched token-efficiency study preparation', () => {
       })),
     };
     const corpus = parseMatchedEvaluationCorpusV1(corpusInput);
+    const fixRepositories = await Promise.all(
+      corpus.tasks.map(async (_task, index) => {
+        const base = repositories[index % 2];
+        const fix = await heldOutRepository(join(root, `fix-repository-${index}`), base.url);
+        await writeFile(join(fix.directory, 'service.ts'), 'export const value = 2;\n');
+        await git(fix.directory, ['add', 'service.ts']);
+        await git(fix.directory, ['commit', '-qm', 'known fix']);
+        return {...fix, ...(await observeMatchedEvaluationRepositoryV1(fix.directory))};
+      }),
+    );
     const corpusPath = join(root, 'corpus.json');
     await writeFile(corpusPath, `${JSON.stringify(corpus, undefined, 2)}\n`);
     const graphSnapshotId = `cgsn_${'1'.repeat(40)}`;
@@ -201,6 +211,20 @@ describe('matched token-efficiency study preparation', () => {
     await chmod(auth, 0o600);
     const lockFile = join(root, 'install-lock.json');
     await writeFile(lockFile, '{"fixture":true}\n');
+    const verificationEnvironment = join(root, 'verification-environment');
+    await mkdir(join(verificationEnvironment, 'bin'), {recursive: true});
+    const verificationInterpreter = join(verificationEnvironment, 'bin', 'python');
+    await writeFile(verificationInterpreter, '#!/bin/sh\nexec "$@"\n');
+    await chmod(verificationInterpreter, 0o700);
+    const verificationRunner = join(root, 'verification-runner');
+    await writeFile(
+      verificationRunner,
+      '#!/bin/sh\ncase "$2" in *fix-repository-*) printf "%s verifier passed\\n" "$1"; exit 0 ;; *) printf "%s verifier failed: fixture\\n" "$1" >&2; exit 1 ;; esac\n',
+    );
+    await chmod(verificationRunner, 0o700);
+    const verificationSandbox = join(root, 'verification-sandbox');
+    await writeFile(verificationSandbox, '#!/bin/sh\nshift 2\nexec "$@"\n');
+    await chmod(verificationSandbox, 0o700);
     const planPath = join(root, 'plan.json');
     await writeFile(
       planPath,
@@ -267,7 +291,19 @@ describe('matched token-efficiency study preparation', () => {
             user: 'evaluation-user',
           },
           timeoutMilliseconds: 60_000,
-          version: 1,
+          verification: {
+            environmentDirectory: verificationEnvironment,
+            interpreter: verificationInterpreter,
+            runner: verificationRunner,
+            sandboxExecutable: verificationSandbox,
+            tasks: corpus.tasks.map((task, index) => ({
+              fixRepositoryDirectory: fixRepositories[index].directory,
+              selector: `task-${index}`,
+              taskId: task.taskId,
+            })),
+            timeoutMilliseconds: 10_000,
+          },
+          version: 2,
         },
         undefined,
         2,
@@ -339,6 +375,10 @@ describe('matched token-efficiency study preparation', () => {
     }
     expect(JSON.stringify(configs.map(entry => entry.config))).not.toContain('studyHash');
     expect(study.clusters).toHaveLength(2);
+    expect(study.verificationPlanHash).toBe(receipt.verificationPlanHash);
+    expect(runtime.verificationPlanHash).toBe(study.verificationPlanHash);
+    expect(receipt.outputHashes).toHaveProperty('verification-plan.json');
+    expect(configs.every(entry => entry.config.verificationPlan?.planHash === study.verificationPlanHash)).toBe(true);
     expect(study.taskContexts.every(context => context.linkReceipts.length > 0)).toBe(true);
     for (const context of study.taskContexts) {
       const expected = taskContexts.find(candidate => candidate.taskId === context.taskId);

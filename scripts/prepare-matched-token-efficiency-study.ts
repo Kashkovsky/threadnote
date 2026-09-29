@@ -29,6 +29,12 @@ import {
   type MatchedTokenEfficiencyStudyV1,
   type MatchedTokenEfficiencyTaskContextV1,
 } from '@threadnote/threadnote/evaluation/matched-token-efficiency';
+import {
+  createMatchedEvaluationVerificationCalibrationV1,
+  createMatchedEvaluationVerificationPlanV1,
+  matchedEvaluationVerificationIdV1,
+  type MatchedEvaluationVerificationPlanV1,
+} from '@threadnote/threadnote/evaluation/matched-verification';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
 import {assertCodeMemoryLinkGraphStatusPreflight} from './code-memory-link-codex-preflight.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
@@ -36,7 +42,9 @@ import {scriptArguments} from './effect/script.js';
 import {
   matchedEvaluationCodexEnvironmentPolicyHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
+  matchedEvaluationVerifierEnvironmentHashV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
+  runMatchedEvaluationDeterministicVerifierV1,
   type MatchedEvaluationCodexAdapterConfigV1,
   type MatchedEvaluationPreparedContextHomeV1,
   MATCHED_EVALUATION_CODEX_ADAPTER_VERSION,
@@ -47,11 +55,12 @@ import {
 } from './matched-evaluation-runtime-integrity.js';
 import {
   parseMatchedEvaluationRuntimeV1,
+  MATCHED_EVALUATION_RUNTIME_VERSION,
   type MatchedEvaluationRuntimeArmV1,
   type MatchedEvaluationRuntimeV1,
 } from './run-matched-evaluation.js';
 
-export const MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION = 1 as const;
+export const MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION = 2 as const;
 export const MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION = '5.0.6' as const;
 
 interface PreparationPlanV1 {
@@ -96,7 +105,21 @@ interface PreparationPlanV1 {
     readonly user: string;
   };
   readonly timeoutMilliseconds: number;
+  readonly verification: VerificationPreparationPlanV1;
   readonly version: typeof MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION;
+}
+
+interface VerificationPreparationPlanV1 {
+  readonly environmentDirectory: string;
+  readonly interpreter: string;
+  readonly runner: string;
+  readonly sandboxExecutable: string;
+  readonly tasks: readonly {
+    readonly fixRepositoryDirectory: string;
+    readonly selector: string;
+    readonly taskId: string;
+  }[];
+  readonly timeoutMilliseconds: number;
 }
 
 interface ModelPlanV1 {
@@ -148,6 +171,7 @@ export interface MatchedTokenEfficiencyPreparationReceiptV1 {
   readonly threadnoteArtifactHash: string;
   readonly threadnoteLockHash: string;
   readonly threadnoteSourceCommit: string;
+  readonly verificationPlanHash: string;
   readonly version: typeof MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION;
 }
 
@@ -158,6 +182,7 @@ const FIXTURE_MEMORY_ID = /^mem_[0-9a-f]{16,64}$/u;
 const MANAGED_MEMORY_ID = /^tn_[A-Za-z0-9_-]{1,128}$/u;
 const CLUSTER_ID = /^cluster_[0-9a-f]{16,64}$/u;
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+const VERIFIER_SELECTOR = /^[a-z][a-z0-9-]{0,63}$/u;
 const VERSION_OUTPUT = /^threadnote v5\.0\.6-local\.g([0-9a-f]{40})\s*$/u;
 const MAXIMUM_JSON_BYTES = 8 * 1_024 * 1_024;
 
@@ -199,6 +224,7 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
   );
   await assertPrivateAuthFile(plan.adapter.authSourcePath);
   const clusterObservations = await prepareClusters(plan, corpus);
+  const verificationPlan = await prepareVerificationPlan(plan, corpus, clusterObservations);
   const provisionalManifest = createMatchedEvaluationManifestV1({
     arms: placeholderArmDefinitions(),
     corpus,
@@ -213,6 +239,7 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
     plan,
     prepared: tasks,
     runtimeFileHashes,
+    verificationPlan,
   });
   const configBytes = new Map(configs.map(([arm, config]) => [arm, jsonBytes(config)]));
   const configHashes = Object.fromEntries(
@@ -260,18 +287,21 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
     studyId: plan.studyId,
     targetArms: ['threadnote-compact', 'threadnote-source'],
     taskContexts: tasks.map(task => task.taskContext),
+    verificationPlanHash: verificationPlan.planHash,
   });
   const runtime = createRuntime({
     adapterExecutable,
     clusterObservations,
     outputRoot: finalRoot,
     plan,
+    verificationPlanHash: verificationPlan.planHash,
   });
   const files = new Map<string, Uint8Array>([
     ['corpus.json', jsonBytes(corpus)],
     ['manifest.json', jsonBytes(manifest)],
     ['study.json', jsonBytes(study)],
     ['runtime.json', jsonBytes(runtime)],
+    ['verification-plan.json', jsonBytes(verificationPlan)],
     ['reference-scope-unavailable.json', unavailableReference],
   ]);
   for (const [arm, bytes] of configBytes) files.set(`adapter-config/${arm}.json`, bytes);
@@ -288,11 +318,12 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
     threadnoteArtifactHash,
     threadnoteLockHash,
     threadnoteSourceCommit: sourceCommit,
+    verificationPlanHash: verificationPlan.planHash,
     version: MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION,
   };
   const receipt: MatchedTokenEfficiencyPreparationReceiptV1 = {
     ...receiptWithoutHash,
-    receiptHash: digest('matched-token-efficiency-preparation-receipt-v1', receiptWithoutHash),
+    receiptHash: digest('matched-token-efficiency-preparation-receipt-v2', receiptWithoutHash),
   };
   files.set('preparation-receipt.json', jsonBytes(receipt));
   const staging = await realpath(await mkdtemp(join(outputParent, '.matched-token-efficiency-staging-')));
@@ -309,6 +340,7 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
       sourceCommit,
       threadnoteArtifactHash,
       threadnoteLockHash,
+      verificationPlan,
     });
     await rename(staging, outputRoot);
     promoted = true;
@@ -337,6 +369,7 @@ async function assertPreparationInputsUnchanged(input: {
   readonly sourceCommit: string;
   readonly threadnoteArtifactHash: string;
   readonly threadnoteLockHash: string;
+  readonly verificationPlan: MatchedEvaluationVerificationPlanV1;
 }): Promise<void> {
   const sourceCommit = await assertThreadnote506SourceAndExecutable(input.plan.threadnote);
   if (sourceCommit !== input.sourceCommit) throw new Error('Threadnote source changed during preparation.');
@@ -360,6 +393,7 @@ async function assertPreparationInputsUnchanged(input: {
     }),
   );
   await assertPrivateAuthFile(input.plan.adapter.authSourcePath);
+  await assertVerificationPlanUnchanged(input.verificationPlan);
   for (const cluster of input.plan.clusters) {
     const observed = await observeMatchedEvaluationRepositoryV1(cluster.repositoryDirectory);
     const expected = required(input.clusterObservations.get(cluster.clusterId), cluster.clusterId);
@@ -403,6 +437,159 @@ async function prepareClusters(
     }
   }
   return result;
+}
+
+async function prepareVerificationPlan(
+  plan: PreparationPlanV1,
+  corpus: MatchedEvaluationCorpusV1,
+  clusterObservations: ReadonlyMap<string, MatchedEvaluationRepositoryObservationV1>,
+): Promise<MatchedEvaluationVerificationPlanV1> {
+  const environmentDirectory = await canonicalDirectory(
+    plan.verification.environmentDirectory,
+    'verification environment',
+  );
+  const [environmentHash, interpreterHash, runnerHash, sandboxExecutableHash] = await Promise.all([
+    matchedEvaluationVerifierEnvironmentHashV1(environmentDirectory),
+    hashLinkedExecutable(plan.verification.interpreter, 'verification interpreter'),
+    hashCanonicalFile(plan.verification.runner, false, 'verification runner'),
+    hashCanonicalFile(plan.verification.sandboxExecutable, true, 'verification sandbox executable'),
+  ]);
+  const provisionalTasks = await Promise.all(
+    plan.verification.tasks.map(async task => {
+      const context = required(
+        plan.taskContexts.find(candidate => candidate.taskId === task.taskId),
+        `verification task context ${task.taskId}`,
+      );
+      const cluster = required(
+        plan.clusters.find(candidate => candidate.clusterId === context.clusterId),
+        `verification cluster ${context.clusterId}`,
+      );
+      const base = required(clusterObservations.get(cluster.clusterId), `verification base ${cluster.clusterId}`);
+      const fixDirectory = await canonicalDirectory(
+        task.fixRepositoryDirectory,
+        `verification fix repository ${task.taskId}`,
+      );
+      await assertRepositoryRemote(fixDirectory, cluster.repositoryUrl);
+      const fix = await observeMatchedEvaluationRepositoryV1(fixDirectory);
+      if (fix.dirty || !COMMIT.test(fix.revision)) {
+        throw new Error(`Verification fix repository ${task.taskId} must be a clean full commit.`);
+      }
+      return {
+        base,
+        baseDirectory: cluster.repositoryDirectory,
+        fix,
+        fixDirectory,
+        task,
+        verificationTask: {
+          calibration: createMatchedEvaluationVerificationCalibrationV1({
+            baseDiagnosticHash: '1'.repeat(64),
+            baseExitCode: 1,
+            baseRepositoryFixtureHash: base.fixtureHash,
+            baseRevision: base.revision,
+            fixDiagnosticHash: '2'.repeat(64),
+            fixExitCode: 0,
+            fixRepositoryFixtureHash: fix.fixtureHash,
+            fixRevision: fix.revision,
+          }),
+          selector: task.selector,
+          taskId: task.taskId,
+          verificationId: matchedEvaluationVerificationIdV1(task.taskId, task.selector),
+        },
+      };
+    }),
+  );
+  const corpusTaskIds = corpus.tasks.map(task => task.taskId).sort();
+  const verificationTaskIds = provisionalTasks.map(task => task.task.taskId).sort();
+  if (JSON.stringify(corpusTaskIds) !== JSON.stringify(verificationTaskIds)) {
+    throw new Error('Verification plan tasks must exactly cover the corpus.');
+  }
+  const provisionalPlan = createMatchedEvaluationVerificationPlanV1({
+    environmentDirectory,
+    environmentHash,
+    interpreter: plan.verification.interpreter,
+    interpreterHash,
+    runner: plan.verification.runner,
+    runnerHash,
+    sandbox: {
+      executable: plan.verification.sandboxExecutable,
+      executableHash: sandboxExecutableHash,
+      policy: 'darwin-seatbelt-v1',
+    },
+    tasks: provisionalTasks.map(task => task.verificationTask),
+    timeoutMilliseconds: plan.verification.timeoutMilliseconds,
+  });
+  const calibratedTasks = [];
+  for (const task of provisionalTasks) {
+    const root = await realpath(await mkdtemp(join(plan.adapter.temporaryRoot, '.verification-calibration-')));
+    try {
+      const baseReceipt = await runMatchedEvaluationDeterministicVerifierV1({
+        artifactHash: task.base.fixtureHash,
+        plan: provisionalPlan,
+        repositoryRoot: task.baseDirectory,
+        root: join(root, 'base'),
+        taskId: task.task.taskId,
+      });
+      const fixReceipt = await runMatchedEvaluationDeterministicVerifierV1({
+        artifactHash: task.fix.fixtureHash,
+        plan: provisionalPlan,
+        repositoryRoot: task.fixDirectory,
+        root: join(root, 'fix'),
+        taskId: task.task.taskId,
+      });
+      if (baseReceipt.status !== 'task-failed' || fixReceipt.status !== 'passed') {
+        throw new Error(`Verification calibration did not fail at base and pass at fix for ${task.task.taskId}.`);
+      }
+      calibratedTasks.push({
+        calibration: createMatchedEvaluationVerificationCalibrationV1({
+          baseDiagnosticHash: baseReceipt.diagnosticHash,
+          baseExitCode: 1,
+          baseRepositoryFixtureHash: task.base.fixtureHash,
+          baseRevision: task.base.revision,
+          fixDiagnosticHash: fixReceipt.diagnosticHash,
+          fixExitCode: 0,
+          fixRepositoryFixtureHash: task.fix.fixtureHash,
+          fixRevision: task.fix.revision,
+        }),
+        selector: task.task.selector,
+        taskId: task.task.taskId,
+        verificationId: matchedEvaluationVerificationIdV1(task.task.taskId, task.task.selector),
+      });
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }
+  return createMatchedEvaluationVerificationPlanV1({
+    environmentDirectory,
+    environmentHash,
+    interpreter: plan.verification.interpreter,
+    interpreterHash,
+    runner: plan.verification.runner,
+    runnerHash,
+    sandbox: {
+      executable: plan.verification.sandboxExecutable,
+      executableHash: sandboxExecutableHash,
+      policy: 'darwin-seatbelt-v1',
+    },
+    tasks: calibratedTasks,
+    timeoutMilliseconds: plan.verification.timeoutMilliseconds,
+  });
+}
+
+async function assertVerificationPlanUnchanged(plan: MatchedEvaluationVerificationPlanV1): Promise<void> {
+  const [environmentHash, interpreterHash, runnerHash, sandboxHash] = await Promise.all([
+    matchedEvaluationVerifierEnvironmentHashV1(plan.environmentDirectory),
+    hashLinkedExecutable(plan.interpreter, 'verification interpreter'),
+    hashCanonicalFile(plan.runner, false, 'verification runner'),
+    hashCanonicalFile(plan.sandbox.executable, true, 'verification sandbox executable'),
+  ]);
+  if (
+    environmentHash !== plan.environmentHash ||
+    interpreterHash !== plan.interpreterHash ||
+    runnerHash !== plan.runnerHash ||
+    sandboxHash !== plan.sandbox.executableHash
+  ) {
+    throw new Error('A pinned verification input changed during preparation.');
+  }
 }
 
 async function prepareTasks(input: {
@@ -519,6 +706,7 @@ function createAdapterConfigs(input: {
   readonly plan: PreparationPlanV1;
   readonly prepared: readonly PreparedTask[];
   readonly runtimeFileHashes: ReadonlyMap<string, string>;
+  readonly verificationPlan: MatchedEvaluationVerificationPlanV1;
 }): readonly [MatchedEvaluationArm, MatchedEvaluationCodexAdapterConfigV1][] {
   return MATCHED_EVALUATION_ARMS.map(arm => {
     const contextHomes =
@@ -560,6 +748,7 @@ function createAdapterConfigs(input: {
       safeExecutablePath: input.plan.adapter.safeExecutablePath,
       taskBudget: input.plan.adapter.taskBudget,
       temporaryRoot: input.plan.adapter.temporaryRoot,
+      verificationPlan: input.verificationPlan,
       version: MATCHED_EVALUATION_CODEX_ADAPTER_VERSION,
     });
     return [arm, config];
@@ -571,6 +760,7 @@ function createRuntime(input: {
   readonly clusterObservations: ReadonlyMap<string, MatchedEvaluationRepositoryObservationV1>;
   readonly outputRoot: string;
   readonly plan: PreparationPlanV1;
+  readonly verificationPlanHash: string;
 }): MatchedEvaluationRuntimeV1 {
   const runtimeArms: MatchedEvaluationRuntimeArmV1[] = [
     runtimeArm('files', input),
@@ -588,7 +778,8 @@ function createRuntime(input: {
         .identityHash,
     })),
     timeoutMilliseconds: input.plan.timeoutMilliseconds,
-    version: 3,
+    verificationPlanHash: input.verificationPlanHash,
+    version: MATCHED_EVALUATION_RUNTIME_VERSION,
   });
 }
 
@@ -1008,9 +1199,10 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
     'taskContexts',
     'threadnote',
     'timeoutMilliseconds',
+    'verification',
     'version',
   ]);
-  if (plan.version !== MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION) invalid('preparation plan version must be 1');
+  if (plan.version !== MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION) invalid('preparation plan version must be 2');
   const adapter = object(plan.adapter, 'adapter plan');
   exactKeys(adapter, [
     'appServer',
@@ -1045,6 +1237,32 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
     'task context ids',
   );
   const pricing = adapter.pricingMicrosPerMillionTokens;
+  const verification = object(plan.verification, 'verification plan');
+  exactKeys(verification, [
+    'environmentDirectory',
+    'interpreter',
+    'runner',
+    'sandboxExecutable',
+    'tasks',
+    'timeoutMilliseconds',
+  ]);
+  const verificationTasks = array(verification.tasks, 'verification tasks').map((value, index) => {
+    const task = object(value, `verification task ${index}`);
+    exactKeys(task, ['fixRepositoryDirectory', 'selector', 'taskId']);
+    return {
+      fixRepositoryDirectory: absolutePath(task.fixRepositoryDirectory, `verification task ${index} fix repository`),
+      selector: matching(task.selector, VERIFIER_SELECTOR, `verification task ${index} selector`),
+      taskId: matching(task.taskId, TASK_ID, `verification task ${index} id`),
+    };
+  });
+  unique(
+    verificationTasks.map(task => task.taskId),
+    'verification task ids',
+  );
+  unique(
+    verificationTasks.map(task => task.fixRepositoryDirectory),
+    'verification fix repositories',
+  );
   const taskBudget = object(adapter.taskBudget, 'task budget');
   exactKeys(taskBudget, ['steps', 'tokens']);
   return {
@@ -1105,6 +1323,14 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
       user: matching(threadnote.user, PROJECT, 'Threadnote user'),
     },
     timeoutMilliseconds: integer(plan.timeoutMilliseconds, 60_000, 7_200_000, 'runtime timeout'),
+    verification: {
+      environmentDirectory: absolutePath(verification.environmentDirectory, 'verification environment'),
+      interpreter: absolutePath(verification.interpreter, 'verification interpreter'),
+      runner: absolutePath(verification.runner, 'verification runner'),
+      sandboxExecutable: absolutePath(verification.sandboxExecutable, 'verification sandbox executable'),
+      tasks: verificationTasks,
+      timeoutMilliseconds: integer(verification.timeoutMilliseconds, 1_000, 600_000, 'verification timeout'),
+    },
     version: MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION,
   };
 }
@@ -1306,6 +1532,19 @@ async function assertPrivateAuthFile(path: string): Promise<void> {
 
 async function hashCanonicalFile(path: string, executable: boolean, label: string): Promise<string> {
   return sha256(await readCanonicalFile(path, executable, label));
+}
+
+async function hashLinkedExecutable(path: string, label: string): Promise<string> {
+  const metadata = await lstat(path);
+  if (!metadata.isFile() && !metadata.isSymbolicLink()) {
+    throw new Error(`${label} must be a file or symbolic link.`);
+  }
+  const target = await realpath(path);
+  const targetMetadata = await lstat(target);
+  if (!targetMetadata.isFile() || targetMetadata.isSymbolicLink() || (targetMetadata.mode & 0o111) === 0) {
+    throw new Error(`${label} must resolve to one executable regular file.`);
+  }
+  return sha256(await readFile(target));
 }
 
 async function canonicalRegularFile(path: string, executable: boolean, label: string): Promise<string> {

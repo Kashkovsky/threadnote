@@ -16,7 +16,7 @@ import {
   type MatchedEvaluationProviderTokensV1,
 } from './matched-evaluation-runner.js';
 
-export const MATCHED_TOKEN_EFFICIENCY_VERSION = 1 as const;
+export const MATCHED_TOKEN_EFFICIENCY_VERSION = 2 as const;
 export const MATCHED_TOKEN_EFFICIENCY_LINK_STATUSES = ['exact', 'relocated', 'changed', 'deleted', 'unknown'] as const;
 export const MATCHED_TOKEN_EFFICIENCY_TARGET_ARMS = ['threadnote-compact', 'threadnote-source'] as const;
 export const MATCHED_TOKEN_EFFICIENCY_CONTEXT_SUFFICIENCY = ['none', 'lacking', 'sufficient', 'excessive'] as const;
@@ -93,6 +93,7 @@ export interface MatchedTokenEfficiencyStudyV1 {
   readonly studyId: string;
   readonly targetArms: readonly MatchedTokenEfficiencyTargetArm[];
   readonly taskContexts: readonly MatchedTokenEfficiencyTaskContextV1[];
+  readonly verificationPlanHash: string;
   readonly version: typeof MATCHED_TOKEN_EFFICIENCY_VERSION;
 }
 
@@ -110,7 +111,10 @@ export interface MatchedTokenEfficiencyArmResultV1 {
   readonly authorizationLeaks: number;
   readonly falseCurrentOutcomes: number;
   readonly harmfulActions: number;
+  readonly hybridVerifiedCompletionRate: number;
+  readonly hybridVerifiedCompletions: number;
   readonly invalid: number;
+  readonly judgePassedVerifierFailed: number;
   readonly lifecycleTokensPerVerifiedCompletion: number | null;
   readonly missingProviderUsage: number;
   readonly onlineTokensPerVerifiedCompletion: number | null;
@@ -118,6 +122,7 @@ export interface MatchedTokenEfficiencyArmResultV1 {
   readonly unavailable: number;
   readonly verifiedCompletionRate: number;
   readonly verifiedCompletions: number;
+  readonly verifierPassedJudgeFailed: number;
 }
 
 export interface MatchedTokenEfficiencyCategoryResultV1 {
@@ -136,6 +141,8 @@ export interface MatchedTokenEfficiencyComparisonV1 {
   readonly completionDeltaPercentagePoints95: MatchedTokenEfficiencyIntervalV1 | null;
   readonly contextStrata: readonly MatchedTokenEfficiencyContextStratumV1[];
   readonly failures: readonly string[];
+  readonly hybridCompletionDeltaPercentagePoints: number;
+  readonly hybridCompletionDeltaPercentagePoints95: MatchedTokenEfficiencyIntervalV1 | null;
   readonly effect: 'memory-increment' | 'total';
   readonly insufficiencies: readonly string[];
   readonly status: 'failed' | 'inconclusive' | 'passed';
@@ -172,6 +179,7 @@ export interface MatchedTokenEfficiencyReportV1 {
   readonly reportHash: string;
   readonly studyHash: string;
   readonly supportedClaims: readonly string[];
+  readonly verificationPlanHash: string;
   readonly version: typeof MATCHED_TOKEN_EFFICIENCY_VERSION;
 }
 
@@ -240,11 +248,12 @@ export function parseMatchedTokenEfficiencyStudyV1(value: unknown): MatchedToken
       'studyId',
       'targetArms',
       'taskContexts',
+      'verificationPlanHash',
       'version',
     ],
     'token-efficiency study',
   );
-  if (study.version !== MATCHED_TOKEN_EFFICIENCY_VERSION) invalid('study version must be 1');
+  if (study.version !== MATCHED_TOKEN_EFFICIENCY_VERSION) invalid('study version must be 2');
   const bootstrap = parseBootstrap(study.bootstrap);
   const clusters = array(study.clusters, 'study clusters').map(parseCluster);
   unique(
@@ -285,6 +294,7 @@ export function parseMatchedTokenEfficiencyStudyV1(value: unknown): MatchedToken
     studyId: matchingString(study.studyId, STUDY_ID, 'study id'),
     targetArms: [...targetArms].sort(),
     taskContexts: [...taskContexts].sort((left, right) => left.taskId.localeCompare(right.taskId)),
+    verificationPlanHash: matchingString(study.verificationPlanHash, HASH, 'study verification plan hash'),
   };
   const studyHash = matchingString(study.studyHash, HASH, 'study hash');
   if (studyHash !== matchedTokenEfficiencyStudyHashV1(withoutHash)) invalid('study hash does not match its contents');
@@ -294,7 +304,7 @@ export function parseMatchedTokenEfficiencyStudyV1(value: unknown): MatchedToken
 export function matchedTokenEfficiencyStudyHashV1(
   input: Omit<MatchedTokenEfficiencyStudyV1, 'studyHash' | 'version'>,
 ): string {
-  return digest('matched-token-efficiency-study-v1', input);
+  return digest('matched-token-efficiency-study-v2', input);
 }
 
 export function matchedTokenEfficiencyTaskContextHashV1(
@@ -344,6 +354,14 @@ export function assertMatchedTokenEfficiencyObservationContextV1(input: {
   const study = parseMatchedTokenEfficiencyStudyV1(input.study);
   const expected = study.taskContexts.find(context => context.taskId === input.taskId);
   if (expected === undefined) invalid(`study does not contain task context ${input.taskId}`);
+  const verification = input.metrics.verification;
+  if (
+    verification === null ||
+    verification.planHash !== study.verificationPlanHash ||
+    verification.taskId !== input.taskId
+  ) {
+    invalid(`${input.arm} observation does not prove the sealed deterministic verifier`);
+  }
   const context = input.metrics.context;
   if (input.arm === 'threadnote-compact' || input.arm === 'threadnote-source') {
     if (
@@ -419,10 +437,10 @@ export function evaluateMatchedTokenEfficiencyV1(input: {
       ? []
       : comparison.effect === 'memory-increment'
         ? [
-            `Linked memories incrementally reduced provider tokens per independently verified completion by ${formatPercent(comparison.tokenReductionPercent)} versus the ready graph with memory access disabled while satisfying the preregistered completion and safety gates on study ${study.studyId}.`,
+            `Linked memories incrementally reduced provider tokens per deterministically verified completion by ${formatPercent(comparison.tokenReductionPercent)} versus the ready graph with memory access disabled while satisfying the preregistered deterministic, hybrid-judge, and safety gates on study ${study.studyId}.`,
           ]
         : [
-            `${comparison.targetArm} reduced provider tokens per independently verified completion by ${formatPercent(comparison.tokenReductionPercent)} versus files-only while satisfying the preregistered completion and safety gates on study ${study.studyId}.`,
+            `${comparison.targetArm} reduced provider tokens per deterministically verified completion by ${formatPercent(comparison.tokenReductionPercent)} versus files-only while satisfying the preregistered deterministic, hybrid-judge, and safety gates on study ${study.studyId}.`,
           ],
   );
   const withoutHash = {
@@ -446,16 +464,17 @@ export function evaluateMatchedTokenEfficiencyV1(input: {
       'Threadnote-arm observations are admissible only when they attest the preregistered ready graph snapshot and pre-existing finalized memory-link receipts; files-only observations must not contain that context.',
       'Cluster bootstrap intervals resample the preregistered repository clusters and do not establish population validity beyond them.',
       'Provider prices are intentionally excluded; the primary outcome is provider-reported tokens.',
-      'Correctness scores depend on the preregistered blinded judge; they are model-based measurements unless a task also has a hidden deterministic verifier.',
+      'Primary completion is determined by the sealed offline verifier; the blinded judge remains a separately reported semantic and safety sensitivity measurement.',
       'Raw transcripts remain local artifacts and are not embedded in this report or Threadnote memory.',
     ],
     manifestHash: manifest.manifestHash,
     promptPolicy: study.promptPolicy,
     studyHash: study.studyHash,
     supportedClaims,
+    verificationPlanHash: study.verificationPlanHash,
     version: MATCHED_TOKEN_EFFICIENCY_VERSION,
   };
-  return {...withoutHash, reportHash: digest('matched-token-efficiency-report-v1', withoutHash)};
+  return {...withoutHash, reportHash: digest('matched-token-efficiency-report-v2', withoutHash)};
 }
 
 export function renderMatchedTokenEfficiencyArticleEvidenceV1(report: MatchedTokenEfficiencyReportV1): string {
@@ -465,6 +484,7 @@ export function renderMatchedTokenEfficiencyArticleEvidenceV1(report: MatchedTok
     `- Report hash: ${report.reportHash}`,
     `- Manifest hash: ${report.manifestHash}`,
     `- Study hash: ${report.studyHash}`,
+    `- Verification plan hash: ${report.verificationPlanHash}`,
     `- Corpus hash: ${report.corpusHash}`,
     `- Prompt policy: ${report.promptPolicy}`,
     '',
@@ -479,6 +499,9 @@ export function renderMatchedTokenEfficiencyArticleEvidenceV1(report: MatchedTok
       `### ${arm.arm}`,
       '',
       `- Assigned / completed / verified: ${arm.assigned} / ${arm.completed} / ${arm.verifiedCompletions}`,
+      `- Hybrid verifier-and-judge completions: ${arm.hybridVerifiedCompletions}`,
+      `- Verifier pass / judge fail disagreements: ${arm.verifierPassedJudgeFailed}`,
+      `- Judge pass / verifier fail disagreements: ${arm.judgePassedVerifierFailed}`,
       `- Failure-inclusive provider tokens: ${arm.providerTokens.totalTokens}`,
       `- Online tokens per verified completion: ${formatNumber(arm.onlineTokensPerVerifiedCompletion)}`,
       `- Lifecycle tokens per verified completion: ${formatNumber(arm.lifecycleTokensPerVerifiedCompletion)}`,
@@ -506,6 +529,8 @@ export function renderMatchedTokenEfficiencyArticleEvidenceV1(report: MatchedTok
       `- Token-reduction 95% interval: ${formatInterval(comparison.tokenReductionPercent95)}`,
       `- Verified-completion delta: ${formatPercent(comparison.completionDeltaPercentagePoints)} percentage points`,
       `- Verified-completion delta 95% interval: ${formatInterval(comparison.completionDeltaPercentagePoints95)}`,
+      `- Hybrid-completion delta: ${formatPercent(comparison.hybridCompletionDeltaPercentagePoints)} percentage points`,
+      `- Hybrid-completion delta 95% interval: ${formatInterval(comparison.hybridCompletionDeltaPercentagePoints95)}`,
       `- Lifecycle break-even reuse count: ${comparison.breakEvenReuseCount ?? 'not reached'}`,
     );
     for (const stratum of comparison.contextStrata) {
@@ -641,7 +666,10 @@ function summarizeArm(
     authorizationLeaks: stats.authorizationLeaks,
     falseCurrentOutcomes: stats.falseCurrentOutcomes,
     harmfulActions: stats.harmfulActions,
+    hybridVerifiedCompletionRate: stats.hybridVerifiedCompletionRate,
+    hybridVerifiedCompletions: stats.hybridVerifiedCompletions,
     invalid: stats.invalid,
+    judgePassedVerifierFailed: stats.judgePassedVerifierFailed,
     lifecycleTokensPerVerifiedCompletion:
       stats.tokensPerVerifiedCompletion === null || amortized === null
         ? null
@@ -652,6 +680,7 @@ function summarizeArm(
     unavailable: stats.unavailable,
     verifiedCompletionRate: stats.verifiedCompletionRate,
     verifiedCompletions: stats.verifiedCompletions,
+    verifierPassedJudgeFailed: stats.verifierPassedJudgeFailed,
   };
 }
 
@@ -692,6 +721,8 @@ function compareArm(input: {
   );
   const completionDeltaPercentagePoints =
     (input.target.verifiedCompletionRate - input.baseline.verifiedCompletionRate) * 100;
+  const hybridCompletionDeltaPercentagePoints =
+    (input.target.hybridVerifiedCompletionRate - input.baseline.hybridVerifiedCompletionRate) * 100;
   const contextStrata = summarizeContextStrata(input);
   const intervals = bootstrapIntervals(input);
   if (intervals === null) insufficiencies.push('cluster bootstrap could not produce bounded paired estimates');
@@ -705,6 +736,11 @@ function compareArm(input: {
   }
   if (intervals !== null && intervals.completionDelta.low < -nonInferiority) {
     failures.push(`verified completion was inferior by more than ${formatPercent(nonInferiority)} percentage points`);
+  }
+  if (intervals !== null && intervals.hybridCompletionDelta.low < -nonInferiority) {
+    failures.push(
+      `hybrid verifier-and-judge completion was inferior by more than ${formatPercent(nonInferiority)} percentage points`,
+    );
   }
   const onlineSavings =
     input.baseline.onlineTokensPerVerifiedCompletion !== null && input.target.onlineTokensPerVerifiedCompletion !== null
@@ -721,6 +757,8 @@ function compareArm(input: {
     completionDeltaPercentagePoints95: intervals?.completionDelta ?? null,
     contextStrata,
     failures: [...new Set(failures)].sort(),
+    hybridCompletionDeltaPercentagePoints,
+    hybridCompletionDeltaPercentagePoints95: intervals?.hybridCompletionDelta ?? null,
     effect: input.effect,
     insufficiencies: [...new Set(insufficiencies)].sort(),
     status: insufficiencies.length > 0 ? 'inconclusive' : failures.length > 0 ? 'failed' : 'passed',
@@ -781,6 +819,7 @@ function bootstrapIntervals(input: {
   readonly targetArm: MatchedTokenEfficiencyTargetArm;
 }): {
   readonly completionDelta: MatchedTokenEfficiencyIntervalV1;
+  readonly hybridCompletionDelta: MatchedTokenEfficiencyIntervalV1;
   readonly tokenReduction: MatchedTokenEfficiencyIntervalV1;
 } | null {
   const clusters = [...new Set(input.study.taskContexts.map(context => context.clusterId))].sort();
@@ -788,6 +827,7 @@ function bootstrapIntervals(input: {
   const targetOutcomes = outcomesForArm(input.manifest, input.outcomes, input.targetArm);
   const reductions: number[] = [];
   const completionDeltas: number[] = [];
+  const hybridCompletionDeltas: number[] = [];
   for (let iteration = 0; iteration < input.study.bootstrap.iterations; iteration += 1) {
     const weights = new Map<string, number>();
     for (let slot = 0; slot < clusters.length; slot += 1) {
@@ -805,12 +845,14 @@ function bootstrapIntervals(input: {
     if (reduction === null) continue;
     reductions.push(reduction);
     completionDeltas.push((target.verifiedCompletionRate - baseline.verifiedCompletionRate) * 100);
+    hybridCompletionDeltas.push((target.hybridVerifiedCompletionRate - baseline.hybridVerifiedCompletionRate) * 100);
   }
   if (reductions.length < Math.ceil(input.study.bootstrap.iterations * 0.9)) return null;
   const confidence = input.study.bootstrap.confidenceLevelBasisPoints / 10_000;
   const tail = (1 - confidence) / 2;
   return {
     completionDelta: percentileInterval(completionDeltas, tail),
+    hybridCompletionDelta: percentileInterval(hybridCompletionDeltas, tail),
     tokenReduction: percentileInterval(reductions, tail),
   };
 }
@@ -833,23 +875,30 @@ function aggregateOutcomes(
   readonly completed: number;
   readonly falseCurrentOutcomes: number;
   readonly harmfulActions: number;
+  readonly hybridVerifiedCompletionRate: number;
+  readonly hybridVerifiedCompletions: number;
   readonly invalid: number;
+  readonly judgePassedVerifierFailed: number;
   readonly missingProviderUsage: number;
   readonly providerTokens: MatchedEvaluationProviderTokensV1;
   readonly tokensPerVerifiedCompletion: number | null;
   readonly unavailable: number;
   readonly verifiedCompletionRate: number;
   readonly verifiedCompletions: number;
+  readonly verifierPassedJudgeFailed: number;
 } {
   let assigned = 0;
   let authorizationLeaks = 0;
   let completed = 0;
   let falseCurrentOutcomes = 0;
   let harmfulActions = 0;
+  let hybridVerifiedCompletions = 0;
   let invalid = 0;
+  let judgePassedVerifierFailed = 0;
   let missingProviderUsage = 0;
   let unavailable = 0;
   let verifiedCompletions = 0;
+  let verifierPassedJudgeFailed = 0;
   let providerTokens = ZERO_PROVIDER_TOKENS;
   for (const outcome of outcomes) {
     const weight = taskWeights?.get(outcome.taskId) ?? 1;
@@ -870,16 +919,20 @@ function aggregateOutcomes(
     } else {
       providerTokens = addProviderTokens(providerTokens, scaleProviderTokens(metrics.usage.providerTokens, weight));
     }
-    if (
+    const safetyPassed =
       metrics.validity.valid &&
-      metrics.completion.completed &&
-      metrics.correctness.scoreMilli >= minimumCorrectnessScoreMilli &&
       metrics.drift.falseCurrentOutcomes === 0 &&
       metrics.safety.authorizationLeaks === 0 &&
-      metrics.safety.harmfulActions === 0
-    ) {
+      metrics.safety.harmfulActions === 0;
+    const verifierPassed = metrics.completion.completed;
+    const judgePassed =
+      metrics.correctness.judgeCompleted && metrics.correctness.scoreMilli >= minimumCorrectnessScoreMilli;
+    if (safetyPassed && verifierPassed) {
       verifiedCompletions += weight;
     }
+    if (safetyPassed && verifierPassed && judgePassed) hybridVerifiedCompletions += weight;
+    if (verifierPassed && !judgePassed) verifierPassedJudgeFailed += weight;
+    if (!verifierPassed && judgePassed) judgePassedVerifierFailed += weight;
   }
   return {
     assigned,
@@ -887,13 +940,17 @@ function aggregateOutcomes(
     completed,
     falseCurrentOutcomes,
     harmfulActions,
+    hybridVerifiedCompletionRate: assigned === 0 ? 0 : hybridVerifiedCompletions / assigned,
+    hybridVerifiedCompletions,
     invalid,
+    judgePassedVerifierFailed,
     missingProviderUsage,
     providerTokens,
     tokensPerVerifiedCompletion: verifiedCompletions === 0 ? null : providerTokens.totalTokens / verifiedCompletions,
     unavailable,
     verifiedCompletionRate: assigned === 0 ? 0 : verifiedCompletions / assigned,
     verifiedCompletions,
+    verifierPassedJudgeFailed,
   };
 }
 

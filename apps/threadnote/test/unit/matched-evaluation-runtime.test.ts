@@ -162,7 +162,8 @@ describe('matched evaluation runtime integrity', () => {
         {clusterId: firstCluster, repositoryDirectory: firstDirectory, repositoryIdentityHash: first.identityHash},
       ],
       timeoutMilliseconds: 60_000,
-      version: 3 as const,
+      verificationPlanHash: 'f'.repeat(64),
+      version: 4 as const,
     };
 
     expect(parseMatchedEvaluationRuntimeV1(runtime)).toEqual(runtime);

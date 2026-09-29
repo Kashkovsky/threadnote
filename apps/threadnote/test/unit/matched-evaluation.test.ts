@@ -340,7 +340,7 @@ function armDefinitions(): readonly MatchedEvaluationArmDefinitionV1[] {
   return MATCHED_EVALUATION_ARMS.map((arm, index) => ({
     adapterArtifactHash: String(index + 1).repeat(64),
     adapterConfigurationHash: (index + 6).toString(16).repeat(64),
-    adapterProtocol: 'matched-evaluation-adapter-v3',
+    adapterProtocol: 'matched-evaluation-adapter-v4',
     arm,
     environmentPolicyHash:
       arm === 'reference-scope' ? matchedEvaluationReferenceEnvironmentPolicyHashV1() : 'e'.repeat(64),
@@ -368,7 +368,7 @@ function observation(runOrder: number): MatchedEvaluationObservationV1 {
     artifactHash: runOrder.toString(16).padStart(64, '0'),
     metrics: metrics(),
     transcriptHash: (runOrder + 1).toString(16).padStart(64, '0'),
-    version: 2,
+    version: 3,
   };
 }
 
@@ -377,7 +377,7 @@ function metrics(): MatchedEvaluationMetricsV1 {
     auditability: {citations: 2, resolvableCitations: 2},
     completion: {completed: true},
     context: null,
-    correctness: {judge: 'blinded-rubric-v1', scoreMilli: 1_000},
+    correctness: {judge: 'blinded-rubric-v1', judgeCompleted: true, scoreMilli: 1_000},
     drift: {falseCurrentOutcomes: 0},
     providerCostMicros: null,
     retrieval: {recalledEvidence: 2, requiredEvidence: 2},
@@ -398,5 +398,6 @@ function metrics(): MatchedEvaluationMetricsV1 {
       toolTurns: 2,
     },
     validity: {failureCount: 0, valid: true},
+    verification: null,
   };
 }

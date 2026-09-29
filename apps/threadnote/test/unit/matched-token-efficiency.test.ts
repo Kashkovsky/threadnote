@@ -27,6 +27,7 @@ import {
   renderMatchedTokenEfficiencyArticleEvidenceV1,
   type MatchedTokenEfficiencyStudyV1,
 } from '@threadnote/threadnote/evaluation/matched-token-efficiency';
+import {createMatchedEvaluationVerificationReceiptV1} from '@threadnote/threadnote/evaluation/matched-verification';
 import {projectMatchedEvaluationAdapterTaskV1} from '../../../../scripts/run-matched-evaluation.js';
 
 describe('matched token-efficiency claim evaluation', () => {
@@ -122,7 +123,12 @@ describe('matched token-efficiency claim evaluation', () => {
     const study = createStudy(corpus, manifest);
     const outcomes = await outcomesFor(corpus, manifest, study, (arm, runOrder, metrics) =>
       arm === 'threadnote-compact' && runOrder === firstRunOrder(manifest, arm)
-        ? {...metrics, completion: {completed: false}, correctness: {...metrics.correctness, scoreMilli: 0}}
+        ? {
+            ...metrics,
+            completion: {completed: false},
+            correctness: {...metrics.correctness, judgeCompleted: false, scoreMilli: 0},
+            verification: failedVerification(required(metrics.verification)),
+          }
         : metrics,
     );
 
@@ -131,6 +137,29 @@ describe('matched token-efficiency claim evaluation', () => {
 
     expect(compact).toMatchObject({providerTokens: {totalTokens: 21_000}, verifiedCompletions: 29});
     expect(compact?.onlineTokensPerVerifiedCompletion).toBeCloseTo(21_000 / 29);
+  });
+
+  it('uses deterministic completion as primary and reports verifier-judge disagreement separately', async () => {
+    const corpus = await fixture();
+    const manifest = createManifest(corpus);
+    const study = createStudy(corpus, manifest);
+    const outcomes = await outcomesFor(corpus, manifest, study, (arm, runOrder, metrics) =>
+      arm === 'threadnote-compact' && runOrder === firstRunOrder(manifest, arm)
+        ? {...metrics, correctness: {...metrics.correctness, judgeCompleted: false, scoreMilli: 0}}
+        : metrics,
+    );
+
+    const report = evaluateMatchedTokenEfficiencyV1({corpus, manifest, outcomes, study});
+    const compact = required(report.arms.find(arm => arm.arm === 'threadnote-compact'));
+
+    expect(compact).toMatchObject({
+      hybridVerifiedCompletions: 29,
+      verifiedCompletions: 30,
+      verifierPassedJudgeFailed: 1,
+    });
+    expect(renderMatchedTokenEfficiencyArticleEvidenceV1(report)).toContain(
+      'Verifier pass / judge fail disagreements: 1',
+    );
   });
 
   it('fails closed on mismatched context or missing provider usage', async () => {
@@ -306,6 +335,7 @@ function studyInput(
         taskId: manifestTask.taskId,
       });
     }),
+    verificationPlanHash: 'f'.repeat(64),
   };
 }
 
@@ -324,7 +354,7 @@ async function outcomesFor(
     corpus,
     execute: async request => {
       const taskContext = required(study.taskContexts.find(context => context.taskId === request.task.taskId));
-      const metrics = metricsFor(request.arm, study, taskContext);
+      const metrics = metricsFor(request.arm, study, taskContext, request.schedule.runOrder);
       return observation(request.schedule.runOrder, transform(request.arm, request.schedule.runOrder, metrics));
     },
     manifest,
@@ -335,6 +365,7 @@ function metricsFor(
   arm: MatchedEvaluationArm,
   study: MatchedTokenEfficiencyStudyV1,
   taskContext: MatchedTokenEfficiencyStudyV1['taskContexts'][number],
+  runOrder: number,
 ): MatchedEvaluationMetricsV1 {
   const total =
     arm === 'files'
@@ -369,7 +400,7 @@ function metricsFor(
               taskContextHash: null,
             }
           : null,
-    correctness: {judge: 'blinded-rubric-v1', scoreMilli: 1_000},
+    correctness: {judge: 'blinded-rubric-v1', judgeCompleted: true, scoreMilli: 1_000},
     drift: {falseCurrentOutcomes: 0},
     providerCostMicros: null,
     retrieval: {recalledEvidence: 2, requiredEvidence: 2},
@@ -384,6 +415,20 @@ function metricsFor(
       toolTurns: 2,
     },
     validity: {failureCount: 0, valid: true},
+    verification: createMatchedEvaluationVerificationReceiptV1({
+      artifactHash: runOrder.toString(16).padStart(64, '0'),
+      diagnosticHash: '1'.repeat(64),
+      durationMilliseconds: 10,
+      environmentHash: '2'.repeat(64),
+      exitCode: 0,
+      interpreterHash: '3'.repeat(64),
+      planHash: study.verificationPlanHash,
+      runnerHash: '4'.repeat(64),
+      sandboxExecutableHash: '5'.repeat(64),
+      status: 'passed',
+      taskId: taskContext.taskId,
+      verificationId: '6'.repeat(64),
+    }),
   };
 }
 
@@ -398,12 +443,31 @@ function providerTokens(totalTokens: number) {
   };
 }
 
+function failedVerification(
+  receipt: NonNullable<MatchedEvaluationMetricsV1['verification']>,
+): NonNullable<MatchedEvaluationMetricsV1['verification']> {
+  return createMatchedEvaluationVerificationReceiptV1({
+    artifactHash: receipt.artifactHash,
+    diagnosticHash: 'a'.repeat(64),
+    durationMilliseconds: receipt.durationMilliseconds,
+    environmentHash: receipt.environmentHash,
+    exitCode: 1,
+    interpreterHash: receipt.interpreterHash,
+    planHash: receipt.planHash,
+    runnerHash: receipt.runnerHash,
+    sandboxExecutableHash: receipt.sandboxExecutableHash,
+    status: 'task-failed',
+    taskId: receipt.taskId,
+    verificationId: receipt.verificationId,
+  });
+}
+
 function observation(runOrder: number, metrics: MatchedEvaluationMetricsV1): MatchedEvaluationObservationV1 {
   return {
     artifactHash: runOrder.toString(16).padStart(64, '0'),
     metrics,
     transcriptHash: (runOrder + 1).toString(16).padStart(64, '0'),
-    version: 2,
+    version: 3,
   };
 }
 
@@ -411,7 +475,7 @@ function armDefinitions(): readonly MatchedEvaluationArmDefinitionV1[] {
   return MATCHED_EVALUATION_ARMS.map((arm, index) => ({
     adapterArtifactHash: String(index + 1).repeat(64),
     adapterConfigurationHash: (index + 6).toString(16).repeat(64),
-    adapterProtocol: 'matched-evaluation-adapter-v3',
+    adapterProtocol: 'matched-evaluation-adapter-v4',
     arm,
     environmentPolicyHash:
       arm === 'reference-scope' ? matchedEvaluationReferenceEnvironmentPolicyHashV1() : 'e'.repeat(64),

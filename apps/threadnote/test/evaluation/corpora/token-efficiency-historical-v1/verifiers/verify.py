@@ -89,6 +89,7 @@ class Application:
         stdout, stderr, status = mypy_api.run(
             [
                 "--strict",
+                "--config-file=/dev/null",
                 "--no-incremental",
                 "--cache-dir=/dev/null",
                 "--ignore-missing-imports",
