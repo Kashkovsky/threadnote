@@ -474,6 +474,8 @@ describe('matched evaluation Codex adapter', () => {
     expect(budgetResponse).toMatchObject({
       metrics: {
         completion: {completed: false},
+        correctness: {judgeCompleted: false, scoreMilli: 620},
+        drift: {falseCurrentOutcomes: 1},
         usage: {providerTokens: {inputTokens: 100, outputTokens: 50, totalTokens: 150}},
         validity: {failureCount: 0, valid: true},
       },

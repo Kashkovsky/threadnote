@@ -408,8 +408,8 @@ export async function runMatchedEvaluationCodexAdapter(input: {
           toolTurns: toolTurns(agentTurn.events),
         },
         validity: {
-          failureCount: judge.failureReasons.length + (contextProtocolFailure ? 1 : 0),
-          valid: judge.failureReasons.length === 0 && !contextProtocolFailure,
+          failureCount: contextProtocolFailure ? 1 : 0,
+          valid: !contextProtocolFailure,
         },
         verification,
       },

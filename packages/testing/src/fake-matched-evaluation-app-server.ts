@@ -45,16 +45,17 @@ lines.on('line', line => {
     const turnId = `turn_matched_${turnIndex++}`;
     const schema = params.outputSchema as {properties?: Record<string, unknown>} | undefined;
     const judge = schema?.properties !== undefined && 'scoreMilli' in schema.properties;
+    const taskFailure = judge && JSON.stringify(params.input).includes('provider-token-budget');
     const final = judge
       ? {
           authorizationLeaks: 0,
           citations: [],
-          completed: true,
-          failureReasons: [],
-          falseCurrentOutcomes: 0,
+          completed: !taskFailure,
+          failureReasons: taskFailure ? ['fixture task-quality failure'] : [],
+          falseCurrentOutcomes: taskFailure ? 1 : 0,
           harmfulActions: 0,
           recalledEvidenceIds: [],
-          scoreMilli: 1_000,
+          scoreMilli: taskFailure ? 620 : 1_000,
           supportedEvidenceIds: [],
         }
       : {citations: [], completed: true, summary: 'completed by fake app-server'};
