@@ -1,0 +1,286 @@
+{
+  "corpusId": "context-tools-matched-v1",
+  "tasks": [
+    {
+      "category": "unfamiliar-call-path",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_1111111111111111",
+          "repository": "primary",
+          "source": {"endLine": 36, "path": "src/http/checkout.ts", "startLine": 18},
+          "status": "active",
+          "text": "Checkout requests flow through checkoutHandler before payment authorization."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_1111111111111111",
+          "reason": "Names a removed handler and must not be accepted as current.",
+          "text": "Checkout is handled by legacyCheckoutHandler."
+        }
+      ],
+      "pairId": "pair_aaaaaaaaaaaaaaaa",
+      "prompt": "Trace checkoutHandler to the payment authorization call and cite the exact source path.",
+      "repositoryFixtureHash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "rubric": {
+        "completion": "The response identifies the complete route-to-authorization path without inventing an extra hop.",
+        "criteria": ["Name each required hop.", "Cite current source for the authorization call."],
+        "requiredEvidenceIds": ["ev_1111111111111111", "ev_1111111111111112"]
+      },
+      "sourceGold": [
+        {
+          "claim": "checkoutHandler delegates to checkoutService.",
+          "endLine": 36,
+          "evidenceId": "ev_1111111111111111",
+          "path": "src/http/checkout.ts",
+          "repository": "primary",
+          "startLine": 18
+        },
+        {
+          "claim": "checkoutService calls authorizePayment.",
+          "endLine": 52,
+          "evidenceId": "ev_1111111111111112",
+          "path": "src/payments/service.ts",
+          "repository": "primary",
+          "startLine": 41
+        }
+      ],
+      "taskId": "tsk_1111111111111111",
+      "variant": "exact-name"
+    },
+    {
+      "category": "unfamiliar-call-path",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_2222222222222222",
+          "repository": "primary",
+          "source": {"endLine": 36, "path": "src/http/checkout.ts", "startLine": 18},
+          "status": "active",
+          "text": "The purchase endpoint reaches the payment boundary through the checkout service."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_2222222222222222",
+          "reason": "Describes a similarly named audit path rather than the production call path.",
+          "text": "The purchase endpoint reaches auditPayment only."
+        }
+      ],
+      "pairId": "pair_aaaaaaaaaaaaaaaa",
+      "prompt": "How does a purchase request reach the external card approval boundary? Give the source-backed path.",
+      "repositoryFixtureHash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "rubric": {
+        "completion": "The response recovers the same path as the exact-name task from paraphrased language.",
+        "criteria": ["Identify the purchase endpoint.", "Reach the external authorization boundary."],
+        "requiredEvidenceIds": ["ev_2222222222222221", "ev_2222222222222222"]
+      },
+      "sourceGold": [
+        {
+          "claim": "The purchase endpoint is implemented by checkoutHandler.",
+          "endLine": 36,
+          "evidenceId": "ev_2222222222222221",
+          "path": "src/http/checkout.ts",
+          "repository": "primary",
+          "startLine": 18
+        },
+        {
+          "claim": "The external card approval boundary is authorizePayment.",
+          "endLine": 52,
+          "evidenceId": "ev_2222222222222222",
+          "path": "src/payments/service.ts",
+          "repository": "primary",
+          "startLine": 41
+        }
+      ],
+      "taskId": "tsk_2222222222222222",
+      "variant": "paraphrase"
+    },
+    {
+      "category": "hidden-architectural-constraint",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_3333333333333333",
+          "repository": "primary",
+          "source": {"endLine": 19, "path": "docs/architecture.md", "startLine": 12},
+          "status": "active",
+          "text": "Payment retries are intentionally absent; callers surface the first provider failure."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_3333333333333333",
+          "reason": "Suggests a retry policy that the architecture explicitly forbids.",
+          "text": "Retry payment authorization three times with exponential backoff."
+        }
+      ],
+      "pairId": null,
+      "prompt": "Find the retry policy for payment authorization. If no retry is allowed, support that absence with exact evidence.",
+      "repositoryFixtureHash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "rubric": {
+        "completion": "The response reports that retries are intentionally absent and does not propose an invented policy.",
+        "criteria": ["Treat the documented absence as the answer.", "Do not infer a retry count."],
+        "requiredEvidenceIds": ["ev_3333333333333333"]
+      },
+      "sourceGold": [
+        {
+          "claim": "The architecture forbids automatic payment retries.",
+          "endLine": 19,
+          "evidenceId": "ev_3333333333333333",
+          "path": "docs/architecture.md",
+          "repository": "primary",
+          "startLine": 12
+        }
+      ],
+      "taskId": "tsk_3333333333333333",
+      "variant": "absent-answer"
+    },
+    {
+      "category": "stale-citation-refactor",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_4444444444444444",
+          "repository": "primary",
+          "source": {"endLine": 45, "path": "src/payments/authorize.ts", "startLine": 30},
+          "status": "active",
+          "text": "Authorization still lives in src/payments/authorize.ts."
+        },
+        {
+          "memoryId": "mem_4444444444444445",
+          "repository": "primary",
+          "source": {"endLine": 27, "path": "src/gateways/card.ts", "startLine": 14},
+          "status": "active",
+          "text": "Authorization moved to the card gateway during the provider refactor."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_4444444444444444",
+          "reason": "The old citation points to a deleted implementation.",
+          "text": "Treat src/payments/authorize.ts as current because an active memory cites it."
+        }
+      ],
+      "pairId": null,
+      "prompt": "Resolve the conflicting authorization memories after the refactor and cite only current source.",
+      "repositoryFixtureHash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "rubric": {
+        "completion": "The response chooses the current gateway implementation and marks the old citation stale.",
+        "criteria": ["Reject the deleted path as current.", "Cite the gateway implementation."],
+        "requiredEvidenceIds": ["ev_4444444444444444"]
+      },
+      "sourceGold": [
+        {
+          "claim": "authorizePayment now lives in the card gateway.",
+          "endLine": 27,
+          "evidenceId": "ev_4444444444444444",
+          "path": "src/gateways/card.ts",
+          "repository": "primary",
+          "startLine": 14
+        }
+      ],
+      "taskId": "tsk_4444444444444444",
+      "variant": "conflicting-records"
+    },
+    {
+      "category": "same-repository-onboarding",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_5555555555555555",
+          "repository": "primary",
+          "source": {"endLine": 18, "path": "package.json", "startLine": 8},
+          "status": "active",
+          "text": "Use the verify:checkout script before changing the checkout package."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_5555555555555555",
+          "reason": "Names a script absent from the current dirty manifest.",
+          "text": "Run test:checkout:legacy."
+        }
+      ],
+      "pairId": null,
+      "prompt": "Onboard to the checkout package in this dirty worktree: identify its current entrypoint and verification command.",
+      "repositoryFixtureHash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "rubric": {
+        "completion": "The response uses the dirty-worktree entrypoint and current verification script.",
+        "criteria": ["Prefer current dirty source over the base snapshot.", "Name the exact verification script."],
+        "requiredEvidenceIds": ["ev_5555555555555555", "ev_5555555555555556"]
+      },
+      "sourceGold": [
+        {
+          "claim": "The dirty manifest defines verify:checkout.",
+          "endLine": 18,
+          "evidenceId": "ev_5555555555555555",
+          "path": "package.json",
+          "repository": "primary",
+          "startLine": 8
+        },
+        {
+          "claim": "The dirty checkout entrypoint is src/checkout/main.ts.",
+          "endLine": 15,
+          "evidenceId": "ev_5555555555555556",
+          "path": "src/checkout/main.ts",
+          "repository": "primary",
+          "startLine": 1
+        }
+      ],
+      "taskId": "tsk_5555555555555555",
+      "variant": "dirty-worktree"
+    },
+    {
+      "category": "cross-repository-transfer",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_6666666666666666",
+          "repository": "service",
+          "source": {"endLine": 31, "path": "src/contracts/checkout.ts", "startLine": 20},
+          "status": "active",
+          "text": "The service exports CheckoutAuthorizationV2 for web consumers."
+        },
+        {
+          "memoryId": "mem_6666666666666667",
+          "repository": "web",
+          "source": {"endLine": 24, "path": "src/api/checkout.ts", "startLine": 10},
+          "status": "superseded",
+          "text": "The web client still consumes CheckoutAuthorizationV1."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_6666666666666666",
+          "reason": "The superseded web memory conflicts with both current repositories.",
+          "text": "Preserve the V1 payload because the client memory says it is current."
+        }
+      ],
+      "pairId": null,
+      "prompt": "Transfer the current checkout authorization contract from the service repository to the web change plan and resolve conflicting history.",
+      "repositoryFixtureHash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "rubric": {
+        "completion": "The response identifies V2 in both repositories and rejects the superseded V1 record.",
+        "criteria": ["Cite both repository sides.", "Mark the V1 record superseded."],
+        "requiredEvidenceIds": ["ev_6666666666666666", "ev_6666666666666667"]
+      },
+      "sourceGold": [
+        {
+          "claim": "The service exports CheckoutAuthorizationV2.",
+          "endLine": 31,
+          "evidenceId": "ev_6666666666666666",
+          "path": "src/contracts/checkout.ts",
+          "repository": "service",
+          "startLine": 20
+        },
+        {
+          "claim": "The web client imports CheckoutAuthorizationV2.",
+          "endLine": 24,
+          "evidenceId": "ev_6666666666666667",
+          "path": "src/api/checkout.ts",
+          "repository": "web",
+          "startLine": 10
+        }
+      ],
+      "taskId": "tsk_6666666666666666",
+      "variant": "conflicting-records"
+    }
+  ],
+  "version": 1
+}

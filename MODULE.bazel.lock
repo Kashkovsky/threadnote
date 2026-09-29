@@ -217,7 +217,7 @@
     "//tools/bazel:repositories.bzl%bun": {
       "os:osx,arch:aarch64": {
         "bzlTransitiveDigest": "tZ8aX22NhvYtjfnUIoK17Bld1ZOWWaxkND5VoWIl5S4=",
-        "usagesDigest": "jT1CMqnIOJaflqqYmuV59pnSc+DxVccQrM7jqXhATbg=",
+        "usagesDigest": "xiJYDpGdIekJfMT79WHtA3TVu6lHi7p9Mou+WSgcGVk=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
           "bun_toolchain": {

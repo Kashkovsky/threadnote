@@ -48,6 +48,7 @@ describe('Manager Context Brief input', () => {
         budgetTokens: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
         callerCwd: '/private/project',
         codeRefs: ['src/service.ts', 'src/service.ts', `cgs_${'a'.repeat(32)}`],
+        detail: 'source',
         mode: 'impact',
         project: ' threadnote ',
         task: '  Trace   Manager context  ',
@@ -55,6 +56,7 @@ describe('Manager Context Brief input', () => {
     ).toEqual({
       budgetTokens: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
       codeRefs: ['src/service.ts', `cgs_${'a'.repeat(32)}`],
+      detail: 'source',
       mode: 'impact',
       scope: {callerCwd: '/private/project', kind: 'repository', project: 'threadnote'},
       task: 'Trace Manager context',
@@ -75,6 +77,7 @@ describe('Manager Context Brief input', () => {
     [{callerCwd: 'relative/project', task: 'x'}, 'absolute path'],
     [{callerCwd: '/private/project', extra: true, task: 'x'}, 'unsupported field extra'],
     [{callerCwd: '/private/project', mode: 'wander', task: 'x'}, 'Mode must be one of'],
+    [{callerCwd: '/private/project', detail: 'verbose', task: 'x'}, 'detail must be compact or source'],
     [{budgetTokens: 0, callerCwd: '/private/project', task: 'x'}, 'budgetTokens must be an integer'],
     [
       {

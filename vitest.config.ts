@@ -58,7 +58,7 @@ export const createVitestConfig = (ciLongRunningGroupName = process.env.THREADNO
             'apps/threadnote/test/**/*.test.ts',
             'apps/website/test/**/*.test.ts',
             'infra/*/test/**/*.test.ts',
-            'packages/*/test/**/*.test.ts',
+            'packages/*/test/**/*.test.{ts,tsx}',
             'tools/bazel/test/*.test.ts',
             'tools/ci/test/*.test.ts',
             'tools/workspace/test/*.test.ts',

@@ -75,6 +75,8 @@ import {
 } from '@threadnote/memory/code/citation-policy';
 import {discardDeferredCodeAnchorIntent} from '../memory/deferred/code_anchor.js';
 import {parseMemoryDocument, type MemoryRecord} from '@threadnote/memory/hygiene';
+import {verifyResolvedMemoryIdentity} from '@threadnote/recall/memory/identity';
+import {resolveManagerMemoryIdentity} from './memory/identity.js';
 import {
   ensureSharedDirectoryChain,
   assertSharedWorktreeFileReady,
@@ -91,6 +93,7 @@ import {
 import {collectDoctorChecks, runRepair, runStart} from '../lifecycle.js';
 import {runSeed, runSeedSkills} from '../seeding.js';
 import {readManagerRuntimeState} from './state.js';
+import {handleManagerWorkflowRequest} from './workflow.js';
 import {handleManagerProcessRequest} from './processes.js';
 import {handleManagerWorkspaceRequest} from './value.js';
 import {emptyManagerTree, readManagerTreeRoot} from '@threadnote/manager/tree';
@@ -427,33 +430,32 @@ export const resourcesTree = Effect.fn('manager.resourcesTree')(function* (confi
 });
 
 export const readManagedMemory = Effect.fn('manager.readManagedMemory')(function* (config: RuntimeConfig, uri: string) {
-  assertResourceUri(uri);
-  const path = yield* localPathForMemoryUri(config, uri);
-  if (!path) {
-    return yield* ManagerOperationError.make({message: `Manager can only read current-user memory URIs: ${uri}`});
-  }
+  const resolved = yield* resolveManagerMemoryIdentity(config, uri);
+  const canonicalUri = resolved.canonicalUri;
+  const path = yield* localPathForMemoryUri(config, canonicalUri);
+  if (!path) return yield* ManagerOperationError.make({message: `Memory is outside this Library: ${canonicalUri}`});
   const pathStat = yield* lstat(path);
-  if (!pathStat.isFile()) {
-    return yield* ManagerOperationError.make({message: `Manager can only read regular memory files: ${uri}`});
-  }
+  if (!pathStat.isFile())
+    return yield* ManagerOperationError.make({message: `Manager requires regular memory files: ${canonicalUri}`});
   const content = yield* readFile(path, 'utf8');
+  yield* verifyResolvedMemoryIdentity(resolved, canonicalUri, content);
   const relativePath = (yield* pathRelative(yield* localMemoriesRoot(config), path))
     .split(yield* pathSeparator)
     .join('/');
-  const record = parseMemoryDocument(uri, content);
+  const record = parseMemoryDocument(canonicalUri, content);
   return {
     content,
     node: {
       isDir: false,
-      isShared: isInSharedNamespace(config, uri),
-      isSystem: isSystemMemoryName(path.split(yield* pathSeparator).at(-1) ?? ''),
+      isShared: isInSharedNamespace(config, canonicalUri),
+      isSystem: SYSTEM_MEMORY_NAMES.has(path.split(yield* pathSeparator).at(-1) ?? ''),
       metadata: record?.metadata,
       modTime: pathStat.mtime.toISOString(),
-      name: path.split(yield* pathSeparator).at(-1) ?? uri,
+      name: path.split(yield* pathSeparator).at(-1) ?? canonicalUri,
       relativePath,
-      sharedTeam: sharedTeamNameForUri(config, uri),
+      sharedTeam: sharedTeamNameForUri(config, canonicalUri),
       size: pathStat.size,
-      uri,
+      uri: canonicalUri,
     },
     record,
   };
@@ -557,6 +559,17 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
   }
   if (!isAuthorized(context, request)) {
     writeJson(response, 401, {error: 'Unauthorized'});
+    return;
+  }
+  const workflowResponse = yield* handleManagerWorkflowRequest({
+    body: request.body,
+    config: context.config,
+    jobContext: {key: context, scope: context.worksetScope},
+    method: request.method,
+    url,
+  });
+  if (workflowResponse) {
+    writeJson(response, workflowResponse.status, workflowResponse.body);
     return;
   }
   const processResponse = yield* handleManagerProcessRequest({
@@ -1033,7 +1046,7 @@ const readTree: (
       return {
         isDir: false,
         isShared: isInSharedNamespace(config, uri),
-        isSystem: isSystemMemoryName(name),
+        isSystem: SYSTEM_MEMORY_NAMES.has(name),
         metadata: record?.metadata,
         modTime: pathStat.mtime.toISOString(),
         name,
@@ -1066,7 +1079,7 @@ const readTree: (
       children,
       isDir: true,
       isShared: isInSharedNamespace(config, uri),
-      isSystem: isSystemMemoryName(name),
+      isSystem: SYSTEM_MEMORY_NAMES.has(name),
       modTime: pathStat.mtime.toISOString(),
       name,
       relativePath,
@@ -1962,9 +1975,7 @@ function isGraphApiPath(pathname: string): boolean {
   return pathname === '/api/graph' || pathname.startsWith('/api/graph/') || pathname.startsWith('/api/graphs');
 }
 
-function isSystemMemoryName(name: string): boolean {
-  return name === '.abstract.md' || name === '.overview.md' || name === '.git' || name === '.gitignore';
-}
+const SYSTEM_MEMORY_NAMES = new Set(['.abstract.md', '.overview.md', '.git', '.gitignore']);
 
 const readJsonBody = Effect.fn('manager.readJsonBody')(function* (request: ManagerRequest) {
   return yield* request.body;

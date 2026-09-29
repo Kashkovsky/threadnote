@@ -5,6 +5,9 @@ import {ContextPanel} from './context/view.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from '@threadnote/manager/dialog';
 import {WorksetsPanel} from '@threadnote/manager/worksets_view';
 import {ProcessesPanel} from './processes_view.js';
+import {ManagerHomePanel} from './home_view.js';
+import {ContextHealthPanel, ReviewsPanel} from './attention_view.js';
+import {LibraryExplorer} from './library_explorer.js';
 import {settleManagerRefreshTasks} from '@threadnote/manager/refresh';
 import {DropdownSelect, MarkdownViewer, Metadata, TargetFields} from '@threadnote/manager/ui/controls';
 import {
@@ -67,7 +70,6 @@ import {
   loadManagerGraphViewsPage,
   managerProjectOptions,
   markdownBodyForPreview,
-  nodeMatches,
   panelDescription,
   panelIcon,
   panelNavDescription,
@@ -75,7 +77,6 @@ import {
   resourceUrisFromText,
   selectableMemoryUris,
   tabTitle,
-  treeItemClass,
   uniqueSelectorValues,
 } from '@threadnote/manager/ui/support';
 
@@ -180,7 +181,7 @@ const EMPTY_SELECTED_URIS: ReadonlySet<string> = new Set();
 
 function App(): React.ReactElement {
   const dialogs = useManagerDialogs();
-  const [panel, setPanel] = useState<PanelName>('graph');
+  const [panel, setPanel] = useState<PanelName>('home');
   const [state, setState] = useState<StateResponse | undefined>();
   const [graphCatalog, setGraphCatalog] = useState<GraphCatalog | undefined>();
   const [graphCatalogError, setGraphCatalogError] = useState('');
@@ -200,6 +201,7 @@ function App(): React.ReactElement {
   const [selectedUris, setSelectedUris] = useState<ReadonlySet<string>>(new Set());
   const [memory, setMemory] = useState<MemoryResponse | undefined>();
   const [loadedUri, setLoadedUri] = useState<string | undefined>();
+  const canonicalizedSelectionRef = useRef<string | undefined>(undefined);
   const draftRef = useRef<ManagerDraft | undefined>(undefined);
   const [pendingCanonical, setPendingCanonical] = useState<MemoryResponse | undefined>();
   const [availability, dispatchAvailability] = useReducer(managerAvailabilityTransition, initialManagerAvailability);
@@ -215,6 +217,7 @@ function App(): React.ReactElement {
   const [recallProject, setRecallProject] = useState('');
   const [readUri, setReadUri] = useState('');
   const [compactProject, setCompactProject] = useState('');
+  const [workspaceProject, setWorkspaceProject] = useState('');
   const [compactTopic, setCompactTopic] = useState('');
   const [packPath, setPackPath] = useState('');
   const [selectedShare, setSelectedShare] = useState('');
@@ -239,6 +242,7 @@ function App(): React.ReactElement {
   const [consolidationSourceUris, setConsolidationSourceUris] = useState<readonly string[]>([]);
   const [bulkAction, setBulkAction] = useState<'archive' | 'forget' | 'publish' | undefined>();
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
+  const [attentionRefreshGeneration, setAttentionRefreshGeneration] = useState(0);
 
   useEffect(() => {
     void refreshAll();
@@ -368,7 +372,18 @@ function App(): React.ReactElement {
       setTarget({kind: 'durable', project: '', status: 'active', team: node.sharedTeam ?? '', topic: ''});
       return;
     }
+    if (
+      canonicalizedSelectionRef.current === selectedUri &&
+      selectedUri === loadedUri &&
+      memory?.node.uri === selectedUri
+    ) {
+      canonicalizedSelectionRef.current = undefined;
+      dispatchAvailability('selection-ready');
+      return;
+    }
+    canonicalizedSelectionRef.current = undefined;
     let cancelled = false;
+    const requestedUri = selectedUri;
     dispatchAvailability('selection-started');
     setMemory(undefined);
     setLoadedUri(undefined);
@@ -378,8 +393,13 @@ function App(): React.ReactElement {
         ? loadResource(selectedUri, () => !cancelled)
         : loadMemory(selectedUri, () => !cancelled)
     )
-      .then(() => {
-        if (!cancelled) dispatchAvailability('selection-ready');
+      .then(resolvedUri => {
+        if (cancelled) return;
+        if (resolvedUri && resolvedUri !== requestedUri) {
+          canonicalizedSelectionRef.current = resolvedUri;
+          setSelectedUri(resolvedUri);
+        }
+        dispatchAvailability('selection-ready');
       })
       .catch(() => {
         if (!cancelled) dispatchAvailability('selection-failed');
@@ -412,7 +432,18 @@ function App(): React.ReactElement {
   const selectedList = useMemo(() => [...visibleSelectedUris], [visibleSelectedUris]);
   const canBulkPublish = useMemo(() => canPublishSelectedMemoriesFromManager(tree, selectedList), [tree, selectedList]);
   const outputUris = useMemo(() => resourceUrisFromText(output), [output]);
-  const projectOptions = useMemo(() => managerProjectOptions(tree), [tree]);
+  const projectOptions = useMemo(
+    () =>
+      uniqueSelectorValues([
+        ...managerProjectOptions(tree),
+        ...(graphCatalog?.configuredProjects ?? []).map(project => project.name),
+      ]),
+    [graphCatalog?.configuredProjects, tree],
+  );
+  useEffect(() => {
+    if (projectOptions.includes(workspaceProject)) return;
+    setWorkspaceProject(projectOptions[0] ?? '');
+  }, [projectOptions, workspaceProject]);
   const teamOptions = useMemo(
     () => uniqueSelectorValues(['default', ...shares.map(share => share.name), target.team]),
     [shares, target.team],
@@ -457,6 +488,7 @@ function App(): React.ReactElement {
       setTree(nextTree.tree);
       setResourceTree(nextTree.resourcesTree);
     }
+    setAttentionRefreshGeneration(generation => generation + 1);
     toastMessage(failures.length === 0 ? 'Refreshed' : `Refresh incomplete · ${failures.join(' · ')}`);
   }
 
@@ -561,9 +593,11 @@ function App(): React.ReactElement {
     setGraphDiagnostics(current => withoutRemovedGraphDiagnosticsView(current, target));
   }
 
-  async function loadMemory(uri: string, accept: () => boolean = () => true): Promise<void> {
+  async function loadMemory(uri: string, accept: () => boolean = () => true): Promise<string | undefined> {
     const next = await api<MemoryResponse>(`/api/memory?uri=${encodeURIComponent(uri)}`);
-    if (accept()) showMemory(next);
+    if (!accept()) return undefined;
+    showMemory(next);
+    return next.node.uri;
   }
 
   function showMemory(next: MemoryResponse): void {
@@ -582,9 +616,9 @@ function App(): React.ReactElement {
     });
   }
 
-  async function loadResource(uri: string, accept: () => boolean = () => true): Promise<void> {
+  async function loadResource(uri: string, accept: () => boolean = () => true): Promise<string | undefined> {
     const result = await api<ReadResponse>('/api/read', {uri});
-    if (!accept()) return;
+    if (!accept()) return undefined;
     setMemory(undefined);
     setLoadedUri(uri);
     setContent(result.content || result.output);
@@ -592,6 +626,7 @@ function App(): React.ReactElement {
     setReadUri(uri);
     setMemoryViewMode(isMarkdownUri(uri) ? 'preview' : 'edit');
     setTarget({kind: 'durable', project: '', status: 'active', team: '', topic: ''});
+    return uri;
   }
 
   async function readContext(uri: string): Promise<void> {
@@ -1194,7 +1229,7 @@ function App(): React.ReactElement {
 
   return (
     <div className="app" style={appStyle}>
-      <aside className={`sidebar ${panel === 'memory' ? 'has-context' : ''}`}>
+      <aside className="sidebar">
         <div className="brand">
           <div className="brand-title">
             <img alt="" className="brand-logo" src="/threadnote-logo.svg" />
@@ -1206,7 +1241,21 @@ function App(): React.ReactElement {
         </div>
         <p className="sidebar-label">Workspace</p>
         <nav className="primary-nav" aria-label="Manager sections">
-          {(['graph', 'context', 'worksets', 'memory', 'shares', 'processes', 'doctor', 'tools'] as const).map(name => (
+          {(
+            [
+              'home',
+              'reviews',
+              'context-health',
+              'graph',
+              'context',
+              'worksets',
+              'memory',
+              'shares',
+              'processes',
+              'doctor',
+              'tools',
+            ] as const
+          ).map(name => (
             <button
               aria-current={panel === name ? 'page' : undefined}
               className={panel === name ? 'is-active' : undefined}
@@ -1226,106 +1275,13 @@ function App(): React.ReactElement {
           ))}
         </nav>
 
-        {panel === 'memory' ? (
-          <section className="sidebar-context" aria-label="Memory browser">
-            <div className="sidebar-context-head">
-              <p className="sidebar-label">Library</p>
-              <button
-                aria-label="Refresh memory library"
-                className="icon-button"
-                disabled={bulkAction !== undefined}
-                onClick={() => void refreshAll()}
-                title="Refresh"
-                type="button"
-              >
-                ↻
-              </button>
-            </div>
-            <input
-              disabled={controlsBlocked}
-              value={filter}
-              onChange={event => setFilter(event.target.value)}
-              placeholder="Filter context"
-              type="search"
-            />
-            <div className="nav-tree-tabs" aria-label="Navigation tree">
-              <button
-                className={navTreeTab === 'memories' ? 'is-active' : undefined}
-                disabled={controlsBlocked}
-                onClick={() => setNavTreeTab('memories')}
-                type="button"
-              >
-                Memories
-              </button>
-              <button
-                className={navTreeTab === 'resources' ? 'is-active' : undefined}
-                disabled={controlsBlocked}
-                onClick={() => setNavTreeTab('resources')}
-                type="button"
-              >
-                Resources
-              </button>
-            </div>
-            <label className="check-row">
-              <input
-                checked={showSystem}
-                disabled={controlsBlocked}
-                onChange={event => setShowSystem(event.target.checked)}
-                type="checkbox"
-              />
-              <span>Show system files</span>
-            </label>
-            <nav className="tree" aria-label="Context tree">
-              {navTreeTab === 'resources' ? (
-                resourceTree ? (
-                  <Tree
-                    filter={filter}
-                    node={resourceTree}
-                    onSelect={selectTreeUri}
-                    selectable={false}
-                    selectedUri={selectedUri}
-                    showSystem={showSystem}
-                  />
-                ) : (
-                  <p className="tree-empty">No resources</p>
-                )
-              ) : tree ? (
-                <Tree
-                  filter={filter}
-                  node={tree}
-                  onSelect={selectTreeUri}
-                  onToggleSelection={(node, checked) =>
-                    setSelectedUris(current => {
-                      const next = new Set(current);
-                      for (const uri of selectableMemoryUris(node, {filter, showSystem})) {
-                        if (checked) {
-                          next.add(uri);
-                        } else {
-                          next.delete(uri);
-                        }
-                      }
-                      return next;
-                    })
-                  }
-                  selectedUri={selectedUri}
-                  selectedUris={selectedUris}
-                  selectionDisabled={bulkAction !== undefined}
-                  showSystem={showSystem}
-                />
-              ) : (
-                <p className="tree-empty">No memories</p>
-              )}
-            </nav>
-          </section>
-        ) : (
-          <div className="sidebar-product-note">
-            <span className="status-pulse" />
-            <div>
-              <strong>Local runtime</strong>
-              <p>{state ? `v${state.version} · private by default` : 'Connecting…'}</p>
-            </div>
+        <div className="sidebar-product-note">
+          <span className="status-pulse" />
+          <div>
+            <strong>Local runtime</strong>
+            <p>{state ? `v${state.version} · private by default` : 'Connecting…'}</p>
           </div>
-        )}
+        </div>
         {updateIndicator ? (
           <div className="sidebar-update">
             <span>{updateIndicator.label}</span>
@@ -1384,12 +1340,6 @@ function App(): React.ReactElement {
                 ? 'Manager disconnected. Memory contents and write actions are unavailable. Restart the Manager, then refresh this page.'
                 : 'Connecting to Manager. Memory contents and write actions are unavailable.'}
             </div>
-          ) : selectedUri && !selectedIsReadable ? (
-            <div className="manager-connection-alert" role="status">
-              {availability.selection === 'failed'
-                ? 'Could not load the selected record. Refresh before editing.'
-                : 'Loading the selected record before editing.'}
-            </div>
           ) : null}
         </header>
 
@@ -1421,9 +1371,48 @@ function App(): React.ReactElement {
           </section>
         ) : null}
 
+        {panel === 'home' ? (
+          <ManagerHomePanel
+            onOpen={target => setPanel(target)}
+            onOpenMemory={uri => {
+              setPanel('memory');
+              setSelectedUri(uri);
+            }}
+            onProjectChange={setWorkspaceProject}
+            project={workspaceProject}
+            projects={projectOptions}
+          />
+        ) : null}
+
+        {panel === 'reviews' ? (
+          <ReviewsPanel
+            onOpenLibrary={uri => {
+              setPanel('memory');
+              if (uri) setSelectedUri(uri);
+            }}
+            onProjectChange={setWorkspaceProject}
+            project={workspaceProject}
+            projects={projectOptions}
+            refreshGeneration={attentionRefreshGeneration}
+          />
+        ) : null}
+
+        {panel === 'context-health' ? (
+          <ContextHealthPanel
+            onOpenLibrary={uri => {
+              setPanel('memory');
+              if (uri) setSelectedUri(uri);
+            }}
+            onProjectChange={setWorkspaceProject}
+            project={workspaceProject}
+            projects={projectOptions}
+            refreshGeneration={attentionRefreshGeneration}
+          />
+        ) : null}
+
         {panel === 'context' ? (
           <section className="panel context-panel is-active">
-            <ContextPanel />
+            <ContextPanel projectOptions={projectOptions} />
           </section>
         ) : null}
 
@@ -1440,188 +1429,221 @@ function App(): React.ReactElement {
         ) : null}
 
         {panel === 'memory' ? (
-          <section className="panel is-active">
-            <div className="content-grid">
-              <section className="editor-pane">
-                <div className="pane-head">
-                  <div>
-                    <h2>{selectedNode?.name ?? 'New memory'}</h2>
-                    <p className="uri-line">{selectedUri ?? 'No URI until saved'}</p>
-                  </div>
-                  <div className="action-row">
-                    <div className="segmented-control" aria-label="Memory view mode">
-                      <button
-                        className={memoryViewMode === 'preview' ? 'is-active' : undefined}
-                        disabled={!selectedIsMarkdown || selectedIsDir || controlsBlocked}
-                        onClick={() => setMemoryViewMode('preview')}
-                      >
-                        Preview
-                      </button>
-                      <button
-                        className={memoryViewMode === 'edit' ? 'is-active' : undefined}
-                        disabled={selectedIsDir || selectedIsResource || controlsBlocked}
-                        onClick={() => setMemoryViewMode('edit')}
-                      >
-                        Edit
-                      </button>
-                    </div>
-                    <button disabled={controlsBlocked} onClick={() => void newMemory()}>
-                      New
-                    </button>
-                    <button
-                      disabled={selectedIsDir || selectedIsResource || controlsBlocked}
-                      onClick={() => void (memory ? saveCurrent() : saveNew())}
-                    >
-                      Save
-                    </button>
-                    <button disabled={!canMutate || controlsBlocked} onClick={() => void archiveCurrent()}>
-                      Archive
-                    </button>
-                    <button
-                      disabled={
-                        !canMutate ||
-                        selectedNode?.isShared === true ||
-                        !canPublishMemoryFromManager(selectedUri, memory?.record?.metadata) ||
-                        controlsBlocked
-                      }
-                      onClick={() => void publishCurrent()}
-                    >
-                      Publish
-                    </button>
-                    <button
-                      disabled={!canMutate || selectedNode?.isShared !== true || controlsBlocked}
-                      onClick={() => void unpublishCurrent()}
-                    >
-                      Unpublish
-                    </button>
-                    <button disabled={!canMutate || controlsBlocked} onClick={() => void moveCurrent()}>
-                      Move
-                    </button>
-                    <button
-                      className="danger"
-                      disabled={!canRemoveFolder || controlsBlocked}
-                      onClick={() => void removeFolderCurrent()}
-                      title={selectedNode?.isShared ? 'Use Sharing to remove shared folders' : undefined}
-                    >
-                      Remove Folder
-                    </button>
-                    <button
-                      className="danger"
-                      disabled={!canMutate || controlsBlocked}
-                      onClick={() => void forgetCurrent()}
-                    >
-                      Forget
-                    </button>
-                  </div>
+          <section className="panel library-panel is-active">
+            <div className="library-workspace">
+              {selectedUri && !selectedIsReadable ? (
+                <div className="library-record-status" role="status">
+                  {availability.selection === 'failed' ? 'Could not load record. Refresh to retry.' : 'Loading memory…'}
                 </div>
-                {pendingCanonical && selectedUri === pendingCanonical.node.uri ? (
-                  <div className="manager-draft-reconcile" role="alert">
-                    <p>The record changed while Manager was disconnected. Your unsaved draft is preserved.</p>
-                    <details>
-                      <summary>Review the reloaded record</summary>
-                      <pre>{pendingCanonical.content}</pre>
-                    </details>
+              ) : null}
+              <LibraryExplorer
+                busy={bulkAction !== undefined}
+                controlsBlocked={controlsBlocked}
+                filter={filter}
+                navTreeTab={navTreeTab}
+                onFilter={setFilter}
+                onRefresh={() => void refreshAll()}
+                onSelect={selectTreeUri}
+                onShowSystem={setShowSystem}
+                onTab={setNavTreeTab}
+                onToggleSelection={(node, checked) =>
+                  setSelectedUris(current => {
+                    const next = new Set(current);
+                    for (const uri of selectableMemoryUris(node, {filter, showSystem})) {
+                      if (checked) next.add(uri);
+                      else next.delete(uri);
+                    }
+                    return next;
+                  })
+                }
+                resourceTree={resourceTree}
+                selectedUri={selectedUri}
+                selectedUris={selectedUris}
+                showSystem={showSystem}
+                tree={tree}
+              />
+              <div className="content-grid">
+                <section className="editor-pane">
+                  <div className="pane-head">
+                    <div>
+                      <h2>{selectedNode?.name ?? 'New memory'}</h2>
+                      <p className="uri-line">{selectedUri ?? 'No URI until saved'}</p>
+                    </div>
                     <div className="action-row">
-                      <button
-                        onClick={() => {
-                          draftRef.current = {...draftRef.current!, base: pendingCanonical.content};
-                          setPendingCanonical(undefined);
-                        }}
-                      >
-                        Keep my draft
+                      <div className="segmented-control" aria-label="Memory view mode">
+                        <button
+                          className={memoryViewMode === 'preview' ? 'is-active' : undefined}
+                          disabled={!selectedIsMarkdown || selectedIsDir || controlsBlocked}
+                          onClick={() => setMemoryViewMode('preview')}
+                        >
+                          Preview
+                        </button>
+                        <button
+                          className={memoryViewMode === 'edit' ? 'is-active' : undefined}
+                          disabled={selectedIsDir || selectedIsResource || controlsBlocked}
+                          onClick={() => setMemoryViewMode('edit')}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                      <button disabled={controlsBlocked} onClick={() => void newMemory()}>
+                        New
                       </button>
                       <button
-                        onClick={() => {
-                          draftRef.current = undefined;
-                          showMemory(pendingCanonical);
-                        }}
+                        disabled={selectedIsDir || selectedIsResource || controlsBlocked}
+                        onClick={() => void (memory ? saveCurrent() : saveNew())}
                       >
-                        Load reloaded record
+                        Save
+                      </button>
+                      <button disabled={!canMutate || controlsBlocked} onClick={() => void archiveCurrent()}>
+                        Archive
+                      </button>
+                      <button
+                        disabled={
+                          !canMutate ||
+                          selectedNode?.isShared === true ||
+                          !canPublishMemoryFromManager(selectedUri, memory?.record?.metadata) ||
+                          controlsBlocked
+                        }
+                        onClick={() => void publishCurrent()}
+                      >
+                        Publish
+                      </button>
+                      <button
+                        disabled={!canMutate || selectedNode?.isShared !== true || controlsBlocked}
+                        onClick={() => void unpublishCurrent()}
+                      >
+                        Unpublish
+                      </button>
+                      <button disabled={!canMutate || controlsBlocked} onClick={() => void moveCurrent()}>
+                        Move
+                      </button>
+                      <button
+                        className="danger"
+                        disabled={!canRemoveFolder || controlsBlocked}
+                        onClick={() => void removeFolderCurrent()}
+                        title={selectedNode?.isShared ? 'Use Sharing to remove shared folders' : undefined}
+                      >
+                        Remove Folder
+                      </button>
+                      <button
+                        className="danger"
+                        disabled={!canMutate || controlsBlocked}
+                        onClick={() => void forgetCurrent()}
+                      >
+                        Forget
                       </button>
                     </div>
                   </div>
-                ) : null}
-                {selectedUri && !selectedIsDir && !selectedIsReadable ? (
-                  <div className="manager-record-unavailable" role="status">
-                    Record unavailable until it loads.
-                  </div>
-                ) : memoryViewMode === 'preview' && selectedIsMarkdown && !selectedIsDir ? (
-                  <MarkdownViewer markdown={markdownPreview} />
-                ) : (
-                  <textarea
-                    disabled={selectedIsDir || selectedIsResource || controlsBlocked}
-                    onChange={event => {
-                      const next = event.target.value;
-                      if (selectedUri && memory)
-                        draftRef.current = {base: memory.content, text: next, uri: selectedUri};
-                      setContent(next);
-                    }}
-                    placeholder={
-                      selectedIsDir ? 'Folder selected' : selectedIsResource ? 'Resource content' : 'Memory content'
-                    }
-                    spellCheck={false}
-                    value={content}
-                  />
-                )}
-              </section>
-
-              <aside className="inspector">
-                <h3>Metadata</h3>
-                {selectedUri && !selectedIsReadable && !selectedIsDir ? (
-                  <p className="muted">Metadata unavailable until the selected record loads.</p>
-                ) : (
-                  <>
-                    <TargetFields
-                      disabled={metadataFieldsDisabled}
-                      onChange={setTarget}
-                      openSelect={openSelect}
-                      projectOptions={projectOptions}
-                      setOpenSelect={setOpenSelect}
-                      target={target}
+                  {pendingCanonical && selectedUri === pendingCanonical.node.uri ? (
+                    <div className="manager-draft-reconcile" role="alert">
+                      <p>The record changed while Manager was disconnected. Your unsaved draft is preserved.</p>
+                      <details>
+                        <summary>Review the reloaded record</summary>
+                        <pre>{pendingCanonical.content}</pre>
+                      </details>
+                      <div className="action-row">
+                        <button
+                          onClick={() => {
+                            draftRef.current = {...draftRef.current!, base: pendingCanonical.content};
+                            setPendingCanonical(undefined);
+                          }}
+                        >
+                          Keep my draft
+                        </button>
+                        <button
+                          onClick={() => {
+                            draftRef.current = undefined;
+                            showMemory(pendingCanonical);
+                          }}
+                        >
+                          Load reloaded record
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {selectedUri && !selectedIsDir && !selectedIsReadable ? (
+                    <div className="manager-record-unavailable" role="status">
+                      Record unavailable until it loads.
+                    </div>
+                  ) : memoryViewMode === 'preview' && selectedIsMarkdown && !selectedIsDir ? (
+                    <MarkdownViewer markdown={markdownPreview} />
+                  ) : (
+                    <textarea
+                      disabled={selectedIsDir || selectedIsResource || controlsBlocked}
+                      onChange={event => {
+                        const next = event.target.value;
+                        if (selectedUri && memory)
+                          draftRef.current = {base: memory.content, text: next, uri: selectedUri};
+                        setContent(next);
+                      }}
+                      placeholder={
+                        selectedIsDir ? 'Folder selected' : selectedIsResource ? 'Resource content' : 'Memory content'
+                      }
+                      spellCheck={false}
+                      value={content}
                     />
-                    {metadataFieldsDisabled ? (
-                      <p className="muted">Metadata is read-only for existing entries.</p>
-                    ) : null}
-                    <Metadata metadata={memory?.record?.metadata} node={memory?.node ?? selectedNode} />
-                  </>
-                )}
-                <h3>Consolidate</h3>
-                <div className="field-row select-row">
-                  <DropdownSelect
-                    id="agent"
-                    label="Agent"
-                    onChange={value => void (isAgentClient(value) && setAgent(value))}
-                    openSelect={openSelect}
-                    options={(state?.agents ?? []).map(item => ({
-                      disabled: !item.available || (item.id !== 'codex' && item.id !== 'claude'),
-                      label: `${item.label}${item.available ? '' : ' unavailable'}`,
-                      value: item.id,
-                    }))}
-                    setOpenSelect={setOpenSelect}
-                    value={agent}
+                  )}
+                </section>
+
+                <aside className="inspector">
+                  <h3>Metadata</h3>
+                  {selectedUri && !selectedIsReadable && !selectedIsDir ? (
+                    <p className="muted">Metadata unavailable until the selected record loads.</p>
+                  ) : (
+                    <>
+                      <TargetFields
+                        disabled={metadataFieldsDisabled}
+                        onChange={setTarget}
+                        openSelect={openSelect}
+                        projectOptions={projectOptions}
+                        setOpenSelect={setOpenSelect}
+                        target={target}
+                      />
+                      {metadataFieldsDisabled ? (
+                        <p className="muted">Metadata is read-only for existing entries.</p>
+                      ) : null}
+                      <Metadata metadata={memory?.record?.metadata} node={memory?.node ?? selectedNode} />
+                    </>
+                  )}
+                  <h3>Consolidate</h3>
+                  <div className="field-row select-row">
+                    <DropdownSelect
+                      id="agent"
+                      label="Agent"
+                      onChange={value => void (isAgentClient(value) && setAgent(value))}
+                      openSelect={openSelect}
+                      options={(state?.agents ?? []).map(item => ({
+                        disabled: !item.available || (item.id !== 'codex' && item.id !== 'claude'),
+                        label: `${item.label}${item.available ? '' : ' unavailable'}`,
+                        value: item.id,
+                      }))}
+                      setOpenSelect={setOpenSelect}
+                      value={agent}
+                    />
+                    <button
+                      disabled={consolidationBusy || controlsBlocked || !canDraftConsolidation}
+                      onClick={() => void draftConsolidation()}
+                    >
+                      {draftingConsolidation ? 'Drafting...' : 'Draft'}
+                    </button>
+                  </div>
+                  <textarea
+                    aria-busy={consolidationBusy}
+                    placeholder={draftingConsolidation ? 'Generating draft...' : 'Draft preview'}
+                    readOnly={consolidationBusy || controlsBlocked}
+                    value={draft}
+                    onChange={event => setDraft(event.target.value)}
+                    spellCheck={false}
                   />
                   <button
-                    disabled={consolidationBusy || controlsBlocked || !canDraftConsolidation}
-                    onClick={() => void draftConsolidation()}
+                    disabled={consolidationBusy || controlsBlocked || !jobId || !draft}
+                    onClick={() => void applyConsolidation()}
                   >
-                    {draftingConsolidation ? 'Drafting...' : 'Draft'}
+                    {applyingConsolidation ? 'Applying...' : 'Apply draft'}
                   </button>
-                </div>
-                <textarea
-                  aria-busy={consolidationBusy}
-                  placeholder={draftingConsolidation ? 'Generating draft...' : 'Draft preview'}
-                  readOnly={consolidationBusy || controlsBlocked}
-                  value={draft}
-                  onChange={event => setDraft(event.target.value)}
-                  spellCheck={false}
-                />
-                <button
-                  disabled={consolidationBusy || controlsBlocked || !jobId || !draft}
-                  onClick={() => void applyConsolidation()}
-                >
-                  {applyingConsolidation ? 'Applying...' : 'Apply draft'}
-                </button>
-              </aside>
+                </aside>
+              </div>
             </div>
           </section>
         ) : null}
@@ -1836,97 +1858,6 @@ function App(): React.ReactElement {
       ) : null}
       {toast ? <div className="toast">{toast}</div> : null}
     </div>
-  );
-}
-
-function Tree(props: {
-  readonly filter: string;
-  readonly node: TreeNode;
-  readonly onSelect: (uri: string) => void;
-  readonly onToggleSelection?: (node: TreeNode, checked: boolean) => void;
-  readonly selectable?: boolean;
-  readonly selectedUri?: string;
-  readonly selectedUris?: ReadonlySet<string>;
-  readonly selectionDisabled?: boolean;
-  readonly showSystem: boolean;
-}): React.ReactElement | null {
-  const selectable = props.selectable !== false;
-  const selectedUris = props.selectedUris ?? EMPTY_SELECTED_URIS;
-  if (!props.showSystem && props.node.isSystem) {
-    return null;
-  }
-  if (props.filter && !nodeMatches(props.node, props.filter)) {
-    return null;
-  }
-  if (props.node.isDir) {
-    const selectableUris = selectable
-      ? selectableMemoryUris(props.node, {filter: props.filter, showSystem: props.showSystem})
-      : [];
-    const selectedCount = selectableUris.filter(uri => selectedUris.has(uri)).length;
-    const checked = selectableUris.length > 0 && selectedCount === selectableUris.length;
-    const indeterminate = selectedCount > 0 && selectedCount < selectableUris.length;
-    const summaryClass = treeItemClass(props.selectedUri === props.node.uri, !selectable);
-    return (
-      <details open={props.node.relativePath.split('/').length < 3}>
-        <summary className={summaryClass} onClick={() => props.onSelect(props.node.uri)} title={props.node.uri}>
-          {selectable ? (
-            <TreeSelectionCheckbox
-              checked={checked}
-              disabled={props.selectionDisabled === true || selectableUris.length === 0}
-              indeterminate={indeterminate}
-              onChange={checked => props.onToggleSelection?.(props.node, checked)}
-            />
-          ) : null}
-          <span aria-hidden="true" className="tree-caret" />
-          <span className="tree-name">{props.node.name}</span>
-        </summary>
-        <div className="tree-children">
-          {(props.node.children ?? []).map(child => (
-            <Tree {...props} key={child.uri} node={child} />
-          ))}
-        </div>
-      </details>
-    );
-  }
-  const rowClass = treeItemClass(props.selectedUri === props.node.uri, !selectable, 'tree-row');
-  return (
-    <div className={rowClass}>
-      {selectable ? (
-        <input
-          checked={selectedUris.has(props.node.uri)}
-          disabled={props.selectionDisabled === true}
-          onChange={event => props.onToggleSelection?.(props.node, event.target.checked)}
-          type="checkbox"
-        />
-      ) : null}
-      <button className="tree-file" onClick={() => props.onSelect(props.node.uri)} title={props.node.uri}>
-        <span className="tree-name">{props.node.name}</span>
-      </button>
-    </div>
-  );
-}
-
-function TreeSelectionCheckbox(props: {
-  readonly checked: boolean;
-  readonly disabled: boolean;
-  readonly indeterminate: boolean;
-  readonly onChange: (checked: boolean) => void;
-}): React.ReactElement {
-  const ref = useRef<HTMLInputElement | null>(null);
-  useEffect(() => {
-    if (ref.current) {
-      ref.current.indeterminate = props.indeterminate;
-    }
-  }, [props.indeterminate]);
-  return (
-    <input
-      checked={props.checked}
-      disabled={props.disabled}
-      onChange={event => props.onChange(event.target.checked)}
-      onClick={event => event.stopPropagation()}
-      ref={ref}
-      type="checkbox"
-    />
   );
 }
 

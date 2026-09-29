@@ -20,6 +20,7 @@ import {
   retrieveContextBriefGraphEvidence,
   unavailableContextBriefGraphEvidence,
 } from '@threadnote/context/graph/evidence';
+import {retrieveContextBriefSourceEvidence} from '@threadnote/context/graph/source_evidence';
 import {
   unavailableContextBriefCodeLinkedMemoryEvidence,
   unavailableContextBriefMemoryEvidence,
@@ -203,7 +204,10 @@ const compileContextBriefRuntime = Effect.fn('contextBrief.compileRuntime')(func
         {
           citationValidation: (scope, candidates, fence) =>
             validateContextBriefMemoryCitations(config, scope, candidates, fence),
-          graphEvidence: graphPlan => retrieveContextBriefGraphEvidence(config, graphPlan),
+          graphEvidence: graphPlan =>
+            retrieveContextBriefGraphEvidence(config, graphPlan, request =>
+              retrieveContextBriefSourceEvidence(request),
+            ),
           codeLinkedMemoryEvidence: codePlan => retrieveContextBriefCodeLinkedMemoryEvidence(config, codePlan),
           memoryEvidence: memoryPlan =>
             options.codeLinkedMemoryOnly
@@ -241,6 +245,7 @@ const compileContextBriefRuntime = Effect.fn('contextBrief.compileRuntime')(func
       {
         budgetTokens: request.outputBudgetTokens,
         ...(request.codeAnchors.codeRefs.length === 0 ? {} : {codeRefs: request.codeAnchors.codeRefs}),
+        ...(request.detail === 'compact' ? {} : {detail: request.detail}),
         mode: request.mode,
         responseFormat: request.responseFormat,
         scope: request.scope,
@@ -448,6 +453,7 @@ function telemetryUnknownReason(
 }
 
 export * from '@threadnote/context/graph/evidence';
+export * from '@threadnote/context/graph/source_evidence';
 export * from '@threadnote/context/graph/anchor_evidence';
 export * from '@threadnote/context/citation_validation';
 export * from './memory_evidence.js';

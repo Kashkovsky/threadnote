@@ -117,7 +117,7 @@ export interface CandidateReview {
 }
 
 export interface CandidateAuditEvent {
-  readonly action: 'apply' | 'begin_apply' | 'conflict' | 'create_review' | 'defer' | 'reject';
+  readonly action: 'apply' | 'begin_apply' | 'conflict' | 'create_review' | 'defer' | 'refresh_safety' | 'reject';
   readonly allowDestructiveReplacement?: boolean;
   readonly at: string;
   readonly candidateId?: string;
@@ -266,6 +266,47 @@ export function candidateReviewWithState(
         revision,
       })
     : updated;
+}
+
+export function candidateReviewWithReplacementSafety(
+  review: CandidateReview,
+  candidateId: string,
+  targetBody: string,
+  targetContentHash: string,
+  at: string,
+): CandidateReview | undefined {
+  const candidate = review.candidates.find(item => item.candidateId === candidateId);
+  if (
+    candidate?.state !== 'pending' ||
+    candidate.comparison !== 'replacement' ||
+    candidate.recommendation !== 'replace' ||
+    candidate.targetUri === undefined
+  ) {
+    return undefined;
+  }
+  const revision = review.revision + 1;
+  return candidateReviewWithAuditEvent(
+    {
+      ...review,
+      candidates: review.candidates.map(item =>
+        item.candidateId === candidateId
+          ? {
+              ...item,
+              replacementSafetyBaseline: replacementSafetyBaseline(targetBody),
+              targetContentHash,
+            }
+          : item,
+      ),
+      revision,
+    },
+    {
+      action: 'refresh_safety',
+      at,
+      candidateId,
+      reviewId: review.reviewId,
+      revision,
+    },
+  );
 }
 
 export function candidateReviewWithApplying(
@@ -1207,6 +1248,7 @@ function candidateAuditEventIsValid(value: unknown): value is CandidateAuditEven
       value.action === 'conflict' ||
       value.action === 'create_review' ||
       value.action === 'defer' ||
+      value.action === 'refresh_safety' ||
       value.action === 'reject') &&
     (!('allowDestructiveReplacement' in value) || typeof value.allowDestructiveReplacement === 'boolean') &&
     'at' in value &&
