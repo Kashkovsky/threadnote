@@ -576,7 +576,7 @@ describe('standalone updater', () => {
           latestVersion: releaseVersion,
         });
       }),
-    ).pipe(provideTestLayer(ApplicationLayer)),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('emits one versioned JSON document for a release check', () =>
