@@ -40,6 +40,17 @@ export function codeGraphRefreshBlocksReadyInspection(
   return refreshBlocks && (!status.readySnapshot || (status.stale && !allowStaleReadySnapshot));
 }
 
+/** A successful stale-tolerant read is authoritative over refresh-process state. */
+export function codeGraphRefreshBlocksCompletedInspection(
+  status: {readonly readySnapshot?: unknown; readonly stale: boolean},
+  refreshStatus: CodeGraphRefreshStatus | undefined,
+  allowStaleReadySnapshot: boolean,
+): boolean {
+  return (
+    !allowStaleReadySnapshot && codeGraphRefreshBlocksReadyInspection(status, refreshStatus, allowStaleReadySnapshot)
+  );
+}
+
 export {
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionObservation,
@@ -102,22 +113,23 @@ export const completeCodeGraphReadyReadRefresh = Effect.fn('codeGraph.completeRe
 }) {
   if (input.ensureWatcher) yield* input.watcher.ensure({...input.target, key: input.key});
   if (!input.backgroundRefreshRequested) return input.refresh;
-  // A compatible ready read may establish a watcher, but never turns its
-  // successful response into new hidden build demand. It may resume a demand
-  // already admitted by a watcher on another process so abandoned work does
-  // not remain permanently claimed after that process exits.
-  const resumed =
-    input.watcher.resume === undefined
-      ? undefined
-      : yield* input.watcher.resume({...input.target, key: input.key}).pipe(Effect.orElseSucceed(() => undefined));
-  return (
-    resumed ??
-    input.refresh ?? {
+  const continuity =
+    input.refresh ??
+    ({
       type: 'code-graph-refresh-continuity' as const,
       version: 1 as const,
       state: 'deferred' as const,
-    }
-  );
+    } satisfies CodeGraphRefreshContinuity);
+  // A compatible stale read may resume demand already admitted by another
+  // process, but durable demand discovery is maintenance rather than part of
+  // the evidence read. Keep it detached so a usable ready snapshot cannot be
+  // replaced by an MCP timeout while the refresh sidecar is under contention.
+  if (input.watcher.resume !== undefined) {
+    yield* input.watcher
+      .resume({...input.target, key: input.key})
+      .pipe(Effect.ignore, Effect.forkDetach, Effect.asVoid);
+  }
+  return continuity;
 });
 
 export function selectCodeGraphReadyReadChangedPaths(

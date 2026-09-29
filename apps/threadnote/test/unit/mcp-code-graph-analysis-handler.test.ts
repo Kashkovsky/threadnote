@@ -20,7 +20,12 @@ import {
 import type {CodeGraphQueryScope} from '@threadnote/graph/query/scope';
 import {attachCodeGraphStatusObservation} from '@threadnote/graph/query/contract';
 import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentity} from '@threadnote/graph/types';
-import {CodeGraphWatcher, type CodeGraphRefreshStatus, type CodeGraphWatchOptions} from '@threadnote/graph/watcher';
+import {
+  CodeGraphWatcher,
+  type CodeGraphRefreshStatus,
+  type CodeGraphWatcherShape,
+  type CodeGraphWatchOptions,
+} from '@threadnote/graph/watcher';
 import {EffectMcpServerAdapter, type EffectMcpServer} from '@threadnote/threadnote/effect/ai/mcp';
 import {registerCodeGraphTool} from '@threadnote/threadnote/mcp/server/code_graph';
 import type {CommandResult} from '@threadnote/platform/command';
@@ -180,7 +185,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     );
   });
 
-  effectIt.effect('honors an explicit longer budget for ready query and exact-node reads', () => {
+  effectIt.effect('uses the 55-second default budget for ready query and exact-node reads', () => {
     const ready = codeGraphStatus({ready: true, stale: true});
     const harness = analyzeHandlerHarness({
       allowBackgroundRequest: true,
@@ -200,7 +205,6 @@ describe('registered analyze_code_graph snapshot resolution', () => {
           .invokeInspect({
             callerCwd: ready.identity.repoRoot,
             responseFormat: 'dual',
-            readTimeoutMilliseconds: 55000,
             ...request,
           })
           .pipe(Effect.forkChild({startImmediately: true}));
@@ -304,6 +308,30 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       }
       expect(harness.observation.isolatedInspectCalls).toBe(requests.length);
       expect(harness.observation.refreshOptions).toEqual([]);
+      expect(harness.observation.watcherStatusTargets).toEqual(requests.map(() => undefined));
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect('does not put completed ready reads behind persisted watcher discovery', () => {
+    const ready = codeGraphStatus({ready: true, stale: false});
+    const harness = analyzeHandlerHarness({
+      attachResults: [],
+      refresh: false,
+      rejectTargetedWatcherStatus: true,
+      statuses: [ready],
+    });
+
+    return Effect.gen(function* () {
+      const result = yield* harness.invokeInspect({
+        callerCwd: ready.identity.repoRoot,
+        operation: 'query',
+        query: 'value',
+        responseFormat: 'dual',
+      });
+
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({operation: 'query', type: 'code-graph-inspection'});
+      expect(harness.observation.watcherStatusTargets).toEqual([undefined]);
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -419,7 +447,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         .invokeInspect({callerCwd: ready.identity.repoRoot, operation: 'query', query: 'value'})
         .pipe(Effect.forkChild({startImmediately: true}));
       yield* started;
-      yield* TestClock.adjust('22 seconds');
+      yield* TestClock.adjust('52 seconds');
       const result = yield* Fiber.join(fiber);
 
       expect(result.structuredContent, JSON.stringify(result)).toMatchObject({
@@ -611,6 +639,7 @@ interface AnalyzeHandlerHarnessInput {
   readonly manifestPath?: string;
   readonly refresh: boolean;
   readonly refreshStatus?: CodeGraphRefreshStatus;
+  readonly rejectTargetedWatcherStatus?: boolean;
   readonly statuses: readonly CodeGraphStatus[];
 }
 
@@ -624,6 +653,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
   let analysisCalls = 0;
   let isolatedInspectCalls = 0;
   const isolatedRequests: Array<Record<string, unknown>> = [];
+  const watcherStatusTargets: Array<Parameters<CodeGraphWatcherShape['status']>[1]> = [];
   let watcherStatusCalls = 0;
   let statusIndex = 0;
   let attachIndex = 0;
@@ -687,9 +717,13 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
           })
         : Effect.die('Unexpected graph request.');
     },
-    status: () =>
+    status: (_key, target) =>
       Effect.sync(() => {
         watcherStatusCalls += 1;
+        watcherStatusTargets.push(target);
+        if (input.rejectTargetedWatcherStatus && target !== undefined) {
+          throw new Error('Completed ready evidence must not wait for persisted watcher discovery.');
+        }
         return Option.some(input.refreshStatus ?? deferredRefreshStatus());
       }),
     watch: () => Effect.die('Unexpected graph watch.'),
@@ -859,6 +893,7 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
       get watcherStatusCalls() {
         return watcherStatusCalls;
       },
+      watcherStatusTargets,
     },
   };
 }

@@ -82,7 +82,7 @@ import {
   codeGraphInspectionStartsRefresh,
   codeGraphNoReadySnapshotResult,
   codeGraphQueryExecutionBudget,
-  codeGraphRefreshBlocksReadyInspection,
+  codeGraphRefreshBlocksCompletedInspection,
   completeCodeGraphReadyReadRefresh,
 } from './code_graph/ready_read.js';
 import {argumentError, mcpErrorResult, requiredText, type RuntimeConfig} from './common.js';
@@ -109,7 +109,7 @@ const MCP_CODE_GRAPH_RETRY_FALLBACK_MILLISECONDS = 5_000;
 const MCP_CODE_GRAPH_RETRY_MINIMUM_MILLISECONDS = 3_000;
 const MCP_CODE_GRAPH_RETRY_MAXIMUM_MILLISECONDS = 30_000;
 const MCP_CODE_GRAPH_TOOL_TIMEOUT_MILLISECONDS = 25_000;
-const MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS = 25_000;
+const MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS = 55_000;
 const MCP_CODE_GRAPH_RESPONSE_RESERVE_MILLISECONDS = 1_000;
 const MCP_CODE_GRAPH_TIMEOUT_STATUS_MILLISECONDS = 1_000;
 const MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT = 20;
@@ -220,7 +220,7 @@ export function registerCodeGraphTool(
           },
         ),
         callerCwd: McpInput.string('Absolute checkout path'),
-        readTimeoutMilliseconds: McpInput.integer('Total ms; minimum 4000, default 25000.', {
+        readTimeoutMilliseconds: McpInput.integer('Total ms; minimum 4000, default 55000.', {
           minimum: 4000,
           maximum: 55000,
         }),
@@ -587,8 +587,9 @@ export function registerCodeGraphTool(
           readySnapshot: read.status.readySnapshotId === undefined ? undefined : {id: read.status.readySnapshotId},
           stale: read.status.stale,
         };
-        const refreshStatus = Option.getOrUndefined(yield* watcher.status(worktreeKey, refreshTarget));
-        if (codeGraphRefreshBlocksReadyInspection(firstSummary, refreshStatus, allowStaleReadySnapshot)) {
+        // The worker proved the snapshot readable; only consult watcher state already cached by this runtime.
+        const refreshStatus = Option.getOrUndefined(yield* watcher.status(worktreeKey));
+        if (codeGraphRefreshBlocksCompletedInspection(firstSummary, refreshStatus, allowStaleReadySnapshot)) {
           return yield* queryTelemetry.stage(
             'graph.query.execute',
             'query-serialization',

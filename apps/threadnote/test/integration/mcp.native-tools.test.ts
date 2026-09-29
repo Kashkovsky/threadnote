@@ -2566,6 +2566,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(JSON.stringify(graphTool?.inputSchema)).toContain(
           'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
         );
+        expect(JSON.stringify(graphTool?.inputSchema)).toContain('default 55000');
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           required: ['operation'],
