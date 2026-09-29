@@ -33,11 +33,15 @@ describe('matched token-efficiency claim evaluation', () => {
   it('domain-separates frozen graph and citation identities deterministically', () => {
     fc.assert(
       fc.property(
-        fc
-          .array(fc.constantFrom(...'0123456789abcdef'), {minLength: 16, maxLength: 64})
-          .map(characters => characters.join('')),
-        value => {
-          const snapshot = matchedTokenEfficiencyGraphSnapshotHashV1(`cgsn_${value}`);
+        fc.tuple(
+          fc
+            .array(fc.constantFrom(...'0123456789abcdef'), {minLength: 40, maxLength: 40})
+            .map(characters => characters.join('')),
+          fc.constantFrom('', '-direct', `-full-${'f'.repeat(16)}`),
+        ),
+        ([value, suffix]) => {
+          const snapshotId = `cgsn_${value}${suffix}`;
+          const snapshot = matchedTokenEfficiencyGraphSnapshotHashV1(snapshotId);
           const content = matchedTokenEfficiencyGraphContentHashV1(`cgc_${value}`);
           const citation = matchedTokenEfficiencyCitationHashV1({
             citationId: `tncc_${value}`,
@@ -47,10 +51,13 @@ describe('matched token-efficiency claim evaluation', () => {
 
           expect(snapshot).toMatch(/^[0-9a-f]{64}$/u);
           expect(new Set([snapshot, content, citation])).toHaveLength(3);
-          expect(matchedTokenEfficiencyGraphSnapshotHashV1(`cgsn_${value}`)).toBe(snapshot);
+          expect(matchedTokenEfficiencyGraphSnapshotHashV1(snapshotId)).toBe(snapshot);
         },
       ),
       {numRuns: 40},
+    );
+    expect(() => matchedTokenEfficiencyGraphSnapshotHashV1(`cgsn_${'a'.repeat(40)}-full-short`)).toThrow(
+      'ready graph snapshot id is invalid',
     );
   });
 
