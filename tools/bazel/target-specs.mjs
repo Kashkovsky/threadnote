@@ -40,6 +40,7 @@ const recallQualityEntries = [
   'scripts/run-matched-evaluation.ts',
   'scripts/matched-evaluation-codex-adapter.ts',
   'scripts/matched-evaluation-context-proxy.ts',
+  'scripts/prepare-matched-token-efficiency-study.ts',
 ];
 const windowsSmokeEntries = [
   'apps/threadnote/test/unit/windows-support.test.ts',

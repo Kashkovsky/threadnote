@@ -181,6 +181,10 @@ const MEMORY_ID = /^mem_[0-9a-f]{16,64}$/u;
 const CLUSTER_ID = /^cluster_[0-9a-f]{16,64}$/u;
 const STUDY_ID = /^[a-z][a-z0-9-]{2,63}$/u;
 const GIT_REVISION = /^[0-9a-f]{40}$/u;
+const GRAPH_SNAPSHOT_ID = /^cgsn_[0-9a-f]{16,128}$/u;
+const GRAPH_CONTENT_ID = /^cgc_[0-9a-f]{16,128}$/u;
+const CODE_CITATION_ID = /^tncc_[0-9a-f]{16,128}$/u;
+const MANAGED_MEMORY_ID = /^tn_[A-Za-z0-9_-]{1,128}$/u;
 const ZERO_PROVIDER_TOKENS: MatchedEvaluationProviderTokensV1 = Object.freeze({
   cachedInputTokens: 0,
   inputTokens: 0,
@@ -303,6 +307,32 @@ export function matchedTokenEfficiencyLinkReceiptsHashV1(
   input: readonly MatchedTokenEfficiencyLinkReceiptV1[],
 ): string {
   return digest('matched-token-efficiency-link-receipts-v1', input);
+}
+
+export function matchedTokenEfficiencyGraphSnapshotHashV1(snapshotId: string): string {
+  return digest(
+    'matched-token-efficiency-graph-snapshot-v1',
+    matchingString(snapshotId, GRAPH_SNAPSHOT_ID, 'ready graph snapshot id'),
+  );
+}
+
+export function matchedTokenEfficiencyGraphContentHashV1(graphContentId: string): string {
+  return digest(
+    'matched-token-efficiency-graph-content-v1',
+    matchingString(graphContentId, GRAPH_CONTENT_ID, 'ready graph content id'),
+  );
+}
+
+export function matchedTokenEfficiencyCitationHashV1(input: {
+  readonly citationId: string;
+  readonly fixtureMemoryId: string;
+  readonly managedMemoryId: string;
+}): string {
+  return digest('matched-token-efficiency-code-citation-v1', {
+    citationId: matchingString(input.citationId, CODE_CITATION_ID, 'code citation id'),
+    fixtureMemoryId: matchingString(input.fixtureMemoryId, MEMORY_ID, 'fixture memory id'),
+    managedMemoryId: matchingString(input.managedMemoryId, MANAGED_MEMORY_ID, 'managed memory id'),
+  });
 }
 
 export function assertMatchedTokenEfficiencyObservationContextV1(input: {

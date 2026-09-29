@@ -4,6 +4,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import type {Stats} from 'node:fs';
 import {chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, writeFile} from 'node:fs/promises';
 import {basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
+import {matchedEvaluationReferenceEnvironmentPolicyHashV1} from '@threadnote/threadnote/evaluation/matched-evaluation';
 import {
   MATCHED_EVALUATION_CONTEXT_PACKET_ENV,
   MATCHED_EVALUATION_CONTEXT_SERVER_NAME,
@@ -21,6 +22,17 @@ import {assertMatchedEvaluationRepositoryV1} from './matched-evaluation-runtime-
 export const MATCHED_EVALUATION_CODEX_ADAPTER_VERSION = 1 as const;
 export const MATCHED_EVALUATION_ADAPTER_CONFIG_ENV = 'MATCHED_EVALUATION_ADAPTER_CONFIG' as const;
 export const MATCHED_EVALUATION_ADAPTER_EXECUTABLE_ENV = 'MATCHED_EVALUATION_ADAPTER_EXECUTABLE' as const;
+export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
+  apps: 'disabled',
+  approvals: 'untrusted-user-reviewed',
+  hooks: 'disabled',
+  network: 'disabled',
+  plugins: 'disabled',
+  subagents: 'disabled',
+  userInstructions: 'disabled',
+  version: 1,
+  workspace: 'isolated-worktree',
+});
 
 const ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v3' as const;
 const RUNTIME_VERSION = 3 as const;
@@ -76,7 +88,6 @@ export interface MatchedEvaluationPreparedContextHomeV1 {
     readonly graphSnapshotHash: string;
     readonly linkReceiptsHash: string | null;
     readonly memoryAccess: 'disabled' | 'linked';
-    readonly studyHash: string;
     readonly taskContextHash: string | null;
   };
   readonly homeDirectory: string;
@@ -394,6 +405,14 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     'context home task ids',
   );
   const arm = literal(config.arm, ARMS, 'adapter arm');
+  const environmentPolicyHash = matching(config.environmentPolicyHash, HASH, 'environment policy hash');
+  const expectedEnvironmentPolicyHash =
+    arm === 'reference-scope'
+      ? matchedEvaluationReferenceEnvironmentPolicyHashV1()
+      : matchedEvaluationCodexEnvironmentPolicyHashV1();
+  if (environmentPolicyHash !== expectedEnvironmentPolicyHash) {
+    invalid('adapter environment policy hash differs from the enforced isolation policy');
+  }
   if ((arm === 'files' || arm === 'reference-scope') !== (contextHomes.length === 0)) {
     invalid('only Threadnote arms may configure prepared context homes');
   }
@@ -409,7 +428,7 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     authSourcePath: absolutePath(config.authSourcePath, 'auth source'),
     contextBudgetTokens: integer(config.contextBudgetTokens, 800, 1_500, 'context budget'),
     contextHomes,
-    environmentPolicyHash: matching(config.environmentPolicyHash, HASH, 'environment policy hash'),
+    environmentPolicyHash,
     git: {
       executable: absolutePath(git.executable, 'Git executable'),
       executableSha256: matching(git.executableSha256, HASH, 'Git hash'),
@@ -433,6 +452,14 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     temporaryRoot: absolutePath(config.temporaryRoot, 'temporary root'),
     version: MATCHED_EVALUATION_CODEX_ADAPTER_VERSION,
   };
+}
+
+export function matchedEvaluationCodexEnvironmentPolicyHashV1(): string {
+  return sha256(
+    Buffer.from(
+      `matched-evaluation-codex-environment-policy-v1\n${JSON.stringify(MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1)}`,
+    ),
+  );
 }
 
 export async function matchedEvaluationPreparedHomeFixtureHashV1(rootInput: string): Promise<string> {
@@ -496,7 +523,7 @@ async function prepareContextHome(
   if (context === null) return null;
   const prepared = config.contextHomes.find(entry => entry.taskId === request.agentTask.taskId);
   if (prepared === undefined) throw new Error('Adapter config lacks the task prepared context home.');
-  if (JSON.stringify(prepared.expectedContext) !== JSON.stringify(context)) {
+  if (JSON.stringify(prepared.expectedContext) !== JSON.stringify(preparedContextIdentity(context))) {
     throw new Error('Prepared context home attestation differs from the study request.');
   }
   if ((await matchedEvaluationPreparedHomeFixtureHashV1(prepared.homeDirectory)) !== prepared.homeFixtureHash) {
@@ -723,6 +750,16 @@ function contextForRequest(request: AdapterRequest): ParsedContext | null {
     memoryAccess,
     studyHash,
     taskContextHash: matching(task.taskContextHash, HASH, 'prepared task context hash'),
+  };
+}
+
+function preparedContextIdentity(context: ParsedContext): MatchedEvaluationPreparedContextHomeV1['expectedContext'] {
+  return {
+    graphContentHash: context.graphContentHash,
+    graphSnapshotHash: context.graphSnapshotHash,
+    linkReceiptsHash: context.linkReceiptsHash,
+    memoryAccess: context.memoryAccess,
+    taskContextHash: context.taskContextHash,
   };
 }
 
@@ -1306,14 +1343,7 @@ function parseContextHome(value: unknown, index: number): MatchedEvaluationPrepa
   const home = object(value, `context home ${index}`);
   exactKeys(home, ['expectedContext', 'homeDirectory', 'homeFixtureHash', 'project', 'taskId']);
   const expected = object(home.expectedContext, `context home ${index} expected context`);
-  exactKeys(expected, [
-    'graphContentHash',
-    'graphSnapshotHash',
-    'linkReceiptsHash',
-    'memoryAccess',
-    'studyHash',
-    'taskContextHash',
-  ]);
+  exactKeys(expected, ['graphContentHash', 'graphSnapshotHash', 'linkReceiptsHash', 'memoryAccess', 'taskContextHash']);
   const memoryAccess = literal(expected.memoryAccess, ['disabled', 'linked'] as const, 'memory access');
   const linkReceiptsHash = nullableHash(expected.linkReceiptsHash, 'link receipts hash');
   const taskContextHash = nullableHash(expected.taskContextHash, 'task context hash');
@@ -1329,7 +1359,6 @@ function parseContextHome(value: unknown, index: number): MatchedEvaluationPrepa
       graphSnapshotHash: matching(expected.graphSnapshotHash, HASH, 'graph snapshot hash'),
       linkReceiptsHash,
       memoryAccess,
-      studyHash: matching(expected.studyHash, HASH, 'study hash'),
       taskContextHash,
     },
     homeDirectory: absolutePath(home.homeDirectory, `context home ${index} directory`),

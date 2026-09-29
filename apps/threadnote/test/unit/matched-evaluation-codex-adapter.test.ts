@@ -6,6 +6,7 @@ import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   extractMatchedEvaluationProviderUsageV1,
+  matchedEvaluationCodexEnvironmentPolicyHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
   runMatchedEvaluationCodexAdapter,
@@ -34,7 +35,6 @@ describe('matched evaluation Codex adapter', () => {
               graphSnapshotHash: '9'.repeat(64),
               linkReceiptsHash: null,
               memoryAccess: 'disabled',
-              studyHash: 'a'.repeat(64),
               taskContextHash: null,
             },
             homeDirectory: '/tmp/prepared-threadnote-home',
@@ -45,6 +45,42 @@ describe('matched evaluation Codex adapter', () => {
         ],
       }),
     ).toThrow('only Threadnote arms may configure prepared context homes');
+  });
+
+  it('keeps the study hash out of immutable prepared-home configuration', () => {
+    const expectedContext = {
+      graphContentHash: '8'.repeat(64),
+      graphSnapshotHash: '9'.repeat(64),
+      linkReceiptsHash: 'a'.repeat(64),
+      memoryAccess: 'linked' as const,
+      taskContextHash: 'b'.repeat(64),
+    };
+    const config = {
+      ...adapterConfig(),
+      arm: 'threadnote-compact' as const,
+      contextHomes: [
+        {
+          expectedContext,
+          homeDirectory: '/tmp/prepared-threadnote-home',
+          homeFixtureHash: 'c'.repeat(64),
+          project: 'threadnote',
+          taskId: 'tsk_0123456789abcdef',
+        },
+      ],
+    };
+
+    expect(parseMatchedEvaluationCodexAdapterConfigV1(config)).toEqual(config);
+    expect(() =>
+      parseMatchedEvaluationCodexAdapterConfigV1({
+        ...config,
+        contextHomes: [
+          {
+            ...config.contextHomes[0],
+            expectedContext: {...expectedContext, studyHash: 'd'.repeat(64)},
+          },
+        ],
+      }),
+    ).toThrow('unsupported or missing fields');
   });
 
   it('uses the last cumulative provider report and rejects inconsistent accounting', () => {
@@ -239,7 +275,7 @@ function adapterConfig() {
     authSourcePath: '/tmp/auth.json',
     contextBudgetTokens: 1_200,
     contextHomes: [],
-    environmentPolicyHash: '2'.repeat(64),
+    environmentPolicyHash: matchedEvaluationCodexEnvironmentPolicyHashV1(),
     git: {executable: '/usr/bin/git', executableSha256: '3'.repeat(64)},
     judgeModel: {id: 'judge-model', parametersHash: '4'.repeat(64), provider: 'openai', reasoningEffort: 'low'},
     model: {id: 'agent-model', parametersHash: '5'.repeat(64), provider: 'openai', reasoningEffort: 'medium'},

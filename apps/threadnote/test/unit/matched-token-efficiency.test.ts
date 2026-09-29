@@ -21,12 +21,39 @@ import {
   createMatchedTokenEfficiencyStudyV1,
   createMatchedTokenEfficiencyTaskContextV1,
   evaluateMatchedTokenEfficiencyV1,
+  matchedTokenEfficiencyCitationHashV1,
+  matchedTokenEfficiencyGraphContentHashV1,
+  matchedTokenEfficiencyGraphSnapshotHashV1,
   renderMatchedTokenEfficiencyArticleEvidenceV1,
   type MatchedTokenEfficiencyStudyV1,
 } from '@threadnote/threadnote/evaluation/matched-token-efficiency';
 import {projectMatchedEvaluationAdapterTaskV1} from '../../../../scripts/run-matched-evaluation.js';
 
 describe('matched token-efficiency claim evaluation', () => {
+  it('domain-separates frozen graph and citation identities deterministically', () => {
+    fc.assert(
+      fc.property(
+        fc
+          .array(fc.constantFrom(...'0123456789abcdef'), {minLength: 16, maxLength: 64})
+          .map(characters => characters.join('')),
+        value => {
+          const snapshot = matchedTokenEfficiencyGraphSnapshotHashV1(`cgsn_${value}`);
+          const content = matchedTokenEfficiencyGraphContentHashV1(`cgc_${value}`);
+          const citation = matchedTokenEfficiencyCitationHashV1({
+            citationId: `tncc_${value}`,
+            fixtureMemoryId: `mem_${value}`,
+            managedMemoryId: `tn_${value}`,
+          });
+
+          expect(snapshot).toMatch(/^[0-9a-f]{64}$/u);
+          expect(new Set([snapshot, content, citation])).toHaveLength(3);
+          expect(matchedTokenEfficiencyGraphSnapshotHashV1(`cgsn_${value}`)).toBe(snapshot);
+        },
+      ),
+      {numRuns: 40},
+    );
+  });
+
   it('passes only with failure-inclusive provider usage, ready graph receipts, and clustered intervals', async () => {
     const corpus = await fixture();
     const manifest = createManifest(corpus);

@@ -38,8 +38,41 @@ reported as such. The behavioral claim requires a randomized developer trial: co
 treatment developers use Threadnote, both may provide any context they choose, and analysis clusters by developer and
 repository while retaining all provider tokens and task failures.
 
-Build the frozen corpus and manifest with `createMatchedEvaluationManifestV1`, then build each prepared context and the
-study with `createMatchedTokenEfficiencyTaskContextV1` and `createMatchedTokenEfficiencyStudyV1`. Runtime v3 binds one
+Build and independently review the frozen corpus first. For every task, retain two distinct prepared Threadnote homes
+from the same exact ready graph: a graph-only home with no managed memory documents, and a task-specific linked home
+containing exactly the preregistered reviewed memories and finalized current citations. The preparation command verifies
+the clean public checkouts, exact graph identity in both homes, an empty graph-only Context Brief for the exact task
+prompt, linked-memory currentness and stable managed identities, owner-only auth, local runtime artifacts, as-issued
+context/assessment files, and the Threadnote source ancestry before it atomically writes the corpus, per-arm adapter
+configs, manifest, study, runtime, and hash receipt:
+
+```sh
+bun run eval:matched:prepare -- \
+  --corpus /absolute/path/to/reviewed-corpus.json \
+  --plan /absolute/path/to/reviewed-preparation-plan.json \
+  --output /absolute/path/to/.context/token-efficiency-study
+```
+
+Preparation makes no model-provider calls, but it still freezes the provider/model/reasoning settings, Codex app-server
+binary, owner-only auth source, Git and safe-binary hashes, task budget, and optional pricing needed by the later run.
+The exact plan schema is exercised by
+[`matched-token-efficiency-preparation.test.ts`](../unit/matched-token-efficiency-preparation.test.ts). Its top-level
+fields are `version`, `studyId`, `project`, `scheduleSeed`, `repetitions`, `clusters`, `taskContexts`, `bootstrap`,
+`gates`, `lifecycle`, `timeoutMilliseconds`, `threadnote`, and `adapter`. Every task context names the cluster, the two
+prepared homes, the as-issued assessment/content files, and a complete `linkedMemoryIdentities` roster mapping every
+corpus `mem_...` fixture identity to the reviewed memory's actual `tn_...` identity. Repetitions must be a multiple of
+five.
+
+The plan must pin Threadnote 5.0.6. A local build is admissible only when its clean source HEAD contains the recorded
+final 5.0.6 release commit and `threadnote --version` reports `threadnote v5.0.6-local.g<that exact 40-character HEAD>`;
+the version output, source commit, executable bytes, and lock bytes are all retained in the preparation receipt. A
+stable `threadnote v5.0.6` binary without independently verifiable commit provenance is rejected. The bundled preparer
+leaves `reference-scope` explicitly unavailable because the production Codex adapter does not expose a reference
+product; this does not prevent the preregistered files-versus-Threadnote and graph-versus-linked-memory comparisons from
+running.
+
+The preparation command uses `createMatchedEvaluationManifestV1`, `createMatchedTokenEfficiencyTaskContextV1`, and
+`createMatchedTokenEfficiencyStudyV1`. Runtime v3 binds one
 canonical clean checkout to every study cluster by cluster ID and repository identity hash; this lets one local run use
 the complete multi-repository held-out corpus instead of silently executing every task in one repository. Each arm also
 binds a reviewed adapter configuration hash separately from the adapter executable and environment policy.
@@ -84,6 +117,11 @@ The bundled production adapter evaluates completion and correctness with a separ
 That judge never sees the treatment label or agent workspace, but it is still a model-based measurement rather than a
 deterministic test oracle. Article claims must name that limitation; task-specific hidden executable checks should be
 added when the held-out task contract permits them.
+
+With the minimum six tasks and five repetitions, the bundled four-arm runtime performs 120 adapter attempts (240 model
+turns: one agent and one blinded judge per attempt) and records 30 preregistered `reference-scope` slots as unavailable.
+Adding a real reference adapter would raise this to 150 attempts and 300 turns. When pricing is `null`, the evidence
+still reports provider tokens but deliberately makes no monetary-cost claim.
 
 Raw transcripts stay local and must not be stored in Threadnote memory. After every completed experiment—including a
 failed or null result—review `article-evidence.md` and store one replace-in-place durable memory under the stable topic
