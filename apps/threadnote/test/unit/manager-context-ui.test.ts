@@ -31,63 +31,109 @@ beforeEach(() => {
   originalFetch = globalThis.fetch;
   requests = [];
   canonicalMemoryBody = 'Canonical memory body';
-  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
-    const path =
-      typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
-    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
-    requests.push({body, path});
-    if (path === '/api/context/brief') {
-      return Promise.resolve(
-        jsonResponse(
-          projectedBrief(GRAPH_REF, body.workset ? 'workset' : 'repository', {
-            staleAnchorRecovery: body.task === 'Recover this Context Brief graph',
+  globalThis.fetch = Object.assign(
+    (input: string | URL | Request, init?: RequestInit) => {
+      const path =
+        typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
+      const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+      if (path === '/api/worksets') {
+        return Promise.resolve(
+          jsonResponse({
+            definitions: [{memberCount: 1, name: 'platform'}],
+            definitionSource: 'seed-manifest',
+            editability: {state: 'editable'},
+            projectEditability: {state: 'editable'},
+            projects: [
+              {
+                branchState: 'current',
+                folder: 'threadnote',
+                name: 'threadnote',
+                path: '/private/threadnote',
+                worksetCount: 1,
+                worksets: ['platform'],
+              },
+              {
+                branchState: 'current',
+                folder: 'other',
+                name: 'other-project',
+                path: '/private/other-repository',
+                worksetCount: 0,
+                worksets: [],
+              },
+              {
+                branchState: 'current',
+                folder: 'changed',
+                name: 'changed-project',
+                path: '/private/changed',
+                worksetCount: 0,
+                worksets: [],
+              },
+            ],
+            projectsReadOnly: false,
+            readOnly: false,
+            revision: 'a'.repeat(64),
+            type: 'manager-workset-catalog',
+            version: 1,
           }),
-        ),
-      );
-    }
-    if (path === '/api/graphs/action') {
-      return Promise.resolve(jsonResponse({output: 'Ready in an isolated process · 12 files · 40 symbols · 21 edges'}));
-    }
-    if (path === '/api/worksets/prepare') {
-      return Promise.resolve(
-        jsonResponse({
-          job: {
-            createdAt: '2026-08-31T00:00:00.000Z',
-            id: 'cgwj_context_recovery',
-            progress: {message: 'Ready.', phase: 'completed', total: 1},
-            result: {state: 'ready'},
-            status: 'completed',
-            workset: body.workset,
-          },
-        }),
-      );
-    }
-    if (path === '/api/context/recall') {
-      const explicitProject = typeof body.project === 'string' ? body.project : undefined;
-      return Promise.resolve(
-        jsonResponse(recallResponse(String(body.query ?? ''), explicitProject ?? 'threadnote', explicitProject)),
-      );
-    }
-    if (path === '/api/context/feedback') {
-      return Promise.resolve(jsonResponse({action: body.action, recorded: true, uri: body.uri}));
-    }
-    if (path === '/api/context/connections') {
-      return Promise.resolve(jsonResponse(connectionsResponse(String(body.uri ?? ''))));
-    }
-    if (path === '/api/memory/relations') {
-      canonicalMemoryBody = 'Updated canonical memory body';
-      return Promise.resolve(
-        jsonResponse({
-          content: 'updated canonical content',
-          memoryId: 'tn_manager_context',
-          relations: body.relations,
-          uri: RELOCATED_URI,
-        }),
-      );
-    }
-    if (path === '/api/context/read') return Promise.resolve(jsonResponse(readResponse(Number(body.page ?? 0))));
-    throw new Error(`Unexpected Manager Context request: ${path}`);
-  }) as typeof fetch;
+        );
+      }
+      requests.push({body, path});
+      if (path === '/api/context/brief') {
+        return Promise.resolve(
+          jsonResponse(
+            projectedBrief(GRAPH_REF, body.workset ? 'workset' : 'repository', {
+              staleAnchorRecovery: body.task === 'Recover this Context Brief graph',
+            }),
+          ),
+        );
+      }
+      if (path === '/api/graphs/action') {
+        return Promise.resolve(
+          jsonResponse({output: 'Ready in an isolated process · 12 files · 40 symbols · 21 edges'}),
+        );
+      }
+      if (path === '/api/worksets/prepare') {
+        return Promise.resolve(
+          jsonResponse({
+            job: {
+              createdAt: '2026-08-31T00:00:00.000Z',
+              id: 'cgwj_context_recovery',
+              progress: {message: 'Ready.', phase: 'completed', total: 1},
+              result: {state: 'ready'},
+              status: 'completed',
+              workset: body.workset,
+            },
+          }),
+        );
+      }
+      if (path === '/api/context/recall') {
+        const explicitProject = typeof body.project === 'string' ? body.project : undefined;
+        return Promise.resolve(
+          jsonResponse(recallResponse(String(body.query ?? ''), explicitProject ?? 'threadnote', explicitProject)),
+        );
+      }
+      if (path === '/api/context/feedback') {
+        return Promise.resolve(jsonResponse({action: body.action, recorded: true, uri: body.uri}));
+      }
+      if (path === '/api/context/connections') {
+        return Promise.resolve(jsonResponse(connectionsResponse(String(body.uri ?? ''))));
+      }
+      if (path === '/api/memory/relations') {
+        canonicalMemoryBody = 'Updated canonical memory body';
+        return Promise.resolve(
+          jsonResponse({
+            content: 'updated canonical content',
+            memoryId: 'tn_manager_context',
+            relations: body.relations,
+            uri: RELOCATED_URI,
+          }),
+        );
+      }
+      if (path === '/api/context/read') return Promise.resolve(jsonResponse(readResponse(Number(body.page ?? 0))));
+      throw new Error(`Unexpected Manager Context request: ${path}`);
+    },
+    {preconnect: originalFetch.preconnect},
+  );
 });
 
 afterEach(async () => {
@@ -107,9 +153,17 @@ describe('Manager Context workspace', () => {
     expect(document.body.textContent).toContain('Delete local value data');
   });
 
+  it('keeps memory-only projects available in the Context memory selector', async () => {
+    await renderContext(['memory-only-project']);
+
+    expect([...selectWithLabel('Memory project').options].map(option => option.value)).toContain('memory-only-project');
+    expect([...selectWithLabel('Memory project').options].map(option => option.value)).toContain('threadnote');
+  });
+
   it('composes a full brief, opens canonical memory, and reruns from an exact graph ref', async () => {
     await renderContext();
-    await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
+    await changeSelect(selectWithLabel('Repository'), '/private/threadnote');
+    await changeSelect(selectWithLabel('Evidence detail'), 'source');
     await changeTextArea(textareaWithLabel('Engineering task'), 'Trace the Context Brief Manager contract');
     await changeTextArea(textareaWithLabel('Code anchors'), 'apps/threadnote/src/manager/context.ts\n' + GRAPH_REF);
 
@@ -121,6 +175,7 @@ describe('Manager Context workspace', () => {
         budgetTokens: 1_250,
         callerCwd: '/private/threadnote',
         codeRefs: ['apps/threadnote/src/manager/context.ts', GRAPH_REF],
+        detail: 'source',
         mode: 'brief',
         task: 'Trace the Context Brief Manager contract',
       },
@@ -156,7 +211,7 @@ describe('Manager Context workspace', () => {
 
   it('keeps every entered anchor visible and disables compilation above the server bound', async () => {
     await renderContext();
-    await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
+    await changeSelect(selectWithLabel('Repository'), '/private/threadnote');
     await changeTextArea(textareaWithLabel('Engineering task'), 'Bound the selected anchors');
     const refs = Array.from({length: CONTEXT_BRIEF_MAXIMUM_CODE_REFS + 1}, (_, index) => `src/${index}.ts`);
     await changeTextArea(textareaWithLabel('Code anchors'), refs.join('\n'));
@@ -171,7 +226,7 @@ describe('Manager Context workspace', () => {
 
   it('indexes an explicitly selected repository graph and recompiles without losing the Context form or result', async () => {
     await renderContext();
-    await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
+    await changeSelect(selectWithLabel('Repository'), '/private/threadnote');
     await changeTextArea(textareaWithLabel('Engineering task'), 'Recover this Context Brief graph');
     await changeTextArea(textareaWithLabel('Code anchors'), 'apps/threadnote/src/manager/context.ts');
     await clickButton('Compile Context Brief');
@@ -187,7 +242,7 @@ describe('Manager Context workspace', () => {
     expect(requests.filter(request => request.path === '/api/graphs/action')).toEqual([
       {body: {action: 'index-cwd', cwd: '/private/threadnote'}, path: '/api/graphs/action'},
     ]);
-    expect(inputWithLabel('Caller workspace').value).toBe('/private/threadnote');
+    expect(selectWithLabel('Repository').value).toBe('/private/threadnote');
     expect(textareaWithLabel('Engineering task').value).toBe('Recover this Context Brief graph');
     expect(textareaWithLabel('Code anchors').value).toBe('apps/threadnote/src/manager/context.ts');
     expect(document.body.textContent).toContain('Context Brief recompiled with the refreshed graph.');
@@ -196,11 +251,11 @@ describe('Manager Context workspace', () => {
 
   it('does not index a different workspace after the displayed brief inputs change', async () => {
     await renderContext();
-    await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
+    await changeSelect(selectWithLabel('Repository'), '/private/threadnote');
     await changeTextArea(textareaWithLabel('Engineering task'), 'Recover only the displayed scope');
     await clickButton('Compile Context Brief');
     await waitForText('Context Brief evidence is projected here');
-    await changeInput(inputWithLabel('Caller workspace'), '/private/other-repository');
+    await changeSelect(selectWithLabel('Repository'), '/private/other-repository');
 
     await clickButton('Index graph and rerun');
     await waitForText('The Context Brief inputs changed. Rerun the brief before preparing its graph scope.');
@@ -212,7 +267,7 @@ describe('Manager Context workspace', () => {
   it('prepares an explicitly selected Workset and recompiles its Context Brief in place', async () => {
     await renderContext();
     await clickButton('Workset');
-    await changeInput(inputWithLabel('Prepared Workset'), 'platform');
+    await changeSelect(selectWithLabel('Prepared Workset'), 'platform');
     await changeTextArea(textareaWithLabel('Engineering task'), 'Recover the prepared Workset graph');
     await clickButton('Compile Context Brief');
     await waitForText('Context Brief evidence is projected here');
@@ -223,22 +278,42 @@ describe('Manager Context workspace', () => {
     expect(requests.filter(request => request.path === '/api/worksets/prepare')).toEqual([
       {body: {concurrency: 2, workset: 'platform'}, path: '/api/worksets/prepare'},
     ]);
-    expect(inputWithLabel('Prepared Workset').value).toBe('platform');
+    expect(selectWithLabel('Prepared Workset').value).toBe('platform');
     expect(document.body.textContent).toContain('Workset platform is ready. Context Brief recompiled');
   });
 
   it('returns the brief composer to an interactive state after cancellation', async () => {
     globalThis.fetch = Object.assign(
-      (_input: string | URL | Request, init?: RequestInit) =>
-        new Promise<Response>((_resolve, reject) => {
+      (input: string | URL | Request, init?: RequestInit) => {
+        const path =
+          typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
+        if (path === '/api/worksets') {
+          return Promise.resolve(
+            jsonResponse({
+              definitions: [{memberCount: 1, name: 'platform'}],
+              projects: [
+                {
+                  branchState: 'current',
+                  folder: 'threadnote',
+                  name: 'threadnote',
+                  path: '/private/threadnote',
+                  worksetCount: 1,
+                  worksets: ['platform'],
+                },
+              ],
+            }),
+          );
+        }
+        return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener('abort', () => reject(new DOMException('Cancelled', 'AbortError')), {
             once: true,
           });
-        }),
+        });
+      },
       {preconnect: originalFetch.preconnect},
     );
     await renderContext();
-    await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
+    await changeSelect(selectWithLabel('Repository'), '/private/threadnote');
     await changeTextArea(textareaWithLabel('Engineering task'), 'Cancel this bounded compile');
     await clickButton('Compile Context Brief');
     expect(document.querySelector('.context-compose')?.getAttribute('aria-busy')).toBe('true');
@@ -371,7 +446,7 @@ describe('Manager Context workspace', () => {
 
   it('lazily lists direct connections, opens neighbors, and saves only through the structured relation editor', async () => {
     await renderContext();
-    await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
+    await changeSelect(selectWithLabel('Repository'), '/private/threadnote');
     await clickButton('Recall & read');
     await changeInput(inputWithLabel('Recall query'), 'connected memory');
     await clickButton('Recall context');
@@ -522,7 +597,7 @@ describe('Manager Context workspace', () => {
     expect(requests.filter(request => request.path === '/api/context/recall')).toHaveLength(2);
     expect(requests.at(-1)?.body).toEqual({includeArchived: false, query: 'changed criteria'});
 
-    await changeInput(inputWithLabel('Memory project'), 'changed-project');
+    await changeSelect(selectWithLabel('Memory project'), 'changed-project');
     expect(document.body.textContent).toContain('Recall returns pointers, not evidence');
   });
 
@@ -548,17 +623,24 @@ describe('Manager Context workspace', () => {
   });
 });
 
-async function renderContext(): Promise<void> {
+async function renderContext(projectOptions: readonly string[] = []): Promise<void> {
   const container = document.createElement('div');
   document.body.append(container);
   reactRoot = createRoot(container);
-  await act(async () => reactRoot?.render(React.createElement(ContextPanel)));
+  await act(async () => reactRoot?.render(React.createElement(ContextPanel, {projectOptions})));
 }
 
 async function changeInput(input: HTMLInputElement, value: string): Promise<void> {
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
     input.dispatchEvent(new Event('input', {bubbles: true}));
+  });
+}
+
+async function changeSelect(input: HTMLSelectElement, value: string): Promise<void> {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(input, value);
+    input.dispatchEvent(new Event('change', {bubbles: true}));
   });
 }
 
@@ -574,6 +656,14 @@ function inputWithLabel(label: string): HTMLInputElement {
     .find(candidate => candidate.textContent?.includes(label))
     ?.querySelector('input');
   if (!element) throw new Error(`Input did not render: ${label}`);
+  return element;
+}
+
+function selectWithLabel(label: string): HTMLSelectElement {
+  const element = [...document.querySelectorAll<HTMLLabelElement>('label')]
+    .find(candidate => candidate.textContent?.includes(label))
+    ?.querySelector('select');
+  if (!element) throw new Error(`Select did not render: ${label}`);
   return element;
 }
 

@@ -34,6 +34,7 @@ import type {
 import type {runProcedurePublish, runProcedureStatus, runProcedureVerify} from '../procedure/commands.js';
 import type {runPilotCommand} from '../value_report/pilot/commands.js';
 import {
+  CONTEXT_BRIEF_DETAILS,
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
 } from '@threadnote/context/types';
@@ -98,6 +99,12 @@ export function makeContextBriefCommand<E, R>(
       cwd: optionalString(
         CONTEXT_BRIEF_CWD_OPTION.name,
         'Absolute repository path, at most 4096 UTF-8 bytes; defaults to the current directory',
+      ),
+      detail: defaultChoice(
+        'detail',
+        CONTEXT_BRIEF_DETAILS,
+        'Response detail: compact evidence or bounded exact-current source excerpts',
+        'compact',
       ),
       json: boolean('json', 'Print the structured Context Brief projection'),
       mode: defaultChoice('mode', ['brief', 'locate', 'explain', 'trace', 'impact'], 'Evidence-planning mode', 'brief'),

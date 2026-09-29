@@ -98,6 +98,7 @@ import {mergeRecallOperationalWarnings} from '@threadnote/recall/warning';
 import {syncObsidianSourcesBeforeRecall} from '../../obsidian/source.js';
 import {withProductionPhaseTiming} from '../../effect/production_log.js';
 import {withAnonymousTelemetryPhase} from '../../effect/telemetry.js';
+import type {ApplyMemoryCandidateInput} from '../../memory/candidate_apply_contract.js';
 import {
   buildRecallIndexSelectionCandidates,
   buildRecallSelectionCandidates,
@@ -338,18 +339,6 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
   );
 }
 
-export interface ApplyMemoryCandidateInput {
-  readonly action?: 'approve' | 'defer' | 'reject';
-  readonly allowDestructiveReplacement?: boolean;
-  readonly approved?: boolean;
-  readonly candidateId?: string;
-  readonly editedText?: string;
-  readonly operation?: CandidateApplyOperation;
-  readonly replaceUri?: string;
-  readonly reviewId?: string;
-  readonly revision?: number;
-}
-
 interface ApplyMemoryCandidateOptions {
   readonly reviewLockHeld?: boolean;
 }
@@ -359,6 +348,7 @@ export function applyMemoryCandidate(
   {
     action,
     allowDestructiveReplacement,
+    allowMissingReplacementCreate,
     approved,
     candidateId,
     editedText,
@@ -651,9 +641,17 @@ export function applyMemoryCandidate(
         !reviewedTargetIsShared &&
         (candidate.recommendation === 'replace' || candidate.comparison === 'contradiction')
       ) {
-        return argumentError(
-          `Candidate ${candidate.candidateId} has the same stable identity as active memory and cannot be created separately; choose operation=replace with its reviewed target.`,
-        );
+        if (!allowMissingReplacementCreate || reviewedTargetUri === undefined) {
+          return argumentError(
+            `Candidate ${candidate.candidateId} has the same stable identity as active memory and cannot be created separately; choose operation=replace with its reviewed target.`,
+          );
+        }
+        const [currentTarget] = yield* readMemoryRecordsByUri(config, [reviewedTargetUri]);
+        if (currentTarget !== undefined) {
+          return argumentError(
+            `Candidate ${candidate.candidateId} replacement target still exists; refresh replacement safety before applying.`,
+          );
+        }
       }
       if (effectiveOperation === 'replace' && reviewedTargetUri === undefined) {
         return argumentError(`Candidate ${candidate.candidateId} has no reviewed replacement target.`);

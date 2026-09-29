@@ -1,4 +1,5 @@
 import {sha256HexSync} from '@threadnote/platform/sha256';
+import {AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN} from '@threadnote/protocol/agent-response';
 import {
   CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES,
   CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION,
@@ -35,6 +36,7 @@ const MAXIMUM_FOLLOW_UPS = 24;
 /** Build a deterministic private retrieval plan. This is not a user-facing query language or output field. */
 export function planContextBrief(input: ContextBriefRequestV1 | unknown): ContextBriefPlanV1 {
   const request = parseContextBriefRequestV1(input);
+  const detail = request.detail ?? 'compact';
   const modeShape =
     request.mode === 'impact' || request.mode === 'trace'
       ? {edgeLimit: 64, evidenceCards: 10, nodeLimit: 24}
@@ -51,11 +53,21 @@ export function planContextBrief(input: ContextBriefRequestV1 | unknown): Contex
     graph: {
       ...modeShape,
       codeRefs: request.codeRefs ?? [],
+      detail,
       maximumEstimatedTokens: CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
       mode: request.mode,
       query: request.task,
       scope: request.scope,
+      sourceMaximumBytes:
+        detail === 'source'
+          ? Math.floor(
+              request.budgetTokens *
+                AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN *
+                (request.responseFormat === 'dual' ? 0.2 : 0.4),
+            )
+          : 0,
     },
+    detail,
     memory: {
       candidateLimit: 24,
       ...(request.scope.project === undefined ? {} : {project: request.scope.project}),

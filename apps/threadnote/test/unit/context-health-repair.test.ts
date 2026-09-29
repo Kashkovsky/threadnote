@@ -4,9 +4,11 @@ import {
   applyContextHealthRepairProposalV1,
   contextHealthReportRevisionV1,
   contextHealthRepairProposalRevisionV1,
+  memoryContentWithCitationReplacementsV1,
   previewContextHealthRepairPlanV1,
   type ContextHealthRepairProposalV1,
 } from '@threadnote/threadnote/memory/context/health_repair';
+import {contextHealthRepairLockScopeV1} from '@threadnote/threadnote/memory/context/health_repair_commands';
 import {
   formatMemoryDocument,
   parseMemoryDocument,
@@ -14,6 +16,7 @@ import {
   type MemoryRecord,
 } from '@threadnote/memory/document';
 import type {ContextHealthFindingV1, ContextHealthReportV1} from '@threadnote/context/health';
+import {createMemoryCodeCitation} from '@threadnote/memory/code/citation';
 
 const PROJECT = 'threadnote';
 const NOW = '2026-09-17T12:00:00.000Z';
@@ -203,7 +206,7 @@ describe('context health repair proposals', () => {
     );
   });
 
-  it('keeps stable identity aliases review-only because their liveness is not one URI CAS', () => {
+  it('removes a proven-missing stable identity relation and blocks it when that identity exists', () => {
     const alias = 'threadnote://memory/tn_missing';
     const source = record('alias-source', 'Alias target.', {
       relations: [{type: 'depends_on', uri: alias}],
@@ -212,8 +215,160 @@ describe('context health repair proposals', () => {
       healthReport([finding('relation-target-missing', 'repair-relation', source.uri, alias)]),
       [source],
     );
-    expect(proposal.mutation).toMatchObject({kind: 'review-only', targetUri: alias});
-    expect(proposal.preconditions).toEqual([]);
+    expect(proposal.mutation).toMatchObject({kind: 'remove-relations', targetUri: alias});
+    expect(contextHealthRepairLockScopeV1(proposal)).toEqual({
+      lockKeys: [source.uri, 'threadnote-memory-identity:tn_missing'],
+      recordUris: [source.uri],
+    });
+    expect(proposal.preconditions).toEqual([expect.objectContaining({uri: source.uri})]);
+    expect(
+      applyContextHealthRepairProposalV1({
+        absentTargetUris: [alias],
+        expectedRevision: proposal.revision,
+        proposal,
+        records: [source],
+      }),
+    ).toMatchObject({status: 'applied'});
+
+    const appeared = record('alias-target', 'Target exists.', {memoryId: 'tn_missing'});
+    expect(
+      applyContextHealthRepairProposalV1({
+        absentTargetUris: [alias],
+        expectedRevision: proposal.revision,
+        proposal,
+        records: [source, appeared],
+      }),
+    ).toMatchObject({conflict: {code: 'precondition-failed'}, status: 'conflict'});
+    expect(
+      previewContextHealthRepairPlanV1(
+        healthReport([finding('relation-target-missing', 'repair-relation', source.uri, alias)]),
+        [source, appeared],
+        {absentTargetUris: [alias]},
+      ).proposals[0]?.mutation,
+    ).toMatchObject({kind: 'review-only'});
+  });
+
+  it('removes an inactive stable identity relation using the canonical target record as its precondition', () => {
+    const alias = 'threadnote://memory/tn_inactive';
+    const source = record('inactive-alias-source', 'Alias target.', {
+      relations: [{type: 'depends_on', uri: alias}],
+    });
+    const target = record(
+      'inactive-alias-target',
+      'Inactive target.',
+      {memoryId: 'tn_inactive', status: 'archived'},
+      'threadnote://user/me/memories/durable/archived/threadnote/inactive-alias-target.md',
+    );
+    const proposal = onlyProposal(
+      healthReport([finding('relation-target-inactive', 'repair-relation', source.uri, alias)]),
+      [source, target],
+    );
+
+    expect(proposal.mutation).toMatchObject({
+      kind: 'remove-relations',
+      targetPrecondition: {state: 'inactive'},
+      targetUri: alias,
+    });
+    const recordUris = [source.uri, target.uri].sort();
+    expect(proposal.preconditions.map(precondition => precondition.uri)).toEqual(recordUris);
+    expect(contextHealthRepairLockScopeV1(proposal)).toEqual({
+      lockKeys: [...recordUris, 'threadnote-memory-identity:tn_inactive'],
+      recordUris,
+    });
+    expect(
+      applyContextHealthRepairProposalV1({
+        expectedRevision: proposal.revision,
+        proposal,
+        records: [source, target],
+      }),
+    ).toMatchObject({status: 'applied'});
+  });
+
+  it('previews and applies an exact citation recapture while preserving unknown headers', () => {
+    const previous = fileCitation('apps/threadnote/src/manager/server.ts', 'a', 'b', 'c');
+    const replacement = fileCitation('apps/threadnote/src/manager/server.ts', 'd', 'e', 'f');
+    const source = record('cited-source', 'Cited decision.', {
+      codeCitations: [previous],
+      memoryId: 'tn_cited_source',
+      schemaVersion: 5,
+    });
+    const citationFinding = finding('citation-changed', 'repair-citation', source.uri, `${source.uri}#${previous.id}`);
+    const proposal = previewContextHealthRepairPlanV1(healthReport([citationFinding]), [source], {
+      citationReplacements: new Map([[citationFinding.id, replacement]]),
+    }).proposals[0];
+    expect(proposal?.mutation).toMatchObject({
+      citationId: previous.id,
+      kind: 'replace-citation',
+      replacement: {id: replacement.id},
+    });
+    if (proposal === undefined) throw new Error('expected citation repair proposal');
+
+    const applied = applyContextHealthRepairProposalV1({
+      expectedRevision: proposal.revision,
+      proposal,
+      records: [source],
+    });
+    expect(applied.status).toBe('applied');
+    if (applied.status !== 'applied') throw new Error('expected citation repair to apply');
+    expect(applied.records[0]?.metadata.codeCitations).toEqual([replacement]);
+    expect(applied.records[0]?.content).toContain('unknown_header: preserved');
+    expect(
+      applyContextHealthRepairProposalV1({
+        expectedRevision: proposal.revision,
+        proposal,
+        records: applied.records,
+      }),
+    ).toMatchObject({status: 'already-applied'});
+  });
+
+  it('rewrites every reviewed citation in one memory independently of replacement order', () => {
+    const previous = [
+      fileCitation('src/first.ts', '1', '1', '1'),
+      fileCitation('src/second.ts', '2', '2', '2'),
+      fileCitation('src/third.ts', '3', '3', '3'),
+    ];
+    const replacements = [
+      fileCitation('src/first.ts', '4', '4', '4'),
+      fileCitation('src/second.ts', '5', '5', '5'),
+      fileCitation('src/third.ts', '6', '6', '6'),
+    ];
+    const source = record('batch-citations', 'All cited decisions remain readable.', {
+      codeCitations: previous,
+      schemaVersion: 5,
+    });
+    const expected = memoryContentWithCitationReplacementsV1(
+      source,
+      previous.map((citation, index) => ({citationId: citation.id, replacement: replacements[index]})),
+    );
+    expect(expected).toBeDefined();
+    fc.assert(
+      fc.property(fc.uniqueArray(fc.integer({min: 0, max: 2}), {minLength: 3, maxLength: 3}), order => {
+        const content = memoryContentWithCitationReplacementsV1(
+          source,
+          order.map(index => ({citationId: previous[index].id, replacement: replacements[index]})),
+        );
+        expect(content).toBe(expected);
+        expect(parseMemoryDocument(source.uri, content ?? '')?.metadata.codeCitations).toEqual(replacements);
+      }),
+      {numRuns: 20},
+    );
+  });
+
+  it('keeps citation recapture review-only when graph evidence belongs to another repository', () => {
+    const previous = fileCitation('src/shared.ts', 'a', 'b', 'c', '1');
+    const foreign = fileCitation('src/shared.ts', 'd', 'e', 'f', '2');
+    const source = record('foreign-citation', 'Repository-bound decision.', {
+      codeCitations: [previous],
+      memoryId: 'tn_foreign_citation',
+      schemaVersion: 5,
+    });
+    const citationFinding = finding('citation-unknown', 'repair-citation', source.uri, `${source.uri}#${previous.id}`);
+
+    const proposal = previewContextHealthRepairPlanV1(healthReport([citationFinding]), [source], {
+      citationReplacements: new Map([[citationFinding.id, foreign]]),
+    }).proposals[0];
+
+    expect(proposal?.mutation).toMatchObject({kind: 'review-only', repairKind: 'repair-citation'});
   });
 
   it('makes archive replay receipt-idempotent and stale snapshots stable conflicts', () => {
@@ -722,4 +877,19 @@ function finding(
     summary: category,
     uris,
   };
+}
+
+function fileCitation(path: string, hashSeed: string, commitSeed: string, snapshotSeed: string, repositorySeed = '1') {
+  return createMemoryCodeCitation({
+    extractorSet: 'typescript-v1',
+    fileContentHash: {algorithm: 'sha256', value: hashSeed.repeat(64)},
+    path,
+    repositoryId: repositorySeed.repeat(64),
+    repositoryIdentityKind: 'local',
+    sourceCommit: commitSeed.repeat(40),
+    sourceDirty: false,
+    sourceSnapshotId: `cgsn_${snapshotSeed.repeat(40)}`,
+    target: {kind: 'file'},
+    version: 1,
+  });
 }

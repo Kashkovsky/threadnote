@@ -8,6 +8,7 @@ import {
   CONTEXT_BRIEF_MODES,
   isContextBriefMode,
   parseContextBriefRequestV1,
+  type ContextBriefDetail,
   type ContextBriefMode,
   type ProjectedContextBriefV1,
 } from '@threadnote/context/types';
@@ -329,6 +330,7 @@ export const runManagerContextConnections = Effect.fn('managerContext.connection
 export function managerContextBriefInput(body: Record<string, unknown>): {
   readonly budgetTokens: number;
   readonly codeRefs: readonly string[];
+  readonly detail?: ContextBriefDetail;
   readonly mode: ContextBriefMode;
   readonly scope:
     | {readonly callerCwd: string; readonly kind: 'repository'; readonly project?: string}
@@ -337,7 +339,7 @@ export function managerContextBriefInput(body: Record<string, unknown>): {
 } {
   exactKeys(
     body,
-    new Set(['budgetTokens', 'callerCwd', 'codeRefs', 'mode', 'project', 'task', 'workset']),
+    new Set(['budgetTokens', 'callerCwd', 'codeRefs', 'detail', 'mode', 'project', 'task', 'workset']),
     'Context Brief request',
   );
   const task = requiredText(body.task, 'task', MANAGER_CONTEXT_TEXT_MAXIMUM_BYTES);
@@ -362,6 +364,7 @@ export function managerContextBriefInput(body: Record<string, unknown>): {
   const request = {
     budgetTokens,
     ...(body.codeRefs === undefined ? {} : {codeRefs: body.codeRefs}),
+    ...(body.detail === undefined ? {} : {detail: body.detail}),
     mode,
     scope:
       workset === undefined

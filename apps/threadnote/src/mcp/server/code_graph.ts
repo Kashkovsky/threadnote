@@ -142,6 +142,10 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         codeRefs: McpInput.stringOrStrings('Canonical graph path/cgs_<32 hex>; no ./, ../, absolute, cgr_; max 8', {
           maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
         }),
+        detail: McpInput.literals(
+          ['compact', 'source'],
+          'Default compact; source adds bounded exact-current excerpts.',
+        ),
         mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Default brief'),
         project: McpInput.string(MCP_CODE_GRAPH_PROJECT_SELECTOR_DESCRIPTION),
         responseFormat: McpInput.literals(['dual', 'agent'], 'Default agent; dual adds structured content.'),
@@ -150,7 +154,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         workset: McpInput.string('Prepared workset; max 256 UTF-8 bytes; else callerCwd'),
       },
     },
-    ({budgetTokens, callerCwd, codeRefs, mode, project, responseFormat, surface, task, workset}) => {
+    ({budgetTokens, callerCwd, codeRefs, detail, mode, project, responseFormat, surface, task, workset}) => {
       const selectedResponseFormat = responseFormat ?? 'agent';
       const worksetName = workset?.trim();
       const checkedCwd = worksetName
@@ -177,6 +181,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         const response = yield* compileContextBrief(config, {
           ...(budgetTokens === undefined ? {} : {budgetTokens}),
           codeRefs: requestedCodeRefs,
+          ...(detail === undefined ? {} : {detail}),
           ...(mode === undefined ? {} : {mode}),
           responseFormat: selectedResponseFormat,
           scope: worksetName
@@ -1986,12 +1991,10 @@ function codeGraphProgressSummary(progress: CodeGraphProgress | undefined): stri
       return `phase: ${progress.phase}`;
   }
 }
-
 function formatCodeGraphDuration(milliseconds: number): string {
   const seconds = Math.max(1, Math.ceil(milliseconds / 1_000));
   if (seconds < 90) return `${seconds} second${seconds === 1 ? '' : 's'}`;
   const minutes = Math.ceil(seconds / 60);
   if (minutes < 90) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
-  const hours = Math.ceil(minutes / 60);
-  return `${hours} hour${hours === 1 ? '' : 's'}`;
+  return `${Math.ceil(minutes / 60)} hours`;
 }

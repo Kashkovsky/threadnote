@@ -1,5 +1,6 @@
 import {Console, Effect} from 'effect';
-import {applyMemoryCandidate, type ApplyMemoryCandidateInput} from '../mcp/server/recall.js';
+import {applyMemoryCandidate} from '../mcp/server/recall.js';
+import type {ApplyMemoryCandidateInput} from './candidate_apply_contract.js';
 import {applyScrubber} from '@threadnote/platform/scrubber';
 import type {RuntimeConfig} from '@threadnote/workspace/config';
 import {loadCandidateReview} from '@threadnote/memory/candidate';

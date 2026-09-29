@@ -11,6 +11,7 @@ import {
   buildCandidateReview,
   candidateReviewWithAuditEvent,
   candidateReviewWithApplying,
+  candidateReviewWithReplacementSafety,
   candidateReviewWithState,
   loadCandidateReview,
   readActiveProjectMemories,
@@ -677,6 +678,47 @@ describe('candidate review persistence', () => {
         codeCitations: [],
         reviewId: review.reviewId,
         version: 2,
+      });
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, TestSystemInfoLayer))),
+  );
+
+  effectIt.effect('persists replacement-safety refresh revisions and audit events', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const temporaryDirectory = yield* Effect.acquireRelease(
+        fs.makeTempDirectory({prefix: 'threadnote-candidate-safety-refresh-'}),
+        candidateDirectory => fs.remove(candidateDirectory, {force: true, recursive: true}).pipe(Effect.ignore),
+      );
+      const review = yield* buildCandidateReview(
+        input,
+        [existing()],
+        DateTime.toDateUtc(DateTime.makeUnsafe('2026-07-23T10:00:00.000Z')),
+      );
+      const candidateId = review.candidates[0]?.candidateId ?? '';
+      const refreshed = candidateReviewWithReplacementSafety(
+        review,
+        candidateId,
+        '## Decisions\n- Keep application workflows Effect-native.\n\n## Constraints\n- Preserve callers.',
+        'a'.repeat(64),
+        '2026-07-23T10:01:00.000Z',
+      );
+      if (!refreshed) throw new Error('expected a replacement candidate');
+
+      yield* saveCandidateReview(temporaryDirectory, refreshed);
+      const loaded = yield* loadCandidateReview(temporaryDirectory, review.reviewId);
+
+      expect(loaded.revision).toBe(2);
+      expect(loaded.candidates[0]).toMatchObject({
+        replacementSafetyBaseline: {
+          sectionHeadings: ['Decisions', 'Constraints'],
+          version: 1,
+        },
+        targetContentHash: 'a'.repeat(64),
+      });
+      expect(loaded.auditEvents.at(-1)).toMatchObject({
+        action: 'refresh_safety',
+        candidateId,
+        revision: 2,
       });
     }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, TestSystemInfoLayer))),
   );

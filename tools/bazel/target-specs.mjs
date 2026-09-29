@@ -16,7 +16,7 @@ const filesBelow = directory => {
 };
 const testFilesBelow = directory =>
   filesBelow(directory)
-    .filter(path => path.endsWith('.test.ts'))
+    .filter(path => /\.test\.tsx?$/u.test(path))
     .sort();
 const packageDirectories = readdirSync(join(root, 'packages'))
   .sort()

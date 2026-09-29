@@ -7,6 +7,7 @@ import {
 } from '@threadnote/context/types';
 import type {
   ContextBriefFollowUpV1,
+  ContextBriefDetail,
   ContextBriefMemoryEvidenceV1,
   ContextBriefMode,
   ContextBriefV1,
@@ -25,7 +26,7 @@ import type {MemoryCodeCitationV1} from '@threadnote/memory/code/citation';
 import {MEMORY_RELATION_TYPES, type MemoryRelation} from '@threadnote/memory/document';
 import {MANAGER_CONTEXT_RECALL_PAGE_SIZE_DEFAULT, projectManagerRecallPage} from '@threadnote/manager/context/paging';
 import {api, errorMessage} from '@threadnote/manager/ui/support';
-import type {ManagerWorksetPrepareJob} from '@threadnote/manager/workset/contracts';
+import type {ManagerWorksetCatalog, ManagerWorksetPrepareJob} from '@threadnote/manager/workset/contracts';
 import {ValuePanel} from '../value_view.js';
 
 type ContextWorkspaceView = 'brief' | 'recall' | 'value';
@@ -45,6 +46,7 @@ interface BriefRequestSnapshot {
     readonly budgetTokens: number;
     readonly callerCwd?: string;
     readonly codeRefs: readonly string[];
+    readonly detail?: ContextBriefDetail;
     readonly mode: ContextBriefMode;
     readonly project?: string;
     readonly task: string;
@@ -54,14 +56,21 @@ interface BriefRequestSnapshot {
     {readonly callerCwd: string; readonly kind: 'repository'} | {readonly kind: 'workset'; readonly workset: string};
 }
 
-export function ContextPanel(): React.ReactElement {
+interface ContextPanelProps {
+  readonly projectOptions?: readonly string[];
+}
+
+export function ContextPanel(props: ContextPanelProps): React.ReactElement {
   const [view, setView] = useState<ContextWorkspaceView>('brief');
   const [scopeKind, setScopeKind] = useState<ContextScopeKind>('repository');
   const [callerCwd, setCallerCwd] = useState('');
   const [workset, setWorkset] = useState('');
   const [project, setProject] = useState('');
+  const [catalog, setCatalog] = useState<ManagerWorksetCatalog>();
+  const [catalogError, setCatalogError] = useState('');
   const [task, setTask] = useState('');
   const [mode, setMode] = useState<ContextBriefMode>('brief');
+  const [detail, setDetail] = useState<ContextBriefDetail>('compact');
   const [budgetTokens, setBudgetTokens] = useState(1_250);
   const [codeRefsText, setCodeRefsText] = useState('');
   const [brief, setBrief] = useState<ProjectedContextBriefV1>();
@@ -111,6 +120,10 @@ export function ContextPanel(): React.ReactElement {
     !Number.isSafeInteger(budgetTokens) ||
     budgetTokens < CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS ||
     budgetTokens > CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS;
+  const memoryProjectOptions = useMemo(
+    () => [...new Set([...(props.projectOptions ?? []), ...(catalog?.projects.map(item => item.name) ?? [])])],
+    [catalog?.projects, props.projectOptions],
+  );
 
   useEffect(
     () => () => {
@@ -124,6 +137,19 @@ export function ContextPanel(): React.ReactElement {
     },
     [],
   );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void api<ManagerWorksetCatalog>('/api/worksets', undefined, {signal: controller.signal})
+      .then(next => {
+        setCatalog(next);
+        setCatalogError('');
+      })
+      .catch(cause => {
+        if (!controller.signal.aborted) setCatalogError(errorMessage(cause));
+      });
+    return () => controller.abort();
+  }, []);
 
   async function runBrief(overrides: BriefRunOverrides = {}): Promise<void> {
     const nextTask = overrides.task ?? task;
@@ -155,6 +181,7 @@ export function ContextPanel(): React.ReactElement {
       body: {
         budgetTokens,
         codeRefs: nextCodeRefs,
+        ...(detail === 'compact' ? {} : {detail}),
         mode: nextMode,
         ...(project.trim() ? {project: project.trim()} : {}),
         task: nextTask.trim(),
@@ -204,6 +231,7 @@ export function ContextPanel(): React.ReactElement {
       !currentScopeMatches ||
       snapshot.body.task !== task.trim() ||
       snapshot.body.mode !== mode ||
+      (snapshot.body.detail ?? 'compact') !== detail ||
       snapshot.body.budgetTokens !== budgetTokens ||
       (snapshot.body.project ?? '') !== project.trim() ||
       snapshot.body.codeRefs.join('\n') !== codeRefs.join('\n')
@@ -488,29 +516,50 @@ export function ContextPanel(): React.ReactElement {
           </div>
         </div>
         <label>
-          {scopeKind === 'repository' ? 'Caller workspace' : 'Prepared Workset'}
-          <input
+          {scopeKind === 'repository' ? 'Repository' : 'Prepared Workset'}
+          <select
             disabled={graphRecoveryBusy}
             onChange={event => {
               invalidateRecall();
-              if (scopeKind === 'repository') setCallerCwd(event.target.value);
-              else setWorkset(event.target.value);
+              if (scopeKind === 'repository') {
+                setCallerCwd(event.target.value);
+              } else setWorkset(event.target.value);
             }}
-            placeholder={scopeKind === 'repository' ? '/absolute/path/to/repository' : 'platform'}
             value={scopeKind === 'repository' ? callerCwd : workset}
-          />
+          >
+            <option value="">{scopeKind === 'repository' ? 'Select repository' : 'Select Workset'}</option>
+            {scopeKind === 'repository'
+              ? catalog?.projects.map(item => (
+                  <option key={item.name} value={item.path}>
+                    {item.name} — {item.path}
+                  </option>
+                ))
+              : catalog?.definitions.map(item => (
+                  <option key={item.name} value={item.name}>
+                    {item.name} · {item.memberCount} projects
+                  </option>
+                ))}
+          </select>
         </label>
         <label>
           Memory project
-          <input
+          <select
             disabled={graphRecoveryBusy}
             onChange={event => {
               invalidateRecall();
               setProject(event.target.value);
             }}
-            placeholder="blank = inferred/all"
             value={project}
-          />
+          >
+            <option value="">Infer from repository / search all</option>
+            {memoryProjectOptions.map(item => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+            {project && !memoryProjectOptions.includes(project) ? <option>{project}</option> : null}
+          </select>
+          {catalogError ? <small>Configured choices are unavailable. Refresh Manager to retry.</small> : null}
         </label>
       </section>
 
@@ -537,6 +586,17 @@ export function ContextPanel(): React.ReactElement {
                 {(['brief', 'locate', 'explain', 'trace', 'impact'] as const).map(value => (
                   <option key={value}>{value}</option>
                 ))}
+              </select>
+            </label>
+            <label>
+              Evidence detail
+              <select
+                disabled={graphRecoveryBusy}
+                onChange={event => setDetail(event.target.value as ContextBriefDetail)}
+                value={detail}
+              >
+                <option value="compact">Compact evidence</option>
+                <option value="source">Include source excerpts</option>
               </select>
             </label>
             <label>
