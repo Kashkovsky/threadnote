@@ -2,7 +2,7 @@ import {fcProp} from '@threadnote/testing/fast-check-property';
 import {it as effectIt} from '@effect/vitest';
 import {TestError} from '@threadnote/testing/test-error';
 import {describe, expect, it} from '@effect/vitest';
-import {Deferred, Effect} from 'effect';
+import {Effect} from 'effect';
 import * as FC from 'fast-check';
 import {
   codeGraphAnalysisMcpResponse,
@@ -124,13 +124,12 @@ describe('MCP code graph indexing progress', () => {
   });
 
   effectIt.effect(
-    'never registers a build demand after a successful ready read and preserves observed continuity',
+    'never registers a build demand after a successful ready read and delegates resume scheduling to the watcher',
     () =>
       Effect.gen(function* () {
         let ensured = 0;
         let requested = 0;
-        const resumeStarted = yield* Deferred.make<void>();
-        const releaseResume = yield* Deferred.make<void>();
+        let scheduledResumes = 0;
         const watcher = {
           ensure: () =>
             Effect.sync(() => {
@@ -148,11 +147,10 @@ describe('MCP code graph indexing progress', () => {
                 requestState: 'started' as const,
               };
             }),
-          resume: () =>
-            Deferred.succeed(resumeStarted, undefined).pipe(
-              Effect.andThen(Deferred.await(releaseResume)),
-              Effect.as(undefined),
-            ),
+          scheduleResume: () =>
+            Effect.sync(() => {
+              scheduledResumes += 1;
+            }),
         } as unknown as CodeGraphWatcherShape;
 
         const continuity = yield* completeCodeGraphReadyReadRefresh({
@@ -164,7 +162,6 @@ describe('MCP code graph indexing progress', () => {
         });
 
         expect(continuity).toEqual({state: 'deferred', type: 'code-graph-refresh-continuity', version: 1});
-        yield* Deferred.await(resumeStarted);
         const active = {
           currentTargetToken: `cgdq_${'1'.repeat(32)}`,
           state: 'active' as const,
@@ -182,7 +179,7 @@ describe('MCP code graph indexing progress', () => {
         expect(preserved).toEqual(active);
         expect(ensured).toBe(2);
         expect(requested).toBe(0);
-        yield* Deferred.succeed(releaseResume, undefined);
+        expect(scheduledResumes).toBe(2);
       }),
   );
 

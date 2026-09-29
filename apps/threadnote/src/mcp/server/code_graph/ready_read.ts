@@ -108,26 +108,27 @@ export const completeCodeGraphReadyReadRefresh = Effect.fn('codeGraph.completeRe
   readonly ensureWatcher: boolean;
   readonly key: string;
   readonly refresh?: CodeGraphRefreshContinuity;
+  readonly refreshStatus?: CodeGraphRefreshStatus;
   readonly target: Omit<CodeGraphWatchOptions, 'key'>;
   readonly watcher: CodeGraphWatcherShape;
 }) {
   if (input.ensureWatcher) yield* input.watcher.ensure({...input.target, key: input.key});
   if (!input.backgroundRefreshRequested) return input.refresh;
-  const continuity =
+  const observedContinuity =
     input.refresh ??
     ({
       type: 'code-graph-refresh-continuity' as const,
       version: 1 as const,
-      state: 'deferred' as const,
+      state: input.refreshStatus?.state === 'indexing' ? ('active' as const) : ('deferred' as const),
     } satisfies CodeGraphRefreshContinuity);
-  // A compatible stale read may resume demand already admitted by another
-  // process, but durable demand discovery is maintenance rather than part of
-  // the evidence read. Keep it detached so a usable ready snapshot cannot be
-  // replaced by an MCP timeout while the refresh sidecar is under contention.
-  if (input.watcher.resume !== undefined) {
-    yield* input.watcher
-      .resume({...input.target, key: input.key})
-      .pipe(Effect.ignore, Effect.forkDetach, Effect.asVoid);
+  const failure = input.refreshStatus?.state === 'deferred' ? input.refreshStatus.failure : undefined;
+  const continuity =
+    failure === undefined ? observedContinuity : {...observedContinuity, failure, state: 'deferred' as const};
+  // Durable demand discovery is maintenance, not part of the evidence read.
+  // The watcher owns a keyed single-flight in its service scope so repeated
+  // stale reads return promptly without accumulating detached filesystem work.
+  if (failure?.recovery !== 'reconnect-runtime' && input.watcher.scheduleResume !== undefined) {
+    yield* input.watcher.scheduleResume({...input.target, key: input.key});
   }
   return continuity;
 });

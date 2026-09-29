@@ -168,6 +168,7 @@ describe('deferred code-anchor workspace refresh', () => {
               Layer.succeed(
                 CodeGraphWatcher,
                 CodeGraphWatcher.of({
+                  cachedStatus: () => Effect.succeedNone,
                   ensure: () => Effect.void,
                   metrics: Effect.succeed({
                     activeRefreshKeys: 0,
