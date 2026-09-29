@@ -180,6 +180,21 @@ describe('standalone release workflows', () => {
     }),
   );
 
+  it.effect('loads the publisher version validator without workspace dependencies', () =>
+    Effect.gen(function* () {
+      const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
+      const releaseWorkflow = yield* readProjectFile('.github/workflows/publish.yml');
+      const validator = yield* readProjectFile('scripts/release-version.ts');
+
+      for (const workflow of [publisher, releaseWorkflow]) {
+        expect(workflow).toContain('await import("./scripts/release-version.ts")');
+        expect(workflow).not.toContain('await import("./scripts/prepare-release.ts")');
+      }
+      expect(validator).not.toMatch(/^\s*import\s/m);
+      expect(validator).toContain('Number.isSafeInteger');
+    }),
+  );
+
   it.effect('keeps the v4.6.0 publication recovery exact, one-shot, and artifact-bound', () =>
     Effect.gen(function* () {
       const recovery = yield* readProjectFile('.github/workflows/publish-v4.6.0-recovery.yml');
@@ -249,7 +264,7 @@ describe('standalone release workflows', () => {
       expect(verifyJob).toContain('name: Validate release tag syntax');
       expect(verifyJob).toContain('refs/tags/${RELEASE_TAG}^{commit}');
       expect(verifyJob).toContain('git merge-base --is-ancestor "$head_commit" refs/remotes/origin/main');
-      expect(verifyJob).toContain('await import("./scripts/prepare-release.ts")');
+      expect(verifyJob).toContain('await import("./scripts/release-version.ts")');
       expect(verifyJob).toContain('isSupportedReleaseVersion(tag.slice(1))');
       expect(verifyJob).toContain('canonical safe-integer stable vX.Y.Z');
       expect(verifyJob).toContain('canonical safe-integer stable vX.Y.Z or numbered beta vX.Y.Z-beta.N.');
@@ -276,7 +291,7 @@ describe('standalone release workflows', () => {
       expect(publisher).toContain('persist-credentials: false');
       expect(publisher).toContain('refs/tags/${RELEASE_TAG}:refs/threadnote-release-tag');
       expect(publisher).toContain('remote_tag_commit');
-      expect(publisher).toContain('await import("./scripts/prepare-release.ts")');
+      expect(publisher).toContain('await import("./scripts/release-version.ts")');
       expect(publisher).toContain('isSupportedReleaseVersion(tag.slice(1))');
       expect(publisher).toContain('git merge-base --is-ancestor "$verified_commit" refs/remotes/origin/main');
       expect(publisher).toContain(

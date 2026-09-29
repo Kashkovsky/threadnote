@@ -10,11 +10,12 @@ import {
   releaseHeadlineFromSummary,
   summarizeReleaseNote,
 } from '@threadnote/website/release-notes';
+import {isSupportedReleaseVersion} from './release-version.js';
+
+export {isSupportedReleaseVersion} from './release-version.js';
 
 const ROOT_URL = new URL('..', import.meta.url);
 const RELEASE_NOTES_HEADING = "## What's new";
-const CANONICAL_STABLE_RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const CANONICAL_BETA_RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-beta\.([1-9]\d*)$/;
 
 export interface PrepareReleaseOptions {
   readonly dryRun: boolean;
@@ -30,18 +31,6 @@ export interface PreparedReleasePlan {
   readonly previousVersion: string;
   readonly version: string;
   readonly wrotePackageVersion: boolean;
-}
-
-function isCanonicalBetaReleaseVersion(version: string): boolean {
-  const match = CANONICAL_BETA_RELEASE_VERSION.exec(version);
-  return match !== null && match.slice(1).every(component => Number.isSafeInteger(Number(component)));
-}
-
-export function isSupportedReleaseVersion(version: string): boolean {
-  return (
-    (CANONICAL_STABLE_RELEASE_VERSION.test(version) && parseStableReleaseVersion(`v${version}`) !== undefined) ||
-    isCanonicalBetaReleaseVersion(version)
-  );
 }
 
 function releaseVersionExpectation(): string {

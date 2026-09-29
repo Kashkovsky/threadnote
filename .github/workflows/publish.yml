@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           if bun -e '
             const tag = process.env.RELEASE_TAG ?? "";
-            const {isSupportedReleaseVersion} = await import("./scripts/prepare-release.ts");
+            const {isSupportedReleaseVersion} = await import("./scripts/release-version.ts");
             process.exit(tag.startsWith("v") && isSupportedReleaseVersion(tag.slice(1)) ? 0 : 1);
           '; then
             exit 0
