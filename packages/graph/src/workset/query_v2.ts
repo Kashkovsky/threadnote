@@ -61,7 +61,7 @@ export const CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS = {
   requestMaintenance: false,
 } as const satisfies CodeGraphStatusOptions;
 
-const DEFAULT_DEADLINE_MILLISECONDS = 3_000;
+const DEFAULT_DEADLINE_MILLISECONDS = 5_000;
 const MAXIMUM_DEADLINE_MILLISECONDS = 60_000;
 // Logical cross-repository breadth is independent of both each repository's
 // local node limit and the compact first-page transport projection.
