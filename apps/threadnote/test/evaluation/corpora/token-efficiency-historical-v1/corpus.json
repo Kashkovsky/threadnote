@@ -107,7 +107,7 @@
             "endLine": 1112
           },
           "status": "active",
-          "text": "The class builder installs a generated __replace__ method by attaching the shared evolve function through _add_method_dunders. The shared operation reconstructs an attrs instance from initialization fields while applying requested changes; it is the compatibility bridge for copy/replace-style APIs."
+          "text": "The class builder installs a generated __replace__ method by attaching the shared evolve function through _add_method_dunders. The shared operation reconstructs an attrs instance from initialization fields while applying requested changes."
         }
       ],
       "negativeControls": [
@@ -154,7 +154,7 @@
             "endLine": 3114
           },
           "status": "active",
-          "text": "Click builds option help metadata by resolving option-level show_default first and otherwise inheriting ctx.show_default. Defaults are fetched with resilient parsing and formatted by type, including sequences, enums, dynamic callables, boolean flags, and empty strings, before being appended to the help record."
+          "text": "Click builds option help metadata by resolving option-level show_default first and otherwise inheriting ctx.show_default. Defaults are fetched with resilient parsing and formatted by type, including lists or tuples, enums, function-valued defaults, boolean flags, and empty strings, before being appended to the help record."
         }
       ],
       "negativeControls": [
