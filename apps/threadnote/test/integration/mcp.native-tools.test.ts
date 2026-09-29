@@ -598,19 +598,18 @@ describe('Threadnote MCP toolsets', () => {
           expect(JSON.stringify(codeReferenceTool?.inputSchema)).toContain('Graph-indexed repository-relative path');
         }
         const remember = tools.tools.find(tool => tool.name === 'remember_context');
-        expect(remember?.description).toContain('For kind=handoff or smoke, omit keywords and regenerateKeywords');
         expect(remember?.inputSchema).toMatchObject({
           properties: {
             citationPolicy: {enum: ['require-current', 'defer'], type: 'string'},
             clearKeywords: {
-              description: expect.stringContaining('only keyword control supported for handoff and smoke'),
+              description: expect.stringContaining('handoff/smoke allowed'),
               type: 'boolean',
             },
             keywords: {
-              description: expect.stringContaining('unsupported for handoff and smoke'),
+              description: expect.stringContaining('no handoff/smoke'),
             },
             regenerateKeywords: {
-              description: expect.stringContaining('unsupported for handoff and smoke'),
+              description: expect.stringContaining('no handoff/smoke'),
               type: 'boolean',
             },
             relations: {
