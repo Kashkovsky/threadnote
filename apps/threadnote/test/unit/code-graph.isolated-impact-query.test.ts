@@ -2,6 +2,7 @@ import {systemRuntimeBoundaries} from '../helpers/system-runtime-boundaries.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {fcProp} from '@threadnote/testing/fast-check-property';
+import {TestError} from '@threadnote/testing/test-error';
 import {it as effectIt} from '@effect/vitest';
 import {succeedUndefined} from '@threadnote/platform/optional';
 import {Clock, Effect, Fiber, FileSystem, Layer, Path} from 'effect';
@@ -846,6 +847,53 @@ describe('isolated code graph discovery reads', () => {
     }),
   );
 
+  effectIt.effect('carries persisted refresh continuity from the resolved cross-host identity', () =>
+    Effect.gen(function* () {
+      const seen = {status: 0, attach: 0, inspectOptions: undefined as unknown};
+      const neighbors = {...result, operation: 'neighbors' as const};
+      const service = discoveryService(seen, neighbors, discoveryStatus());
+      let observedIdentity: unknown;
+      const refresh = {
+        currentTargetToken: `cgdq_${'1'.repeat(32)}`,
+        latestDesiredToken: `cgdq_${'2'.repeat(32)}`,
+        state: 'active' as const,
+        type: 'code-graph-refresh-continuity' as const,
+        version: 1 as const,
+      };
+
+      const actual = yield* serveCodeGraphDiscoveryRead(request, {
+        observeRefresh: demandIdentity =>
+          Effect.sync(() => {
+            observedIdentity = demandIdentity;
+            return refresh;
+          }),
+      }).pipe(Effect.provideService(CodeGraphQueryService, service));
+
+      expect(observedIdentity).toEqual({
+        checkoutId: identity.checkoutId,
+        scopeId: projectScope.scope?.scopeKey,
+        threadnoteHome: request.threadnoteHome,
+        worktreeId: identity.worktreeId,
+      });
+      expect(actual.status?.refresh).toEqual(refresh);
+    }),
+  );
+
+  effectIt.effect('keeps ready evidence when persisted refresh observation fails', () =>
+    Effect.gen(function* () {
+      const seen = {status: 0, attach: 0, inspectOptions: undefined as unknown};
+      const neighbors = {...result, operation: 'neighbors' as const};
+      const service = discoveryService(seen, neighbors, discoveryStatus());
+
+      const actual = yield* serveCodeGraphDiscoveryRead(request, {
+        observeRefresh: () => Effect.fail(TestError.make({message: 'fixture continuity failure'})),
+      }).pipe(Effect.provideService(CodeGraphQueryService, service));
+
+      expect(actual.result).toEqual(neighbors);
+      expect(actual.status?.refresh).toBeUndefined();
+    }),
+  );
+
   effectIt.effect('re-attaches stale snapshots before reading', () =>
     Effect.gen(function* () {
       const seen = {status: 0, attach: 0, inspectOptions: undefined as unknown};
@@ -1019,6 +1067,12 @@ describe('isolated code graph discovery reads', () => {
                 protocol: 1,
                 result: neighbors,
                 status: {
+                  refresh: {
+                    currentTargetToken: `cgdq_${'1'.repeat(32)}`,
+                    state: 'active',
+                    type: 'code-graph-refresh-continuity',
+                    version: 1,
+                  },
                   stale: false,
                   readySnapshotId: discoverySnapshot.id,
                   surface: {
@@ -1051,6 +1105,12 @@ describe('isolated code graph discovery reads', () => {
       }
       expect(actual.result).toEqual(neighbors);
       expect(actual.status).toEqual({
+        refresh: {
+          currentTargetToken: `cgdq_${'1'.repeat(32)}`,
+          state: 'active',
+          type: 'code-graph-refresh-continuity',
+          version: 1,
+        },
         stale: false,
         readySnapshotId: discoverySnapshot.id,
         surface: {
@@ -1155,6 +1215,33 @@ describe('isolated code graph discovery reads', () => {
         ),
       );
       expect(badStatus._tag).toBe('IsolatedCodeGraphImpactQueryError');
+      const badRefresh = yield* read(
+        broker(
+          JSON.stringify({
+            ok: true,
+            protocol: 1,
+            result: neighbors,
+            status: {
+              refresh: {
+                currentTargetToken: '/private/repository',
+                state: 'active',
+                type: 'code-graph-refresh-continuity',
+                version: 1,
+              },
+              stale: false,
+              surface: {
+                freshness: 'current',
+                selection: 'active',
+                snapshot: {edgeCount: 7, fileCount: 11, symbolCount: 13},
+              },
+              worktreeId: 'd'.repeat(64),
+              repoRoot: '/workspace/repository',
+            },
+            telemetry: [],
+          }),
+        ),
+      );
+      expect(badRefresh._tag).toBe('IsolatedCodeGraphImpactQueryError');
       const badMarker = yield* read(
         broker(JSON.stringify({ok: false, protocol: 1, telemetry: [], unavailable: 'bogus'})),
       );

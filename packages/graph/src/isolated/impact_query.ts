@@ -1,4 +1,4 @@
-import {Cause, Clock, Effect, Exit, Predicate, Schema, Stdio, Stream} from 'effect';
+import {Cause, Clock, Crypto, Effect, Exit, FileSystem, Option, Path, Predicate, Schema, Stdio, Stream} from 'effect';
 import {CommandExecutor, CommandTimedOut, type CommandExecutionError} from '@threadnote/platform/command';
 import {SystemInfo, type SystemInfoShape} from '@threadnote/platform/system';
 import {CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT} from '@threadnote/graph/worker_protocol';
@@ -24,14 +24,17 @@ import {
   type CodeGraphQueryAnonymousTelemetrySnapshotSurface,
 } from '../query/telemetry_snapshot.js';
 import {codeGraphScopeAdmitsPath} from '../scope/applicability.js';
+import {observeCodeGraphBackgroundDemand, type CodeGraphRefreshDemandIdentity} from '../refresh/demand.js';
 import {resolveRepositoryIdentity} from '../repository.js';
 import {CodeGraphSnapshotUnavailable, type CodeGraphQueryResult, type RepositoryIdentity} from '../types.js';
+import type {CodeGraphRefreshContinuity} from '../watcher.js';
 
 const CODE_GRAPH_IMPACT_QUERY_PROTOCOL = 1 as const;
 const CODE_GRAPH_IMPACT_QUERY_INPUT_BYTES_MAXIMUM = 256 * 1_024;
 const CODE_GRAPH_IMPACT_QUERY_OUTPUT_BYTES_MAXIMUM = 2 * 1_024 * 1_024;
 const CODE_GRAPH_IMPACT_QUERY_TEXT_BYTES_MAXIMUM = 64 * 1_024;
 const CODE_GRAPH_IMPACT_QUERY_SEED_LIMIT = 200;
+const CODE_GRAPH_REFRESH_CONTINUITY_OBSERVATION_TIMEOUT_MILLISECONDS = 1_000;
 const CODE_GRAPH_IMPACT_QUERY_CHANGED_PATHS_SELECTOR = 'changed paths';
 const GIT_OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 const CODE_GRAPH_SNAPSHOT_ID_PATTERN = /^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u;
@@ -101,6 +104,7 @@ type CodeGraphImpactQueryResponse =
     };
 
 export interface CodeGraphImpactQueryReadStatus {
+  readonly refresh?: CodeGraphRefreshContinuity;
   readonly stale: boolean;
   readonly readySnapshotId?: string;
   readonly surface: CodeGraphQueryAnonymousTelemetrySnapshotSurface;
@@ -308,6 +312,9 @@ export const inspectCodeGraphReadIsolated = Effect.fn('codeGraph.readIsolated')(
 export const serveCodeGraphDiscoveryRead = Effect.fn('codeGraph.serveDiscoveryRead')(function* (
   request: CodeGraphImpactQueryRequest,
   options: {
+    readonly observeRefresh?: (
+      identity: CodeGraphRefreshDemandIdentity,
+    ) => Effect.Effect<CodeGraphRefreshContinuity | undefined, unknown>;
     readonly telemetry?: CodeGraphQueryTelemetryObserver;
   } = {},
 ) {
@@ -377,11 +384,24 @@ export const serveCodeGraphDiscoveryRead = Effect.fn('codeGraph.serveDiscoveryRe
       ),
     );
   if (typeof result === 'object' && result !== null && 'unavailable' in result) return result;
+  const scopeId = observation?.projectScope?.scope?.scopeKey;
+  const refresh =
+    options.observeRefresh === undefined
+      ? undefined
+      : yield* options
+          .observeRefresh({
+            checkoutId: attached.identity.checkoutId,
+            ...(scopeId === undefined ? {} : {scopeId}),
+            threadnoteHome: request.threadnoteHome,
+            worktreeId: attached.identity.worktreeId,
+          })
+          .pipe(Effect.orElseSucceed(() => undefined));
   const selection = codeGraphQueryAnonymousTelemetrySnapshotSelection(status, attached);
   const surface = codeGraphQueryAnonymousTelemetrySnapshotSurface(attached, selection);
   return {
     result,
     status: {
+      ...(refresh === undefined || refresh.state === 'idle' ? {} : {refresh}),
       stale: attached.stale,
       ...(attached.readySnapshot === undefined ? {} : {readySnapshotId: attached.readySnapshot.id}),
       surface:
@@ -407,12 +427,27 @@ export const codeGraphImpactQueryWorkerProgram = (threadnoteHome: string) =>
   Effect.gen(function* () {
     const request = yield* readImpactQueryWorkerRequest;
     const query = yield* CodeGraphQueryService;
+    const crypto = yield* Crypto.Crypto;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
     const telemetry: CodeGraphQueryTelemetryObservation[] = [];
+    const observeRefresh = (identity: CodeGraphRefreshDemandIdentity) =>
+      observeCodeGraphBackgroundDemand(identity).pipe(
+        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(SystemInfo, system),
+        Effect.timeoutOption(CODE_GRAPH_REFRESH_CONTINUITY_OBSERVATION_TIMEOUT_MILLISECONDS),
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
     const response =
       request === undefined || request.threadnoteHome !== threadnoteHome
         ? ({ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL, telemetry} as const)
         : request.discover === true
           ? yield* serveCodeGraphDiscoveryRead(request, {
+              observeRefresh,
               telemetry: codeGraphIsolatedQueryTelemetryRecorder(telemetry),
             }).pipe(
               Effect.match({
@@ -867,9 +902,12 @@ function decodeImpactQueryReadStatus(value: unknown): CodeGraphImpactQueryReadSt
   ) {
     return undefined;
   }
+  const refresh = decodeImpactQueryRefreshContinuity(value.refresh);
+  if (value.refresh !== undefined && refresh === undefined) return undefined;
   if (surface.selection === 'none') {
     if (surface.freshness !== undefined || surface.snapshot !== undefined) return undefined;
     return {
+      ...(refresh === undefined ? {} : {refresh}),
       stale: value.stale,
       surface: {selection: 'none'},
       worktreeId: value.worktreeId,
@@ -889,6 +927,7 @@ function decodeImpactQueryReadStatus(value: unknown): CodeGraphImpactQueryReadSt
     return undefined;
   }
   return {
+    ...(refresh === undefined ? {} : {refresh}),
     stale: value.stale,
     ...(value.readySnapshotId === undefined ? {} : {readySnapshotId: value.readySnapshotId}),
     surface: {
@@ -899,6 +938,72 @@ function decodeImpactQueryReadStatus(value: unknown): CodeGraphImpactQueryReadSt
     worktreeId: value.worktreeId,
     repoRoot: value.repoRoot,
   };
+}
+
+function decodeImpactQueryRefreshContinuity(value: unknown): CodeGraphRefreshContinuity | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !Predicate.isObject(value) ||
+    value.type !== 'code-graph-refresh-continuity' ||
+    value.version !== 1 ||
+    !['active', 'queued', 'deferred', 'idle'].includes(String(value.state)) ||
+    value.failure !== undefined
+  ) {
+    return undefined;
+  }
+  const decodeToken = (token: unknown): string | undefined | null =>
+    token === undefined ? undefined : typeof token === 'string' && /^cgdq_[0-9a-f]{32}$/u.test(token) ? token : null;
+  const currentTargetToken = decodeToken(value.currentTargetToken);
+  const latestDesiredToken = decodeToken(value.latestDesiredToken);
+  const queueToken = decodeToken(value.queueToken);
+  if (currentTargetToken === null || latestDesiredToken === null || queueToken === null) return undefined;
+  if (
+    value.retryAfterMilliseconds !== undefined &&
+    (typeof value.retryAfterMilliseconds !== 'number' ||
+      !boundedInteger(value.retryAfterMilliseconds, 0, Number.MAX_SAFE_INTEGER))
+  ) {
+    return undefined;
+  }
+  const retryAfterMilliseconds =
+    typeof value.retryAfterMilliseconds === 'number' ? value.retryAfterMilliseconds : undefined;
+  if (value.state === 'active') {
+    if (currentTargetToken === undefined || queueToken !== undefined || retryAfterMilliseconds !== undefined)
+      return undefined;
+    return {
+      type: 'code-graph-refresh-continuity',
+      version: 1,
+      state: 'active',
+      currentTargetToken,
+      ...(latestDesiredToken === undefined ? {} : {latestDesiredToken}),
+    };
+  }
+  if (value.state === 'queued' || value.state === 'deferred') {
+    if (
+      currentTargetToken !== undefined ||
+      queueToken === undefined ||
+      latestDesiredToken === undefined ||
+      (value.state === 'deferred' && retryAfterMilliseconds === undefined)
+    ) {
+      return undefined;
+    }
+    return {
+      type: 'code-graph-refresh-continuity',
+      version: 1,
+      state: value.state,
+      queueToken,
+      latestDesiredToken,
+      ...(retryAfterMilliseconds === undefined ? {} : {retryAfterMilliseconds}),
+    };
+  }
+  if (
+    currentTargetToken !== undefined ||
+    queueToken !== undefined ||
+    latestDesiredToken !== undefined ||
+    retryAfterMilliseconds !== undefined
+  ) {
+    return undefined;
+  }
+  return {type: 'code-graph-refresh-continuity', version: 1, state: 'idle'};
 }
 
 export function decodeCodeGraphIsolatedQueryTelemetry(
