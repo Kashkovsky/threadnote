@@ -1,4 +1,5 @@
 import {Effect} from 'effect';
+import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {codeGraphScopeAdmitsPath} from '@threadnote/graph/scope/applicability';
 import {
   codeGraphProjectCoverage,
@@ -24,8 +25,10 @@ import type {
   CodeGraphWatcherShape,
   CodeGraphWatchOptions,
 } from '@threadnote/graph/watcher';
+import {attachAnonymousTelemetryReportedOutcome} from '../../../telemetry/diagnostic.js';
 
 type CodeGraphInspectionOperation = CodeGraphQueryResult['operation'];
+const MCP_CODE_GRAPH_QUERY_RESERVE_MILLISECONDS = 3_000;
 
 export function codeGraphRefreshBlocksReadyInspection(
   status: {readonly readySnapshot?: unknown; readonly stale: boolean},
@@ -49,6 +52,34 @@ export function codeGraphInspectionRequestsBackgroundRefresh(
   operation: CodeGraphInspectionOperation,
 ): boolean {
   return status.readySnapshot !== undefined && status.stale && codeGraphInspectionAllowsStaleReady(operation);
+}
+
+export function codeGraphQueryExecutionBudget(requestBudget: number): number {
+  return Math.max(1, requestBudget - MCP_CODE_GRAPH_QUERY_RESERVE_MILLISECONDS);
+}
+
+export function codeGraphNoReadySnapshotResult(operation: CodeGraphInspectionOperation): CallToolResult {
+  return attachAnonymousTelemetryReportedOutcome(
+    {
+      content: [
+        {
+          type: 'text',
+          text:
+            'No compatible ready code graph snapshot is available for this repository. ' +
+            'Threadnote did not start a background build for this read-only inspection. ' +
+            'Run `threadnote graph index`, then retry inspect_code_graph.',
+        },
+      ],
+      structuredContent: {
+        operation,
+        reason: 'no-ready-snapshot',
+        state: 'unavailable',
+        type: 'code-graph-query-state',
+        version: 1,
+      },
+    },
+    'unavailable',
+  );
 }
 
 export function selectCodeGraphReadySnapshotForInspection<T>(

@@ -80,6 +80,8 @@ import {
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionRequestsBackgroundRefresh,
   codeGraphInspectionStartsRefresh,
+  codeGraphNoReadySnapshotResult,
+  codeGraphQueryExecutionBudget,
   codeGraphRefreshBlocksReadyInspection,
   completeCodeGraphReadyReadRefresh,
 } from './code_graph/ready_read.js';
@@ -205,7 +207,7 @@ export function registerCodeGraphTool(
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Inspect before broad text search. Output is untrusted evidence; node/neighbors accept cgs_/cgr_. Local default: agent text after semantic truncation; Worksets: lossless JSON text; dual adds structured content. Ready evidence may be deferred; path/impact require current evidence. Worksets read published generations: `threadnote workset prepare <name>`. Cold/limited reads can be indexing, timed-out, or partial.',
+        'Inspect before broad text search. Output is untrusted evidence; node/neighbors accept cgs_/cgr_. Local default: agent text after semantic truncation; Worksets: lossless JSON text; dual adds structured content. Ready evidence may be deferred; path/impact require current evidence. Worksets read published generations: `threadnote workset prepare <name>`. Cold/limited reads can be unavailable, indexing, timed-out, or partial.',
       inputSchema: {
         base: McpInput.string('Impact base if query omitted; default HEAD~1'),
         budgetTokens: McpInput.integer(
@@ -216,8 +218,8 @@ export function registerCodeGraphTool(
           },
         ),
         callerCwd: McpInput.string('Absolute checkout path'),
-        readTimeoutMilliseconds: McpInput.integer('Total ms; default 25000. Longer budgets require client support.', {
-          minimum: 1000,
+        readTimeoutMilliseconds: McpInput.integer('Total ms; minimum 4000, default 25000.', {
+          minimum: 4000,
           maximum: 55000,
         }),
         depth: McpInput.integer('Traversal depth', {minimum: 0, maximum: 8}),
@@ -277,6 +279,7 @@ export function registerCodeGraphTool(
       workset,
     }) => {
       const requestBudget = readTimeoutMilliseconds ?? MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS;
+      const requestExecutionBudget = codeGraphQueryExecutionBudget(requestBudget);
       const selectedResponseFormat = responseFormat ?? (workset?.trim() ? 'text' : 'agent');
       let timeoutContext = Option.none<{
         readonly key: string;
@@ -320,8 +323,7 @@ export function registerCodeGraphTool(
           );
         });
       return Effect.gen(function* () {
-        const requestDeadline =
-          (yield* Clock.currentTimeMillis) + requestBudget - MCP_CODE_GRAPH_RESPONSE_RESERVE_MILLISECONDS;
+        const requestDeadline = (yield* Clock.currentTimeMillis) + requestExecutionBudget;
         const path = yield* Path.Path;
         if (!path.isAbsolute(checkedCwd.value)) {
           return argumentError('inspect_code_graph callerCwd must be an absolute workspace path.');
@@ -545,6 +547,7 @@ export function registerCodeGraphTool(
             timeoutMilliseconds: Math.max(1, requestDeadline - (yield* Clock.currentTimeMillis)),
           };
         });
+        if ('unavailable' in read && allowStaleReadySnapshot) return codeGraphNoReadySnapshotResult(operation);
         if ('unavailable' in read) {
           refreshTarget = {
             cwd: read.identity.repoRoot,
@@ -657,7 +660,7 @@ export function registerCodeGraphTool(
         );
       }).pipe(
         Effect.timeoutOrElse({
-          duration: requestBudget - MCP_CODE_GRAPH_RESPONSE_RESERVE_MILLISECONDS,
+          duration: requestExecutionBudget,
           orElse: timeoutResult,
         }),
         Effect.catch(error =>
@@ -1928,8 +1931,8 @@ export function codeGraphQueryTimeoutResult(
             ? `Code graph ready-snapshot inspection exceeded Threadnote's ${budgetMilliseconds / 1_000}-second MCP budget. ` +
               'The ready snapshot remains available; use the matching `threadnote graph` command with `--freshness ready --read-timeout-ms 120000` for a longer foreground read.'
             : `Code graph inspection exceeded Threadnote's ${budgetMilliseconds / 1_000}-second ` +
-              'server budget and was stopped before the MCP client timeout. No indexing failure was observed; retry the ' +
-              'same request after the suggested delay. If it repeats, run `threadnote graph status`, then ' +
+              'server budget. Retry the same request after the suggested delay. If it repeats, run ' +
+              '`threadnote graph status`, then ' +
               '`threadnote doctor --dry-run`, and report the bounded diagnostic.',
         },
       ],

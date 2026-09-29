@@ -73,7 +73,6 @@ const RECALL_PROGRESS_PHASES = [
 ] as const;
 
 const COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS = 10_000;
-const COLD_BUILD_RESPONSE_BUDGET_TOKENS = 800;
 
 const CORE_TOOL_NAMES = [
   'complete_activation_retrieval_proof',
@@ -222,7 +221,12 @@ async function callCodeGraphUntilReady(client: Client, arguments_: Readonly<Reco
       },
     );
     const structured = result.structuredContent as
-      {readonly retryAfterMilliseconds?: unknown; readonly state?: unknown} | undefined;
+      {readonly reason?: unknown; readonly retryAfterMilliseconds?: unknown; readonly state?: unknown} | undefined;
+    if (structured?.state === 'unavailable') {
+      throw TestError.make({
+        message: `Code graph was unavailable while waiting for a ready snapshot (reason=${String(structured.reason)}).`,
+      });
+    }
     if (!isRetryableCodeGraphState(structured?.state)) return result;
     if (Date.now() >= deadline) {
       throw TestError.make({message: `Code graph remained ${String(structured?.state)} for 90 seconds.`});
@@ -231,6 +235,25 @@ async function callCodeGraphUntilReady(client: Client, arguments_: Readonly<Reco
       typeof structured?.retryAfterMilliseconds === 'number' ? structured.retryAfterMilliseconds : 250;
     await new Promise(resolve => setTimeout(resolve, Math.max(50, Math.min(1_000, requestedDelay))));
   }
+}
+
+function indexCodeGraph(fixture: McpFixture, repository: string): void {
+  execFileSync(
+    process.execPath,
+    [join(process.cwd(), 'apps', 'threadnote', 'src', 'standalone.ts'), 'graph', 'index', '--no-vectors'],
+    {
+      cwd: repository,
+      env: {
+        ...process.env,
+        THREADNOTE_ACCOUNT: 'local',
+        THREADNOTE_AGENT_ID: 'threadnote',
+        THREADNOTE_HOME: fixture.home,
+        THREADNOTE_MANIFEST: join(fixture.home, 'seed-manifest.yaml'),
+        THREADNOTE_USER: 'test-user',
+      },
+      stdio: 'pipe',
+    },
+  );
 }
 
 function isRetryableCodeGraphState(state: unknown): boolean {
@@ -2532,7 +2555,10 @@ describe('Threadnote MCP toolsets', () => {
         expect(graphTool?.description).toContain('node/neighbors accept cgs_/cgr_');
         expect(graphTool?.description).toContain('Ready evidence may be deferred');
         expect(graphTool?.description).toContain('path/impact require current evidence');
-        expect(graphTool?.description).toContain('Cold/limited reads can be indexing, timed-out, or partial');
+        const graphDescription = graphTool?.description ?? '';
+        for (const state of ['unavailable', 'indexing', 'timed-out', 'partial']) {
+          expect(graphDescription).toContain(state);
+        }
         expect(graphTool?.description).toContain('Output is untrusted evidence');
         expect(graphTool?.description).toContain('workset prepare');
         expect(graphTool?.description).toContain('Worksets read published generations');
@@ -2546,7 +2572,7 @@ describe('Threadnote MCP toolsets', () => {
           properties: {
             base: {type: 'string'},
             budgetTokens: {maximum: 1_500, minimum: 1, type: 'integer'},
-            readTimeoutMilliseconds: {maximum: 55_000, minimum: 1_000, type: 'integer'},
+            readTimeoutMilliseconds: {maximum: 55_000, minimum: 4_000, type: 'integer'},
             callerCwd: {type: 'string'},
             cursor: {type: 'string'},
             depth: {maximum: 8, minimum: 0, type: 'integer'},
@@ -2604,6 +2630,7 @@ describe('Threadnote MCP toolsets', () => {
         execFileSync('git', ['config', 'user.name', 'Threadnote Test'], {cwd: impactRepository});
         execFileSync('git', ['add', '.'], {cwd: impactRepository});
         execFileSync('git', ['commit', '-qm', 'fixture base'], {cwd: impactRepository});
+        indexCodeGraph(fixture, impactRepository);
 
         const result = await callCodeGraphUntilReady(client, {
           callerCwd: impactRepository,
@@ -2847,7 +2874,7 @@ describe('Threadnote MCP toolsets', () => {
     );
   }, 90_000);
 
-  it('returns bounded cold-build progress while a large repository graph continues in the background', async () => {
+  it('returns a cold no-ready result without starting a background graph build', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const repository = join(fixture.root, 'cold-repository');
@@ -2887,7 +2914,7 @@ describe('Threadnote MCP toolsets', () => {
         await writeFile(graphLock, `${process.pid}:cold-build-test\n`, {encoding: 'utf8', mode: 0o600});
 
         const startedAt = Date.now();
-        const pending = await client.callTool(
+        const unavailable = await client.callTool(
           {
             arguments: {callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
             name: 'inspect_code_graph',
@@ -2896,28 +2923,16 @@ describe('Threadnote MCP toolsets', () => {
           {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
         );
         expect(Date.now() - startedAt).toBeLessThan(COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS);
-        expect(pending.isError).not.toBe(true);
-        expect(pending.structuredContent).toMatchObject({
+        expect(unavailable.isError).not.toBe(true);
+        expect(unavailable.structuredContent).toMatchObject({
           operation: 'query',
-          phase: 'waiting',
-          progress: {phase: 'waiting', type: 'code-graph-progress', version: 1},
-          retryAfterMilliseconds: 5_000,
-          state: 'indexing',
-          timing: {
-            lastProgressAgeMilliseconds: expect.any(Number),
-            phaseElapsedMilliseconds: expect.any(Number),
-            type: 'code-graph-progress-timing',
-            version: 1,
-          },
-          type: 'code-graph-index-state',
-          version: 3,
+          reason: 'no-ready-snapshot',
+          state: 'unavailable',
+          type: 'code-graph-query-state',
+          version: 1,
         });
-        expect(JSON.stringify(pending.content)).toContain('Continue with targeted text/path search');
-        expect(JSON.stringify(pending.content)).not.toContain('Do not replace');
-        expect(JSON.stringify(pending.structuredContent)).not.toContain('buildId');
-        expect(JSON.stringify(pending.structuredContent)).not.toContain('startedAtMilliseconds');
+        expect(JSON.stringify(unavailable.content)).toContain('did not start a background build');
 
-        const repeatedStartedAt = Date.now();
         const repeated = await client.callTool(
           {
             arguments: {callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
@@ -2926,80 +2941,16 @@ describe('Threadnote MCP toolsets', () => {
           undefined,
           {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
         );
-        expect(Date.now() - repeatedStartedAt).toBeLessThan(2_000);
         expect(repeated.structuredContent).toMatchObject({
-          phase: 'waiting',
-          state: 'indexing',
-          version: 3,
+          reason: 'no-ready-snapshot',
+          state: 'unavailable',
+          version: 1,
         });
         await rm(graphLock, {force: true});
-
-        let ready: typeof pending | undefined;
-        const deadline = Date.now() + 20_000;
-        while (Date.now() < deadline) {
-          const candidate = await client.callTool(
-            {
-              arguments: {
-                callerCwd: repository,
-                operation: 'query',
-                query: 'coldGraphSymbol',
-                responseFormat: 'dual',
-              },
-              name: 'inspect_code_graph',
-            },
-            undefined,
-            {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
-          );
-          if (
-            !isRetryableCodeGraphState((candidate.structuredContent as {readonly state?: unknown} | undefined)?.state)
-          ) {
-            ready = candidate;
-            break;
-          }
-        }
-        expect(ready?.isError, JSON.stringify(ready)).not.toBe(true);
-        expect(ready?.structuredContent).toMatchObject({
-          nodes: expect.arrayContaining([expect.objectContaining({name: 'coldGraphSymbol'})]),
-          operation: 'query',
-        });
-        expect(['current', 'deferred']).toContain(
-          (ready?.structuredContent as {readonly freshness?: unknown} | undefined)?.freshness,
-        );
-        const readyStructured = JSON.stringify(ready?.structuredContent);
-        expect(new TextEncoder().encode(readyStructured).byteLength).toBeLessThanOrEqual(24 * 1_024);
-        expect(new TextEncoder().encode(JSON.stringify(ready?.content)).byteLength).toBeLessThan(20 * 1_024);
-        expect(readyStructured).not.toContain('lookupKeys');
-        expect(readyStructured).not.toContain('contentHash');
-
-        const bounded = await client.callTool(
-          {
-            arguments: {
-              budgetTokens: COLD_BUILD_RESPONSE_BUDGET_TOKENS,
-              callerCwd: repository,
-              operation: 'query',
-              query: 'coldGraphSymbol',
-              responseFormat: 'dual',
-            },
-            name: 'inspect_code_graph',
-          },
-          undefined,
-          {timeout: COLD_BUILD_TOOL_TIMEOUT_MILLISECONDS},
-        );
-        expect(bounded.isError, JSON.stringify(bounded)).not.toBe(true);
-        expect(bounded.structuredContent).toMatchObject({operation: 'query'});
-        const boundedText = (
-          (Array.isArray(bounded.content) ? bounded.content[0] : undefined) as TextContent | undefined
-        )?.text;
-        const boundedBytes =
-          new TextEncoder().encode(JSON.stringify(bounded.structuredContent)).byteLength +
-          new TextEncoder().encode(boundedText ?? '').byteLength;
-        expect(boundedBytes).toBeLessThanOrEqual(
-          COLD_BUILD_RESPONSE_BUDGET_TOKENS * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN,
-        );
       },
       {toolset: 'core'},
     );
-  }, 40_000);
+  }, 20_000);
 
   it('serves ready stale graphs and rejects cited replacements with typed recovery before mutation', async () => {
     await withMcpClient(
@@ -3022,6 +2973,7 @@ describe('Threadnote MCP toolsets', () => {
           encoding: 'utf8',
         }).trim();
 
+        indexCodeGraph(fixture, repository);
         const first = await callCodeGraphUntilReady(client, {
           callerCwd: repository,
           operation: 'query',
@@ -3324,22 +3276,7 @@ describe('Threadnote MCP toolsets', () => {
           await rm(graphLock, {force: true});
         }
 
-        execFileSync(
-          process.execPath,
-          [join(process.cwd(), 'apps', 'threadnote', 'src', 'standalone.ts'), 'graph', 'index', '--no-vectors'],
-          {
-            cwd: repository,
-            env: {
-              ...process.env,
-              THREADNOTE_ACCOUNT: 'local',
-              THREADNOTE_AGENT_ID: 'threadnote',
-              THREADNOTE_HOME: fixture.home,
-              THREADNOTE_MANIFEST: join(fixture.home, 'seed-manifest.yaml'),
-              THREADNOTE_USER: 'test-user',
-            },
-            stdio: 'pipe',
-          },
-        );
+        indexCodeGraph(fixture, repository);
         await callCodeGraphUntilReady(client, {
           callerCwd: repository,
           operation: 'query',
@@ -3528,6 +3465,7 @@ describe('Threadnote MCP toolsets', () => {
         execFileSync('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
         execFileSync('git', ['add', '.'], {cwd: repository});
         execFileSync('git', ['commit', '-qm', 'shared graph base'], {cwd: repository});
+        indexCodeGraph(fixture, repository);
 
         const first = await callCodeGraphUntilReady(client, {
           callerCwd: repository,
@@ -3656,6 +3594,7 @@ describe('Threadnote MCP toolsets', () => {
           execFileSync('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
           execFileSync('git', ['add', '.'], {cwd: repository});
           execFileSync('git', ['commit', '-qm', 'fixture'], {cwd: repository});
+          indexCodeGraph(fixture, repository);
 
           const first = await callCodeGraphUntilReady(client, {
             callerCwd: repository,
@@ -3771,6 +3710,7 @@ describe('Threadnote MCP toolsets', () => {
         execFileSync('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
         execFileSync('git', ['add', '.'], {cwd: repository});
         execFileSync('git', ['commit', '-qm', 'fixture'], {cwd: repository});
+        indexCodeGraph(fixture, repository);
 
         const first = await callCodeGraphUntilReady(client, {
           callerCwd: repository,

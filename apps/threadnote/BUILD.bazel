@@ -1697,6 +1697,7 @@ bun_workspace_test(
         "@npm//:@effect/platform-bun",
         "@npm//:@effect/sql-sqlite-bun",
         "@npm//:@effect/vitest",
+        "@npm//:@modelcontextprotocol/sdk",
         "@npm//:@repomix/tree-sitter-wasms",
         "@npm//:@tree-sitter-grammars/tree-sitter-hcl",
         "@npm//:@tree-sitter-grammars/tree-sitter-lua",

@@ -1100,7 +1100,7 @@ threadnote share conflict resolve <id> --take shared`,
         body: [
           {
             type: 'paragraph',
-            text: 'The first graph query lazily builds a per-checkout SQLite snapshot below ~/.threadnote/indexes/code-graph. Committed source comes from bounded Git object reads; staged, unstaged, renamed, deleted, and eligible untracked files form the current worktree overlay.',
+            text: 'A cold repository has no ready graph snapshot: ordinary query, node, neighbors, and explain reads return state=unavailable with reason=no-ready-snapshot and do not start indexing. Run `threadnote graph index` explicitly to build the per-checkout SQLite snapshot below ~/.threadnote/indexes/code-graph. Committed source comes from bounded Git object reads; staged, unstaged, renamed, deleted, and eligible untracked files form the current worktree overlay.',
           },
           {
             type: 'paragraph',
@@ -1190,7 +1190,7 @@ threadnote graph purge \\
           },
           {
             type: 'paragraph',
-            text: 'A cold MCP call in a large repository may return state=indexing with a phase and retryAfterMilliseconds while one session-scoped build continues. Agents cannot query partial rows from an unpromoted snapshot; retry the same inspect_code_graph call after the requested delay. Once a consistent lexical snapshot is promoted, query, node, neighbors, and explain can use it while optional vector enrichment and whole-graph summaries continue in the background. During a source refresh those operations may disclose the previous ready snapshot as stale; path and impact wait for current state.',
+            text: 'Strict path and impact reads, or an explicit current-freshness request, can start a bounded scoped refresh and return state=indexing with a phase and retryAfterMilliseconds while it continues. Agents cannot query partial rows from an unpromoted snapshot; retry the same inspect_code_graph call after the requested delay. Ordinary query, node, neighbors, and explain reads do not start a cold build; once a consistent snapshot is ready they can use it, and during a source refresh they may disclose the previous ready snapshot as stale; optional vector enrichment and whole-graph summaries continue in the background. Path and impact wait for current state.',
           },
           {
             type: 'paragraph',
@@ -1198,7 +1198,7 @@ threadnote graph purge \\
           },
           {
             type: 'note',
-            text: 'The first MCP graph inspection starts a watcher for that worktree during the MCP session. The watcher debounces filesystem events and performs a full Git reconciliation every five minutes. graph watch exposes the same behavior as a foreground CLI command.',
+            text: 'Ordinary MCP graph reads do not start a watcher or background build for a cold worktree. Use `threadnote graph index` for an explicit build, or use strict path, impact, or current-freshness reads when a bounded refresh is required. `graph watch` explicitly starts a watcher for that worktree, debounces filesystem events, and performs a full Git reconciliation every five minutes.',
           },
         ],
       },

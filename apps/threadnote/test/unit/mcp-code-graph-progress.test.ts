@@ -24,11 +24,17 @@ import {
   compactCodeGraphMcpTiming,
   selectCodeGraphReadySnapshotForInspection,
 } from '@threadnote/threadnote/mcp/server/index';
-import {completeCodeGraphReadyReadRefresh} from '@threadnote/threadnote/mcp/server/code_graph/ready_read';
+import {
+  codeGraphQueryExecutionBudget,
+  completeCodeGraphReadyReadRefresh,
+} from '@threadnote/threadnote/mcp/server/code_graph/ready_read';
 import {analyzeCodeGraph} from '@threadnote/graph/analysis';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '@threadnote/graph/types';
 import type {CodeGraphRefreshStatus, CodeGraphWatcherShape} from '@threadnote/graph/watcher';
-import type {CodeGraphStatusObservation} from '@threadnote/graph/query/contract';
+import {
+  codeGraphInspectionNeedsReadyAttachment,
+  type CodeGraphStatusObservation,
+} from '@threadnote/graph/query/contract';
 import {measureAgentToolResponse} from '@threadnote/protocol/agent-response';
 import {formatCodeGraphMcpResponse} from '@threadnote/threadnote/mcp/code_graph_projection';
 import {
@@ -199,7 +205,7 @@ describe('MCP code graph indexing progress', () => {
 
   fcProp(
     it,
-    'starts refresh only for stale cold or current-required inspections',
+    'starts refresh only for current-required inspections without current evidence',
     {
       operation: FC.constantFrom(
         'query' as const,
@@ -215,7 +221,22 @@ describe('MCP code graph indexing progress', () => {
     ({operation, ready, stale}) => {
       expect(
         codeGraphInspectionStartsRefresh({readySnapshot: ready ? {id: 'ready'} : undefined, stale}, operation),
-      ).toBe(!ready || (stale && (operation === 'path' || operation === 'impact')));
+      ).toBe((!ready || stale) && (operation === 'path' || operation === 'impact'));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  fcProp(
+    it,
+    'attaches a compatible ready snapshot whenever the observed pointer is missing or stale',
+    {
+      ready: FC.boolean(),
+      stale: FC.boolean(),
+    },
+    ({ready, stale}) => {
+      expect(codeGraphInspectionNeedsReadyAttachment({readySnapshot: ready ? {id: 'ready'} : undefined, stale})).toBe(
+        !ready || stale,
+      );
     },
     {fastCheck: {numRuns: 100}},
   );
@@ -454,6 +475,33 @@ describe('MCP code graph indexing progress', () => {
     expect(codeGraphRetryAfterMilliseconds(indexingStatus(60_000))).toBe(15_000);
     expect(codeGraphRetryAfterMilliseconds(indexingStatus(60 * 60_000))).toBe(30_000);
   });
+
+  it('reserves three seconds for query cleanup and response finalization', () => {
+    expect(
+      [4_000, 4_001, 25_000, 55_000].map(requestBudget => [
+        requestBudget,
+        codeGraphQueryExecutionBudget(requestBudget),
+      ]),
+    ).toEqual([
+      [4_000, 1_000],
+      [4_001, 1_001],
+      [25_000, 22_000],
+      [55_000, 52_000],
+    ]);
+  });
+
+  fcProp(
+    it,
+    'keeps every accepted query budget above the cleanup reserve',
+    {requestBudget: FC.integer({min: 4_000, max: 55_000})},
+    ({requestBudget}) => {
+      const executionBudget = codeGraphQueryExecutionBudget(requestBudget);
+      expect(executionBudget).toBeGreaterThanOrEqual(1_000);
+      expect(executionBudget).toBeLessThanOrEqual(requestBudget);
+      expect(requestBudget - executionBudget).toBe(3_000);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
 
   it('keeps elapsed query, active indexing, and deferred refresh states explicit', () => {
     const timedOut = codeGraphQueryTimeoutResult('query');

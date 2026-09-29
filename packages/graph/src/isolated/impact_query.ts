@@ -5,9 +5,9 @@ import {CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT} from '@threadnote/graph/worker_
 import {CodeGraphQueryService, observationFromCodeGraphStatus, type CodeGraphInspectOptions} from '../query.js';
 import {
   codeGraphInspectionAllowsStaleReady,
+  codeGraphInspectionNeedsReadyAttachment,
   codeGraphInspectionObservation,
   codeGraphInspectionObservesWorktree,
-  codeGraphInspectionStartsRefresh,
 } from '../query/contract.js';
 import type {
   CodeGraphQueryTelemetryObservation,
@@ -319,14 +319,13 @@ export const serveCodeGraphDiscoveryRead = Effect.fn('codeGraph.serveDiscoveryRe
     requestMaintenance: false,
     telemetry: options.telemetry,
   });
-  const attached =
-    status.stale || codeGraphInspectionStartsRefresh(status, request.operation)
-      ? yield* query.attachSharedReadySnapshot(request.threadnoteHome, status.identity, status, {
-          allowBorrowedStale: codeGraphInspectionAllowsStaleReady(request.operation),
-          requestMaintenance: false,
-          telemetry: options.telemetry,
-        })
-      : status;
+  const attached = codeGraphInspectionNeedsReadyAttachment(status)
+    ? yield* query.attachSharedReadySnapshot(request.threadnoteHome, status.identity, status, {
+        allowBorrowedStale: codeGraphInspectionAllowsStaleReady(request.operation),
+        requestMaintenance: false,
+        telemetry: options.telemetry,
+      })
+    : status;
   if (attached.readySnapshot === undefined) {
     return {
       unavailable: 'no-ready-snapshot' as const,

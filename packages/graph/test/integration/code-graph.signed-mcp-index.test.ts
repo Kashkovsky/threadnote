@@ -11,7 +11,7 @@ import {sha256Digest, sha256HexFromDigest} from '@threadnote/graph/sharing/diges
 import {defaultGraphShareProfile, graphShareProfileDigest} from '@threadnote/graph/sharing/profile';
 
 describe('MCP-owned signed graph contribution', () => {
-  it('queues and delivers a signed candidate from an ordinary graph query without a contribute command', async () => {
+  it('queues and delivers a signed candidate from a strict graph inspection without a contribute command', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-signed-mcp-index-'));
     const home = join(root, 'home');
     const cas = join(root, 'cas');
@@ -185,6 +185,19 @@ globalThis.fetch = Object.assign(async (input, init) => {
         '-qm',
         'fixture',
       ]);
+      await writeFile(join(repository, 'src', 'after.ts'), 'export function signedMcpAfterTarget() { return 43; }\n');
+      await command('git', ['-C', repository, 'add', '.']);
+      await command('git', [
+        '-C',
+        repository,
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '-qm',
+        'second fixture',
+      ]);
       const {stdout: sourceCommit} = await command('git', ['-C', repository, 'rev-parse', 'HEAD']);
       const coordinatorUrl = 'https://control.example.test';
       const publisherKeyFingerprint = sha256Digest('synthetic publisher');
@@ -265,7 +278,7 @@ globalThis.fetch = Object.assign(async (input, init) => {
       await client.connect(transport);
       const result = await client.callTool({
         name: 'inspect_code_graph',
-        arguments: {callerCwd: repository, operation: 'query', query: 'signedMcpTarget', budgetTokens: 800},
+        arguments: {base: 'HEAD~1', callerCwd: repository, operation: 'impact', budgetTokens: 800},
       });
       expect(result.isError).not.toBe(true);
 
@@ -273,8 +286,9 @@ globalThis.fetch = Object.assign(async (input, init) => {
       await waitFor(() => pendingResult !== undefined, 20_000);
       const candidates = await readJournalCandidates(candidatePath);
       const packageVersion = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')).version;
-      expect(candidates).toHaveLength(1);
-      expect(candidates[0]).toMatchObject({
+      const currentCandidate = candidates.find(candidate => candidate.sourceCommit === sourceCommit.trim());
+      expect(currentCandidate).toBeDefined();
+      expect(currentCandidate).toMatchObject({
         casRoot: cas,
         organization: 'acme',
         partialCoverage: false,
@@ -283,8 +297,8 @@ globalThis.fetch = Object.assign(async (input, init) => {
         resourceLimits: [],
         sourceCommit: sourceCommit.trim(),
       });
-      expect(candidates[0].graphAbi).toMatch(/^[0-9a-f]{64}$/u);
-      expect(candidates[0].snapshotId).toMatch(/^cgsn_[0-9a-f]{40}/u);
+      expect(currentCandidate!.graphAbi).toMatch(/^[0-9a-f]{64}$/u);
+      expect(currentCandidate!.snapshotId).toMatch(/^cgsn_[0-9a-f]{40}/u);
       expect(enrolledWorker).toBeDefined();
       const announcement = pendingResult as {
         algorithm: string;
@@ -292,6 +306,8 @@ globalThis.fetch = Object.assign(async (input, init) => {
         publicKey: string;
         signature: string;
       };
+      const deliveredCandidate = candidates.find(candidate => candidate.actionKey === announcement.body.actionKey);
+      expect(deliveredCandidate).toBeDefined();
       const {idempotencyKey, ...announcementFields} = announcement.body;
       expect(announcement.algorithm).toBe('ed25519');
       expect(announcement.publicKey).toBe(enrolledWorker!.signingPublicKey);
@@ -302,12 +318,12 @@ globalThis.fetch = Object.assign(async (input, init) => {
         await verifySignature(announcement.publicKey, 'announcement', announcement.body, announcement.signature),
       ).toBe(true);
       expect(announcement.body).toMatchObject({
-        actionKey: candidates[0].actionKey,
-        batchId: sourceCommit.trim().slice(0, 40),
+        actionKey: deliveredCandidate!.actionKey,
+        batchId: String(deliveredCandidate!.sourceCommit).slice(0, 40),
         principalId: enrolledWorker!.principalId,
         profileDigest,
         repositoryId,
-        semanticDigest: candidates[0].semanticDigest,
+        semanticDigest: deliveredCandidate!.semanticDigest,
         workerId: enrolledWorker!.workerId,
       });
       const manifestBytes = registryManifests.get(announcement.body.resultManifestDigest);
@@ -318,7 +334,7 @@ globalThis.fetch = Object.assign(async (input, init) => {
         layers: Array<{digest: string; size: number}>;
       };
       expect(manifest.layers).toHaveLength(2);
-      expect(manifest.layers[0].digest).toBe(candidates[0].resultDigest);
+      expect(manifest.layers[0].digest).toBe(deliveredCandidate!.resultDigest);
       expect(manifest.layers[1].digest).toBe(announcement.body.attestationDigest);
       for (const entry of [manifest.config, ...manifest.layers]) {
         const bytes = registryBlobs.get(entry.digest);
@@ -329,9 +345,9 @@ globalThis.fetch = Object.assign(async (input, init) => {
       const resultBytes = registryBlobs.get(manifest.layers[0].digest)!;
       const resultArtifact = JSON.parse(new TextDecoder().decode(resultBytes)) as Record<string, unknown>;
       expect(resultArtifact).toMatchObject({
-        actionKey: candidates[0].actionKey,
+        actionKey: deliveredCandidate!.actionKey,
         repositoryId,
-        semanticDigest: candidates[0].semanticDigest,
+        semanticDigest: deliveredCandidate!.semanticDigest,
       });
       const attestationBytes = registryBlobs.get(manifest.layers[1].digest)!;
       const attestation = JSON.parse(new TextDecoder().decode(attestationBytes)) as {
@@ -343,15 +359,15 @@ globalThis.fetch = Object.assign(async (input, init) => {
       expect(attestation.algorithm).toBe('ed25519');
       expect(attestation.publicKey).toBe(enrolledWorker!.signingPublicKey);
       expect(attestation.claims).toMatchObject({
-        actionKey: candidates[0].actionKey,
-        graphAbi: candidates[0].graphAbi,
+        actionKey: deliveredCandidate!.actionKey,
+        graphAbi: deliveredCandidate!.graphAbi,
         principalId: enrolledWorker!.principalId,
         profileDigest,
-        resultDigest: candidates[0].resultDigest,
+        resultDigest: deliveredCandidate!.resultDigest,
         resultSize: resultBytes.byteLength,
         repositoryId,
-        semanticDigest: candidates[0].semanticDigest,
-        sourceCommit: sourceCommit.trim(),
+        semanticDigest: deliveredCandidate!.semanticDigest,
+        sourceCommit: deliveredCandidate!.sourceCommit,
         workerId: enrolledWorker!.workerId,
       });
       expect(
@@ -362,10 +378,13 @@ globalThis.fetch = Object.assign(async (input, init) => {
       await waitFor(() => delivered, 20_000);
       expect(requests).toContain('POST /v1/enroll');
       expect(requests).toContain('POST /v1/results');
-      await waitFor(async () => {
-        const manifest = JSON.parse(await readFile(candidatePath, 'utf8'));
-        return manifest.segments.length === 0;
-      }, 5_000);
+      await waitFor(
+        async () =>
+          !(await readJournalCandidates(candidatePath)).some(
+            candidate => candidate.actionKey === deliveredCandidate!.actionKey,
+          ),
+        5_000,
+      );
     } finally {
       releaseResult();
       await client?.close();
