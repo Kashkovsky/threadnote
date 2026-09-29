@@ -8,6 +8,7 @@ import {matchedEvaluationReferenceEnvironmentPolicyHashV1} from '@threadnote/thr
 import {
   MATCHED_EVALUATION_CONTEXT_PACKET_ENV,
   MATCHED_EVALUATION_CONTEXT_SERVER_NAME,
+  renderMatchedEvaluationRuntimeManifestV1,
   runMatchedEvaluationContextProxy,
   type MatchedEvaluationContextProxyPacketV1,
 } from './matched-evaluation-context-proxy.js';
@@ -567,6 +568,13 @@ async function createCodexIsolation(input: {
       throw new Error('Threadnote arm lacks its prepared home or pinned tool.');
     }
     packetPath = join(privateRoot, `context-${randomUUID()}.json`);
+    const runtimeManifestPath = join(privateRoot, `manifest-${randomUUID()}.json`);
+    const runtimeManifest = renderMatchedEvaluationRuntimeManifestV1(
+      input.prepared.project,
+      input.repositoryRoot,
+      input.runNonce,
+    );
+    await writeFile(runtimeManifestPath, runtimeManifest, {flag: 'wx', mode: 0o600});
     const packet: MatchedEvaluationContextProxyPacketV1 = {
       budgetTokens: input.config.contextBudgetTokens,
       detail:
@@ -580,12 +588,14 @@ async function createCodexIsolation(input: {
       prompt: input.taskPrompt,
       repositoryRoot: input.repositoryRoot,
       runNonce: input.runNonce,
+      runtimeManifestPath,
+      runtimeManifestSha256: sha256(Buffer.from(runtimeManifest)),
       threadnoteExecutable: input.tool.executable,
       threadnoteExecutableSha256: input.tool.artifactHash,
       threadnoteHome: input.prepared.home,
       version: 1,
     };
-    await writeFile(packetPath, `${JSON.stringify(packet)}\n`, {mode: 0o600});
+    await writeFile(packetPath, `${JSON.stringify(packet)}\n`, {flag: 'wx', mode: 0o600});
   }
   const model = input.useJudgeModel ? input.config.judgeModel : input.config.model;
   await writeFile(

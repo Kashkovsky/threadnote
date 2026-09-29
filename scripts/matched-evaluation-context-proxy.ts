@@ -30,6 +30,8 @@ export interface MatchedEvaluationContextProxyPacketV1 {
   readonly prompt: string;
   readonly repositoryRoot: string;
   readonly runNonce: string;
+  readonly runtimeManifestPath: string;
+  readonly runtimeManifestSha256: string;
   readonly threadnoteExecutable: string;
   readonly threadnoteExecutableSha256: string;
   readonly threadnoteHome: string;
@@ -90,7 +92,10 @@ export async function handleMatchedEvaluationContextRequest(
   const requestedRefs =
     request.codeRefs === undefined ? [] : typeof request.codeRefs === 'string' ? [request.codeRefs] : request.codeRefs;
   const codeRefs = requestedRefs.map(reference => validatedCodeRef(reference, packet.repositoryRoot));
-  await assertPinnedExecutable(packet.threadnoteExecutable, packet.threadnoteExecutableSha256);
+  await Promise.all([
+    assertPinnedExecutable(packet.threadnoteExecutable, packet.threadnoteExecutableSha256),
+    assertRuntimeManifest(packet, preparedHome),
+  ]);
   const structuredContent = await runThreadnoteContextBrief(packet, {
     codeRefs,
     mode: request.mode ?? 'brief',
@@ -106,6 +111,7 @@ export async function handleMatchedEvaluationContextRequest(
         ...packet.expectedContext,
         graphReady: true,
         runNonce: packet.runNonce,
+        runtimeManifestSha256: packet.runtimeManifestSha256,
         version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
       },
     },
@@ -125,6 +131,8 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'prompt',
     'repositoryRoot',
     'runNonce',
+    'runtimeManifestPath',
+    'runtimeManifestSha256',
     'threadnoteExecutable',
     'threadnoteExecutableSha256',
     'threadnoteHome',
@@ -164,11 +172,35 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     prompt: boundedText(packet.prompt, 1, 4_096, 'prompt'),
     repositoryRoot: absolutePath(packet.repositoryRoot, 'repository root'),
     runNonce: matching(packet.runNonce, RUN_NONCE, 'run nonce'),
+    runtimeManifestPath: absolutePath(packet.runtimeManifestPath, 'runtime manifest'),
+    runtimeManifestSha256: matching(packet.runtimeManifestSha256, HASH, 'runtime manifest hash'),
     threadnoteExecutable: absolutePath(packet.threadnoteExecutable, 'Threadnote executable'),
     threadnoteExecutableSha256: matching(packet.threadnoteExecutableSha256, HASH, 'Threadnote executable hash'),
     threadnoteHome: absolutePath(packet.threadnoteHome, 'Threadnote home'),
     version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
   };
+}
+
+export function renderMatchedEvaluationRuntimeManifestV1(
+  projectInput: string,
+  repositoryRootInput: string,
+  runNonceInput: string,
+): string {
+  const project = matching(projectInput, PROJECT, 'project');
+  const repositoryRoot = absolutePath(repositoryRootInput, 'repository root');
+  const runNonce = matching(runNonceInput, RUN_NONCE, 'run nonce');
+  return `${JSON.stringify({
+    matchedEvaluationRun: runNonce,
+    projects: [
+      {
+        name: project,
+        path: repositoryRoot,
+        seed: [],
+        uri: `threadnote://resources/repos/${project}`,
+      },
+    ],
+    version: 1,
+  })}\n`;
 }
 
 async function runThreadnoteContextBrief(
@@ -179,6 +211,8 @@ async function runThreadnoteContextBrief(
     'context',
     'brief',
     '--json',
+    '--manifest',
+    packet.runtimeManifestPath,
     '--cwd',
     packet.repositoryRoot,
     '--project',
@@ -208,6 +242,38 @@ async function runThreadnoteContextBrief(
     return object(JSON.parse(result) as unknown, 'Threadnote Context Brief');
   } catch (cause) {
     throw new Error('Threadnote returned invalid Context Brief JSON.', {cause});
+  }
+}
+
+async function assertRuntimeManifest(
+  packet: MatchedEvaluationContextProxyPacketV1,
+  preparedHome: string,
+): Promise<void> {
+  const canonical = await realpath(packet.runtimeManifestPath);
+  const metadata = await stat(canonical);
+  const isolatedRoot = dirname(packet.repositoryRoot);
+  if (
+    canonical !== packet.runtimeManifestPath ||
+    !metadata.isFile() ||
+    metadata.nlink !== 1 ||
+    (metadata.mode & 0o777) !== 0o600
+  ) {
+    throw new Error('Runtime manifest is not one canonical owner-only file.');
+  }
+  if (
+    !isContained(isolatedRoot, canonical) ||
+    isContained(packet.repositoryRoot, canonical) ||
+    isContained(preparedHome, canonical)
+  ) {
+    throw new Error('Runtime manifest escaped its isolated private root.');
+  }
+  const bytes = await readFile(canonical);
+  if (createHash('sha256').update(bytes).digest('hex') !== packet.runtimeManifestSha256) {
+    throw new Error('Runtime manifest differs from the sealed artifact.');
+  }
+  const expected = renderMatchedEvaluationRuntimeManifestV1(packet.project, packet.repositoryRoot, packet.runNonce);
+  if (!bytes.equals(Buffer.from(expected))) {
+    throw new Error('Runtime manifest does not bind the isolated repository and run.');
   }
 }
 

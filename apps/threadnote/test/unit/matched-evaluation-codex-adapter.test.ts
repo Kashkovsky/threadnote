@@ -1,4 +1,4 @@
-import {chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile} from '@threadnote/testing/node-fs-promises';
+import {chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile} from '@threadnote/testing/node-fs-promises';
 import {tmpdir} from '@threadnote/testing/node-os';
 import {delimiter, dirname, join} from '@threadnote/testing/node-path';
 import {sha256HexSync} from '@threadnote/platform/sha256';
@@ -259,6 +259,7 @@ describe('matched evaluation Codex adapter', () => {
     });
     expect(sha256HexSync(await readFile(artifactPath))).toBe(response.artifactHash);
     expect(sha256HexSync(await readFile(transcriptPath))).toBe(response.transcriptHash);
+    expect((await readdir(root)).filter(name => name.startsWith('matched-evaluation-codex-'))).toEqual([]);
   }, 30_000);
 });
 

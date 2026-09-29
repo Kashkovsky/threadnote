@@ -1241,7 +1241,7 @@ async function captureGit(root: string, arguments_: readonly string[], allowFail
 function threadnoteEnvironment(home: string, safeExecutablePath: string): Readonly<Record<string, string>> {
   return {
     CI: '1',
-    HOME: home,
+    HOME: process.env.HOME ?? '/nonexistent',
     LANG: 'C.UTF-8',
     LC_ALL: 'C.UTF-8',
     NO_COLOR: '1',
