@@ -3,6 +3,72 @@
 This directory is the release-quality contract for Threadnote retrieval. It is intentionally independent of a
 developer home, network access, local canonical data, and model-generated relevance scores.
 
+## Matched provider-token experiment v1
+
+The matched evaluator has a claim-oriented local lane for testing whether established Threadnote context reduces
+provider-reported tokens per independently verified task completion. It compares `files`, `threadnote-graph`,
+`threadnote-compact`, and `threadnote-source` on the same blinded, counterbalanced task schedule; `reference-scope`
+remains an optional comparator. Five repetitions (or another multiple of five) expose every arm in every schedule
+position.
+The primary denominator is a verified completion, and every completed attempt's provider tokens stay in the numerator,
+including incorrect, incomplete, invalid, or safety-failing attempts.
+
+This lane models an established workspace, not first-day setup. Before freezing the study, prepare the graph to `ready`,
+create and review the memories, finalize their code links, and retain the exact graph snapshot and link-receipt hashes.
+Each linked-memory Threadnote observation must attest those preregistered hashes. The graph-only arm attests the same
+ready graph snapshot while memory access and receipt fields are disabled. The files-only and reference arms attest no
+Threadnote context, and the runner sends no raw memory fixture text to any adapter. Graph preparation, memory authoring,
+memory review, elapsed setup time, observed reuse, and lifecycle break-even remain separate, hash-bound accounting.
+
+Article-quality input uses independently held-out public Git repositories. Each cluster binds a public HTTPS repository
+URL, exact 40-character revision, repository fixture hash, and task IDs. The study must cover at least its preregistered
+cluster count. A test fixture or a task split from one synthetic repository is useful for evaluator regression only and
+must not be described as external evidence.
+
+The primary local estimand uses an `identical-as-issued` prompt policy. Preserve each historical task packet exactly as
+the engineer issued it, including manually supplied code, logs, guesses, or architecture notes, and send those exact
+bytes to every arm. Before any outcomes are visible, independent review classifies the extracted manual context as
+`none`, `lacking`, `sufficient`, or `excessive` and binds both the extracted-content hash and assessment hash into the
+study. The report shows every comparison by this context stratum. This prevents an artificially bare files-only prompt
+from manufacturing a Threadnote win. Stratum estimates are descriptive and do not receive their own confidence gate.
+
+This local lane does not establish that developers will change how much context they supply after adopting Threadnote.
+A context-replacement simulation must be a separately preregistered study, and its changed-prompt estimand must be
+reported as such. The behavioral claim requires a randomized developer trial: control developers work normally,
+treatment developers use Threadnote, both may provide any context they choose, and analysis clusters by developer and
+repository while retaining all provider tokens and task failures.
+
+Build the frozen corpus and manifest with `createMatchedEvaluationManifestV1`, then build each prepared context and the
+study with `createMatchedTokenEfficiencyTaskContextV1` and `createMatchedTokenEfficiencyStudyV1`. Pin the reviewed
+adapter, model parameters, Threadnote executable, lock identity, repository checkout, and environment in the existing
+runtime file. Run the experiment locally with canonical absolute paths:
+
+```sh
+bun run eval:matched:claim -- \
+  --corpus /absolute/path/to/corpus.json \
+  --manifest /absolute/path/to/manifest.json \
+  --runtime /absolute/path/to/runtime.json \
+  --study /absolute/path/to/study.json
+```
+
+The local `.context` artifact directory receives the append-only `outcomes.jsonl`, ordinary matched `summary.json`,
+`token-efficiency-report.json`, `article-evidence.md`, per-run artifacts, and raw transcripts. A comparative claim passes
+only when the complete files and target matrices have provider usage, the cluster-bootstrap 95% lower bound clears the
+preregistered token-reduction threshold, verified completion is non-inferior, and false-current, authorization-leak,
+and harmful-action gates pass. It reports total product effects against files-only and the incremental linked-memory
+effect of `threadnote-compact` against `threadnote-graph`; the latter uses a separately preregistered reduction threshold
+and incremental lifecycle setup cost. Missing usage or an incomplete matrix is inconclusive, never a win.
+Provider usage covers the complete agent task window, including any adapter-internal retries or recovery calls, while
+the blinded judge's own tokens are evaluation overhead and remain outside the product-arm numerator. A pinned adapter
+must keep agent execution isolated from `judgeTask` gold evidence; adapter review is part of study admission.
+
+Raw transcripts stay local and must not be stored in Threadnote memory. After every completed experiment—including a
+failed or null result—review `article-evidence.md` and store one replace-in-place durable memory under the stable topic
+`token-efficiency-experiment-evidence`. Preserve the report, manifest, study, and corpus hashes; exact public cluster
+revisions; arm accounting; intervals; gate decision; lifecycle break-even; and limitations. This prevents selective
+publication while leaving the future article traceable to the exact local evidence bundle. The evaluator deliberately
+does not write that memory itself, because mutating Threadnote context during a trial would contaminate the experiment.
+
 The [Threadnote 5 release-readiness fixture](fixtures/threadnote-5-task-loop-v1/README.md) freezes an executable,
 content-free replay contract for solo, two-agent, Git-shared, offline, dirty-worktree, interrupted/resumed,
 upgrade/downgrade, provider-neutral proposal, and health-maintenance scenarios. It independently validates exact source

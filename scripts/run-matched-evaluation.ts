@@ -14,6 +14,7 @@ import {
   parseMatchedEvaluationManifestV1,
   type MatchedEvaluationArm,
   type MatchedEvaluationArmDefinitionV1,
+  MATCHED_EVALUATION_ARMS,
 } from '@threadnote/threadnote/evaluation/matched-evaluation';
 import {
   parseMatchedEvaluationObservationV1,
@@ -23,6 +24,14 @@ import {
   type MatchedEvaluationRunRequestV1,
   type MatchedEvaluationUnavailableReason,
 } from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
+import {
+  assertMatchedTokenEfficiencyObservationContextV1,
+  assertMatchedTokenEfficiencyStudyMatchesV1,
+  evaluateMatchedTokenEfficiencyV1,
+  parseMatchedTokenEfficiencyStudyV1,
+  renderMatchedTokenEfficiencyArticleEvidenceV1,
+  type MatchedTokenEfficiencyStudyV1,
+} from '@threadnote/threadnote/evaluation/matched-token-efficiency';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
@@ -34,7 +43,7 @@ import {
   withMatchedEvaluationArtifactLockV1,
 } from './matched-evaluation-runtime-integrity.js';
 
-export const MATCHED_EVALUATION_RUNTIME_VERSION = 1 as const;
+export const MATCHED_EVALUATION_RUNTIME_VERSION = 2 as const;
 
 export interface MatchedEvaluationRuntimeV1 {
   readonly arms: readonly MatchedEvaluationRuntimeArmV1[];
@@ -52,6 +61,46 @@ export interface MatchedEvaluationRuntimeArmV1 {
   readonly environmentKeys: readonly string[];
   readonly toolExecutable: string | null;
   readonly toolLockFile: string | null;
+}
+
+export function projectMatchedEvaluationAdapterTaskV1(
+  request: Pick<MatchedEvaluationRunRequestV1, 'arm' | 'task'>,
+  study: MatchedTokenEfficiencyStudyV1 | null,
+) {
+  const taskContext = study?.taskContexts.find(context => context.taskId === request.task.taskId) ?? null;
+  if (study !== null && taskContext === null) {
+    throw new Error(`Token-efficiency study has no prepared context for ${request.task.taskId}.`);
+  }
+  return {
+    agentTask: {
+      category: request.task.category,
+      /** Memory contents must be discovered through the pinned arm, never injected into an adapter request. */
+      memoryFixtures: [] as const,
+      prompt: request.task.prompt,
+      repositoryFixtureHash: request.task.repositoryFixtureHash,
+      taskId: request.task.taskId,
+      variant: request.task.variant,
+    },
+    preparedContext:
+      request.arm === 'threadnote-compact' || request.arm === 'threadnote-source'
+        ? {memoryAccess: 'linked' as const, studyHash: study?.studyHash ?? null, taskContext}
+        : request.arm === 'threadnote-graph'
+          ? {
+              graphContext:
+                taskContext === null
+                  ? null
+                  : {
+                      clusterId: taskContext.clusterId,
+                      graphContentHash: taskContext.graphContentHash,
+                      graphSnapshotHash: taskContext.graphSnapshotHash,
+                      repositoryFixtureHash: taskContext.repositoryFixtureHash,
+                      taskId: taskContext.taskId,
+                    },
+              memoryAccess: 'disabled' as const,
+              studyHash: study?.studyHash ?? null,
+            }
+          : null,
+  };
 }
 
 interface ResolvedRuntimeArm {
@@ -86,12 +135,17 @@ export async function runMatchedEvaluationFromFilesV1(options: {
   readonly corpusPath: string;
   readonly manifestPath: string;
   readonly runtimePath: string;
+  readonly studyPath?: string | null;
 }): Promise<void> {
-  const [corpus, manifest, runtime] = await Promise.all([
+  const [corpus, manifest, runtime, study] = await Promise.all([
     readJson(options.corpusPath).then(parseMatchedEvaluationCorpusV1),
     readJson(options.manifestPath).then(parseMatchedEvaluationManifestV1),
     readJson(options.runtimePath).then(parseMatchedEvaluationRuntimeV1),
+    options.studyPath === null || options.studyPath === undefined
+      ? Promise.resolve(null)
+      : readJson(options.studyPath).then(parseMatchedTokenEfficiencyStudyV1),
   ]);
+  if (study !== null) assertMatchedTokenEfficiencyStudyMatchesV1(study, corpus, manifest);
   if (runtime.repositoryIdentityHash !== manifest.repository.identityHash) {
     throw new Error('Runtime repository identity differs from the content-addressed manifest.');
   }
@@ -123,7 +177,7 @@ export async function runMatchedEvaluationFromFilesV1(options: {
       corpus,
       execute: async request => {
         await assertMatchedEvaluationRepositoryV1(runtime.repositoryDirectory, manifest.repository);
-        const result = await executeArm(runtime, requiredResolvedArm(resolved, request.arm), request);
+        const result = await executeArm(runtime, requiredResolvedArm(resolved, request.arm), request, study);
         await assertMatchedEvaluationRepositoryV1(runtime.repositoryDirectory, manifest.repository);
         return result;
       },
@@ -142,12 +196,27 @@ export async function runMatchedEvaluationFromFilesV1(options: {
     await assertMatchedEvaluationRepositoryV1(runtime.repositoryDirectory, manifest.repository);
     const summary = summarizeMatchedEvaluationV1(manifest, outcomes);
     await atomicWrite(summaryPath, `${JSON.stringify(summary, undefined, 2)}\n`);
+    const tokenEfficiencyReport =
+      study === null ? null : evaluateMatchedTokenEfficiencyV1({corpus, manifest, outcomes, study});
+    if (tokenEfficiencyReport !== null) {
+      await Promise.all([
+        atomicWrite(
+          resolve(runtime.artifactDirectory, 'token-efficiency-report.json'),
+          `${JSON.stringify(tokenEfficiencyReport, undefined, 2)}\n`,
+        ),
+        atomicWrite(
+          resolve(runtime.artifactDirectory, 'article-evidence.md'),
+          renderMatchedTokenEfficiencyArticleEvidenceV1(tokenEfficiencyReport),
+        ),
+      ]);
+    }
     process.stdout.write(
       `${JSON.stringify({
         artifactDirectory: runtime.artifactDirectory,
         completed: outcomes.filter(outcome => outcome.status === 'completed').length,
         comparativeClaimsEligible: summary.comparativeClaimsEligible,
         manifestHash: manifest.manifestHash,
+        tokenEfficiencyReportHash: tokenEfficiencyReport?.reportHash ?? null,
         unavailable: Object.fromEntries(unavailable),
         version: MATCHED_EVALUATION_RUNTIME_VERSION,
       })}\n`,
@@ -162,7 +231,7 @@ export function parseMatchedEvaluationRuntimeV1(value: unknown): MatchedEvaluati
     ['arms', 'artifactDirectory', 'repositoryDirectory', 'repositoryIdentityHash', 'timeoutMilliseconds', 'version'],
     'runtime',
   );
-  if (runtime.version !== MATCHED_EVALUATION_RUNTIME_VERSION) invalid('runtime version must be 1');
+  if (runtime.version !== MATCHED_EVALUATION_RUNTIME_VERSION) invalid('runtime version must be 2');
   const arms = array(runtime.arms, 'runtime arms').map((entry, index) => parseRuntimeArm(entry, index));
   unique(
     arms.map(arm => arm.arm),
@@ -221,6 +290,7 @@ async function executeArm(
   runtime: MatchedEvaluationRuntimeV1,
   resolvedArm: ResolvedRuntimeArm,
   request: MatchedEvaluationRunRequestV1,
+  study: MatchedTokenEfficiencyStudyV1 | null,
 ) {
   const runDirectory = resolve(runtime.artifactDirectory, 'runs', request.schedule.runNonce);
   const transcriptDirectory = resolve(runtime.artifactDirectory, 'transcripts');
@@ -238,19 +308,13 @@ async function executeArm(
   const stagedArm = await stageResolvedRuntimeArmV1(resolvedArm, stagedDirectory);
   if (request.arm === 'reference-scope')
     await mkdir(resolve(runDirectory, 'reference-home'), {recursive: true, mode: 0o700});
+  const projectedTask = projectMatchedEvaluationAdapterTaskV1(request, study);
   await atomicWrite(
     requestPath,
     `${JSON.stringify(
       {
         adapterProtocol: stagedArm.definition.adapterProtocol,
-        agentTask: {
-          category: request.task.category,
-          memoryFixtures: request.task.memoryFixtures,
-          prompt: request.task.prompt,
-          repositoryFixtureHash: request.task.repositoryFixtureHash,
-          taskId: request.task.taskId,
-          variant: request.task.variant,
-        },
+        agentTask: projectedTask.agentTask,
         artifactPath,
         blindLabel: request.schedule.blindLabel,
         judgeTask: {
@@ -261,11 +325,18 @@ async function executeArm(
         manifestHash: request.manifest.manifestHash,
         model: request.manifest.model,
         repository: request.manifest.repository,
+        preparedContext: projectedTask.preparedContext,
         runNonce: request.schedule.runNonce,
         runOrder: request.schedule.runOrder,
         tool: {
           detail:
-            request.arm === 'threadnote-source' ? 'source' : request.arm === 'threadnote-compact' ? 'compact' : null,
+            request.arm === 'threadnote-source'
+              ? 'source'
+              : request.arm === 'threadnote-compact'
+                ? 'compact'
+                : request.arm === 'threadnote-graph'
+                  ? 'graph-only'
+                  : null,
           executable: stagedArm.toolExecutable,
           name: stagedArm.definition.tool.name,
           version: stagedArm.definition.tool.version,
@@ -297,6 +368,14 @@ async function executeArm(
     throw new Error(`${request.arm} adapter failed with exit code ${result.exitCode}: ${boundedDiagnostic(result)}`);
   }
   const observation = parseMatchedEvaluationObservationV1(await readJson(responsePath));
+  if (study !== null) {
+    assertMatchedTokenEfficiencyObservationContextV1({
+      arm: request.arm,
+      metrics: observation.metrics,
+      study,
+      taskId: request.task.taskId,
+    });
+  }
   const [artifactHash, transcriptHash] = await Promise.all([
     boundedRegularFileHash(artifactPath, MAXIMUM_JSON_BYTES, 'adapter artifact'),
     boundedRegularFileHash(transcriptPath, MAXIMUM_TRANSCRIPT_BYTES, 'local transcript'),
@@ -422,11 +501,7 @@ function parseRuntimeArm(value: unknown, index: number): MatchedEvaluationRuntim
   return {
     adapterArguments: stringArray(arm.adapterArguments, 0, 64, 4_096, `runtime arm ${index} adapter arguments`),
     adapterExecutable: absolutePath(arm.adapterExecutable, `runtime arm ${index} adapter executable`),
-    arm: literal(
-      arm.arm,
-      ['files', 'threadnote-compact', 'threadnote-source', 'reference-scope'] as const,
-      `runtime arm ${index} id`,
-    ),
+    arm: literal(arm.arm, MATCHED_EVALUATION_ARMS, `runtime arm ${index} id`),
     environmentKeys,
     toolExecutable:
       arm.toolExecutable === null ? null : absolutePath(arm.toolExecutable, `runtime arm ${index} tool executable`),
@@ -439,11 +514,12 @@ function parseArguments(args: readonly string[]): {
   readonly corpusPath: string;
   readonly manifestPath: string;
   readonly runtimePath: string;
+  readonly studyPath: string | null;
 } {
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 1) {
     const option = args[index];
-    if (!['--corpus', '--manifest', '--runtime'].includes(option) || values.has(option)) {
+    if (!['--corpus', '--manifest', '--runtime', '--study'].includes(option) || values.has(option)) {
       throw ScriptError.make({message: `Unknown or repeated matched evaluation option: ${option}`});
     }
     values.set(option, required(args[++index], option));
@@ -452,6 +528,8 @@ function parseArguments(args: readonly string[]): {
     corpusPath: absolutePath(required(values.get('--corpus'), '--corpus'), '--corpus'),
     manifestPath: absolutePath(required(values.get('--manifest'), '--manifest'), '--manifest'),
     runtimePath: absolutePath(required(values.get('--runtime'), '--runtime'), '--runtime'),
+    studyPath:
+      values.get('--study') === undefined ? null : absolutePath(required(values.get('--study'), '--study'), '--study'),
   };
 }
 

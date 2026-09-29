@@ -29,19 +29,19 @@ describe('matched Threadnote, reference, and files evaluation', () => {
 
     expect(manifest.tasks).toHaveLength(6);
     expect(new Set(manifest.tasks.map(task => task.category))).toEqual(new Set(MATCHED_EVALUATION_TASK_CATEGORIES));
-    expect(manifest.schedule).toHaveLength(6 * 4 * 4);
+    expect(manifest.schedule).toHaveLength(6 * 5 * 5);
     expect(parseMatchedEvaluationManifestV1(manifest)).toEqual(manifest);
 
     for (const task of manifest.tasks) {
       const entries = manifest.schedule.filter(entry => entry.taskId === task.taskId);
       for (const label of MATCHED_EVALUATION_BLIND_LABELS) {
-        expect(entries.filter(entry => entry.blindLabel === label)).toHaveLength(4);
+        expect(entries.filter(entry => entry.blindLabel === label)).toHaveLength(5);
         expect(
           entries
             .filter(entry => entry.blindLabel === label)
             .map(entry => entry.position)
             .sort(),
-        ).toEqual([1, 2, 3, 4]);
+        ).toEqual([1, 2, 3, 4, 5]);
       }
     }
   });
@@ -71,7 +71,7 @@ describe('matched Threadnote, reference, and files evaluation', () => {
                   .filter(entry => entry.blindLabel === label)
                   .map(entry => entry.position)
                   .sort(),
-              ).toEqual([1, 2, 3, 4]);
+              ).toEqual([1, 2, 3, 4, 5]);
             }
           }
         },
@@ -137,9 +137,9 @@ describe('matched Threadnote, reference, and files evaluation', () => {
 
     expect(outcomes).toHaveLength(manifest.schedule.length);
     expect(assertMatchedEvaluationOutcomePrefixV1(manifest, outcomes)).toEqual(outcomes);
-    expect(summary.arms.find(arm => arm.arm === 'reference-scope')).toMatchObject({completed: 0, unavailable: 24});
+    expect(summary.arms.find(arm => arm.arm === 'reference-scope')).toMatchObject({completed: 0, unavailable: 30});
     expect(summary.arms.find(arm => arm.arm === 'threadnote-source')).toMatchObject({
-      completed: 24,
+      completed: 30,
       unavailable: 0,
     });
     expect(summary.comparativeClaimsEligible).toBe(false);
@@ -210,6 +210,24 @@ describe('matched Threadnote, reference, and files evaluation', () => {
         },
       }),
     ).toThrow('exceeds end-to-end');
+    expect(() =>
+      parseMatchedEvaluationObservationV1({
+        ...observation(0),
+        metrics: {
+          ...metrics(),
+          usage: {
+            ...metrics().usage,
+            providerTokens: {
+              cachedInputTokens: 10,
+              inputTokens: 200,
+              outputTokens: 50,
+              reasoningOutputTokens: 20,
+              totalTokens: 251,
+            },
+          },
+        },
+      }),
+    ).toThrow('provider token components are inconsistent');
   });
 });
 
@@ -227,7 +245,7 @@ function createManifest(
     arms,
     corpus,
     model: {model: 'test-model', parametersHash: 'b'.repeat(64), provider: 'provider-neutral'},
-    repetitions: 4,
+    repetitions: 5,
     repository: {
       dirty: true,
       fixtureHash: 'c'.repeat(64),
@@ -241,7 +259,7 @@ function createManifest(
 function armDefinitions(): readonly MatchedEvaluationArmDefinitionV1[] {
   return MATCHED_EVALUATION_ARMS.map((arm, index) => ({
     adapterArtifactHash: String(index + 1).repeat(64),
-    adapterProtocol: 'matched-evaluation-adapter-v1',
+    adapterProtocol: 'matched-evaluation-adapter-v2',
     arm,
     environmentPolicyHash:
       arm === 'reference-scope' ? matchedEvaluationReferenceEnvironmentPolicyHashV1() : 'e'.repeat(64),
@@ -269,7 +287,7 @@ function observation(runOrder: number): MatchedEvaluationObservationV1 {
     artifactHash: runOrder.toString(16).padStart(64, '0'),
     metrics: metrics(),
     transcriptHash: (runOrder + 1).toString(16).padStart(64, '0'),
-    version: 1,
+    version: 2,
   };
 }
 
@@ -277,13 +295,27 @@ function metrics(): MatchedEvaluationMetricsV1 {
   return {
     auditability: {citations: 2, resolvableCitations: 2},
     completion: {completed: true},
+    context: null,
     correctness: {judge: 'blinded-rubric-v1', scoreMilli: 1_000},
     drift: {falseCurrentOutcomes: 0},
     providerCostMicros: null,
     retrieval: {recalledEvidence: 2, requiredEvidence: 2},
+    safety: {authorizationLeaks: 0, harmfulActions: 0},
     sourceSupport: {requiredClaims: 2, supportedClaims: 2},
     timing: {endToEndMilliseconds: 20, firstSufficientEvidenceMilliseconds: 10},
-    usage: {modelVisibleBytes: 1_000, modelVisibleTokens: 250, redundantFileReads: 0, toolTurns: 2},
+    usage: {
+      modelVisibleBytes: 1_000,
+      modelVisibleTokens: 250,
+      providerTokens: {
+        cachedInputTokens: 10,
+        inputTokens: 200,
+        outputTokens: 50,
+        reasoningOutputTokens: 20,
+        totalTokens: 250,
+      },
+      redundantFileReads: 0,
+      toolTurns: 2,
+    },
     validity: {failureCount: 0, valid: true},
   };
 }

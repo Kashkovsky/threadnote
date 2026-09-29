@@ -164,6 +164,7 @@
     "./evaluation/memory-connections-scale-contract": "./src/evaluation/memory-connections-scale-contract.ts",
     "./evaluation/matched-evaluation": "./src/evaluation/matched-evaluation.ts",
     "./evaluation/matched-evaluation-runner": "./src/evaluation/matched-evaluation-runner.ts",
+    "./evaluation/matched-token-efficiency": "./src/evaluation/matched-token-efficiency.ts",
     "./evaluation/ready/query_evidence": "./src/evaluation/ready/query_evidence.ts",
     "./evaluation/ready/query_host": "./src/evaluation/ready/query_host.ts",
     "./evaluation/recall": "./src/evaluation/recall.ts",

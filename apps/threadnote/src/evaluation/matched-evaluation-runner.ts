@@ -14,7 +14,7 @@ import {
   MATCHED_EVALUATION_ARMS,
 } from './matched-evaluation.js';
 
-export const MATCHED_EVALUATION_OUTCOME_VERSION = 1 as const;
+export const MATCHED_EVALUATION_OUTCOME_VERSION = 2 as const;
 export const MATCHED_EVALUATION_UNAVAILABLE_REASONS = [
   'runtime-not-configured',
   'adapter-missing',
@@ -23,6 +23,23 @@ export const MATCHED_EVALUATION_UNAVAILABLE_REASONS = [
 ] as const;
 
 export type MatchedEvaluationUnavailableReason = (typeof MATCHED_EVALUATION_UNAVAILABLE_REASONS)[number];
+
+export interface MatchedEvaluationProviderTokensV1 {
+  readonly cachedInputTokens: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly reasoningOutputTokens: number;
+  readonly totalTokens: number;
+}
+
+export interface MatchedEvaluationContextVerificationV1 {
+  readonly graphReady: true;
+  readonly graphSnapshotHash: string;
+  readonly linkReceiptsHash: string | null;
+  readonly memoryAccess: 'disabled' | 'linked';
+  readonly studyHash: string;
+  readonly taskContextHash: string | null;
+}
 
 export interface MatchedEvaluationMetricsV1 {
   readonly auditability: {
@@ -44,6 +61,10 @@ export interface MatchedEvaluationMetricsV1 {
     readonly recalledEvidence: number;
     readonly requiredEvidence: number;
   };
+  readonly safety: {
+    readonly authorizationLeaks: number;
+    readonly harmfulActions: number;
+  };
   readonly sourceSupport: {
     readonly requiredClaims: number;
     readonly supportedClaims: number;
@@ -55,9 +76,13 @@ export interface MatchedEvaluationMetricsV1 {
   readonly usage: {
     readonly modelVisibleBytes: number;
     readonly modelVisibleTokens: number;
+    /** Provider-reported task-window usage. Required for token-efficiency claims. */
+    readonly providerTokens: MatchedEvaluationProviderTokensV1 | null;
     readonly redundantFileReads: number;
     readonly toolTurns: number;
   };
+  /** Exact ready-graph and linked-memory preflight. Null for non-Threadnote arms. */
+  readonly context: MatchedEvaluationContextVerificationV1 | null;
   readonly validity: {
     readonly failureCount: number;
     readonly valid: boolean;
@@ -140,7 +165,7 @@ const MAXIMUM_LEDGER_BYTES = 16 * 1_024 * 1_024;
 export function parseMatchedEvaluationObservationV1(value: unknown): MatchedEvaluationObservationV1 {
   const observation = object(value, 'observation');
   exactKeys(observation, ['artifactHash', 'metrics', 'transcriptHash', 'version'], 'observation');
-  if (observation.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('observation version must be 1');
+  if (observation.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('observation version must be 2');
   return {
     artifactHash: matchingString(observation.artifactHash, HASH, 'observation artifact hash'),
     metrics: parseMetrics(observation.metrics),
@@ -186,7 +211,7 @@ export function createMatchedEvaluationUnavailableOutcomeV1(input: {
     transcriptHash: null,
     unavailable: {
       detailHash: sha256HexSync(
-        `matched-evaluation-unavailable-v1\0${boundedString(input.detail, 1, 2_048, 'unavailable detail')}\n`,
+        `matched-evaluation-unavailable-v2\0${boundedString(input.detail, 1, 2_048, 'unavailable detail')}\n`,
       ),
       reason,
     },
@@ -214,7 +239,7 @@ export function parseMatchedEvaluationOutcomeV1(value: unknown): MatchedEvaluati
     ],
     'outcome',
   );
-  if (outcome.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('outcome version must be 1');
+  if (outcome.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('outcome version must be 2');
   const status = literal(outcome.status, ['completed', 'unavailable'] as const, 'outcome status');
   let unavailable: MatchedEvaluationOutcomeV1['unavailable'] = null;
   if (outcome.unavailable !== null) {
@@ -240,7 +265,7 @@ export function parseMatchedEvaluationOutcomeV1(value: unknown): MatchedEvaluati
   }
   const withoutHash = {
     artifactHash,
-    blindLabel: literal(outcome.blindLabel, ['A', 'B', 'C', 'D'] as const, 'outcome blind label'),
+    blindLabel: literal(outcome.blindLabel, ['A', 'B', 'C', 'D', 'E'] as const, 'outcome blind label'),
     manifestHash: matchingString(outcome.manifestHash, HASH, 'outcome manifest hash'),
     metrics,
     previousOutcomeHash:
@@ -435,7 +460,7 @@ function createOutcome(input: {
 }
 
 function matchedEvaluationOutcomeHashV1(input: Omit<MatchedEvaluationOutcomeV1, 'outcomeHash'>): string {
-  return sha256HexSync(`matched-evaluation-outcome-v1\0${JSON.stringify(input)}\n`);
+  return sha256HexSync(`matched-evaluation-outcome-v2\0${JSON.stringify(input)}\n`);
 }
 
 function assertCorpusMatchesManifest(corpus: MatchedEvaluationCorpusV1, manifest: MatchedEvaluationManifestV1): void {
@@ -524,10 +549,12 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
     [
       'auditability',
       'completion',
+      'context',
       'correctness',
       'drift',
       'providerCostMicros',
       'retrieval',
+      'safety',
       'sourceSupport',
       'timing',
       'usage',
@@ -546,6 +573,8 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
   const drift = object(metrics.drift, 'drift metrics');
   exactKeys(drift, ['falseCurrentOutcomes'], 'drift metrics');
   const retrieval = boundedPair(metrics.retrieval, 'requiredEvidence', 'recalledEvidence', 'retrieval');
+  const safety = object(metrics.safety, 'safety metrics');
+  exactKeys(safety, ['authorizationLeaks', 'harmfulActions'], 'safety metrics');
   const sourceSupport = boundedPair(metrics.sourceSupport, 'requiredClaims', 'supportedClaims', 'source support');
   const timing = object(metrics.timing, 'timing metrics');
   exactKeys(timing, ['endToEndMilliseconds', 'firstSufficientEvidenceMilliseconds'], 'timing metrics');
@@ -558,7 +587,11 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
     invalid('first sufficient evidence time exceeds end-to-end time');
   }
   const usage = object(metrics.usage, 'usage metrics');
-  exactKeys(usage, ['modelVisibleBytes', 'modelVisibleTokens', 'redundantFileReads', 'toolTurns'], 'usage metrics');
+  exactKeys(
+    usage,
+    ['modelVisibleBytes', 'modelVisibleTokens', 'providerTokens', 'redundantFileReads', 'toolTurns'],
+    'usage metrics',
+  );
   const validity = object(metrics.validity, 'validity metrics');
   exactKeys(validity, ['failureCount', 'valid'], 'validity metrics');
   if (typeof validity.valid !== 'boolean') invalid('validity flag must be boolean');
@@ -566,9 +599,11 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
   if (validity.valid !== (failureCount === 0)) invalid('validity flag and failure count disagree');
   const providerCostMicros =
     metrics.providerCostMicros === null ? null : nonNegativeInteger(metrics.providerCostMicros, 'provider cost micros');
+  const context = parseContextVerification(metrics.context);
   return {
     auditability: {citations: auditability.total, resolvableCitations: auditability.subset},
     completion: {completed: completion.completed},
+    context,
     correctness: {
       judge: literal(correctness.judge, ['blinded-rubric-v1'] as const, 'correctness judge'),
       scoreMilli,
@@ -576,16 +611,77 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
     drift: {falseCurrentOutcomes: nonNegativeInteger(drift.falseCurrentOutcomes, 'false-current outcomes')},
     providerCostMicros,
     retrieval: {recalledEvidence: retrieval.subset, requiredEvidence: retrieval.total},
+    safety: {
+      authorizationLeaks: nonNegativeInteger(safety.authorizationLeaks, 'authorization leaks'),
+      harmfulActions: nonNegativeInteger(safety.harmfulActions, 'harmful actions'),
+    },
     sourceSupport: {requiredClaims: sourceSupport.total, supportedClaims: sourceSupport.subset},
     timing: {endToEndMilliseconds, firstSufficientEvidenceMilliseconds},
     usage: {
       modelVisibleBytes: nonNegativeInteger(usage.modelVisibleBytes, 'model-visible bytes'),
       modelVisibleTokens: nonNegativeInteger(usage.modelVisibleTokens, 'model-visible tokens'),
+      providerTokens: usage.providerTokens === null ? null : parseProviderTokens(usage.providerTokens),
       redundantFileReads: nonNegativeInteger(usage.redundantFileReads, 'redundant file reads'),
       toolTurns: nonNegativeInteger(usage.toolTurns, 'tool turns'),
     },
     validity: {failureCount, valid: validity.valid},
   };
+}
+
+function parseContextVerification(value: unknown): MatchedEvaluationContextVerificationV1 | null {
+  if (value === null) return null;
+  const context = object(value, 'context verification');
+  exactKeys(
+    context,
+    ['graphReady', 'graphSnapshotHash', 'linkReceiptsHash', 'memoryAccess', 'studyHash', 'taskContextHash'],
+    'context verification',
+  );
+  if (context.graphReady !== true) invalid('context verification graph must be ready');
+  const memoryAccess = literal(context.memoryAccess, ['disabled', 'linked'] as const, 'context memory access');
+  const linkReceiptsHash =
+    context.linkReceiptsHash === null
+      ? null
+      : matchingString(context.linkReceiptsHash, HASH, 'context link receipts hash');
+  const taskContextHash =
+    context.taskContextHash === null ? null : matchingString(context.taskContextHash, HASH, 'context task hash');
+  if (
+    (memoryAccess === 'disabled' && (linkReceiptsHash !== null || taskContextHash !== null)) ||
+    (memoryAccess === 'linked' && (linkReceiptsHash === null || taskContextHash === null))
+  ) {
+    invalid('context memory access and receipt fields disagree');
+  }
+  return {
+    graphReady: true,
+    graphSnapshotHash: matchingString(context.graphSnapshotHash, HASH, 'context graph snapshot hash'),
+    linkReceiptsHash,
+    memoryAccess,
+    studyHash: matchingString(context.studyHash, HASH, 'context study hash'),
+    taskContextHash,
+  };
+}
+
+function parseProviderTokens(value: unknown): MatchedEvaluationProviderTokensV1 {
+  const usage = object(value, 'provider token usage');
+  exactKeys(
+    usage,
+    ['cachedInputTokens', 'inputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens'],
+    'provider token usage',
+  );
+  const parsed = {
+    cachedInputTokens: nonNegativeInteger(usage.cachedInputTokens, 'cached input tokens'),
+    inputTokens: nonNegativeInteger(usage.inputTokens, 'input tokens'),
+    outputTokens: nonNegativeInteger(usage.outputTokens, 'output tokens'),
+    reasoningOutputTokens: nonNegativeInteger(usage.reasoningOutputTokens, 'reasoning output tokens'),
+    totalTokens: nonNegativeInteger(usage.totalTokens, 'total tokens'),
+  };
+  if (
+    parsed.cachedInputTokens > parsed.inputTokens ||
+    parsed.reasoningOutputTokens > parsed.outputTokens ||
+    parsed.totalTokens !== parsed.inputTokens + parsed.outputTokens
+  ) {
+    invalid('provider token components are inconsistent');
+  }
+  return parsed;
 }
 
 function boundedPair(

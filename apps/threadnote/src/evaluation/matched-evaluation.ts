@@ -1,10 +1,16 @@
 import {sha256HexSync} from '@threadnote/platform/sha256';
 
 export const MATCHED_EVALUATION_VERSION = 1 as const;
-export const MATCHED_EVALUATION_ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v1' as const;
-export const MATCHED_EVALUATION_SCHEDULE_ALGORITHM = 'sha256-counterbalanced-v1' as const;
-export const MATCHED_EVALUATION_ARMS = ['files', 'threadnote-compact', 'threadnote-source', 'reference-scope'] as const;
-export const MATCHED_EVALUATION_BLIND_LABELS = ['A', 'B', 'C', 'D'] as const;
+export const MATCHED_EVALUATION_ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v2' as const;
+export const MATCHED_EVALUATION_SCHEDULE_ALGORITHM = 'sha256-counterbalanced-v2' as const;
+export const MATCHED_EVALUATION_ARMS = [
+  'files',
+  'threadnote-graph',
+  'threadnote-compact',
+  'threadnote-source',
+  'reference-scope',
+] as const;
+export const MATCHED_EVALUATION_BLIND_LABELS = ['A', 'B', 'C', 'D', 'E'] as const;
 export const MATCHED_EVALUATION_TASK_CATEGORIES = [
   'unfamiliar-call-path',
   'hidden-architectural-constraint',
@@ -19,7 +25,7 @@ export const MATCHED_EVALUATION_TASK_VARIANTS = [
   'conflicting-records',
   'dirty-worktree',
 ] as const;
-export const MATCHED_EVALUATION_MINIMUM_REPETITIONS = 4 as const;
+export const MATCHED_EVALUATION_MINIMUM_REPETITIONS = 5 as const;
 
 export type MatchedEvaluationArm = (typeof MATCHED_EVALUATION_ARMS)[number];
 export type MatchedEvaluationBlindLabel = (typeof MATCHED_EVALUATION_BLIND_LABELS)[number];
@@ -107,7 +113,7 @@ export interface MatchedEvaluationManifestTaskV1 {
 
 export interface MatchedEvaluationScheduleEntryV1 {
   readonly blindLabel: MatchedEvaluationBlindLabel;
-  readonly position: 1 | 2 | 3 | 4;
+  readonly position: 1 | 2 | 3 | 4 | 5;
   readonly repetition: number;
   readonly runNonce: string;
   readonly runOrder: number;
@@ -295,6 +301,7 @@ export function deriveMatchedEvaluationBlindAssignmentV1(
     B: shuffled[1],
     C: shuffled[2],
     D: shuffled[3],
+    E: shuffled[4],
   };
 }
 
@@ -330,7 +337,7 @@ export function deriveMatchedEvaluationScheduleV1(input: {
         const runOrder = entries.length;
         entries.push({
           blindLabel,
-          position: (position + 1) as 1 | 2 | 3 | 4,
+          position: (position + 1) as 1 | 2 | 3 | 4 | 5,
           repetition,
           runNonce: `run_${digest('matched-evaluation-run-v1', {
             manifestSeed: scheduleSeed,
@@ -542,7 +549,7 @@ function parseManifestTask(value: unknown, index: number): MatchedEvaluationMani
 }
 
 function parseArmDefinitions(value: readonly unknown[]): readonly MatchedEvaluationArmDefinitionV1[] {
-  if (value.length !== MATCHED_EVALUATION_ARMS.length) invalid('manifest must define all four arms');
+  if (value.length !== MATCHED_EVALUATION_ARMS.length) invalid('manifest must define every arm');
   const parsed = value.map((entry, index) => {
     const arm = object(entry, `arm definition ${index}`);
     exactKeys(
@@ -625,6 +632,7 @@ function parseBlindAssignment(value: unknown): Readonly<Record<MatchedEvaluation
     B: literal(assignment.B, MATCHED_EVALUATION_ARMS, 'blind assignment B'),
     C: literal(assignment.C, MATCHED_EVALUATION_ARMS, 'blind assignment C'),
     D: literal(assignment.D, MATCHED_EVALUATION_ARMS, 'blind assignment D'),
+    E: literal(assignment.E, MATCHED_EVALUATION_ARMS, 'blind assignment E'),
   };
   unique(Object.values(parsed), 'blind assignment arms');
   return parsed;
@@ -637,14 +645,14 @@ function parseScheduleEntry(value: unknown, index: number): MatchedEvaluationSch
     ['blindLabel', 'position', 'repetition', 'runNonce', 'runOrder', 'taskId'],
     `schedule entry ${index}`,
   );
-  if (entry.position !== 1 && entry.position !== 2 && entry.position !== 3 && entry.position !== 4) {
+  if (![1, 2, 3, 4, 5].includes(entry.position as number)) {
     invalid(`schedule entry ${index} position is invalid`);
   }
   const runOrder = nonNegativeInteger(entry.runOrder, `schedule entry ${index} order`);
   if (runOrder !== index) invalid(`schedule entry ${index} is not in canonical run order`);
   return {
     blindLabel: literal(entry.blindLabel, MATCHED_EVALUATION_BLIND_LABELS, `schedule entry ${index} label`),
-    position: entry.position,
+    position: entry.position as 1 | 2 | 3 | 4 | 5,
     repetition: nonNegativeInteger(entry.repetition, `schedule entry ${index} repetition`),
     runNonce: matchingString(entry.runNonce, RUN_NONCE, `schedule entry ${index} nonce`),
     runOrder,
@@ -693,8 +701,8 @@ function assertExactParaphrasePairs(tasks: readonly MatchedEvaluationCorpusTaskV
 
 function repetitionsValue(value: unknown): number {
   const repetitions = positiveInteger(value, 'manifest repetitions');
-  if (repetitions < MATCHED_EVALUATION_MINIMUM_REPETITIONS || repetitions > 40 || repetitions % 4 !== 0) {
-    invalid('manifest repetitions must be between 4 and 40 and divisible by four');
+  if (repetitions < MATCHED_EVALUATION_MINIMUM_REPETITIONS || repetitions > 40 || repetitions % 5 !== 0) {
+    invalid('manifest repetitions must be between 5 and 40 and divisible by five');
   }
   return repetitions;
 }
