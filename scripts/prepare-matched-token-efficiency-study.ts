@@ -447,6 +447,14 @@ async function prepareTasks(input: {
       throw new Error(`Task ${task.taskId} graph-only and linked homes do not share the exact ready graph.`);
     }
     await assertGraphOnlyContextHasNoMemory(input.plan, cluster, graphHome, task.prompt);
+    await assertLinkedContextSurfacesMemories(
+      input.plan,
+      cluster,
+      linkedHome,
+      task.prompt,
+      task.taskId,
+      linkedMemories,
+    );
     const linkReceipts = linkReceiptsForTask(
       task,
       linkedMemories,
@@ -742,6 +750,87 @@ async function assertGraphOnlyContextHasNoMemory(
   }
   if (brief.durableDecisions.length !== 0 || brief.activeHandoffs.length !== 0) {
     throw new Error('Graph-only home exposes memory evidence for the preregistered task prompt.');
+  }
+}
+
+async function assertLinkedContextSurfacesMemories(
+  plan: PreparationPlanV1,
+  cluster: ClusterPlanV1,
+  home: string,
+  task: string,
+  taskId: string,
+  memories: readonly MemoryRecord[],
+): Promise<void> {
+  const topics = memories.map(memory => memory.metadata.topic);
+  if (
+    topics.some(topic => topic === undefined) ||
+    new Set(topics).size !== topics.length ||
+    memories.some(memory => memory.headerTitle !== 'MEMORY' || memory.metadata.kind !== 'durable')
+  ) {
+    throw new Error(`Task ${taskId} linked home requires unique durable memory topics.`);
+  }
+  const result = await captureCodeMemoryLinkProcessGroup({
+    arguments: [
+      'context',
+      'brief',
+      '--json',
+      '--task',
+      task,
+      '--cwd',
+      cluster.repositoryDirectory,
+      '--home',
+      home,
+      '--project',
+      plan.project,
+      '--mode',
+      'brief',
+      '--detail',
+      'compact',
+      '--budget-tokens',
+      String(plan.adapter.contextBudgetTokens),
+    ],
+    command: plan.threadnote.executable,
+    cwd: cluster.repositoryDirectory,
+    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath),
+    label: `Matched evaluation linked-memory Context Brief ${cluster.clusterId}`,
+    maxOutputBytes: 2 * 1_024 * 1_024,
+    timeoutMilliseconds: 120_000,
+  });
+  assertMatchedTokenEfficiencyLinkedBriefV1(
+    JSON.parse(result.stdout) as unknown,
+    plan.project,
+    taskId,
+    topics as readonly string[],
+  );
+}
+
+export function assertMatchedTokenEfficiencyLinkedBriefV1(
+  value: unknown,
+  project: string,
+  taskId: string,
+  expectedTopics: readonly string[],
+): void {
+  const brief = object(value, 'linked-memory Context Brief');
+  if (brief.type !== 'context-brief' || (brief.version !== 2 && brief.version !== 3)) {
+    throw new Error('Linked home did not return a supported Context Brief.');
+  }
+  if (!Array.isArray(brief.durableDecisions) || !Array.isArray(brief.activeHandoffs)) {
+    throw new Error('Linked-memory Context Brief is missing its memory evidence arrays.');
+  }
+  if (brief.activeHandoffs.length !== 0) {
+    throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected handoff.`);
+  }
+  const surfacedTopics = brief.durableDecisions.map((entry, index) => {
+    const decision = object(entry, `linked-memory Context Brief decision ${index}`);
+    if (decision.kind !== 'durable' || decision.project !== project) {
+      throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected memory.`);
+    }
+    return boundedText(decision.topic, 1, 512, `linked-memory Context Brief decision ${index} topic`);
+  });
+  const expected = [...expectedTopics].sort((left, right) => left.localeCompare(right));
+  const surfaced = [...surfacedTopics].sort((left, right) => left.localeCompare(right));
+  if (JSON.stringify(surfaced) !== JSON.stringify(expected)) {
+    throw new Error(`Task ${taskId} exact prompt does not surface its complete reviewed memory roster.`);
   }
 }
 

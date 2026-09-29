@@ -24,6 +24,7 @@ export const MATCHED_EVALUATION_TASK_VARIANTS = [
   'absent-answer',
   'conflicting-records',
   'dirty-worktree',
+  'historical-as-issued',
 ] as const;
 export const MATCHED_EVALUATION_MINIMUM_REPETITIONS = 5 as const;
 
@@ -177,10 +178,7 @@ export function parseMatchedEvaluationCorpusV1(value: unknown): MatchedEvaluatio
   for (const category of MATCHED_EVALUATION_TASK_CATEGORIES) {
     if (!tasks.some(task => task.category === category)) invalid(`corpus does not cover ${category}`);
   }
-  for (const variant of MATCHED_EVALUATION_TASK_VARIANTS) {
-    if (!tasks.some(task => task.variant === variant)) invalid(`corpus does not cover ${variant}`);
-  }
-  assertExactParaphrasePairs(tasks);
+  assertVariantDesign(tasks);
   return {
     corpusId: matchingString(corpus.corpusId, CORPUS_ID, 'corpus id'),
     tasks: [...tasks].sort((left, right) => left.taskId.localeCompare(right.taskId)),
@@ -688,7 +686,19 @@ function parseRepository(value: unknown): MatchedEvaluationManifestV1['repositor
   };
 }
 
-function assertExactParaphrasePairs(tasks: readonly MatchedEvaluationCorpusTaskV1[]): void {
+function assertVariantDesign(tasks: readonly MatchedEvaluationCorpusTaskV1[]): void {
+  const historical = tasks.filter(task => task.variant === 'historical-as-issued');
+  if (historical.length > 0) {
+    if (historical.length !== tasks.length) invalid('historical-as-issued tasks cannot mix with synthetic variants');
+    if (historical.some(task => task.pairId !== null))
+      invalid('historical-as-issued tasks cannot declare synthetic pairs');
+    return;
+  }
+  for (const variant of MATCHED_EVALUATION_TASK_VARIANTS) {
+    if (variant !== 'historical-as-issued' && !tasks.some(task => task.variant === variant)) {
+      invalid(`corpus does not cover ${variant}`);
+    }
+  }
   const exact = tasks.filter(task => task.variant === 'exact-name');
   const paraphrases = tasks.filter(task => task.variant === 'paraphrase');
   if (exact.length === 0 || paraphrases.length === 0) invalid('corpus requires exact-name and paraphrase pairs');

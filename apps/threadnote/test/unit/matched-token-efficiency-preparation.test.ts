@@ -18,6 +18,7 @@ import {parseMatchedEvaluationCodexAdapterConfigV1} from '../../../../scripts/ma
 import {observeMatchedEvaluationRepositoryV1} from '../../../../scripts/matched-evaluation-runtime-integrity.js';
 import {
   MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION,
+  assertMatchedTokenEfficiencyLinkedBriefV1,
   assertMatchedTokenEfficiencyThreadnoteVersionOutputV1,
   prepareMatchedTokenEfficiencyStudyV1,
 } from '../../../../scripts/prepare-matched-token-efficiency-study.js';
@@ -42,6 +43,33 @@ describe('matched token-efficiency study preparation', () => {
     expect(() =>
       assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(`threadnote v5.0.6-local.g${commit}\n`, commit),
     ).not.toThrow();
+  });
+
+  it('requires the exact task prompt to surface the complete reviewed memory roster', () => {
+    const brief = {
+      activeHandoffs: [],
+      durableDecisions: [
+        {kind: 'durable', project: 'threadnote', topic: 'parser-contract'},
+        {kind: 'durable', project: 'threadnote', topic: 'serializer-contract'},
+      ],
+      type: 'context-brief',
+      version: 3,
+    };
+
+    expect(() =>
+      assertMatchedTokenEfficiencyLinkedBriefV1(brief, 'threadnote', 'tsk_1234567890abcdef', [
+        'parser-contract',
+        'serializer-contract',
+      ]),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedTokenEfficiencyLinkedBriefV1(
+        {...brief, durableDecisions: brief.durableDecisions.slice(0, 1)},
+        'threadnote',
+        'tsk_1234567890abcdef',
+        ['parser-contract', 'serializer-contract'],
+      ),
+    ).toThrow('complete reviewed memory roster');
   });
 
   it('freezes a hash-closed no-provider bundle with distinct graph-only and linked homes', async () => {
@@ -405,7 +433,25 @@ if [ "$1" = "context" ] && [ "$2" = "check" ]; then
   exit 0
 fi
 if [ "$1" = "context" ] && [ "$2" = "brief" ]; then
-  echo '{"type":"context-brief","version":3,"durableDecisions":[],"activeHandoffs":[]}'
+  home=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--home" ]; then
+      shift
+      home="$1"
+    fi
+    shift
+  done
+  printf '{"type":"context-brief","version":3,"durableDecisions":['
+  separator=""
+  for memory in "$home"/data/fixture/memories/durable/projects/threadnote/*.md; do
+    if [ ! -f "$memory" ]; then
+      continue
+    fi
+    topic=$(/usr/bin/awk '/^topic: / { sub(/^topic: /, ""); print; exit }' "$memory")
+    printf '%s{"kind":"durable","project":"threadnote","topic":"%s"}' "$separator" "$topic"
+    separator=","
+  done
+  echo '],"activeHandoffs":[]}'
   exit 0
 fi
 cwd=""

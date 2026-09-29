@@ -46,6 +46,77 @@ describe('matched Threadnote, reference, and files evaluation', () => {
     }
   });
 
+  it('admits an unmixed historical as-issued corpus without inventing synthetic task conditions', async () => {
+    const corpus = await fixture();
+    const historical = {
+      ...corpus,
+      tasks: corpus.tasks.map(task => ({...task, pairId: null, variant: 'historical-as-issued' as const})),
+    };
+
+    expect(parseMatchedEvaluationCorpusV1(historical).tasks).toHaveLength(6);
+    expect(() =>
+      parseMatchedEvaluationCorpusV1({
+        ...historical,
+        tasks: historical.tasks.map((task, index) => (index === 0 ? {...task, variant: 'exact-name' as const} : task)),
+      }),
+    ).toThrow('cannot mix with synthetic variants');
+  });
+
+  it('admits the reviewed historical external corpus with unedited prompt and context provenance', async () => {
+    const root = new URL('../evaluation/corpora/token-efficiency-historical-v1/', import.meta.url);
+    const corpus = parseMatchedEvaluationCorpusV1(JSON.parse(await readFile(new URL('corpus.json', root), 'utf8')));
+    const provenance = JSON.parse(await readFile(new URL('provenance.json', root), 'utf8')) as {
+      readonly repositories: readonly {
+        readonly clusterId: string;
+        readonly repository: string;
+        readonly repositoryFixtureHash: string;
+      }[];
+      readonly tasks: readonly {
+        readonly contextAssessment: {
+          readonly assessmentFile: string;
+          readonly contentFile: string | null;
+          readonly sufficiency: string;
+        };
+        readonly promptSource: {readonly lastEditedAt: string | null};
+        readonly targetRepository: string;
+        readonly taskId: string;
+      }[];
+    };
+
+    expect(corpus.tasks).toHaveLength(6);
+    expect(new Set(corpus.tasks.map(task => task.variant))).toEqual(new Set(['historical-as-issued']));
+    expect(new Set(provenance.repositories.map(repository => repository.repository)).size).toBe(6);
+    expect(new Set(provenance.repositories.map(repository => repository.clusterId)).size).toBe(6);
+    expect(new Set(provenance.tasks.map(task => task.contextAssessment.sufficiency))).toEqual(
+      new Set(['none', 'lacking', 'sufficient', 'excessive']),
+    );
+
+    for (const taskProvenance of provenance.tasks) {
+      const task = corpus.tasks.find(candidate => candidate.taskId === taskProvenance.taskId);
+      if (!task) throw new Error(`missing corpus task ${taskProvenance.taskId}`);
+      expect(taskProvenance.promptSource.lastEditedAt).toBeNull();
+      const repository = provenance.repositories.find(
+        candidate => candidate.repository === taskProvenance.targetRepository,
+      );
+      expect(repository?.repositoryFixtureHash).toBe(task.repositoryFixtureHash);
+      const assessment = JSON.parse(
+        await readFile(new URL(taskProvenance.contextAssessment.assessmentFile, root), 'utf8'),
+      ) as {readonly sufficiency: string; readonly taskId: string};
+      expect(assessment).toMatchObject({
+        sufficiency: taskProvenance.contextAssessment.sufficiency,
+        taskId: taskProvenance.taskId,
+      });
+      if (taskProvenance.contextAssessment.contentFile === null) {
+        expect(taskProvenance.contextAssessment.sufficiency).toBe('none');
+      } else {
+        const promptBody = task.prompt.slice(task.prompt.indexOf('\n\n') + 2);
+        expect(await readFile(new URL(taskProvenance.contextAssessment.contentFile, root), 'utf8')).toBe(
+          `${promptBody}\n`,
+        );
+      }
+    }
+  });
+
   it('is deterministic and position-balanced for arbitrary seeds and input permutations', async () => {
     const corpus = await fixture();
     fc.assert(

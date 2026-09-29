@@ -25,6 +25,11 @@ URL, exact 40-character revision, repository fixture hash, and task IDs. The stu
 cluster count. A test fixture or a task split from one synthetic repository is useful for evaluator regression only and
 must not be described as external evidence.
 
+Historical external corpora use the `historical-as-issued` task variant for every task and leave `pairId` null. This
+mode deliberately does not claim coverage of the synthetic `exact-name`, `paraphrase`, `absent-answer`,
+`conflicting-records`, or `dirty-worktree` perturbations. Historical and synthetic variants cannot be mixed in one
+corpus; a later study may materialize those conditions explicitly, but must not infer them from issue text alone.
+
 The primary local estimand uses an `identical-as-issued` prompt policy. Preserve each historical task packet exactly as
 the engineer issued it, including manually supplied code, logs, guesses, or architecture notes, and send those exact
 bytes to every arm. Before any outcomes are visible, independent review classifies the extracted manual context as
@@ -42,7 +47,8 @@ Build and independently review the frozen corpus first. For every task, retain t
 from the same exact ready graph: a graph-only home with no managed memory documents, and a task-specific linked home
 containing exactly the preregistered reviewed memories and finalized current citations. The preparation command verifies
 the clean public checkouts, exact graph identity in both homes, an empty graph-only Context Brief for the exact task
-prompt, linked-memory currentness and stable managed identities, owner-only auth, local runtime artifacts, as-issued
+prompt, complete linked-memory retrieval for that exact prompt at the preregistered budget, linked-memory currentness and
+stable managed identities, owner-only auth, local runtime artifacts, as-issued
 context/assessment files, and the Threadnote source ancestry before it atomically writes the corpus, per-arm adapter
 configs, manifest, study, runtime, and hash receipt:
 
