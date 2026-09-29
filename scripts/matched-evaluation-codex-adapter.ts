@@ -44,7 +44,7 @@ export const MATCHED_EVALUATION_ADAPTER_CONFIG_ENV = 'MATCHED_EVALUATION_ADAPTER
 export const MATCHED_EVALUATION_ADAPTER_EXECUTABLE_ENV = 'MATCHED_EVALUATION_ADAPTER_EXECUTABLE' as const;
 export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
   apps: 'disabled',
-  approvals: 'untrusted-user-reviewed',
+  approvals: 'sandbox-escape-user-reviewed',
   hooks: 'disabled',
   network: 'disabled',
   plugins: 'disabled',
@@ -913,6 +913,7 @@ async function runAppServerTurn(input: {
   readonly timeoutMilliseconds: number;
 }): Promise<AppServerTurnResult> {
   const client = new CodeMemoryLinkAppServerClient({
+    allowSandboxedReadOnlyCommandsWithoutApproval: true,
     command: input.command,
     cwd: input.cwd,
     environment: input.environment,
@@ -940,7 +941,7 @@ async function runAppServerTurn(input: {
         model: input.model.id,
         modelProvider: input.model.provider,
         runtimeWorkspaceRoots: [input.cwd],
-        sandbox: 'workspace-write',
+        sandbox: 'read-only',
       },
       input.timeoutMilliseconds,
     );
@@ -973,13 +974,7 @@ async function runAppServerTurn(input: {
         model: input.model.id,
         outputSchema: input.outputSchema,
         runtimeWorkspaceRoots: [input.cwd],
-        sandboxPolicy: {
-          excludeSlashTmp: true,
-          excludeTmpdirEnvVar: true,
-          networkAccess: false,
-          type: 'workspaceWrite',
-          writableRoots: [input.cwd],
-        },
+        sandboxPolicy: {networkAccess: false, type: 'readOnly'},
         threadId,
       },
       threadId,
@@ -1541,8 +1536,8 @@ function assertEffectiveThread(response: Record<string, unknown>, input: Paramet
     throw new Error('Codex did not honor the pinned model, provider, effort, cwd, or instruction isolation.');
   }
   const sandbox = object(response.sandbox, 'thread sandbox');
-  if (sandbox.type !== 'workspaceWrite' || sandbox.networkAccess !== false) {
-    throw new Error('Codex did not enforce the no-network workspace sandbox.');
+  if (sandbox.type !== 'readOnly' || sandbox.networkAccess !== false) {
+    throw new Error('Codex did not enforce the no-network read-only sandbox.');
   }
 }
 
@@ -1598,7 +1593,7 @@ function buildCodexConfig(input: {
     `model_reasoning_effort = ${toml(input.model.reasoningEffort)}`,
     'approval_policy = "on-request"',
     'approvals_reviewer = "user"',
-    'sandbox_mode = "workspace-write"',
+    'sandbox_mode = "read-only"',
     'allow_login_shell = false',
     'file_opener = "none"',
     'hide_agent_reasoning = true',

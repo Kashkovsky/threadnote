@@ -33,7 +33,7 @@ lines.on('line', line => {
       modelProvider: params.modelProvider,
       reasoningEffort: 'medium',
       runtimeWorkspaceRoots: [params.cwd],
-      sandbox: {networkAccess: false, type: 'workspaceWrite'},
+      sandbox: {networkAccess: false, type: params.sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite'},
       thread: {id: threadId},
     });
     notify('thread/started', {thread: {id: threadId}});

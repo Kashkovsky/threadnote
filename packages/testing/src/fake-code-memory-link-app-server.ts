@@ -125,6 +125,7 @@ function assertLocalEnvironment(params: Record<string, unknown>): void {
 function emitTurn(responseId: number | undefined, params: Record<string, unknown>): void {
   pendingTurnParams = params;
   const deniedCommand = process.env.THREADNOTE_TEST_RECOVER_FROM_DENIED_COMMAND === '1';
+  const noApproval = process.env.THREADNOTE_TEST_NO_COMMAND_APPROVAL === '1';
   const command = deniedCommand
     ? {
         command: "/bin/zsh -lc 'printf x > src/service.ts'",
@@ -155,13 +156,15 @@ function emitTurn(responseId: number | undefined, params: Record<string, unknown
     },
     {method: 'item/started', params: {item: command, threadId, turnId}},
   ];
-  if (process.env.THREADNOTE_TEST_AUTO_APPROVAL_REVIEW === '1' && !deniedCommand) {
-    events.push(...autoApprovalReview(command));
-  } else events.push(approvalRequest(deniedCommand ? 899 : 900, command));
+  if (!noApproval || deniedCommand) {
+    if (process.env.THREADNOTE_TEST_AUTO_APPROVAL_REVIEW === '1' && !deniedCommand) {
+      events.push(...autoApprovalReview(command));
+    } else events.push(approvalRequest(deniedCommand ? 899 : 900, command));
+  }
   writeMessages(
     process.env.THREADNOTE_TEST_APPROVAL_BEFORE_RESPONSE === '1' ? [...events, response] : [response, ...events],
   );
-  if (process.env.THREADNOTE_TEST_AUTO_APPROVAL_REVIEW === '1' && !deniedCommand) {
+  if ((noApproval || process.env.THREADNOTE_TEST_AUTO_APPROVAL_REVIEW === '1') && !deniedCommand) {
     emitApprovedTurn(params, false);
     pendingTurnParams = undefined;
   }
