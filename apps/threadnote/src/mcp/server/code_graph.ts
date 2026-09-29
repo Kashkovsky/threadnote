@@ -132,7 +132,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Graph+memory brief. Defaults to compact agent text; dual adds structured content. Budgets cover final output after semantic truncation. Accepts 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported; cold indexing is never started.',
+        'Graph+memory brief with semantic truncation. Accepts 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported; cold indexing is never started.',
       inputSchema: {
         budgetTokens: McpInput.integer('800-1500; default 1250', {
           minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
@@ -142,10 +142,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         codeRefs: McpInput.stringOrStrings('Canonical graph path/cgs_<32 hex>; no ./, ../, absolute, cgr_; max 8', {
           maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
         }),
-        detail: McpInput.literals(
-          ['compact', 'source'],
-          'Default compact; source adds bounded exact-current excerpts.',
-        ),
+        detail: McpInput.literals(['compact', 'source'], 'Default compact; source adds exact-current excerpts.'),
         mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Default brief'),
         project: McpInput.string(MCP_CODE_GRAPH_PROJECT_SELECTOR_DESCRIPTION),
         responseFormat: McpInput.literals(['dual', 'agent'], 'Default agent; dual adds structured content.'),
