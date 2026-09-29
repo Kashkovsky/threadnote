@@ -42,6 +42,22 @@ describe('Code Memory Link pre-execution app-server policy', () => {
         startedItem: od.item,
       }),
     ).toMatchObject({itemType: 'commandExecution'});
+
+    for (const command of [
+      'git status --short',
+      'git rev-parse --show-toplevel',
+      'git ls-files --cached -- src/service.ts',
+    ]) {
+      const git = commandApproval(command, 'src/service.ts');
+      expect(
+        approveCodeMemoryLinkAppServerRequest({
+          method: 'item/commandExecution/requestApproval',
+          params: git.params,
+          scope: SCOPE,
+          startedItem: git.item,
+        }),
+      ).toMatchObject({itemType: 'commandExecution'});
+    }
   });
 
   it('accepts the pinned code-mode shell wrapper only when every projected command is a bounded read', () => {
@@ -175,6 +191,27 @@ describe('Code Memory Link pre-execution app-server policy', () => {
           startedItem: item,
         }),
       ).toThrow('numeric print range');
+    }
+  });
+
+  it('rejects Git mutation, configuration overrides, and paths outside the public repository', () => {
+    for (const command of [
+      'git add src/service.ts',
+      'git config core.pager cat',
+      'git -c core.pager=cat status --short',
+      'git diff -- src/service.ts',
+      'git ls-files --exclude-from=/tmp/patterns',
+      'git ls-files -- ../private',
+    ]) {
+      const git = commandApproval(command, 'src/service.ts');
+      expect(() =>
+        approveCodeMemoryLinkAppServerRequest({
+          method: 'item/commandExecution/requestApproval',
+          params: git.params,
+          scope: SCOPE,
+          startedItem: git.item,
+        }),
+      ).toThrow();
     }
   });
 

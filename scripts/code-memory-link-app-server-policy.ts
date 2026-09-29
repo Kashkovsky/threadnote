@@ -210,6 +210,7 @@ function assertSingleReadCommand(command: string, repositoryRoot: string, cwd: s
   if (executable === 'pwd') {
     if (tokens.length !== 1) throw new Error('pwd does not accept arguments in the evaluation policy.');
   } else if (executable === 'ls') assertLs(tokens.slice(1), repositoryRoot, cwd);
+  else if (executable === 'git') assertGit(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'rg') assertRipgrep(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'sed') assertSed(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'od') assertOd(tokens.slice(1), repositoryRoot, cwd);
@@ -385,6 +386,63 @@ function assertLs(args: readonly string[], root: string, cwd: string): void {
     paths.push(value);
   }
   for (const path of paths.length === 0 ? ['.'] : paths) containedPath(path, root, cwd);
+}
+
+function assertGit(args: readonly string[], root: string, cwd: string): void {
+  const [subcommand, ...subcommandArgs] = args;
+  if (subcommand === 'status') {
+    const flags = new Set([
+      '-b',
+      '-s',
+      '--branch',
+      '--porcelain',
+      '--porcelain=v1',
+      '--short',
+      '--untracked-files=all',
+      '--untracked-files=no',
+      '--untracked-files=normal',
+    ]);
+    if (subcommandArgs.some(value => !flags.has(value))) {
+      throw new Error('git status option is outside the reviewed grammar.');
+    }
+    return;
+  }
+  if (subcommand === 'rev-parse') {
+    if (
+      subcommandArgs.length !== 1 ||
+      !['--is-inside-work-tree', '--show-prefix', '--show-toplevel'].includes(subcommandArgs[0])
+    ) {
+      throw new Error('git rev-parse is limited to one reviewed repository-location query.');
+    }
+    return;
+  }
+  if (subcommand === 'ls-files') {
+    const flags = new Set([
+      '--cached',
+      '--deleted',
+      '--exclude-standard',
+      '--full-name',
+      '--ignored',
+      '--modified',
+      '--others',
+      '--stage',
+      '--unmerged',
+    ]);
+    let optionsEnded = false;
+    for (const value of subcommandArgs) {
+      if (!optionsEnded && value === '--') {
+        optionsEnded = true;
+        continue;
+      }
+      if (!optionsEnded && flags.has(value)) continue;
+      if (!optionsEnded && value.startsWith('-')) {
+        throw new Error('git ls-files option is outside the reviewed grammar.');
+      }
+      containedPath(value, root, cwd);
+    }
+    return;
+  }
+  throw new Error('git subcommand is outside the reviewed read-only grammar.');
 }
 
 function assertSed(args: readonly string[], root: string, cwd: string): void {
