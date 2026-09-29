@@ -136,6 +136,25 @@ describe('code graph Workset Search V2 core', () => {
     }),
   );
 
+  effectIt.effect('keeps the default read window open after a slow large-workset routing preflight', () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(4);
+      let observation = 0;
+      const execution = yield* runCodeGraphWorksetQueryV2Core(
+        {
+          ...dependencies(fixture),
+          nowMilliseconds: Effect.sync(() => (observation++ === 0 ? 0 : 3_100)),
+        },
+        fixture.input,
+        {startedAtMilliseconds: 0},
+      );
+
+      expect(execution.instrumentation.deepQueriedRepositories).toBe(4);
+      expect(execution.logicalResult.cards).not.toEqual([]);
+      expect(execution.logicalResult.coverage.stopReason).not.toBe('deadline');
+    }),
+  );
+
   effectIt.effect('retains repositories that completed before another deep read reached the deadline', () =>
     Effect.gen(function* () {
       const fixture = makeFixture(4);
