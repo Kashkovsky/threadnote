@@ -3291,6 +3291,27 @@ describe('Threadnote MCP toolsets', () => {
             snapshot: {commit: indexedCommit, id: firstSnapshotId},
           });
           expect((stale.structuredContent as {readonly state?: unknown} | undefined)?.state).toBeUndefined();
+          const repeatedStale = await client.callTool(
+            {
+              arguments: {
+                callerCwd: repository,
+                operation: 'query',
+                query: 'indexedBeforePull',
+                responseFormat: 'dual',
+              },
+              name: 'inspect_code_graph',
+            },
+            undefined,
+            {timeout: 5_000},
+          );
+          expect(repeatedStale.isError).not.toBe(true);
+          expect(repeatedStale.structuredContent).toMatchObject({
+            freshness: 'stale',
+            nodes: expect.arrayContaining([expect.objectContaining({name: 'indexedBeforePull'})]),
+            operation: 'query',
+            snapshot: {commit: indexedCommit, id: firstSnapshotId},
+          });
+          expect((repeatedStale.structuredContent as {readonly state?: unknown} | undefined)?.state).toBeUndefined();
         } finally {
           await rm(graphLock, {force: true});
         }

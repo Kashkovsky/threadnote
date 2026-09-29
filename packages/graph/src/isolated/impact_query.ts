@@ -748,6 +748,7 @@ function validCodeGraphQueryScopeReceipt(value: unknown): value is CodeGraphQuer
   return (
     validProtocolText(scope.closureDigest) &&
     validProtocolText(scope.definitionDigest) &&
+    /^[0-9a-f]{64}$/u.test(String(scope.membershipDigest)) &&
     validProtocolText(scope.scopeKey) &&
     validProtocolText(evidence.catalogFingerprint) &&
     validProtocolText(evidence.closureDigest) &&

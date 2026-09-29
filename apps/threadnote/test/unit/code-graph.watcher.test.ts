@@ -121,6 +121,36 @@ function makeDemandDriverHarness(input: {
 }
 
 describe('CodeGraphWatcher', () => {
+  effectIt.effect('schedules and coalesces durable requests without awaiting the active request', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstStarted = yield* Deferred.make<void>();
+        const releaseFirst = yield* Deferred.make<void>();
+        const trailingCompleted = yield* Deferred.make<void>();
+        const runs = yield* Ref.make(0);
+        const schedule = yield* makeCodeGraphResumeScheduler(() =>
+          Ref.updateAndGet(runs, count => count + 1).pipe(
+            Effect.flatMap(count =>
+              count === 1
+                ? Deferred.succeed(firstStarted, undefined).pipe(Effect.andThen(Deferred.await(releaseFirst)))
+                : Deferred.succeed(trailingCompleted, undefined),
+            ),
+          ),
+        );
+
+        yield* schedule(options);
+        yield* schedule(options);
+        yield* schedule(options);
+        yield* Deferred.await(firstStarted);
+        expect(yield* Ref.get(runs)).toBe(1);
+
+        yield* Deferred.succeed(releaseFirst, undefined);
+        yield* Deferred.await(trailingCompleted);
+        expect(yield* Ref.get(runs)).toBe(2);
+      }),
+    ),
+  );
+
   effectIt.effect('single-flights scoped resume discovery with one observable trailing run', () =>
     Effect.scoped(
       Effect.gen(function* () {

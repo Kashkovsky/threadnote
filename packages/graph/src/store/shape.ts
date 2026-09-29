@@ -1,7 +1,10 @@
 import type {Effect, Option} from 'effect';
 import type {ResolvedCodeGraphIndexScope} from '../index_scope.js';
 import type {CodeGraphScopeApplicabilityEvidence} from '../scope/applicability.js';
-import type {StoredCodeGraphScopeApplicability} from '../scope/applicability_store_types.js';
+import type {
+  StoredCodeGraphScopeApplicability,
+  StoredCodeGraphScopeReceipt,
+} from '../scope/applicability_store_types.js';
 import type * as SqlClient from 'effect/unstable/sql/SqlClient';
 import type {CodeGraphBlobReuseFile} from '../blob_reuse.js';
 import type {CodeGraphCacheFactInput} from '../fact/budget.js';
@@ -552,6 +555,11 @@ export interface CodeGraphStoreShape {
     worktreeId: string,
     scopeId?: string,
   ) => Effect.Effect<StoredCodeGraphScopeApplicability | undefined, CodeGraphStoreFailure>;
+  readonly loadSnapshotScopeReceipt: (
+    databasePath: string,
+    snapshotId: string,
+    scopeId: string,
+  ) => Effect.Effect<StoredCodeGraphScopeReceipt | undefined, CodeGraphStoreFailure>;
   readonly recordScopeApplicability: (
     databasePath: string,
     snapshotId: string,

@@ -121,7 +121,6 @@ export interface CodeGraphInspectOptions extends CodeGraphQueryOptions {
   readonly threadnoteHome: string;
 }
 const CODE_GRAPH_SHARED_ATTACH_WRITER_WAIT_MILLISECONDS = 250;
-
 export class CodeGraphQueryService extends Context.Service<
   CodeGraphQueryService,
   {
@@ -1638,6 +1637,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
         input.layout.databasePath,
         finalIdentity.worktreeId,
         snapshot,
+        true,
       ))
     ) {
       return yield* CodeGraphSnapshotUnavailable.make({
