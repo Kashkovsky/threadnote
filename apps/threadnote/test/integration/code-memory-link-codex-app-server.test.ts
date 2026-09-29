@@ -143,50 +143,6 @@ describe('Code Memory Link Codex app-server transport', () => {
     expect(autoReviewedTrace.approvals).toEqual([]);
     expect(autoReviewedTrace.events.map(event => event.method)).toContain('item/autoApprovalReview/completed');
 
-    await expect(
-      runCodeMemoryLinkAppServerTurn({
-        appServer: {argumentsBeforeSubcommand: [fake], executable: process.execPath},
-        cwd: repositoryRoot,
-        environment: {
-          HOME: repositoryRoot,
-          PATH: process.env.PATH ?? '/usr/bin:/bin',
-          THREADNOTE_TEST_NO_COMMAND_APPROVAL: '1',
-        },
-        expected: {model: 'gpt-5.6-luna', modelProvider: 'openai', reasoningEffort: 'medium'},
-        outputSchema: {type: 'object'},
-        prompt: 'Complete the public fixture task.',
-        proxyServerName: 'context_brief_gate',
-        taskBudget: {steps: 2, tokens: 150},
-        timeoutMilliseconds: 10_000,
-      }),
-    ).rejects.toThrow('without a reviewed pre-execution approval');
-
-    const sandboxedReadTrace = await runCodeMemoryLinkAppServerTurn({
-      allowSandboxedReadOnlyCommandsWithoutApproval: true,
-      appServer: {argumentsBeforeSubcommand: [fake], executable: process.execPath},
-      cwd: repositoryRoot,
-      environment: {
-        HOME: repositoryRoot,
-        PATH: process.env.PATH ?? '/usr/bin:/bin',
-        THREADNOTE_TEST_NO_COMMAND_APPROVAL: '1',
-      },
-      expected: {model: 'gpt-5.6-luna', modelProvider: 'openai', reasoningEffort: 'medium'},
-      outputSchema: {type: 'object'},
-      prompt: 'Complete the public fixture task.',
-      proxyServerName: 'context_brief_gate',
-      taskBudget: {steps: 2, tokens: 150},
-      timeoutMilliseconds: 10_000,
-    });
-    expect(sandboxedReadTrace.approvals).toEqual([]);
-    expect(sandboxedReadTrace.events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          method: 'item/completed',
-          params: expect.objectContaining({item: expect.objectContaining({type: 'commandExecution'})}),
-        }),
-      ]),
-    );
-
     const artifactId = `art_${'1'.repeat(16)}`;
     const rubricInput = {
       fixtureHash: '1'.repeat(64),

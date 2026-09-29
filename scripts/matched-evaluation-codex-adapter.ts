@@ -45,6 +45,7 @@ export const MATCHED_EVALUATION_ADAPTER_EXECUTABLE_ENV = 'MATCHED_EVALUATION_ADA
 export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
   apps: 'disabled',
   approvals: 'sandbox-escape-user-reviewed',
+  commandReview: 'prompt-before-execution',
   hooks: 'disabled',
   network: 'disabled',
   plugins: 'disabled',
@@ -65,6 +66,21 @@ const MAXIMUM_PATCH_BYTES = 6 * 1_024 * 1_024;
 const MAXIMUM_TRANSCRIPT_BYTES = 48 * 1_024 * 1_024;
 const MAXIMUM_PREPARED_HOME_BYTES = 2 * 1_024 * 1_024 * 1_024;
 const MAXIMUM_VERIFIER_ENVIRONMENT_BYTES = 1 * 1_024 * 1_024 * 1_024;
+const MATCHED_EVALUATION_PROMPT_RULE_PREFIXES = [
+  '/bin/zsh',
+  'cat',
+  'file',
+  'head',
+  'ls',
+  'nl',
+  'od',
+  'pwd',
+  'rg',
+  'sed',
+  'stat',
+  'tail',
+  'wc',
+] as const;
 
 type MatchedEvaluationArm = (typeof ARMS)[number];
 
@@ -826,12 +842,15 @@ async function createCodexIsolation(input: {
   const codexHome = join(input.root, 'codex-home');
   const home = join(input.root, 'home');
   const privateRoot = join(input.root, 'private');
+  const rules = join(codexHome, 'rules');
   await Promise.all([
     mkdir(codexHome, {recursive: true}),
     mkdir(home, {recursive: true}),
     mkdir(privateRoot, {recursive: true}),
+    mkdir(rules, {recursive: true}),
   ]);
   await copyPrivateFile(input.config.authSourcePath, join(codexHome, 'auth.json'));
+  await writeFile(join(rules, 'default.rules'), renderMatchedEvaluationCommandReviewRulesV1(), {mode: 0o600});
   let packetPath: string | null = null;
   if (input.context !== null) {
     if (input.prepared === null || input.tool.executable === null || input.tool.artifactHash === null) {
@@ -913,7 +932,6 @@ async function runAppServerTurn(input: {
   readonly timeoutMilliseconds: number;
 }): Promise<AppServerTurnResult> {
   const client = new CodeMemoryLinkAppServerClient({
-    allowSandboxedReadOnlyCommandsWithoutApproval: true,
     command: input.command,
     cwd: input.cwd,
     environment: input.environment,
@@ -1091,6 +1109,7 @@ function agentDeveloperInstructions(hasContext: boolean): string {
   return [
     'Use only the isolated repository and reviewed code-mode tools. Never use networking, subagents, external apps, plugins, skills, hooks, or user configuration.',
     'Use read-only shell inspection and apply_patch for edits. Do not execute repository code; an outer blinded judge verifies the result.',
+    'Every shell command is reviewed before execution. If a command is declined, retry with a literal read-only command that uses no variables, substitutions, redirects, globs, or loops.',
     hasContext
       ? 'The only MCP tool is context_brief. Call it exactly once as instructed, then verify its evidence against source.'
       : 'No MCP tools are available. Do not attempt to discover or invoke any.',
@@ -1591,7 +1610,7 @@ function buildCodexConfig(input: {
     `model = ${toml(input.model.id)}`,
     `model_provider = ${toml(input.model.provider)}`,
     `model_reasoning_effort = ${toml(input.model.reasoningEffort)}`,
-    'approval_policy = "on-request"',
+    'approval_policy = "untrusted"',
     'approvals_reviewer = "user"',
     'sandbox_mode = "read-only"',
     'allow_login_shell = false',
@@ -1655,6 +1674,12 @@ function buildCodexConfig(input: {
     );
   }
   return lines.join('\n');
+}
+
+export function renderMatchedEvaluationCommandReviewRulesV1(): string {
+  return `${MATCHED_EVALUATION_PROMPT_RULE_PREFIXES.map(
+    executable => `prefix_rule(pattern=[${JSON.stringify(executable)}], decision="prompt")`,
+  ).join('\n')}\n`;
 }
 
 function parseContextHome(value: unknown, index: number): MatchedEvaluationPreparedContextHomeV1 {

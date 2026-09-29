@@ -34,7 +34,6 @@ export interface CodeMemoryLinkAppServerTraceV1 {
 }
 
 export interface RunCodeMemoryLinkAppServerTurnInput {
-  readonly allowSandboxedReadOnlyCommandsWithoutApproval?: boolean;
   readonly appServer: CodeMemoryLinkAppServerCommand;
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
@@ -60,7 +59,6 @@ interface PendingRequest {
 /** Minimal JSONL JSON-RPC client for the versioned Codex app-server v2 surface. */
 export class CodeMemoryLinkAppServerClient {
   readonly #approvals: CodeMemoryLinkAppServerApprovalReceiptV1[] = [];
-  readonly #allowSandboxedReadOnlyCommandsWithoutApproval: boolean;
   readonly #approvedItemIds = new Set<string>();
   readonly #autoApprovalReviews = new Map<
     string,
@@ -81,12 +79,10 @@ export class CodeMemoryLinkAppServerClient {
   #nextId = 1;
 
   constructor(input: {
-    readonly allowSandboxedReadOnlyCommandsWithoutApproval?: boolean;
     readonly command: CodeMemoryLinkAppServerCommand;
     readonly cwd: string;
     readonly environment: Readonly<Record<string, string>>;
   }) {
-    this.#allowSandboxedReadOnlyCommandsWithoutApproval = input.allowSandboxedReadOnlyCommandsWithoutApproval === true;
     this.#repositoryRoot = input.cwd;
     this.#process = spawn(
       input.command.executable,
@@ -282,10 +278,7 @@ export class CodeMemoryLinkAppServerClient {
           }
         } else {
           const actionType = assertCodeMemoryLinkPublicAction(item, this.#repositoryRoot);
-          const requiresApproval =
-            actionType === 'fileChange' ||
-            (actionType === 'commandExecution' && !this.#allowSandboxedReadOnlyCommandsWithoutApproval);
-          if (requiresApproval && !this.#approvedItemIds.has(itemId) && !this.#autoApprovedItemIds.has(itemId)) {
+          if (actionType !== null && !this.#approvedItemIds.has(itemId) && !this.#autoApprovedItemIds.has(itemId)) {
             this.#abort(new Error('Codex completed an action without a reviewed pre-execution approval.'));
             return;
           }
@@ -409,7 +402,6 @@ export async function runCodeMemoryLinkAppServerTurn(
   input: RunCodeMemoryLinkAppServerTurnInput,
 ): Promise<CodeMemoryLinkAppServerTraceV1> {
   const client = new CodeMemoryLinkAppServerClient({
-    allowSandboxedReadOnlyCommandsWithoutApproval: input.allowSandboxedReadOnlyCommandsWithoutApproval,
     command: input.appServer,
     cwd: input.cwd,
     environment: input.environment,

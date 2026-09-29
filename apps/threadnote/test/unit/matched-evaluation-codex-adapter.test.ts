@@ -21,6 +21,7 @@ import {
   matchedEvaluationPreparedHomeFixtureHashV1,
   matchedEvaluationVerifierEnvironmentHashV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
+  renderMatchedEvaluationCommandReviewRulesV1,
   runMatchedEvaluationCodexAdapter,
   runMatchedEvaluationDeterministicVerifierV1,
 } from '../../../../scripts/matched-evaluation-codex-adapter.js';
@@ -134,6 +135,32 @@ describe('matched evaluation Codex adapter', () => {
         base.name,
       ),
     ).toThrow('unexpected resources');
+  });
+
+  it('forces every admitted shell executable through pre-execution review', () => {
+    const rules = renderMatchedEvaluationCommandReviewRulesV1();
+    const lines = rules.trim().split('\n');
+
+    expect(lines).toHaveLength(13);
+    expect(new Set(lines).size).toBe(lines.length);
+    for (const executable of [
+      '/bin/zsh',
+      'cat',
+      'file',
+      'head',
+      'ls',
+      'nl',
+      'od',
+      'pwd',
+      'rg',
+      'sed',
+      'stat',
+      'tail',
+      'wc',
+    ]) {
+      expect(lines).toContain(`prefix_rule(pattern=[${JSON.stringify(executable)}], decision="prompt")`);
+    }
+    expect(rules).not.toContain('decision="allow"');
   });
 
   it('uses the last cumulative provider report and rejects inconsistent accounting', () => {
