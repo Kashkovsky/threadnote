@@ -596,7 +596,7 @@ export function registerCodeGraphTool(
             Effect.sync(() => codeGraphRefreshResult(operation, refreshStatus)),
           );
         }
-        let refreshContinuity = refreshStatus?.refresh;
+        let refreshContinuity = read.status.refresh ?? refreshStatus?.refresh;
         const backgroundRefreshRequested = codeGraphInspectionRequestsBackgroundRefresh(firstSummary, operation);
         let presentedResult = read.result;
         if (!backgroundRefreshRequested && codeGraphInspectionStartsRefresh(firstSummary, operation)) {
