@@ -32,9 +32,11 @@ export interface MatchedEvaluationContextProxyPacketV1 {
   readonly runNonce: string;
   readonly runtimeManifestPath: string;
   readonly runtimeManifestSha256: string;
+  readonly threadnoteAccount: string;
   readonly threadnoteExecutable: string;
   readonly threadnoteExecutableSha256: string;
   readonly threadnoteHome: string;
+  readonly threadnoteUser: string;
   readonly version: typeof MATCHED_EVALUATION_CONTEXT_PROXY_VERSION;
 }
 
@@ -133,9 +135,11 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'runNonce',
     'runtimeManifestPath',
     'runtimeManifestSha256',
+    'threadnoteAccount',
     'threadnoteExecutable',
     'threadnoteExecutableSha256',
     'threadnoteHome',
+    'threadnoteUser',
     'version',
   ]);
   if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 1');
@@ -174,9 +178,11 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     runNonce: matching(packet.runNonce, RUN_NONCE, 'run nonce'),
     runtimeManifestPath: absolutePath(packet.runtimeManifestPath, 'runtime manifest'),
     runtimeManifestSha256: matching(packet.runtimeManifestSha256, HASH, 'runtime manifest hash'),
+    threadnoteAccount: matching(packet.threadnoteAccount, PROJECT, 'Threadnote account'),
     threadnoteExecutable: absolutePath(packet.threadnoteExecutable, 'Threadnote executable'),
     threadnoteExecutableSha256: matching(packet.threadnoteExecutableSha256, HASH, 'Threadnote executable hash'),
     threadnoteHome: absolutePath(packet.threadnoteHome, 'Threadnote home'),
+    threadnoteUser: matching(packet.threadnoteUser, PROJECT, 'Threadnote user'),
     version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
   };
 }
@@ -234,9 +240,11 @@ async function runThreadnoteContextBrief(
     LC_ALL: 'C.UTF-8',
     NO_COLOR: '1',
     PATH: '/usr/bin:/bin',
+    THREADNOTE_ACCOUNT: packet.threadnoteAccount,
     THREADNOTE_HOME: packet.threadnoteHome,
     THREADNOTE_NO_SPINNER: '1',
     THREADNOTE_NO_UPDATE_CHECK: '1',
+    THREADNOTE_USER: packet.threadnoteUser,
   });
   try {
     return object(JSON.parse(result) as unknown, 'Threadnote Context Brief');

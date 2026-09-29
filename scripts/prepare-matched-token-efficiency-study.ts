@@ -88,10 +88,12 @@ interface PreparationPlanV1 {
   readonly studyId: string;
   readonly taskContexts: readonly TaskContextPlanV1[];
   readonly threadnote: {
+    readonly account: string;
     readonly executable: string;
     readonly lockFile: string;
     readonly requiredReleaseCommit: string;
     readonly sourceDirectory: string;
+    readonly user: string;
   };
   readonly timeoutMilliseconds: number;
   readonly version: typeof MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION;
@@ -489,6 +491,7 @@ async function prepareTasks(input: {
         },
         homeDirectory: graphHome,
         homeFixtureHash: graphHomeFixtureHash,
+        identity: {account: input.plan.threadnote.account, user: input.plan.threadnote.user},
         project: input.plan.project,
         taskId: task.taskId,
       },
@@ -502,6 +505,7 @@ async function prepareTasks(input: {
         },
         homeDirectory: linkedHome,
         homeFixtureHash: linkedHomeFixtureHash,
+        identity: {account: input.plan.threadnote.account, user: input.plan.threadnote.user},
         project: input.plan.project,
         taskId: task.taskId,
       },
@@ -675,7 +679,7 @@ async function graphIdentityForHome(
     ],
     command: plan.threadnote.executable,
     cwd: cluster.repositoryDirectory,
-    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath),
+    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath, plan.threadnote),
     label: `Matched evaluation graph status ${cluster.clusterId}`,
     maxOutputBytes: 512 * 1_024,
     timeoutMilliseconds: 120_000,
@@ -700,7 +704,7 @@ async function assertContextCheckClean(plan: PreparationPlanV1, cluster: Cluster
     arguments: ['context', 'check', '--home', home, '--project', plan.project, '--json'],
     command: plan.threadnote.executable,
     cwd: cluster.repositoryDirectory,
-    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath),
+    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath, plan.threadnote),
     label: `Matched evaluation context check ${cluster.clusterId}`,
     maxOutputBytes: 512 * 1_024,
     timeoutMilliseconds: 120_000,
@@ -736,7 +740,7 @@ async function assertGraphOnlyContextHasNoMemory(
     ],
     command: plan.threadnote.executable,
     cwd: cluster.repositoryDirectory,
-    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath),
+    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath, plan.threadnote),
     label: `Matched evaluation graph-only Context Brief ${cluster.clusterId}`,
     maxOutputBytes: 2 * 1_024 * 1_024,
     timeoutMilliseconds: 120_000,
@@ -791,7 +795,7 @@ async function assertLinkedContextSurfacesMemories(
     ],
     command: plan.threadnote.executable,
     cwd: cluster.repositoryDirectory,
-    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath),
+    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath, plan.threadnote),
     label: `Matched evaluation linked-memory Context Brief ${cluster.clusterId}`,
     maxOutputBytes: 2 * 1_024 * 1_024,
     timeoutMilliseconds: 120_000,
@@ -1025,7 +1029,7 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
   const appServer = object(adapter.appServer, 'app server plan');
   exactKeys(appServer, ['argumentsAfterSubcommand', 'argumentsBeforeSubcommand', 'executable', 'version']);
   const threadnote = object(plan.threadnote, 'Threadnote plan');
-  exactKeys(threadnote, ['executable', 'lockFile', 'requiredReleaseCommit', 'sourceDirectory']);
+  exactKeys(threadnote, ['account', 'executable', 'lockFile', 'requiredReleaseCommit', 'sourceDirectory', 'user']);
   const clusters = array(plan.clusters, 'clusters').map(parseClusterPlan);
   unique(
     clusters.map(cluster => cluster.clusterId),
@@ -1093,10 +1097,12 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
     studyId: boundedText(plan.studyId, 3, 64, 'study id'),
     taskContexts,
     threadnote: {
+      account: matching(threadnote.account, PROJECT, 'Threadnote account'),
       executable: absolutePath(threadnote.executable, 'Threadnote executable'),
       lockFile: absolutePath(threadnote.lockFile, 'Threadnote lock file'),
       requiredReleaseCommit: matching(threadnote.requiredReleaseCommit, COMMIT, 'required release commit'),
       sourceDirectory: absolutePath(threadnote.sourceDirectory, 'Threadnote source directory'),
+      user: matching(threadnote.user, PROJECT, 'Threadnote user'),
     },
     timeoutMilliseconds: integer(plan.timeoutMilliseconds, 60_000, 7_200_000, 'runtime timeout'),
     version: MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION,
@@ -1238,7 +1244,11 @@ async function captureGit(root: string, arguments_: readonly string[], allowFail
   });
 }
 
-function threadnoteEnvironment(home: string, safeExecutablePath: string): Readonly<Record<string, string>> {
+function threadnoteEnvironment(
+  home: string,
+  safeExecutablePath: string,
+  identity: PreparationPlanV1['threadnote'],
+): Readonly<Record<string, string>> {
   return {
     CI: '1',
     HOME: process.env.HOME ?? '/nonexistent',
@@ -1246,9 +1256,11 @@ function threadnoteEnvironment(home: string, safeExecutablePath: string): Readon
     LC_ALL: 'C.UTF-8',
     NO_COLOR: '1',
     PATH: safeExecutablePath,
+    THREADNOTE_ACCOUNT: identity.account,
     THREADNOTE_HOME: home,
     THREADNOTE_NO_SPINNER: '1',
     THREADNOTE_NO_UPDATE_CHECK: '1',
+    THREADNOTE_USER: identity.user,
   };
 }
 

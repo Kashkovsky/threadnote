@@ -93,6 +93,7 @@ export interface MatchedEvaluationPreparedContextHomeV1 {
   };
   readonly homeDirectory: string;
   readonly homeFixtureHash: string;
+  readonly identity: {readonly account: string; readonly user: string};
   readonly project: string;
   readonly taskId: string;
 }
@@ -520,7 +521,11 @@ async function prepareContextHome(
   request: AdapterRequest,
   context: ParsedContext | null,
   root: string,
-): Promise<{readonly home: string; readonly project: string} | null> {
+): Promise<{
+  readonly home: string;
+  readonly identity: MatchedEvaluationPreparedContextHomeV1['identity'];
+  readonly project: string;
+} | null> {
   if (context === null) return null;
   const prepared = config.contextHomes.find(entry => entry.taskId === request.agentTask.taskId);
   if (prepared === undefined) throw new Error('Adapter config lacks the task prepared context home.');
@@ -535,13 +540,17 @@ async function prepareContextHome(
   if ((await matchedEvaluationPreparedHomeFixtureHashV1(destination)) !== prepared.homeFixtureHash) {
     throw new Error('Copied Threadnote home differs from its pinned fixture hash.');
   }
-  return {home: destination, project: prepared.project};
+  return {home: destination, identity: prepared.identity, project: prepared.project};
 }
 
 async function createCodexIsolation(input: {
   readonly config: MatchedEvaluationCodexAdapterConfigV1;
   readonly context: ParsedContext | null;
-  readonly prepared: {readonly home: string; readonly project: string} | null;
+  readonly prepared: {
+    readonly home: string;
+    readonly identity: MatchedEvaluationPreparedContextHomeV1['identity'];
+    readonly project: string;
+  } | null;
   readonly repositoryRoot: string;
   readonly root: string;
   readonly runNonce: string;
@@ -590,9 +599,11 @@ async function createCodexIsolation(input: {
       runNonce: input.runNonce,
       runtimeManifestPath,
       runtimeManifestSha256: sha256(Buffer.from(runtimeManifest)),
+      threadnoteAccount: input.prepared.identity.account,
       threadnoteExecutable: input.tool.executable,
       threadnoteExecutableSha256: input.tool.artifactHash,
       threadnoteHome: input.prepared.home,
+      threadnoteUser: input.prepared.identity.user,
       version: 1,
     };
     await writeFile(packetPath, `${JSON.stringify(packet)}\n`, {flag: 'wx', mode: 0o600});
@@ -1351,8 +1362,10 @@ function buildCodexConfig(input: {
 
 function parseContextHome(value: unknown, index: number): MatchedEvaluationPreparedContextHomeV1 {
   const home = object(value, `context home ${index}`);
-  exactKeys(home, ['expectedContext', 'homeDirectory', 'homeFixtureHash', 'project', 'taskId']);
+  exactKeys(home, ['expectedContext', 'homeDirectory', 'homeFixtureHash', 'identity', 'project', 'taskId']);
   const expected = object(home.expectedContext, `context home ${index} expected context`);
+  const identity = object(home.identity, `context home ${index} identity`);
+  exactKeys(identity, ['account', 'user']);
   exactKeys(expected, ['graphContentHash', 'graphSnapshotHash', 'linkReceiptsHash', 'memoryAccess', 'taskContextHash']);
   const memoryAccess = literal(expected.memoryAccess, ['disabled', 'linked'] as const, 'memory access');
   const linkReceiptsHash = nullableHash(expected.linkReceiptsHash, 'link receipts hash');
@@ -1373,6 +1386,10 @@ function parseContextHome(value: unknown, index: number): MatchedEvaluationPrepa
     },
     homeDirectory: absolutePath(home.homeDirectory, `context home ${index} directory`),
     homeFixtureHash: matching(home.homeFixtureHash, HASH, `context home ${index} fixture hash`),
+    identity: {
+      account: matching(identity.account, PROJECT, `context home ${index} account`),
+      user: matching(identity.user, PROJECT, `context home ${index} user`),
+    },
     project: matching(home.project, PROJECT, `context home ${index} project`),
     taskId: matching(home.taskId, TASK_ID, `context home ${index} task id`),
   };

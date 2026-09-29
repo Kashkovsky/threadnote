@@ -118,6 +118,8 @@ done
 grep -F ${shellQuote(JSON.stringify(project))} "$manifest" >/dev/null || exit 18
 grep -F ${shellQuote(JSON.stringify(repository))} "$manifest" >/dev/null || exit 19
 grep -F ${shellQuote(JSON.stringify(runNonce))} "$manifest" >/dev/null || exit 20
+[ "$THREADNOTE_ACCOUNT" = 'local' ] || exit 21
+[ "$THREADNOTE_USER" = 'evaluation-user' ] || exit 22
 printf '%s\\n' '{"answer":"prepared context"}'
 `,
     {mode: 0o700},
@@ -143,9 +145,11 @@ printf '%s\\n' '{"answer":"prepared context"}'
       runNonce,
       runtimeManifestPath: manifest,
       runtimeManifestSha256: sha256HexSync(manifestBytes),
+      threadnoteAccount: 'local',
       threadnoteExecutable: executable,
       threadnoteExecutableSha256: sha256HexSync(await readFile(executable)),
       threadnoteHome,
+      threadnoteUser: 'evaluation-user',
       version: 1,
     },
     repository,

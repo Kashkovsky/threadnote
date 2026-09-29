@@ -259,10 +259,12 @@ describe('matched token-efficiency study preparation', () => {
           studyId: 'matched-preparation-test',
           taskContexts,
           threadnote: {
+            account: 'local',
             executable: fakeThreadnote,
             lockFile,
             requiredReleaseCommit: sourceCommit,
             sourceDirectory: source,
+            user: 'evaluation-user',
           },
           timeoutMilliseconds: 60_000,
           version: 1,
