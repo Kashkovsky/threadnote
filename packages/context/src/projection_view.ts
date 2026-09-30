@@ -296,6 +296,9 @@ function projectAgentAnswer(
 ): string {
   const exactContinuation = brief.activeHandoffs.find(isContextBriefExactCurrentContinuation)?.continuationCard;
   if (brief.mode === 'resume' && exactContinuation !== undefined) {
+    if (brief.evidenceState === 'sufficient') {
+      return 'Resume orientation is sufficient. Verify cited source spans, then follow the continuation card. Skip broad source and graph discovery unless verification reveals a gap.';
+    }
     const next = exactContinuation.nextStep === undefined ? '' : ` Next: ${exactContinuation.nextStep}`;
     return utf8Prefix(
       `Resume from current handoff. Verify cited source directly; use the graph only if source differs or a dependency question remains.${next}`,

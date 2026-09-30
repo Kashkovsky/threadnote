@@ -232,8 +232,9 @@ describe('Context Brief continuation contracts', () => {
     expect(brief.evidenceState).toBe('sufficient');
     expect(brief.output.truncated).toBe(true);
     expect(brief.recommendedFollowUps).toEqual([]);
-    expect(agentView.answer).toContain('Verify cited source directly');
-    expect(agentView.answer).toContain('use the graph only if source differs');
+    expect(agentView.answer).toBe(
+      'Resume orientation is sufficient. Verify cited source spans, then follow the continuation card. Skip broad source and graph discovery unless verification reveals a gap.',
+    );
     expect(agentView.graph).toBeUndefined();
     expect(projected.measurement.totalBytes).toBeLessThan(3_000);
   });
@@ -300,14 +301,17 @@ describe('Context Brief continuation contracts', () => {
 
   it('retains non-graph gaps in an otherwise focused resume', () => {
     const logical = validatedResumeLogical();
-    const projected = projectContextBrief(
+    const result = projectContextBrief(
       {...logical, coverage: {...logical.coverage, gaps: ['memory-citation-limited']}},
       1_500,
       'agent',
-    ).structuredContent;
+    );
+    const projected = result.structuredContent;
     expect(projected.coverage.gaps).toEqual(['memory-citation-limited']);
     expect(projected.evidenceState).toBe('partial');
     expect(projected.graph.cards).toEqual([]);
+    expect(parseContextBriefAgentViewText(result.text).answer).toContain('Verify cited source directly');
+    expect(parseContextBriefAgentViewText(result.text).answer).not.toContain('orientation is sufficient');
   });
 
   it('retains the continuation core for arbitrary supported token budgets', () => {
