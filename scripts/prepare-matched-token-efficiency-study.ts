@@ -1144,12 +1144,14 @@ export function assertMatchedTokenEfficiencyLinkedBriefV1(
   if (!isAgentView && !isCanonicalBrief) {
     throw new Error('Linked home did not return a supported Context Brief.');
   }
-  if (!Array.isArray(brief.durableDecisions) || !Array.isArray(brief.activeHandoffs)) {
+  const durableDecisions = brief.durableDecisions ?? (isAgentView ? [] : undefined);
+  const activeHandoffs = brief.activeHandoffs ?? (isAgentView ? [] : undefined);
+  if (!Array.isArray(durableDecisions) || !Array.isArray(activeHandoffs)) {
     throw new Error('Linked-memory Context Brief is missing its memory evidence arrays.');
   }
   const surfacedHandoffTopics = isAgentView
-    ? agentViewMemoryTopics(brief.activeHandoffs, 'handoff', project, taskId)
-    : brief.activeHandoffs.map((entry, index) => {
+    ? agentViewMemoryTopics(activeHandoffs, 'handoff', project, taskId)
+    : activeHandoffs.map((entry, index) => {
         const handoff = object(entry, `linked-memory Context Brief handoff ${index}`);
         if (handoff.kind !== 'handoff' || handoff.project !== project) {
           throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected handoff.`);
@@ -1162,8 +1164,8 @@ export function assertMatchedTokenEfficiencyLinkedBriefV1(
     throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected handoff.`);
   }
   const surfacedTopics = isAgentView
-    ? agentViewMemoryTopics(brief.durableDecisions, 'durable', project, taskId)
-    : brief.durableDecisions.map((entry, index) => {
+    ? agentViewMemoryTopics(durableDecisions, 'durable', project, taskId)
+    : durableDecisions.map((entry, index) => {
         const decision = object(entry, `linked-memory Context Brief decision ${index}`);
         if (decision.kind !== 'durable' || decision.project !== project) {
           throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected memory.`);

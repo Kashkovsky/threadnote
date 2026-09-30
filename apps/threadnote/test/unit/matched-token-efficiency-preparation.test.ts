@@ -126,6 +126,23 @@ describe('matched token-efficiency study preparation', () => {
     expect(() =>
       assertMatchedTokenEfficiencyLinkedBriefV1(
         {
+          briefVersion: 2,
+          durableDecisions: [
+            {
+              uri: 'threadnote://user/evaluation-user/memories/durable/projects/threadnote/parser-contract.md',
+            },
+          ],
+          type: 'context-brief-agent-view',
+          version: 1,
+        },
+        'threadnote',
+        'tsk_1234567890abcdef',
+        ['parser-contract'],
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedTokenEfficiencyLinkedBriefV1(
+        {
           ...brief,
           activeHandoffs: [{kind: 'handoff', project: 'threadnote', topic: 'continuation-checkpoint'}],
           durableDecisions: [{kind: 'durable', project: 'threadnote', topic: 'unexpected-contract'}],
