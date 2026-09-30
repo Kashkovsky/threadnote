@@ -977,7 +977,7 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(deploymentText).toContain('secrets.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE');
     expect(deploymentText).not.toContain('vars.THREADNOTE_TELEMETRY_GRAFANA_URL');
     expect(deploymentText).not.toContain('vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE');
-    expect(deploymentText).not.toContain('bun install');
+    expect(deploymentText).toContain('bun install --frozen-lockfile');
     expect(deploymentText).toContain('git merge-base --is-ancestor');
     expect(deploymentText).toContain('git diff --quiet --no-ext-diff --no-textconv');
     expect(deploymentText).toContain(telemetryDashboardArtifactPath);
@@ -998,7 +998,7 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(verificationText).toContain('secrets.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE');
     expect(verificationText).not.toContain('vars.THREADNOTE_TELEMETRY_GRAFANA_URL');
     expect(verificationText).not.toContain('vars.THREADNOTE_TELEMETRY_GRAFANA_NAMESPACE');
-    expect(verificationText).not.toContain('bun install');
+    expect(verificationText).toContain('bun install --frozen-lockfile');
     expect(verificationText).toContain(
       'bun --config=/dev/null --no-env-file --no-install scripts/telemetry-dashboard.ts verify-live',
     );
@@ -1010,6 +1010,9 @@ describe('direct Grafana dashboard provisioning', () => {
       `${validationText}\n${deploymentText}\n${verificationText}`.match(
         /oven-sh\/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6/gu,
       ),
+    ).toHaveLength(3);
+    expect(
+      `${validationText}\n${deploymentText}\n${verificationText}`.match(/bun install --frozen-lockfile/gu),
     ).toHaveLength(3);
 
     const codeowners = readFileSync('.github/CODEOWNERS', 'utf8');
