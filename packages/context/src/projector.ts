@@ -35,7 +35,10 @@ import {
 import {isMemoryId, memoryIdentityAlias} from '@threadnote/memory/identity-alias';
 import {parseVerifiedProcedureEvidenceList} from './procedure/selection.js';
 import {
+  contextBriefResumeFocusUri,
   contextBriefRelationshipMemoryByUri,
+  deriveContextBriefEvidenceState,
+  isContextBriefGraphOnlyGap,
   requiredContextBriefAgentMemoryItem,
   withStableContextBriefMemoryIdentityGap,
 } from './memory_projection.js';
@@ -117,12 +120,13 @@ export function projectContextBrief(
   maximumEstimatedTokens: number = CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
   responseFormat: ContextBriefResponseFormat = 'dual',
 ): ProjectedContextBriefV1 {
+  const resumeFocusUri = contextBriefResumeFocusUri(logical);
   if (
     ![...logical.activeHandoffs, ...logical.durableDecisions].some(
       memory => memory.actionCard !== undefined || (logical.mode === 'resume' && memory.continuationCard !== undefined),
     )
   ) {
-    return projectContextBriefCore(logical, maximumEstimatedTokens, responseFormat);
+    return projectContextBriefCore(logical, maximumEstimatedTokens, responseFormat, resumeFocusUri);
   }
   const withoutCards = {
     ...logical,
@@ -133,8 +137,8 @@ export function projectContextBrief(
       ({actionCard: _actionCard, continuationCard: _continuationCard, ...memory}) => memory,
     ),
   };
-  const baseline = projectContextBriefCore(withoutCards, maximumEstimatedTokens, responseFormat);
-  const withCards = projectContextBriefCore(logical, maximumEstimatedTokens, responseFormat);
+  const baseline = projectContextBriefCore(withoutCards, maximumEstimatedTokens, responseFormat, resumeFocusUri);
+  const withCards = projectContextBriefCore(logical, maximumEstimatedTokens, responseFormat, resumeFocusUri);
   const preservesBaseline = logical.mode === 'resume' ? preservesResumeBaselineEvidence : preservesBaselineEvidence;
   return preservesBaseline(withCards.structuredContent, baseline.structuredContent) ? withCards : baseline;
 }
@@ -143,27 +147,41 @@ function projectContextBriefCore(
   logical: ContextBriefLogicalResultV1,
   maximumEstimatedTokens: number,
   responseFormat: ContextBriefResponseFormat,
+  resumeFocusUri?: string,
 ): ProjectedContextBriefV1 {
   logical = withStableContextBriefMemoryIdentityGap(logical);
   const maximumBytes = projectionMaximumBytes(maximumEstimatedTokens);
-  const items = projectionItems(logical, responseFormat);
+  const items = projectionItems(logical, responseFormat, resumeFocusUri);
   const graphRecoveryItem = requiredGraphRecoveryItem(logical, items);
   const baseRequiredItems = uniqueProjectionItems(
     [
-      requiredCoverageGapItem(logical, items),
+      requiredCoverageGapItem(items),
+      ...(resumeFocusUri === undefined
+        ? []
+        : items.filter(item => item.lane === 'coverage-gap' || item.lane === 'verified-procedure')),
       ...requiredAgentGraphEvidenceItems(logical, items, responseFormat, graphRecoveryItem),
+      items.find(item => item.lane === 'handoff' && item.id === resumeFocusUri),
       requiredContextBriefAgentMemoryItem(logical, items, responseFormat),
       ...requiredContextBriefSourceProjectionItems(logical, items),
       ...requiredAgentWorksetRecoveryItems(logical, items, responseFormat),
       graphRecoveryItem,
     ].filter((item): item is ProjectionItem => item !== undefined),
   );
-  const fixedCore = requiredCodeLinkedEvidenceCore(logical, items, baseRequiredItems, responseFormat);
+  const fixedCore =
+    resumeFocusUri === undefined
+      ? requiredCodeLinkedEvidenceCore(logical, items, baseRequiredItems, responseFormat)
+      : {
+          allCohortKeys: new Set<string>(),
+          compactMemoryUris: new Set<string>(),
+          excludedKeys: new Set<string>(),
+          requiredItems: baseRequiredItems,
+        };
   const fixedProjection = renderProjection(
     logical,
     fixedCore.requiredItems,
     fixedCore.protectedMemoryUri,
     fixedCore.compactMemoryUris,
+    resumeFocusUri,
   );
   const fixedMeasurement = measureContextBriefResponse(fixedProjection, responseFormat);
   const baseKeys = new Set(baseRequiredItems.map(projectionItemKey));
@@ -197,7 +215,13 @@ function projectContextBriefCore(
   ];
   let selectedCount: number | undefined;
   for (let count = 0; count <= optionalItems.length; count += 1) {
-    const structuredContent = renderProjection(logical, selectItems(count), protectedMemoryUri, compactMemoryUris);
+    const structuredContent = renderProjection(
+      logical,
+      selectItems(count),
+      protectedMemoryUri,
+      compactMemoryUris,
+      resumeFocusUri,
+    );
     const measurement = measureContextBriefResponse(structuredContent, responseFormat);
     if (measurement.totalBytes <= maximumBytes) selectedCount = count;
   }
@@ -211,7 +235,7 @@ function projectContextBriefCore(
       responseFormat,
     });
     if (sourceAdjusted !== logical) {
-      return projectContextBriefCore(sourceAdjusted, maximumEstimatedTokens, responseFormat);
+      return projectContextBriefCore(sourceAdjusted, maximumEstimatedTokens, responseFormat, resumeFocusUri);
     }
     const structuredContent = parseContextBriefV1(renderMinimumProjection(logical, baseRequiredItems));
     const text = renderContextBriefForFormat(structuredContent, responseFormat);
@@ -221,7 +245,7 @@ function projectContextBriefCore(
     return {maximumBytes, measurement, structuredContent, text};
   }
   const structuredContent = parseContextBriefV1(
-    renderProjection(logical, selectItems(selectedCount), protectedMemoryUri, compactMemoryUris),
+    renderProjection(logical, selectItems(selectedCount), protectedMemoryUri, compactMemoryUris, resumeFocusUri),
   );
   const text = renderContextBriefForFormat(structuredContent, responseFormat);
   const measurement = measureContextBriefResponse(structuredContent, responseFormat);
@@ -1022,6 +1046,7 @@ function renderProjection(
   selected: readonly ProjectionItem[],
   protectedMemoryUri?: string,
   compactMemoryUris: ReadonlySet<string> = new Set(),
+  resumeFocusUri?: string,
 ): ContextBriefV1 {
   const selectedByLane = new Map<ProjectionLane, Set<string>>();
   for (const item of selected) {
@@ -1047,6 +1072,7 @@ function renderProjection(
         compactMemoryUris.has(memory.uri),
         true,
         logical.mode === 'resume',
+        memory.uri === resumeFocusUri,
       ),
   );
   const activeHandoffs = selectById(logical.activeHandoffs, selectedByLane.get('handoff'), 'uri').map(memory =>
@@ -1057,6 +1083,7 @@ function renderProjection(
       compactMemoryUris.has(memory.uri),
       true,
       logical.mode === 'resume',
+      memory.uri === resumeFocusUri,
     ),
   );
   const stalenessAndConflicts = selectById(logical.stalenessAndConflicts, selectedByLane.get('issue')).map(issue =>
@@ -1072,13 +1099,14 @@ function renderProjection(
   );
   const selectedGapIds = selectedByLane.get('coverage-gap');
   const gaps = logical.coverage.gaps.filter(gap => selectedGapIds?.has(coverageGapProjectionId(gap)) === true);
-  const evidenceState = deriveEvidenceState({
+  const evidenceState = deriveContextBriefEvidenceState({
     activeHandoffs,
     cards,
     contracts,
     durableDecisions,
     gaps,
     logical,
+    resumeFocusUri,
     sources,
   });
   const recommendedFollowUps = evidenceState === 'sufficient' ? [] : selectedFollowUps;
@@ -1112,25 +1140,27 @@ function renderProjection(
     evidenceState,
     graph: {
       cards,
-      ...(cards.length < logical.graph.cards.length
-        ? {
-            continuation: {
-              omittedCards: logical.graph.cards.length - cards.length,
-              state: 'rerun-required' as const,
-              ...(logical.graph.continuation === undefined
-                ? {}
-                : {upstreamRemainingEstimate: logical.graph.continuation.remainingEstimate}),
-            },
-          }
-        : logical.graph.continuation === undefined
-          ? {}
-          : {
+      ...(resumeFocusUri !== undefined
+        ? {}
+        : cards.length < logical.graph.cards.length
+          ? {
               continuation: {
-                cursor: logical.graph.continuation.cursor,
-                remainingEstimate: logical.graph.continuation.remainingEstimate,
-                state: 'available' as const,
+                omittedCards: logical.graph.cards.length - cards.length,
+                state: 'rerun-required' as const,
+                ...(logical.graph.continuation === undefined
+                  ? {}
+                  : {upstreamRemainingEstimate: logical.graph.continuation.remainingEstimate}),
               },
-            }),
+            }
+          : logical.graph.continuation === undefined
+            ? {}
+            : {
+                continuation: {
+                  cursor: logical.graph.continuation.cursor,
+                  remainingEstimate: logical.graph.continuation.remainingEstimate,
+                  state: 'available' as const,
+                },
+              }),
       contracts,
       ...(sources.length === 0 ? {} : {sources}),
     },
@@ -1155,42 +1185,6 @@ function renderProjection(
     version: logical.version,
     ...(logicalVerifiedProcedures.length === 0 ? {} : {verifiedProcedures}),
   };
-}
-
-function deriveEvidenceState(input: {
-  readonly activeHandoffs: readonly ContextBriefMemoryEvidenceV1[];
-  readonly cards: readonly ContextBriefGraphCardV1[];
-  readonly contracts: readonly ContextBriefGraphContractV1[];
-  readonly durableDecisions: readonly ContextBriefMemoryEvidenceV1[];
-  readonly gaps: readonly string[];
-  readonly logical: ContextBriefLogicalResultV1;
-  readonly sources: ContextBriefV1['graph']['sources'];
-}): ContextBriefEvidenceState {
-  const retainedMemories = [...input.activeHandoffs, ...input.durableDecisions];
-  const hasEvidence = input.cards.length > 0 || retainedMemories.length > 0;
-  if (!hasEvidence) return 'no-match';
-  const unreliable =
-    input.logical.scope.freshness !== 'fresh' ||
-    !input.logical.coverage.graph.complete ||
-    retainedMemories.some(memory => memory.freshness !== 'fresh');
-  if (unreliable) return 'degraded';
-  const requiresContract = input.logical.mode === 'trace' || input.logical.mode === 'impact';
-  const requiresSource = input.sources !== undefined || input.gaps.includes(CONTEXT_BRIEF_SOURCE_EXCERPT_BUDGET_GAP);
-  const requiresContinuation = input.logical.mode === 'resume';
-  const hasContinuation = retainedMemories.some(memory => memory.continuationCard !== undefined);
-  const mandatoryGap = input.gaps.some(gap => gap !== 'no-relevant-active-memory');
-  if (
-    input.cards.length === 0 ||
-    input.cards.length < input.logical.graph.cards.length ||
-    input.logical.graph.continuation !== undefined ||
-    (requiresContract && input.contracts.length === 0) ||
-    (requiresSource && (input.sources?.length ?? 0) === 0) ||
-    (requiresContinuation && !hasContinuation) ||
-    mandatoryGap
-  ) {
-    return 'partial';
-  }
-  return 'sufficient';
 }
 
 /**
@@ -1272,6 +1266,7 @@ function renderMinimumProjection(
 function projectionItems(
   logical: ContextBriefLogicalResultV1,
   responseFormat: ContextBriefResponseFormat,
+  resumeFocusUri?: string,
 ): readonly ProjectionItem[] {
   const hasCurrentCodeRelation = (memory: ContextBriefLogicalMemoryEvidenceV1): boolean =>
     (memory.cohortCodeRelations ?? memory.codeRelations ?? []).some(
@@ -1291,7 +1286,7 @@ function projectionItems(
   const sourceFirst =
     responseFormat === 'agent' && logical.coverage.memory.codeAnchors === undefined && logical.mode === 'locate';
   // Reserve one linked memory, then the exact card, before admitting more stale handoffs.
-  return [
+  const projected = [
     ...logical.coverage.gaps.map((gap, rank) => ({
       id: coverageGapProjectionId(gap),
       lane: 'coverage-gap' as const,
@@ -1386,17 +1381,18 @@ function projectionItems(
       lanePriority(left.lane) - lanePriority(right.lane) ||
       compareText(left.id, right.id),
   );
+  if (resumeFocusUri === undefined) return projected;
+  return projected.filter(
+    item =>
+      (item.lane === 'handoff' && item.id === resumeFocusUri) ||
+      (item.lane === 'coverage-gap' && !isContextBriefGraphOnlyGap(item.id.slice('gap:'.length))) ||
+      item.lane === 'verified-procedure',
+  );
 }
 
 /** Keep one explicit limitation whenever the logical result contains coverage gaps. */
-function requiredCoverageGapItem(
-  logical: ContextBriefLogicalResultV1,
-  items: readonly ProjectionItem[],
-): ProjectionItem | undefined {
-  const gap = logical.coverage.gaps[0];
-  if (gap === undefined) return undefined;
-  const id = coverageGapProjectionId(gap);
-  return items.find(item => item.lane === 'coverage-gap' && item.id === id);
+function requiredCoverageGapItem(items: readonly ProjectionItem[]): ProjectionItem | undefined {
+  return items.find(item => item.lane === 'coverage-gap');
 }
 
 /** A bounded locate answer must not strand a partial or unprepared Workset. */
@@ -1833,12 +1829,13 @@ function compactProjectedMemory(
   compactCodeLinkedCohort = false,
   includeActionCard = false,
   includeContinuationCard = false,
+  preserveContinuationDetails = false,
 ): ContextBriefMemoryEvidenceV1 {
   const {cohortCodeRelations, continuationCard, memoryId, ...withoutIdentity} = memory;
   const compactContinuation =
     !includeContinuationCard || continuationCard === undefined
       ? {}
-      : {continuationCard: compactContinuationCard(continuationCard)};
+      : {continuationCard: compactContinuationCard(continuationCard, preserveContinuationDetails)};
   const hasProjectedCard =
     (includeActionCard && memory.actionCard !== undefined) ||
     (includeContinuationCard && continuationCard !== undefined);

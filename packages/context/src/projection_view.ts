@@ -14,6 +14,7 @@ import {
   CONTEXT_BRIEF_PROCEDURE_VERSION,
 } from './types.js';
 import {contextBriefAnswerWithSourceReadSignal} from './source_projection.js';
+import {isContextBriefExactCurrentContinuation} from './memory_projection.js';
 import {utf8Prefix} from './projection_text.js';
 
 type AgentViewFieldDisposition = 'agent-view' | 'audit-only' | 'represented';
@@ -293,6 +294,14 @@ function projectAgentAnswer(
   brief: ContextBriefV1,
   cards: readonly {readonly line: number; readonly path: string; readonly qualifiedName: string}[],
 ): string {
+  const exactContinuation = brief.activeHandoffs.find(isContextBriefExactCurrentContinuation)?.continuationCard;
+  if (brief.mode === 'resume' && exactContinuation !== undefined) {
+    const next = exactContinuation.nextStep === undefined ? '' : ` Next: ${exactContinuation.nextStep}`;
+    return utf8Prefix(
+      `Resume from current handoff. Verify cited source directly; use the graph only if source differs or a dependency question remains.${next}`,
+      192,
+    );
+  }
   if (brief.mode === 'explain') {
     const rationale = brief.activeHandoffs[0] ?? brief.durableDecisions[0];
     if (rationale !== undefined) {
@@ -404,7 +413,12 @@ export function projectAgentViewMemory(memory: ContextBriefMemoryEvidenceV1): Co
     ...(memory.actionCard === undefined ? {} : {actionCard: memory.actionCard}),
     ...(memory.continuationCard === undefined
       ? {}
-      : {continuationCard: compactContinuationCard(memory.continuationCard)}),
+      : {
+          continuationCard: compactContinuationCard(
+            memory.continuationCard,
+            isContextBriefExactCurrentContinuation(memory),
+          ),
+        }),
     ...(memory.authority === undefined ? {} : {authority: memory.authority}),
     ...(citationActions.length === 0 ? {} : {citationActions}),
     ...(memory.citationDetailsOmitted === undefined ? {} : {citationDetailsOmitted: memory.citationDetailsOmitted}),
@@ -430,15 +444,21 @@ export function projectAgentViewMemory(memory: ContextBriefMemoryEvidenceV1): Co
   };
 }
 
-export function compactContinuationCard(card: ContextBriefContinuationCardV1): ContextBriefContinuationCardV1 {
+export function compactContinuationCard(
+  card: ContextBriefContinuationCardV1,
+  preserveResumeDetails = false,
+): ContextBriefContinuationCardV1 {
+  const limits = preserveResumeDetails
+    ? {decisions: 192, invariants: 160, nextStep: 160, rationale: 128, risks: 96, task: 128, verification: 128}
+    : {decisions: 128, invariants: 96, nextStep: 96, rationale: 96, risks: 80, task: 96, verification: 96};
   return {
-    ...(card.task === undefined ? {} : {task: utf8Prefix(card.task, 96)}),
-    ...(card.decisions === undefined ? {} : {decisions: utf8Prefix(card.decisions, 128)}),
-    ...(card.invariants === undefined ? {} : {invariants: utf8Prefix(card.invariants, 96)}),
-    ...(card.rationale === undefined ? {} : {rationale: utf8Prefix(card.rationale, 96)}),
-    ...(card.verification === undefined ? {} : {verification: utf8Prefix(card.verification, 96)}),
+    ...(card.task === undefined ? {} : {task: utf8Prefix(card.task, limits.task)}),
+    ...(card.decisions === undefined ? {} : {decisions: utf8Prefix(card.decisions, limits.decisions)}),
+    ...(card.invariants === undefined ? {} : {invariants: utf8Prefix(card.invariants, limits.invariants)}),
+    ...(card.rationale === undefined ? {} : {rationale: utf8Prefix(card.rationale, limits.rationale)}),
+    ...(card.verification === undefined ? {} : {verification: utf8Prefix(card.verification, limits.verification)}),
     ...(card.blockers === undefined ? {} : {blockers: utf8Prefix(card.blockers, 80)}),
-    ...(card.risks === undefined ? {} : {risks: utf8Prefix(card.risks, 80)}),
-    ...(card.nextStep === undefined ? {} : {nextStep: utf8Prefix(card.nextStep, 96)}),
+    ...(card.risks === undefined ? {} : {risks: utf8Prefix(card.risks, limits.risks)}),
+    ...(card.nextStep === undefined ? {} : {nextStep: utf8Prefix(card.nextStep, limits.nextStep)}),
   };
 }

@@ -1,9 +1,15 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {parseContextBriefContinuationCard} from '../../src/memory-evidence.js';
+import {contextBriefResumeFocusUri} from '../../src/memory_projection.js';
 import {assembleContextBriefLogicalResult, planContextBrief} from '../../src/planner.js';
 import {parseContextBriefAgentViewText, projectContextBrief} from '../../src/projector.js';
-import {parseContextBriefRequestV1, type ContextBriefGraphEvidenceV1} from '../../src/types.js';
+import {
+  parseContextBriefRequestV1,
+  type ContextBriefGraphEvidenceV1,
+  type ContextBriefLogicalMemoryEvidenceV1,
+  type ContextBriefLogicalResultV1,
+} from '../../src/types.js';
 
 const COMMIT = 'a'.repeat(40);
 const REPOSITORY_ID = 'b'.repeat(64);
@@ -199,12 +205,131 @@ describe('Context Brief continuation contracts', () => {
     ).toBe(false);
   });
 
+  it('projects an exact current resume as a compact continuation instead of optional graph breadth', () => {
+    const projected = projectValidatedResume(1_500);
+    const brief = projected.structuredContent;
+    const agentView = parseContextBriefAgentViewText(projected.text);
+
+    expect(brief.activeHandoffs[0]).toMatchObject({
+      continuationCard: {
+        decisions: expect.stringContaining('after the chunk size and after any chunk extension'),
+        invariants: expect.stringContaining('Reject non-whitespace malformed bytes'),
+        nextStep: expect.stringContaining('h11/tests/test_io.py'),
+      },
+      citationSummary: {coverage: 'current-complete', exact: 1, relocated: 0, stale: 0, unknown: 0},
+      freshness: 'fresh',
+      preciseStatus: 'exact',
+    });
+    expect(brief.durableDecisions).toEqual([]);
+    expect(brief.graph).toEqual({cards: [], contracts: []});
+    expect(brief.coverage.gaps).toEqual([]);
+    expect(brief.coverage.omissions).toMatchObject({
+      activeHandoffs: 0,
+      durableDecisions: 1,
+      graphCards: 16,
+      graphContracts: 32,
+    });
+    expect(brief.evidenceState).toBe('sufficient');
+    expect(brief.output.truncated).toBe(true);
+    expect(brief.recommendedFollowUps).toEqual([]);
+    expect(agentView.answer).toContain('Verify cited source directly');
+    expect(agentView.answer).toContain('use the graph only if source differs');
+    expect(agentView.graph).toBeUndefined();
+    expect(projected.measurement.totalBytes).toBeLessThan(3_000);
+  });
+
+  it('keeps graph evidence when resume citations are not exact and current-complete', () => {
+    const projected = projectValidatedResume(1_500, 'relocated').structuredContent;
+    expect(projected.graph.cards[0]?.id).toBe('card-1');
+    expect(projected.coverage.gaps).toContain('graph-evidence-partial');
+    expect(projected.activeHandoffs[0]?.preciseStatus).toBe('relocated');
+  });
+
+  it('focuses only an unambiguous exact-current continuation', () => {
+    const base = validatedResumeLogical();
+    const citationSummary = base.activeHandoffs[0].citationSummary;
+    if (citationSummary === undefined) throw new Error('expected validated resume citation summary');
+    const updatePrimary = (
+      logical: ContextBriefLogicalResultV1,
+      patch: Partial<ContextBriefLogicalMemoryEvidenceV1>,
+    ): ContextBriefLogicalResultV1 => ({
+      ...logical,
+      activeHandoffs: [{...logical.activeHandoffs[0], ...patch}],
+    });
+    const cases: readonly [string, ContextBriefLogicalResultV1][] = [
+      ['non-resume mode', {...base, mode: 'brief'}],
+      ['missing continuation', updatePrimary(base, {continuationCard: undefined})],
+      ['stale handoff', updatePrimary(base, {freshness: 'stale'})],
+      ['source-commit freshness', updatePrimary(base, {freshnessBasis: 'source-commit'})],
+      ['relocated status', updatePrimary(base, {preciseStatus: 'relocated'})],
+      ['citation error', updatePrimary(base, {citationErrorCount: 1})],
+      ['incomplete coverage', updatePrimary(base, {citationSummary: {...citationSummary, coverage: 'incomplete'}})],
+      ['no exact citation', updatePrimary(base, {citationSummary: {...citationSummary, exact: 0}})],
+      ['relocated citation', updatePrimary(base, {citationSummary: {...citationSummary, relocated: 1}})],
+      ['stale citation', updatePrimary(base, {citationSummary: {...citationSummary, stale: 1}})],
+      ['unknown citation', updatePrimary(base, {citationSummary: {...citationSummary, unknown: 1}})],
+      [
+        'competing handoff',
+        {
+          ...base,
+          activeHandoffs: [
+            ...base.activeHandoffs,
+            {...base.activeHandoffs[0], uri: `${base.activeHandoffs[0].uri}/other`},
+          ],
+        },
+      ],
+      [
+        'conflict',
+        {
+          ...base,
+          stalenessAndConflicts: [
+            {
+              id: 'issue-1',
+              kind: 'candidate-conflict',
+              rank: 0,
+              summary: 'Competing evidence',
+              uris: [base.activeHandoffs[0].uri],
+            },
+          ],
+        },
+      ],
+    ];
+    expect(contextBriefResumeFocusUri(base)).toBe(base.activeHandoffs[0]?.uri);
+    for (const [label, logical] of cases) expect(contextBriefResumeFocusUri(logical), label).toBeUndefined();
+  });
+
+  it('retains non-graph gaps in an otherwise focused resume', () => {
+    const logical = validatedResumeLogical();
+    const projected = projectContextBrief(
+      {...logical, coverage: {...logical.coverage, gaps: ['memory-citation-limited']}},
+      1_500,
+      'agent',
+    ).structuredContent;
+    expect(projected.coverage.gaps).toEqual(['memory-citation-limited']);
+    expect(projected.evidenceState).toBe('partial');
+    expect(projected.graph.cards).toEqual([]);
+  });
+
   it('retains the continuation core for arbitrary supported token budgets', () => {
     fc.assert(
       fc.property(fc.integer({min: 800, max: 1_500}), budgetTokens => {
         const projected = project('resume', realisticHandoff(), budgetTokens, noisyDetachedWorktreeGraph());
         expect(projected.structuredContent.activeHandoffs[0]?.continuationCard).toBeDefined();
         expect(projected.structuredContent.graph.cards[0]?.id).toBe('card-1');
+        expect(projected.measurement.totalBytes).toBeLessThanOrEqual(projected.maximumBytes);
+      }),
+      {numRuns: 50},
+    );
+  });
+
+  it('keeps exact current resume focus bounded for arbitrary supported token budgets', () => {
+    fc.assert(
+      fc.property(fc.integer({min: 800, max: 1_500}), budgetTokens => {
+        const projected = projectValidatedResume(budgetTokens);
+        expect(projected.structuredContent.activeHandoffs[0]?.continuationCard?.nextStep).toContain(
+          'h11/tests/test_io.py',
+        );
+        expect(projected.structuredContent.graph.cards).toEqual([]);
         expect(projected.measurement.totalBytes).toBeLessThanOrEqual(projected.maximumBytes);
       }),
       {numRuns: 50},
@@ -267,6 +392,81 @@ function project(
     budgetTokens,
     'agent',
   );
+}
+
+function projectValidatedResume(budgetTokens: number, status: 'exact' | 'relocated' = 'exact') {
+  return projectContextBrief(validatedResumeLogical(status, budgetTokens), budgetTokens, 'agent');
+}
+
+function validatedResumeLogical(status: 'exact' | 'relocated' = 'exact', budgetTokens = 1_500) {
+  const uri = 'threadnote://user/test/memories/handoffs/active/h11/resume.md';
+  const citation = {
+    extractorSet: 'native-code-graph-13',
+    fileContentHash: {algorithm: 'sha256' as const, value: 'd'.repeat(64)},
+    id: 'citation-h11-abnf',
+    path: 'h11/_abnf.py',
+    repositoryId: REPOSITORY_ID,
+    repositoryIdentityKind: 'remote' as const,
+    sourceCommit: COMMIT,
+    sourceDirty: false,
+    sourceSnapshotId: 'cgsn_test',
+    target: {kind: 'file' as const},
+    version: 1 as const,
+  };
+  const candidate = {
+    ...realisticHandoff(),
+    codeCitations: [citation],
+    continuationCard: {
+      ...realisticHandoff().continuationCard,
+      decisions:
+        'Allow horizontal optional whitespace after the chunk size and after any chunk extension, immediately before CRLF.',
+      invariants:
+        'Reject non-whitespace malformed bytes and preserve full-match validation, payload boundaries, and the size limit.',
+      nextStep:
+        'Update h11/_abnf.py and add size, extension, and strict-rejection regressions in h11/tests/test_io.py.',
+    },
+    uri,
+  };
+  return assembleContextBriefLogicalResult({
+    graph: noisyDetachedWorktreeGraph(),
+    memory: {
+      ...emptyMemory(),
+      candidates: [
+        candidate,
+        {
+          citationErrorCount: 0,
+          codeCitations: [],
+          excerpt: 'Secondary durable subsystem detail that is optional for the exact continuation.',
+          kind: 'durable' as const,
+          rank: 1,
+          sourceCommit: COMMIT,
+          uri: 'threadnote://user/test/memories/durable/projects/h11/subsystem.md',
+        },
+      ],
+      citationValidations: [
+        {
+          receipts: [
+            {
+              candidateCount: 1,
+              citationId: citation.id,
+              coverage: 'current-complete' as const,
+              kind: 'file' as const,
+              observedAt: '2026-09-30T00:00:00.000Z',
+              observedPath: citation.path,
+              reason: status,
+              status,
+              strategy: 'file-path' as const,
+              validatorVersion: 1 as const,
+            },
+          ],
+          uri,
+        },
+      ],
+      consideredCandidates: 2,
+    },
+    observedAt: '2026-09-30T00:00:00.000Z',
+    plan: planContextBrief(request('resume', 'source', budgetTokens)),
+  });
 }
 
 function graph(withSource: boolean): ContextBriefGraphEvidenceV1 {
