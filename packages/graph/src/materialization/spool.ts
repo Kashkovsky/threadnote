@@ -5,11 +5,12 @@ import {
   assertCodeGraphMaterializationSpoolSurfaceState,
   CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES,
   initializeCodeGraphMaterializationSpoolSurfaces,
+  readCodeGraphMaterializationSpoolSurfaceCapacities,
   sortCodeGraphMaterializationSpoolSurface,
 } from './spool/surfaces.js';
 import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from '../sqlite_statement.js';
 
-export const CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION = 1 as const;
+export const CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION = 2 as const;
 export const CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS = 50_000;
 export const CODE_GRAPH_MATERIALIZATION_SORT_SURFACES_MAXIMUM = 32;
 
@@ -247,6 +248,7 @@ export function initializeCodeGraphMaterializationSpoolDatabase(
     assertCodeGraphMaterializationSpoolLedger(database);
     const state = readCodeGraphMaterializationSpoolState(database);
     assertCodeGraphMaterializationSpoolSurfaceState(database, state.stage, state.sortedSurfaceCount ?? 0);
+    readCodeGraphMaterializationSpoolSurfaceCapacities(database);
     return 'resumed';
   })();
 }

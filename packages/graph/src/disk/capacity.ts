@@ -84,13 +84,15 @@ export function isCodeGraphCapacityFailureOperation(value: unknown): value is Co
   return (
     value === 'observe code graph storage capacity' ||
     value === 'protect code graph storage' ||
-    CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS.some(operation => operation === value)
+    CODE_GRAPH_DISK_RESERVATION_OPERATIONS.some(operation => operation === value)
   );
 }
 
 export interface CodeGraphDirectPersistentCapacityBoundary {
   /** Exact UTF-8 bytes of the bounded logical payload when that evidence is available. */
   readonly finalFactBytes: number;
+  /** Spool only: raw payload plus a bound for the additional ordered term dictionary. */
+  readonly mainSortPayloadBytes?: number;
   readonly operation: CodeGraphDirectPersistentCapacityOperation;
   /** Main pager allocation target; omitted for the durable graph database. */
   readonly mainFilesystem?: 'durable' | 'temporary';
@@ -133,6 +135,25 @@ export const CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION = {
   mainFactAmplification: 5,
   mainRowBytes: 256,
   transientFactAmplification: 3,
+  transientRowBytes: 256,
+} as const;
+
+/**
+ * SQLite physical spool-sort fixtures measured ordered pages and sorter spill
+ * above raw column bytes. The operation-specific 5/4 margin is applied below
+ * to ordered payload (including a term-dictionary upper bound) and TEMP spill.
+ * A separate quarter of ordered pages protects the DELETE-mode journal.
+ */
+export const CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION = {
+  identityBase:
+    `graph-v${CODE_GRAPH_SCHEMA_VERSION}:${CODE_GRAPH_EXTRACTOR_SET_VERSION}:spool-sort:` +
+    `capacity-v${CODE_GRAPH_DISK_CAPACITY_MODEL_VERSION}:extension-r${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}:physical-r1`,
+  mainFactAmplification: 1,
+  mainRowBytes: 256,
+  physicalMarginDenominator: 4,
+  physicalMarginNumerator: 5,
+  recoveryFractionDenominator: 4,
+  transientFactAmplification: 1,
   transientRowBytes: 256,
 } as const;
 
@@ -211,6 +232,8 @@ export interface CodeGraphMeasuredDiskCapacityDemand {
   readonly calibrationIdentity: string;
   readonly mainFilesystem?: 'durable' | 'temporary';
   readonly mainHighWaterBytes: number;
+  /** Defaults to the transient filesystem; spool rollback journals remain beside the durable sidecar. */
+  readonly recoveryFilesystem?: 'durable' | 'temporary';
   readonly recoveryFloorBytes: number;
   readonly state: 'measured';
   readonly transientFilesystem: 'durable' | 'temporary';
@@ -301,8 +324,10 @@ export function codeGraphPersistentCapacityDemand(
     input.boundary.operation === 'cache code graph file facts' ||
     input.boundary.operation === 'cache materialized code graph file shards'
       ? CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION
-      : CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION;
-  return codeGraphPersistentCapacityDemandForCalibration(
+      : input.boundary.operation === 'sort persistent code graph materialization spool'
+        ? CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION
+        : CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION;
+  const demand = codeGraphPersistentCapacityDemandForCalibration(
     {
       ...input,
       finalFactBytes: input.boundary.finalFactBytes,
@@ -312,6 +337,43 @@ export function codeGraphPersistentCapacityDemand(
     },
     calibration,
   );
+  if (input.boundary.operation !== 'sort persistent code graph materialization spool' || demand.state !== 'measured') {
+    return demand;
+  }
+  const mainSortPayloadBytes = input.boundary.mainSortPayloadBytes ?? input.boundary.finalFactBytes;
+  if (!nonNegativeSafeInteger(mainSortPayloadBytes)) {
+    return {
+      calibrationIdentity: `${CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION.identityBase}:unmeasured`,
+      reason: 'calibration-input-unknown',
+      state: 'unknown',
+    };
+  }
+  const spoolCalibration = CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION;
+  const mainHighWaterBytes = Math.max(
+    demand.mainHighWaterBytes,
+    saturatingCapacityRatioCeiling(
+      Math.max(input.boundary.finalFactBytes, mainSortPayloadBytes),
+      spoolCalibration.physicalMarginNumerator,
+      spoolCalibration.physicalMarginDenominator,
+    ),
+  );
+  return {
+    ...demand,
+    mainHighWaterBytes,
+    recoveryFilesystem: 'durable',
+    recoveryFloorBytes: Math.max(
+      sqliteWalCapacityBytes(input.pageSize, input.walAutoCheckpointPages),
+      saturatingCapacityRatioCeiling(mainHighWaterBytes, 1, spoolCalibration.recoveryFractionDenominator),
+    ),
+    transientHighWaterBytes: Math.max(
+      demand.transientHighWaterBytes,
+      saturatingCapacityRatioCeiling(
+        input.boundary.finalFactBytes,
+        spoolCalibration.physicalMarginNumerator,
+        spoolCalibration.physicalMarginDenominator,
+      ),
+    ),
+  };
 }
 
 export function codeGraphVectorRetirementCapacityDemand(
@@ -343,6 +405,7 @@ function codeGraphPersistentCapacityDemandForCalibration(
   calibration:
     | typeof CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION
     | typeof CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION
+    | typeof CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION
     | typeof CODE_GRAPH_VECTOR_RETIREMENT_ADMISSION_CAPACITY_CALIBRATION
     | typeof CODE_GRAPH_VECTOR_RETIREMENT_ORDINARY_UNIT_CAPACITY_CALIBRATION
     | typeof CODE_GRAPH_VECTOR_RETIREMENT_POINTER_CAPACITY_CALIBRATION
@@ -451,22 +514,23 @@ export function codeGraphDiskCapacityReservationProjection(
   }
 
   const transientOnDurable = input.demand.transientFilesystem === 'durable';
+  const recoveryOnDurable = (input.demand.recoveryFilesystem ?? input.demand.transientFilesystem) === 'durable';
   const filesystems = [
     {
       bytes: saturatingCapacityAdd(
         mainOnDurable ? externalMainBytes : 0,
         transientOnDurable ? transientHighWaterBytes : 0,
-        transientOnDurable ? recoveryFloorBytes : 0,
+        recoveryOnDurable ? recoveryFloorBytes : 0,
       ),
       key: input.durableFilesystemKey,
     },
-    ...(!mainOnDurable || !transientOnDurable
+    ...(!mainOnDurable || !transientOnDurable || !recoveryOnDurable
       ? [
           {
             bytes: saturatingCapacityAdd(
               mainOnDurable ? 0 : externalMainBytes,
               transientOnDurable ? 0 : transientHighWaterBytes,
-              transientOnDurable ? 0 : recoveryFloorBytes,
+              recoveryOnDurable ? 0 : recoveryFloorBytes,
             ),
             key: input.temporaryFilesystemKey,
           },
@@ -625,6 +689,11 @@ export function saturatingCapacityMultiply(value: number, multiplier: number): n
   return left * right;
 }
 
+function saturatingCapacityRatioCeiling(value: number, numerator: number, denominator: number): number {
+  const scaled = (BigInt(value) * BigInt(numerator) + BigInt(denominator) - 1n) / BigInt(denominator);
+  return Number(scaled > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : scaled);
+}
+
 /** Allocation-free UTF-8 byte count with TextEncoder-compatible lone-surrogate handling. */
 export function codeGraphUtf8ByteLength(value: string): number {
   let bytes = 0;
@@ -663,13 +732,16 @@ function availableCapacityBytes(value: number | undefined): number | undefined {
 function capacityOperation(operation: string): CodeGraphCapacityFailureOperation {
   switch (operation) {
     case 'admit code graph vector retirement':
+    case 'apply persistent code graph materialization spool':
     case 'cache code graph file facts':
     case 'cache materialized code graph file shards':
     case 'maintain code graph vector retirement':
     case 'prepare code graph vector retirement schema':
     case 'publish persistent code graph snapshot':
+    case 'publish persistent code graph materialization spool receipts':
     case 'promote ready code graph snapshot':
     case 'register persistent code graph materialization plan':
+    case 'restore persistent code graph query indexes':
     case 'resolve persistent code graph reexport aliases':
     case 'resolve persistent code graph references':
     case 'retire code graph vector generation':
@@ -677,6 +749,7 @@ function capacityOperation(operation: string): CodeGraphCapacityFailureOperation
     case 'stage persistent code graph facts':
     case 'stage persistent code graph inventory':
     case 'stage persistent code graph workspace':
+    case 'sort persistent code graph materialization spool':
     case 'prepare temporary incremental code graph activation':
     case 'publish temporary code graph snapshot':
     case 'resolve temporary code graph reexport aliases':

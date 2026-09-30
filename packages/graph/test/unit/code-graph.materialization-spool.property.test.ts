@@ -17,10 +17,161 @@ import {
   sortCodeGraphMaterializationSpoolSurfaces,
 } from '@threadnote/graph/materialization/spool';
 import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '@threadnote/graph/materialization/spool/surfaces';
+import {codeGraphPersistentCapacityDemand, evaluateCodeGraphDiskCapacity} from '@threadnote/graph/disk/capacity';
+import {
+  codeGraphSpoolSortCapacityBoundary,
+  observeCodeGraphSpoolSortCapacity,
+} from '@threadnote/graph/materialization/spool/capacity';
+import {appendCodeGraphMaterializationSpoolFactBatch} from '@threadnote/graph/materialization/spool/writer';
 import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from '@threadnote/graph/sqlite_statement';
 import type {CodeGraphLayout} from '@threadnote/graph/layout';
 
 describe('code graph materialization spool', () => {
+  fcProp(
+    it,
+    'bounds sequential sorting by the largest surface regardless of order',
+    {
+      loads: FC.array(
+        FC.record({
+          bytes: FC.integer({max: 1_000_000, min: 0}),
+          lexicalTermBytesUpperBound: FC.integer({max: 1_000_000, min: 0}),
+          rows: FC.integer({max: 10_000, min: 0}),
+        }),
+        {maxLength: CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length},
+      ),
+    },
+    ({loads}) => {
+      const boundary = codeGraphSpoolSortCapacityBoundary(loads);
+      expect(boundary.finalFactBytes).toBe(loads.reduce((maximum, load) => Math.max(maximum, load.bytes), 0));
+      expect(boundary.mainSortPayloadBytes).toBe(
+        loads.reduce((maximum, load) => Math.max(maximum, load.bytes + load.lexicalTermBytesUpperBound), 0),
+      );
+      expect(boundary.rowCount).toBe(loads.reduce((maximum, load) => Math.max(maximum, load.rows), 0));
+      expect(codeGraphSpoolSortCapacityBoundary([...loads].reverse())).toEqual(boundary);
+      for (const load of loads) {
+        expect(boundary.finalFactBytes).toBeGreaterThanOrEqual(load.bytes);
+        expect(boundary.rowCount).toBeGreaterThanOrEqual(load.rows);
+      }
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('persists exact pending surface capacity across append replay and spool resume', () => {
+    const database = new Database(':memory:', {strict: true});
+    const header = {
+      checkoutId: 'a'.repeat(64),
+      extractorSet: 'extractor-v1',
+      graphContentId: `cgc_${'b'.repeat(40)}`,
+      repositoryId: 'c'.repeat(64),
+      snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+    };
+    try {
+      configureCodeGraphMaterializationSpoolDatabase(database);
+      initializeCodeGraphMaterializationSpoolDatabase(database, header);
+      const firstBatch = {
+        edges: [],
+        lookup: [],
+        monikers: [],
+        references: [],
+        reexports: [{importedName: 'x', localName: 'α', sourcePath: 'src/é.ts', targetPath: 'lib.ts'}],
+        rowCount: 3,
+        symbolTerms: [
+          {symbolId: 'symbol-1', term: 'δ', weight: 1},
+          {symbolId: 'symbol-2', term: 'δ', weight: 0.5},
+        ],
+        symbols: [],
+      };
+      const firstReceipt = spoolReceipt({reexportCount: 1, rowCount: 3, termCount: 2});
+      expect(
+        commitCodeGraphMaterializationSpoolBatch(database, firstReceipt, () =>
+          appendCodeGraphMaterializationSpoolFactBatch(database, firstBatch),
+        ),
+      ).toBe('appended');
+      expect(
+        commitCodeGraphMaterializationSpoolBatch(database, firstReceipt, () => {
+          throw new Error('exact replay writer must not run');
+        }),
+      ).toBe('resumed');
+      const boundary = observeCodeGraphSpoolSortCapacity(database);
+      expect(boundary).toEqual(directCodeGraphSpoolSortCapacity(database));
+      expect(boundary).toEqual({
+        finalFactBytes: 26,
+        mainSortPayloadBytes: 30,
+        operation: 'sort persistent code graph materialization spool',
+        rowCount: 2,
+        transientFilesystem: 'temporary',
+      });
+      expect(initializeCodeGraphMaterializationSpoolDatabase(database, header)).toBe('resumed');
+      const secondReceipt = spoolReceipt({batchId: 'f'.repeat(64), batchIndex: 1, reexportCount: 1, rowCount: 1});
+      expect(
+        commitCodeGraphMaterializationSpoolBatch(database, secondReceipt, () =>
+          appendCodeGraphMaterializationSpoolFactBatch(database, {
+            edges: [],
+            lookup: [],
+            monikers: [],
+            references: [],
+            reexports: [
+              {
+                importedName: 'imported',
+                localName: 'name',
+                sourcePath: "src/x'); DROP TABLE materialization_raw_symbol_terms; --",
+                targetPath: 'target',
+              },
+            ],
+            rowCount: 1,
+            symbolTerms: [],
+            symbols: [],
+          }),
+        ),
+      ).toBe('appended');
+      const resumedBoundary = observeCodeGraphSpoolSortCapacity(database);
+      expect(resumedBoundary).toEqual(directCodeGraphSpoolSortCapacity(database));
+      expect(resumedBoundary.finalFactBytes).toBeGreaterThan(boundary.finalFactBytes);
+      expect(
+        codeGraphSqliteGet<{readonly count: number}>(
+          database,
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'materialization_raw_symbol_terms'",
+        ),
+      ).toEqual({count: 1});
+      sealCodeGraphMaterializationSpool(database, 2);
+      sortCodeGraphMaterializationSpoolSurfaces(database);
+      expect(observeCodeGraphSpoolSortCapacity(database)).toEqual({
+        ...boundary,
+        finalFactBytes: 0,
+        mainSortPayloadBytes: 0,
+        rowCount: 0,
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it('admits a sequential sidecar sort when aggregate facts would falsely exceed available space', () => {
+    const gib = 1024 ** 3;
+    const loads = Array.from({length: 4}, () => ({bytes: 5 * gib, rows: 1_000_000}));
+    const capacity = (finalFactBytes: number) =>
+      evaluateCodeGraphDiskCapacity({
+        demand: codeGraphPersistentCapacityDemand({
+          boundary: {
+            ...codeGraphSpoolSortCapacityBoundary(loads),
+            finalFactBytes,
+            mainSortPayloadBytes: finalFactBytes,
+          },
+          lexicalFormatVersion: 1,
+          pageSize: 8192,
+          walAutoCheckpointPages: 1000,
+        }),
+        durableAvailableBytes: 50 * gib,
+        filesystemsShared: true,
+        freelistBytes: 0,
+        reservedDurableBytes: 0,
+        reservedTemporaryBytes: 0,
+        temporaryAvailableBytes: 50 * gib,
+      });
+    expect(capacity(codeGraphSpoolSortCapacityBoundary(loads).finalFactBytes).state).toBe('healthy');
+    expect(capacity(loads.reduce((sum, load) => sum + load.bytes, 0)).state).toBe('pressure');
+  });
+
   fcProp(
     it,
     'releases successful and failed prepared statements before strong close',
@@ -84,7 +235,7 @@ describe('code graph materialization spool', () => {
       typeof codeGraphMaterializationSpoolPath
     >[0];
     expect(codeGraphMaterializationSpoolPath(path, layout, `cgsn_${'a'.repeat(40)}-direct`)).toBe(
-      `/threadnote/code-graph/repository/materialization-spool-v1-cgsn_${'a'.repeat(40)}-direct.sqlite`,
+      `/threadnote/code-graph/repository/materialization-spool-v2-cgsn_${'a'.repeat(40)}-direct.sqlite`,
     );
     for (const invalid of ['', '../escape', `cgsn_${'a'.repeat(39)}`, `cgsn_${'a'.repeat(40)}-full-xyz`]) {
       expect(() => codeGraphMaterializationSpoolPath(path, layout, invalid)).toThrow(
@@ -466,4 +617,38 @@ function spoolReceipt(overrides: Partial<Parameters<typeof commitCodeGraphMateri
     termCount: 0,
     ...overrides,
   };
+}
+
+function directCodeGraphSpoolSortCapacity(database: Database) {
+  const pending = new Set(
+    codeGraphSqliteAll<{readonly name: string}>(
+      database,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'materialization_raw_%'",
+    ).map(row => row.name),
+  );
+  return codeGraphSpoolSortCapacityBoundary(
+    CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.flatMap(surface => {
+      if (!pending.has(`materialization_raw_${surface.name}`)) return [];
+      const payload = surface.columns.map(column => `COALESCE(LENGTH(CAST(${column} AS BLOB)), 0)`).join(' + ');
+      const lexicalTermBytes = surface.name === 'symbol_terms' ? 'COALESCE(SUM(LENGTH(CAST(term AS BLOB))), 0)' : '0';
+      const row = codeGraphSqliteGet<{
+        readonly bytes: bigint | number;
+        readonly lexicalTermBytes: bigint | number;
+        readonly rows: bigint | number;
+      }>(
+        database,
+        `SELECT COALESCE(SUM(${payload}), 0) AS bytes,
+           ${lexicalTermBytes} AS lexicalTermBytes, COUNT(*) AS rows
+         FROM materialization_raw_${surface.name}`,
+      );
+      if (row === null) throw new Error('Direct spool capacity measurement is unavailable.');
+      return [
+        {
+          bytes: Number(row.bytes),
+          lexicalTermBytesUpperBound: Number(row.lexicalTermBytes),
+          rows: Number(row.rows),
+        },
+      ];
+    }),
+  );
 }

@@ -1,4 +1,5 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {succeedUndefined} from '@threadnote/platform/optional';
 import {sha256HexSync} from '@threadnote/platform/sha256';
 import {SystemInfo} from '@threadnote/platform/system';
 import {codeGraphBlobExtractionReuseClass, codeGraphBlobReuseCacheKey} from '../blob_reuse.js';
@@ -9,7 +10,9 @@ import {
   type CodeGraphDirectPersistentCapacityBoundary,
 } from '../disk/capacity.js';
 import {
+  codeGraphCapacityTemporaryDirectory,
   codeGraphDiskReservationFilesystemKey,
+  codeGraphSqliteTemporaryDirectoryUsable,
   type CodeGraphDiskReservationOptions,
   withCodeGraphDiskReservation,
 } from '../disk/reservation.js';
@@ -944,16 +947,27 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
   readonly protection: DirectPersistentCapacityProtection;
   readonly threadnoteHome: string;
 }) {
+  const temporaryDirectory = yield* codeGraphCapacityTemporaryDirectory(
+    {
+      boundary: input.boundary,
+      environment: input.protection.system.environment(),
+      platform: input.protection.system.platform,
+      temporaryDirectory: input.protection.temporaryDirectory,
+    },
+    directory => codeGraphSqliteTemporaryDirectoryUsable(input.fs, directory),
+  );
   const [durableFilesystem, temporaryFilesystem] = yield* Effect.all(
     [
       input.fs.stat(input.layout.repositoryRoot).pipe(
         Effect.map(info => info.dev),
         Effect.option,
       ),
-      input.fs.stat(input.protection.temporaryDirectory).pipe(
-        Effect.map(info => info.dev),
-        Effect.option,
-      ),
+      temporaryDirectory === undefined
+        ? Effect.succeedNone
+        : input.fs.stat(temporaryDirectory).pipe(
+            Effect.map(info => info.dev),
+            Effect.option,
+          ),
     ] as const,
     {concurrency: 2},
   );
@@ -963,12 +977,13 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
       : undefined;
   const probe = (target: string) =>
     input.protection.availableDiskBytes(target, input.boundary).pipe(Effect.orElseSucceed(() => undefined));
+  const temporaryProbe = temporaryDirectory === undefined ? succeedUndefined : probe(temporaryDirectory);
   const availability =
     filesystemsShared === undefined
       ? Effect.succeed([undefined, undefined] as const)
       : filesystemsShared
         ? probe(input.layout.repositoryRoot).pipe(Effect.map(available => [available, available] as const))
-        : Effect.all([probe(input.layout.repositoryRoot), probe(input.protection.temporaryDirectory)] as const, {
+        : Effect.all([probe(input.layout.repositoryRoot), temporaryProbe] as const, {
             concurrency: 2,
           });
   const [[durableAvailableBytes, temporaryAvailableBytes], storage] = yield* Effect.all(
@@ -997,7 +1012,10 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
       ? (codeGraphDiskReservationFilesystemKey(input.protection.system.platform, durableFilesystem.value) ??
         'durable-filesystem-unknown')
       : 'durable-filesystem-unknown',
-    freelistBytes: pageStorage?.reclaimableBytes ?? 0,
+    freelistBytes:
+      input.boundary.operation === 'sort persistent code graph materialization spool'
+        ? 0
+        : (pageStorage?.reclaimableBytes ?? 0),
     temporaryAvailableBytes,
     temporaryFilesystemKey: Option.isSome(temporaryFilesystem)
       ? (codeGraphDiskReservationFilesystemKey(input.protection.system.platform, temporaryFilesystem.value) ??
@@ -1005,6 +1023,9 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
       : 'temporary-filesystem-unknown',
   };
 });
+
+/** @internal Narrow observation seam for capacity-topology integration coverage. */
+export const observeDirectPersistentCapacityForTest = observeDirectPersistentCapacity;
 
 export function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
