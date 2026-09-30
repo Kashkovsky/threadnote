@@ -6,6 +6,8 @@ import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {createHash} from 'node:crypto';
 import {chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises';
 import {dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {Effect} from 'effect';
 import {parseMemoryDocument, type MemoryRecord} from '@threadnote/memory/document';
 import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
@@ -173,6 +175,25 @@ interface LinkedMemoryIdentityPlanV1 {
   readonly managedMemoryId: string;
 }
 
+export interface MatchedTokenEfficiencyAgentContextBriefRequestV1 {
+  readonly budgetTokens: number;
+  readonly callerCwd: string;
+  readonly executable: string;
+  readonly home: string;
+  readonly identity: {readonly account: string; readonly user: string};
+  readonly project: string;
+  readonly safeExecutablePath: string;
+  readonly task: string;
+}
+
+interface PreparationDependenciesV1 {
+  readonly readAgentContextBrief: (request: MatchedTokenEfficiencyAgentContextBriefRequestV1) => Promise<unknown>;
+}
+
+const DEFAULT_PREPARATION_DEPENDENCIES: PreparationDependenciesV1 = {
+  readAgentContextBrief: readAgentContextBriefViaMcp,
+};
+
 interface PreparedTask {
   readonly graphHome: MatchedEvaluationPreparedContextHomeV1;
   readonly linkedHome: MatchedEvaluationPreparedContextHomeV1;
@@ -219,11 +240,14 @@ const program = Effect.gen(function* () {
   });
 });
 
-export async function prepareMatchedTokenEfficiencyStudyV1(options: {
-  readonly corpusPath: string;
-  readonly outputRoot: string;
-  readonly planPath: string;
-}): Promise<MatchedTokenEfficiencyPreparationReceiptV1> {
+export async function prepareMatchedTokenEfficiencyStudyV1(
+  options: {
+    readonly corpusPath: string;
+    readonly outputRoot: string;
+    readonly planPath: string;
+  },
+  dependencies: PreparationDependenciesV1 = DEFAULT_PREPARATION_DEPENDENCIES,
+): Promise<MatchedTokenEfficiencyPreparationReceiptV1> {
   const [corpus, plan] = await Promise.all([
     readJson(options.corpusPath).then(parseMatchedEvaluationCorpusV1),
     readJson(options.planPath).then(parsePreparationPlanV1),
@@ -261,7 +285,13 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
     repository: firstObservation(clusterObservations),
     scheduleSeed: plan.scheduleSeed,
   });
-  const tasks = await prepareTasks({clusterObservations, corpus, manifest: provisionalManifest, plan});
+  const tasks = await prepareTasks({
+    clusterObservations,
+    corpus,
+    manifest: provisionalManifest,
+    plan,
+    readAgentContextBrief: dependencies.readAgentContextBrief,
+  });
   const finalRoot = outputRoot;
   const configs = createAdapterConfigs({
     plan,
@@ -630,6 +660,7 @@ async function prepareTasks(input: {
   readonly corpus: MatchedEvaluationCorpusV1;
   readonly manifest: ReturnType<typeof createMatchedEvaluationManifestV1>;
   readonly plan: PreparationPlanV1;
+  readonly readAgentContextBrief: PreparationDependenciesV1['readAgentContextBrief'];
 }): Promise<readonly PreparedTask[]> {
   const prepared: PreparedTask[] = [];
   const linkedHomes = new Set<string>();
@@ -692,6 +723,7 @@ async function prepareTasks(input: {
       task.taskId,
       linkedMemories,
       planContext.activeHandoffTopics,
+      input.readAgentContextBrief,
     );
     const linkReceipts = linkReceiptsForTask(
       task,
@@ -1010,6 +1042,7 @@ async function assertLinkedContextSurfacesMemories(
   taskId: string,
   memories: readonly MemoryRecord[],
   activeHandoffTopics: readonly string[],
+  readAgentContextBrief: PreparationDependenciesV1['readAgentContextBrief'],
 ): Promise<void> {
   const topics = memories.map(memory => memory.metadata.topic);
   if (
@@ -1019,40 +1052,83 @@ async function assertLinkedContextSurfacesMemories(
   ) {
     throw new Error(`Task ${taskId} linked home requires unique durable memory topics.`);
   }
-  const result = await captureCodeMemoryLinkProcessGroup({
-    arguments: [
-      'context',
-      'brief',
-      '--json',
-      '--task',
-      task,
-      '--cwd',
-      cluster.repositoryDirectory,
-      '--home',
-      home,
-      '--project',
-      plan.project,
-      '--mode',
-      'brief',
-      '--detail',
-      'compact',
-      '--budget-tokens',
-      String(plan.adapter.contextBudgetTokens),
-    ],
-    command: plan.threadnote.executable,
-    cwd: cluster.repositoryDirectory,
-    environment: threadnoteEnvironment(home, plan.adapter.safeExecutablePath, plan.threadnote),
-    label: `Matched evaluation linked-memory Context Brief ${cluster.clusterId}`,
-    maxOutputBytes: 2 * 1_024 * 1_024,
-    timeoutMilliseconds: 120_000,
+  const brief = await readAgentContextBrief({
+    budgetTokens: plan.adapter.contextBudgetTokens,
+    callerCwd: cluster.repositoryDirectory,
+    executable: plan.threadnote.executable,
+    home,
+    identity: plan.threadnote,
+    project: plan.project,
+    safeExecutablePath: plan.adapter.safeExecutablePath,
+    task,
   });
   assertMatchedTokenEfficiencyLinkedBriefV1(
-    JSON.parse(result.stdout) as unknown,
+    brief,
     plan.project,
     taskId,
     topics as readonly string[],
     activeHandoffTopics,
   );
+}
+
+async function readAgentContextBriefViaMcp(
+  request: MatchedTokenEfficiencyAgentContextBriefRequestV1,
+): Promise<unknown> {
+  const client = new Client({name: 'matched-token-efficiency-preparer', version: '1'});
+  const transport = new StdioClientTransport({
+    command: request.executable,
+    args: ['mcp-server', '--home', request.home],
+    cwd: request.callerCwd,
+    env: {
+      ...threadnoteEnvironment(request.home, request.safeExecutablePath, request.identity),
+      LOGNAME: request.identity.user,
+      SHELL: '/bin/sh',
+      TERM: 'dumb',
+      USER: request.identity.user,
+    },
+    maxBufferSize: 2 * 1_024 * 1_024,
+    stderr: 'pipe',
+  });
+  transport.stderr?.on('data', () => undefined);
+  try {
+    await client.connect(transport, {timeout: 30_000});
+    const result = await client.callTool(
+      {
+        arguments: {
+          budgetTokens: request.budgetTokens,
+          callerCwd: request.callerCwd,
+          detail: 'compact',
+          mode: 'brief',
+          project: request.project,
+          responseFormat: 'agent',
+          task: request.task,
+        },
+        name: 'context_brief',
+      },
+      undefined,
+      {timeout: 120_000},
+    );
+    return parseMatchedTokenEfficiencyAgentContextBriefResultV1(result);
+  } finally {
+    await client.close();
+    await transport.close();
+  }
+}
+
+export function parseMatchedTokenEfficiencyAgentContextBriefResultV1(value: unknown): unknown {
+  const result = object(value, 'agent Context Brief tool result');
+  if (result.isError === true) throw new Error('Agent Context Brief tool call returned an error.');
+  if (!Array.isArray(result.content)) throw new Error('Agent Context Brief tool result is missing content.');
+  const text = result.content.flatMap((entry, index) => {
+    const content = object(entry, `agent Context Brief content ${index}`);
+    return content.type === 'text' && typeof content.text === 'string' ? [content.text] : [];
+  });
+  if (text.length !== 1) throw new Error('Agent Context Brief tool result must contain exactly one text payload.');
+  try {
+    return JSON.parse(text[0]) as unknown;
+  } catch (cause) {
+    throw new Error('Agent Context Brief tool result contains invalid JSON.', {cause});
+  }
 }
 
 export function assertMatchedTokenEfficiencyLinkedBriefV1(
@@ -1694,7 +1770,7 @@ async function captureGit(root: string, arguments_: readonly string[], allowFail
 function threadnoteEnvironment(
   home: string,
   safeExecutablePath: string,
-  identity: PreparationPlanV1['threadnote'],
+  identity: {readonly account: string; readonly user: string},
 ): Readonly<Record<string, string>> {
   return {
     CI: '1',

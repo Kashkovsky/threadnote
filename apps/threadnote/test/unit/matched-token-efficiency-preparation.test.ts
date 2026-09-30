@@ -1,5 +1,5 @@
 import {createHash} from '@threadnote/testing/node-crypto';
-import {chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile} from '@threadnote/testing/node-fs-promises';
+import {chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile} from '@threadnote/testing/node-fs-promises';
 import {tmpdir} from '@threadnote/testing/node-os';
 import {join} from '@threadnote/testing/node-path';
 import {afterEach, describe, expect, it} from 'vitest';
@@ -22,7 +22,9 @@ import {
   assertMatchedTokenEfficiencyLinkedBriefV1,
   assertMatchedTokenEfficiencyThreadnoteVersionOutputV1,
   assertMatchedTokenEfficiencyProductionReleaseV1,
+  parseMatchedTokenEfficiencyAgentContextBriefResultV1,
   prepareMatchedTokenEfficiencyStudyV1,
+  type MatchedTokenEfficiencyAgentContextBriefRequestV1,
 } from '../../../../scripts/prepare-matched-token-efficiency-study.js';
 import {parseMatchedEvaluationRuntimeV1} from '../../../../scripts/run-matched-evaluation.js';
 
@@ -166,6 +168,35 @@ describe('matched token-efficiency study preparation', () => {
         ['parser-contract', 'serializer-contract'],
       ),
     ).toThrow('complete reviewed memory roster');
+  });
+
+  it('accepts exactly one successful agent-facing MCP context payload', () => {
+    const brief = {activeHandoffs: [], durableDecisions: [], type: 'context-brief', version: 3};
+    expect(
+      parseMatchedTokenEfficiencyAgentContextBriefResultV1({
+        content: [{text: JSON.stringify(brief), type: 'text'}],
+      }),
+    ).toEqual(brief);
+    expect(() =>
+      parseMatchedTokenEfficiencyAgentContextBriefResultV1({
+        content: [{text: JSON.stringify(brief), type: 'text'}],
+        isError: true,
+      }),
+    ).toThrow('returned an error');
+    expect(() => parseMatchedTokenEfficiencyAgentContextBriefResultV1({content: [{type: 'image'}]})).toThrow(
+      'exactly one text payload',
+    );
+    expect(() =>
+      parseMatchedTokenEfficiencyAgentContextBriefResultV1({
+        content: [
+          {text: JSON.stringify(brief), type: 'text'},
+          {text: JSON.stringify(brief), type: 'text'},
+        ],
+      }),
+    ).toThrow('exactly one text payload');
+    expect(() => parseMatchedTokenEfficiencyAgentContextBriefResultV1({content: [{text: '{', type: 'text'}]})).toThrow(
+      'invalid JSON',
+    );
   });
 
   it('freezes a hash-closed no-provider bundle with distinct graph-only and linked homes', async () => {
@@ -408,7 +439,10 @@ describe('matched token-efficiency study preparation', () => {
     );
     const outputRoot = join(contextRoot, 'prepared-study');
 
-    const receipt = await prepareMatchedTokenEfficiencyStudyV1({corpusPath, outputRoot, planPath});
+    const receipt = await prepareMatchedTokenEfficiencyStudyV1(
+      {corpusPath, outputRoot, planPath},
+      {readAgentContextBrief: readFixtureAgentContextBrief},
+    );
     const manifest = parseMatchedEvaluationManifestV1(
       JSON.parse(await readFile(join(outputRoot, 'manifest.json'), 'utf8')),
     );
@@ -499,6 +533,35 @@ async function temporaryRoot(roots: string[]): Promise<string> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-matched-preparation-')));
   roots.push(root);
   return root;
+}
+
+async function readFixtureAgentContextBrief(
+  request: MatchedTokenEfficiencyAgentContextBriefRequestV1,
+): Promise<unknown> {
+  const memoryDirectory = join(request.home, 'data', 'fixture', 'memories', 'durable', 'projects', request.project);
+  const files = await readdir(memoryDirectory).catch((cause: unknown) => {
+    if (typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'ENOENT') return [];
+    throw cause;
+  });
+  const topics = await Promise.all(
+    files.map(async file => {
+      const match = /^topic: (.+)$/mu.exec(await readFile(join(memoryDirectory, file), 'utf8'));
+      if (!match) throw new Error(`Fixture memory ${file} is missing its topic.`);
+      return match[1];
+    }),
+  );
+  return {
+    activeHandoffs: [],
+    durableDecisions: topics
+      .sort((left, right) => left.localeCompare(right))
+      .map(topic => ({
+        kind: 'durable',
+        project: request.project,
+        topic,
+      })),
+    type: 'context-brief',
+    version: 3,
+  };
 }
 
 async function sourceRepository(directory: string): Promise<string> {
