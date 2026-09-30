@@ -283,8 +283,11 @@ function splitReadCommandChain(command: string): readonly string[] {
     }
     if (quote === 'double') {
       if (character === '"') quote = null;
-      else if (character === '$' || character === '`' || character === '\\') {
+      else if (character === '$' || character === '`') {
         throw new Error('Command chain contains expansion inside double quotes.');
+      } else if (character === '\\') {
+        if (index + 1 >= command.length) throw new Error('Command chain ends with an escape.');
+        index += 1;
       }
       continue;
     }
@@ -394,6 +397,7 @@ function assertGit(args: readonly string[], root: string, cwd: string): void {
   if (subcommand === 'diff') {
     const flags = new Set([
       '--cached',
+      '--check',
       '--color=never',
       '--name-only',
       '--name-status',
@@ -601,10 +605,17 @@ function tokenize(command: string): readonly string[] {
     if (quote === 'double') {
       if (character === '"') quote = null;
       else {
-        if (character === '$' || character === '`' || character === '\\') {
+        if (character === '$' || character === '`') {
           throw new Error('Command contains expansion inside double quotes.');
         }
-        token += character;
+        if (character === '\\') {
+          const next = command[index + 1];
+          if (next === undefined) throw new Error('Command ends with an escape inside double quotes.');
+          if (next === '"' || next === '\\') {
+            token += next;
+            index += 1;
+          } else token += character;
+        } else token += character;
       }
       active = true;
       continue;

@@ -49,6 +49,7 @@ describe('Code Memory Link pre-execution app-server policy', () => {
       'git rev-parse --show-toplevel',
       'git ls-files --cached -- src/service.ts',
       'git diff',
+      'git diff --check',
       'git diff -- src/service.ts',
       'git diff --cached --no-ext-diff --no-renames --color=never -- src/service.ts',
     ]) {
@@ -108,6 +109,27 @@ describe('Code Memory Link pre-execution app-server policy', () => {
       }),
     ).toMatchObject({itemType: 'commandExecution'});
 
+    const escapedRegexProjected = 'rg -n "@overload|def application\\\\(" src tests | head -80';
+    const escapedRegexCommand = `/bin/zsh -c "${escapedRegexProjected
+      .replaceAll('\\\\', '\\\\\\\\')
+      .replaceAll('"', '\\"')}"`;
+    const escapedRegexActions = [
+      {
+        command: 'rg -n "@overload|def application\\\\(" src tests',
+        path: `${ROOT}/src`,
+        query: '@overload|def application\\(',
+        type: 'search',
+      },
+    ];
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: {...params, command: escapedRegexCommand, commandActions: escapedRegexActions},
+        scope: SCOPE,
+        startedItem: {...item, command: escapedRegexCommand, commandActions: escapedRegexActions},
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
+
     for (const flag of ['-c', '-lc']) {
       const completedDisplayCommand = `${shellWord('/bin/zsh')} ${flag} ${shellWord(projected)}`;
       expect(
@@ -154,6 +176,7 @@ describe('Code Memory Link pre-execution app-server policy', () => {
       'pwd || cat src/service.ts',
       'cat src/service.ts > result.json',
       'cat $(pwd)/src/service.ts',
+      'rg -n "$HOME" src/service.ts',
       'sed -i 1d src/service.ts',
     ]) {
       const unsafeCommand = `/bin/zsh -lc ${shellWord(unsafe)}`;

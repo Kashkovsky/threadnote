@@ -829,7 +829,7 @@ describe('Code Memory Link Codex app-server transport', () => {
         ],
         expected,
       ),
-    ).toThrow('reviewed read-only grammar');
+    ).toThrow('git diff revisions and options are outside the reviewed grammar');
   });
 
   it('accepts lossy one-server inventory while preserving topology and routing checks', () => {
