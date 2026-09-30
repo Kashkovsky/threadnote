@@ -12,6 +12,7 @@ import {
   READY_QUERY_GITHUB_REPOSITORY,
   READY_QUERY_GITHUB_REPOSITORY_ID,
   READY_QUERY_GITHUB_WORKFLOW_REF,
+  READY_QUERY_TRANSFERRED_GITHUB_REPOSITORY,
   READY_QUERY_MINIMUM_FILES,
   READY_QUERY_REPOSITORY,
   READY_QUERY_REPOSITORY_COMMIT,
@@ -43,6 +44,15 @@ describe('large ready-query evidence', () => {
     expect(READY_QUERY_CONTROLS.find(control => control.id === 'bazel-kotlinc-options')?.expectedLanguage).toBe(
       'starlark',
     );
+  });
+
+  it('accepts the transferred repository identity while preserving the immutable repository ID', () => {
+    const artifact = validArtifact();
+    artifact.source.github.repository = READY_QUERY_TRANSFERRED_GITHUB_REPOSITORY;
+    artifact.source.github.workflowRef =
+      `${READY_QUERY_TRANSFERRED_GITHUB_REPOSITORY}/.github/workflows/code-graph-ready-query-evidence.yml@refs/heads/main` as const;
+
+    expect(parseReadyQueryEvidenceV1(artifact)).toBe(artifact);
   });
 
   it('rejects privacy-unsafe unknown fields at every retained boundary', () => {

@@ -47,9 +47,7 @@ import {
   READY_QUERY_GITHUB_EVENT,
   READY_QUERY_GITHUB_JOB,
   READY_QUERY_GITHUB_REF,
-  READY_QUERY_GITHUB_REPOSITORY,
   READY_QUERY_GITHUB_REPOSITORY_ID,
-  READY_QUERY_GITHUB_WORKFLOW_REF,
   READY_QUERY_MINIMUM_FILES,
   READY_QUERY_LOGICAL_CPU_MINIMUM,
   READY_QUERY_MINIMUM_SAMPLES,
@@ -57,7 +55,9 @@ import {
   READY_QUERY_REPOSITORY,
   READY_QUERY_REPOSITORY_COMMIT,
   READY_QUERY_REPOSITORY_TREE,
+  isReadyQueryGitHubRepository,
   parseReadyQueryEvidenceV1,
+  readyQueryGitHubWorkflowRef,
   type ReadyQueryControlEvidenceV1,
   type ReadyQueryEvidenceV1,
   type ReadyQueryStageDisposition,
@@ -708,13 +708,13 @@ function qualifyingReadyQuerySource(
     provenance.mode !== 'github-actions-clean-source' ||
     environment.CI !== 'true' ||
     environment.GITHUB_ACTIONS !== 'true' ||
-    github.repository !== READY_QUERY_GITHUB_REPOSITORY ||
+    !isReadyQueryGitHubRepository(github.repository) ||
     github.repositoryId !== READY_QUERY_GITHUB_REPOSITORY_ID ||
     github.eventName !== READY_QUERY_GITHUB_EVENT ||
     github.job !== READY_QUERY_GITHUB_JOB ||
     github.ref !== READY_QUERY_GITHUB_REF ||
     github.refProtected !== 'true' ||
-    github.workflowRef !== READY_QUERY_GITHUB_WORKFLOW_REF ||
+    github.workflowRef !== readyQueryGitHubWorkflowRef(github.repository) ||
     github.environment !== READY_QUERY_GITHUB_ENVIRONMENT ||
     github.environmentAttestation !== READY_QUERY_ENVIRONMENT_ATTESTATION ||
     github.repositoryEnablement !== 'true' ||
@@ -731,6 +731,7 @@ function qualifyingReadyQuerySource(
         'Qualifying ready-query evidence requires the canonical enabled protected-main GitHub workflow environment.',
     });
   }
+  const repository = github.repository;
   return {
     clean: true,
     commit: provenance.sourceCommit,
@@ -741,7 +742,7 @@ function qualifyingReadyQuerySource(
       job: READY_QUERY_GITHUB_JOB,
       ref: READY_QUERY_GITHUB_REF,
       refProtected: true,
-      repository: READY_QUERY_GITHUB_REPOSITORY,
+      repository,
       repositoryId: READY_QUERY_GITHUB_REPOSITORY_ID,
       repositoryEnablement: 'enabled',
       runnerArch: 'X64',
@@ -750,7 +751,7 @@ function qualifyingReadyQuerySource(
       runAttempt: github.runAttempt!,
       runId: github.runId!,
       sha: provenance.sourceCommit,
-      workflowRef: READY_QUERY_GITHUB_WORKFLOW_REF,
+      workflowRef: readyQueryGitHubWorkflowRef(repository),
       workflowSha: provenance.sourceCommit,
     },
     lockfileSha256: provenance.sourceLockfileSha256,

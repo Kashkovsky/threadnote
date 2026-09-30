@@ -33,6 +33,13 @@ have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+is_official_repository() {
+  case "$1" in
+    Kashkovsky/threadnote | threadnote/threadnote) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 require_command() {
   have "$1" || die "$1 is required to install Threadnote."
 }
@@ -625,7 +632,7 @@ tar -xzf "$archive" -C "$staged_root"
 grep -F "\"version\": \"$version\"" "$staged_root/release.json" >/dev/null ||
   die "Release metadata does not match $version."
 if [ "$platform" = "darwin" ] &&
-  [ "$REPOSITORY" = "Kashkovsky/threadnote" ] &&
+  is_official_repository "$REPOSITORY" &&
   [ -z "${THREADNOTE_RELEASE_SOURCE:-}" ] &&
   [ -z "${THREADNOTE_RELEASE_DOWNLOAD_ROOT:-}" ]; then
   require_command codesign

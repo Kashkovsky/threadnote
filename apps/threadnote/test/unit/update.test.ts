@@ -70,6 +70,7 @@ import {
 import * as utils from '@threadnote/threadnote/utils';
 import * as version from '@threadnote/workspace/runtime-version';
 import * as installation from '@threadnote/workspace/installation';
+import {TRANSFERRED_GITHUB_RELEASES_URL} from '@threadnote/threadnote/release/github_auth';
 
 const OFFICIAL_RELEASE_SOURCE = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
 const RELEASE_VERSION = '4.0.0';
@@ -250,6 +251,7 @@ describe('standalone release selection', () => {
 
   it('requires HTTPS and explicit trust for custom release sources', () => {
     expect(resolveReleaseSource(undefined, false, {})).toBe(OFFICIAL_RELEASE_SOURCE);
+    expect(resolveReleaseSource(TRANSFERRED_GITHUB_RELEASES_URL, false, {})).toBe(TRANSFERRED_GITHUB_RELEASES_URL);
     expect(() => resolveReleaseSource('http://mirror.example/releases', true, {})).toThrow(/must use https/);
     expect(resolveReleaseSource('http://127.0.0.1:4312/releases', true, {})).toBe('http://127.0.0.1:4312/releases');
     expect(() => resolveReleaseSource('https://mirror.example/releases', false, {})).toThrow(
@@ -310,9 +312,13 @@ describe('standalone release selection', () => {
             architecture: 'arm64',
             platform: 'darwin',
           });
-          yield* verifyOfficialPlatformSignature(fs, path, releaseRoot, OFFICIAL_RELEASE_SOURCE, darwinSystem).pipe(
-            Effect.provideService(CommandExecutor, commandExecutor),
-          );
+          yield* verifyOfficialPlatformSignature(
+            fs,
+            path,
+            releaseRoot,
+            TRANSFERRED_GITHUB_RELEASES_URL,
+            darwinSystem,
+          ).pipe(Effect.provideService(CommandExecutor, commandExecutor));
           return recorded;
         }),
       ).pipe(provideTestLayer(ApplicationLayer));
