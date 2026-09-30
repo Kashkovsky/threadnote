@@ -8,6 +8,11 @@ export const CODE_MEMORY_LINK_SCALE_ARTIFACT_ROOT =
   'apps/threadnote/test/evaluation/retained/code-memory-link-scale' as const;
 export const CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS = 'github-hosted-macos-15-ARM64' as const;
 export const CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY = 'Kashkovsky/threadnote' as const;
+export const CODE_MEMORY_LINK_SCALE_TRANSFERRED_GITHUB_REPOSITORY = 'threadnote/threadnote' as const;
+export const CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORIES = [
+  CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
+  CODE_MEMORY_LINK_SCALE_TRANSFERRED_GITHUB_REPOSITORY,
+] as const;
 export const CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID = '1230070449' as const;
 export const CODE_MEMORY_LINK_SCALE_GITHUB_JOB = 'code-memory-link-inverse-scale' as const;
 export const CODE_MEMORY_LINK_SCALE_GITHUB_JOB_NAME =
@@ -23,6 +28,14 @@ export const CODE_MEMORY_LINK_SCALE_SCENARIOS = [
   'no-answer',
 ] as const;
 export const CODE_MEMORY_LINK_SCALE_SEED = 'threadnote-code-memory-link-inverse-scale-v1-2026-08-29' as const;
+
+export type CodeMemoryLinkScaleGitHubRepository = (typeof CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORIES)[number];
+
+export function isCodeMemoryLinkScaleGitHubRepository(
+  repository: string,
+): repository is CodeMemoryLinkScaleGitHubRepository {
+  return CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORIES.some(candidate => candidate === repository);
+}
 
 export type CodeMemoryLinkScaleScenarioId = (typeof CODE_MEMORY_LINK_SCALE_SCENARIOS)[number];
 export type CodeMemoryLinkScaleEvidenceClass = 'development-smoke' | 'release-scale';
@@ -884,9 +897,9 @@ export function codeMemoryLinkScaleReleaseClaimFailures(
     identity.dirty ? 'candidate checkout is dirty; required dirty=false' : '',
     identity.gitStatusObserved ? '' : 'candidate Git status could not be observed',
     github.actions ? '' : 'release evidence was not produced by GitHub Actions',
-    github.repository === CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY
+    isCodeMemoryLinkScaleGitHubRepository(github.repository)
       ? ''
-      : `GitHub repository ${github.repository}; required ${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}`,
+      : `GitHub repository ${github.repository}; required one of ${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORIES.join(', ')}`,
     github.repositoryId === CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID
       ? ''
       : `GitHub repository ID ${github.repositoryId}; required ${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID}`,
@@ -902,8 +915,7 @@ export function codeMemoryLinkScaleReleaseClaimFailures(
     github.workflowSha === identity.candidateCommit
       ? ''
       : `GitHub workflow SHA ${github.workflowSha}; required candidate ${identity.candidateCommit}`,
-    github.workflowRef ===
-    `${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}/${CODE_MEMORY_LINK_SCALE_GITHUB_WORKFLOW_PATH}@${github.ref}`
+    github.workflowRef === `${github.repository}/${CODE_MEMORY_LINK_SCALE_GITHUB_WORKFLOW_PATH}@${github.ref}`
       ? ''
       : 'GitHub workflow ref does not identify the governed benchmarks workflow at the claimed ref',
     identity.runnerClass === CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS

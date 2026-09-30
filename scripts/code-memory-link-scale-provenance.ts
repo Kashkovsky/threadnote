@@ -7,20 +7,17 @@ import {
   CODE_MEMORY_LINK_SCALE_CAPTURE_STEP,
   CODE_MEMORY_LINK_SCALE_GITHUB_JOB,
   CODE_MEMORY_LINK_SCALE_GITHUB_JOB_NAME,
-  CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
   CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID,
   CODE_MEMORY_LINK_SCALE_GITHUB_WORKFLOW_PATH,
   CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS,
   codeMemoryLinkScaleAttestationSubjectV1,
   evaluateCodeMemoryLinkScaleCapture,
+  isCodeMemoryLinkScaleGitHubRepository,
   type CodeMemoryLinkScaleCandidateBindingV1,
   type CodeMemoryLinkScaleIdentityV1,
   type CodeMemoryLinkScaleRunnerBindingV1,
 } from '@threadnote/threadnote/evaluation/code-memory-link-scale-contract';
 import {ScriptError} from './effect/errors.js';
-
-const REPOSITORY_URL = `https://github.com/${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}`;
-const WORKFLOW_URL = `${REPOSITORY_URL}/${CODE_MEMORY_LINK_SCALE_GITHUB_WORKFLOW_PATH}`;
 
 /** Only this service can supply release authority to executable entrypoints.
  * Tests may replace the service; production always verifies GitHub/Sigstore signatures
@@ -96,6 +93,10 @@ const verifyGithubCapture = Effect.fn('codeMemoryLinkScale.verifyGithubCapture')
   subject: string,
   identity: CodeMemoryLinkScaleIdentityV1,
 ) {
+  const repository = identity.github.repository;
+  if (!isCodeMemoryLinkScaleGitHubRepository(repository)) {
+    return yield* ScriptError.make({message: 'Scale capture does not identify an official Threadnote repository.'});
+  }
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -112,9 +113,9 @@ const verifyGithubCapture = Effect.fn('codeMemoryLinkScale.verifyGithubCapture')
           '--hostname',
           'github.com',
           '--repo',
-          CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
+          repository,
           '--signer-workflow',
-          `${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}/${CODE_MEMORY_LINK_SCALE_GITHUB_WORKFLOW_PATH}`,
+          `${repository}/${CODE_MEMORY_LINK_SCALE_GITHUB_WORKFLOW_PATH}`,
           '--signer-digest',
           identity.candidateCommit,
           '--source-digest',
@@ -137,7 +138,7 @@ const verifyGithubCapture = Effect.fn('codeMemoryLinkScale.verifyGithubCapture')
         catch: cause =>
           ScriptError.make({message: 'Verified GitHub attestation does not bind this scale capture.', cause}),
       });
-      const prefix = `repos/${CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY}/actions/runs/${binding.github.runId}/attempts/${binding.github.runAttempt}`;
+      const prefix = `repos/${repository}/actions/runs/${binding.github.runId}/attempts/${binding.github.runAttempt}`;
       const [run, jobs] = yield* Effect.all([githubJson(prefix), githubJson(`${prefix}/jobs?per_page=100`)], {
         concurrency: 2,
       });
@@ -172,20 +173,24 @@ function bindingFromVerifiedAttestation(
   identity: CodeMemoryLinkScaleIdentityV1,
 ): CodeMemoryLinkScaleRunnerBindingV1 {
   if (!Array.isArray(value) || value.length === 0) throw new Error('Missing verified attestations');
-  const expectedInvocation = `${REPOSITORY_URL}/actions/runs/${identity.github.runId}/attempts/${identity.github.runAttempt}`;
+  const repository = identity.github.repository;
+  if (!isCodeMemoryLinkScaleGitHubRepository(repository)) throw new Error('Unexpected Threadnote repository');
+  const repositoryUrl = `https://github.com/${repository}`;
+  const workflowUrl = `${repositoryUrl}/${CODE_MEMORY_LINK_SCALE_GITHUB_WORKFLOW_PATH}`;
+  const expectedInvocation = `${repositoryUrl}/actions/runs/${identity.github.runId}/attempts/${identity.github.runAttempt}`;
   for (const entry of value) {
     const result = object(object(entry, 'attestation').verificationResult, 'verification result');
     const certificate = object(object(result.signature, 'signature').certificate, 'certificate');
     const statement = object(result.statement, 'statement');
     const expected = {
       issuer: 'https://token.actions.githubusercontent.com',
-      sourceRepositoryURI: REPOSITORY_URL,
+      sourceRepositoryURI: repositoryUrl,
       sourceRepositoryIdentifier: CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID,
       sourceRepositoryDigest: identity.candidateCommit,
       sourceRepositoryRef: identity.github.ref,
-      buildSignerURI: `${WORKFLOW_URL}@${identity.github.ref}`,
+      buildSignerURI: `${workflowUrl}@${identity.github.ref}`,
       buildSignerDigest: identity.candidateCommit,
-      buildConfigURI: `${WORKFLOW_URL}@${identity.github.ref}`,
+      buildConfigURI: `${workflowUrl}@${identity.github.ref}`,
       buildConfigDigest: identity.candidateCommit,
       buildTrigger: identity.github.eventName,
       runInvocationURI: expectedInvocation,
@@ -205,7 +210,7 @@ function bindingFromVerifiedAttestation(
         eventName: string(certificate.buildTrigger, 'build trigger'),
         job: CODE_MEMORY_LINK_SCALE_GITHUB_JOB,
         ref: string(certificate.sourceRepositoryRef, 'source ref'),
-        repository: CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
+        repository,
         repositoryId: string(certificate.sourceRepositoryIdentifier, 'repository ID'),
         runId: identity.github.runId,
         runAttempt: identity.github.runAttempt,

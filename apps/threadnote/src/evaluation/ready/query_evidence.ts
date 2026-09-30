@@ -27,6 +27,11 @@ export const READY_QUERY_REPOSITORY = 'JetBrains/intellij-community' as const;
 export const READY_QUERY_REPOSITORY_COMMIT = '3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c' as const;
 export const READY_QUERY_REPOSITORY_TREE = '047481e05148b1c11a52fa813e13323c23abbc0d' as const;
 export const READY_QUERY_GITHUB_REPOSITORY = 'Kashkovsky/threadnote' as const;
+export const READY_QUERY_TRANSFERRED_GITHUB_REPOSITORY = 'threadnote/threadnote' as const;
+export const READY_QUERY_GITHUB_REPOSITORIES = [
+  READY_QUERY_GITHUB_REPOSITORY,
+  READY_QUERY_TRANSFERRED_GITHUB_REPOSITORY,
+] as const;
 export const READY_QUERY_GITHUB_REPOSITORY_ID = '1230070449' as const;
 export const READY_QUERY_GITHUB_EVENT = 'workflow_dispatch' as const;
 export const READY_QUERY_GITHUB_REF = 'refs/heads/main' as const;
@@ -37,6 +42,18 @@ export const READY_QUERY_GITHUB_WORKFLOW_REF =
   `${READY_QUERY_GITHUB_REPOSITORY}/${READY_QUERY_GITHUB_WORKFLOW_PATH}@${READY_QUERY_GITHUB_REF}` as const;
 export const READY_QUERY_ENVIRONMENT_ATTESTATION =
   `intellij-ready-query-v1:${READY_QUERY_REPOSITORY_COMMIT}:${READY_QUERY_REPOSITORY_TREE}` as const;
+
+export type ReadyQueryGitHubRepository = (typeof READY_QUERY_GITHUB_REPOSITORIES)[number];
+export type ReadyQueryGitHubWorkflowRef =
+  `${ReadyQueryGitHubRepository}/${typeof READY_QUERY_GITHUB_WORKFLOW_PATH}@${typeof READY_QUERY_GITHUB_REF}`;
+
+export function isReadyQueryGitHubRepository(value: string | undefined): value is ReadyQueryGitHubRepository {
+  return READY_QUERY_GITHUB_REPOSITORIES.some(repository => repository === value);
+}
+
+export function readyQueryGitHubWorkflowRef(repository: ReadyQueryGitHubRepository): ReadyQueryGitHubWorkflowRef {
+  return `${repository}/${READY_QUERY_GITHUB_WORKFLOW_PATH}@${READY_QUERY_GITHUB_REF}`;
+}
 
 export const READY_QUERY_CONTROLS = [
   {
@@ -193,7 +210,7 @@ export interface ReadyQueryEvidenceV1 {
       readonly job: typeof READY_QUERY_GITHUB_JOB;
       readonly ref: typeof READY_QUERY_GITHUB_REF;
       readonly refProtected: true;
-      readonly repository: typeof READY_QUERY_GITHUB_REPOSITORY;
+      readonly repository: ReadyQueryGitHubRepository;
       readonly repositoryId: typeof READY_QUERY_GITHUB_REPOSITORY_ID;
       readonly repositoryEnablement: 'enabled';
       readonly runnerArch: 'X64';
@@ -202,7 +219,7 @@ export interface ReadyQueryEvidenceV1 {
       readonly runAttempt: string;
       readonly runId: string;
       readonly sha: string;
-      readonly workflowRef: typeof READY_QUERY_GITHUB_WORKFLOW_REF;
+      readonly workflowRef: ReadyQueryGitHubWorkflowRef;
       readonly workflowSha: string;
     };
     readonly lockfileSha256: string;
@@ -318,7 +335,7 @@ function validateSource(source: ReadyQueryEvidenceV1['source'] | undefined): voi
     'GitHub workflow provenance',
   );
   assert(
-    source.github.repository === READY_QUERY_GITHUB_REPOSITORY &&
+    isReadyQueryGitHubRepository(source.github.repository) &&
       source.github.repositoryId === READY_QUERY_GITHUB_REPOSITORY_ID &&
       source.github.eventName === READY_QUERY_GITHUB_EVENT &&
       source.github.job === READY_QUERY_GITHUB_JOB &&
@@ -328,7 +345,7 @@ function validateSource(source: ReadyQueryEvidenceV1['source'] | undefined): voi
       source.github.runnerEnvironment === 'self-hosted' &&
       source.github.runnerOs === 'Linux' &&
       source.github.runnerArch === 'X64' &&
-      source.github.workflowRef === READY_QUERY_GITHUB_WORKFLOW_REF &&
+      source.github.workflowRef === readyQueryGitHubWorkflowRef(source.github.repository) &&
       source.github.environment === READY_QUERY_GITHUB_ENVIRONMENT &&
       source.github.environmentAttestation === READY_QUERY_ENVIRONMENT_ATTESTATION &&
       source.github.sha === source.commit &&

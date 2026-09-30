@@ -14,7 +14,8 @@ jobs:
   ready-query-evidence:
     name: Pinned IntelliJ ready-query evidence
     if: >-
-      github.repository == 'Kashkovsky/threadnote' &&
+      (github.repository == 'Kashkovsky/threadnote' ||
+       github.repository == 'threadnote/threadnote') &&
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
       github.ref_protected == true &&
@@ -42,13 +43,19 @@ jobs:
           THREADNOTE_READY_QUERY_REPOSITORY: ${{ vars.THREADNOTE_READY_QUERY_REPOSITORY }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REPOSITORY" = 'Kashkovsky/threadnote'
+          case "$GITHUB_REPOSITORY" in
+            Kashkovsky/threadnote|threadnote/threadnote) ;;
+            *) exit 1 ;;
+          esac
           test "$GITHUB_REPOSITORY_ID" = '1230070449'
           test "$GITHUB_EVENT_NAME" = 'workflow_dispatch'
           test "$GITHUB_JOB" = 'ready-query-evidence'
           test "$GITHUB_REF" = 'refs/heads/main'
           test "$GITHUB_REF_PROTECTED" = 'true'
-          test "$GITHUB_WORKFLOW_REF" = 'Kashkovsky/threadnote/.github/workflows/code-graph-ready-query-evidence.yml@refs/heads/main'
+          case "$GITHUB_WORKFLOW_REF" in
+            Kashkovsky/threadnote/.github/workflows/code-graph-ready-query-evidence.yml@refs/heads/main|threadnote/threadnote/.github/workflows/code-graph-ready-query-evidence.yml@refs/heads/main) ;;
+            *) exit 1 ;;
+          esac
           test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
           test "$RUNNER_ENVIRONMENT" = 'self-hosted'
           test "$RUNNER_OS" = 'Linux'

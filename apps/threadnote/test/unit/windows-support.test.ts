@@ -66,6 +66,8 @@ describe('Windows platform contracts', () => {
     expect(installer).toContain('$codeSignature = $metadata.codeSignature');
     expect(installer).toContain('$codeSignature -isnot [string]');
     expect(installer).toContain("$codeSignature -cne 'unsigned'");
+    expect(installer).toContain("@('Kashkovsky/threadnote', 'threadnote/threadnote')");
+    expect(installer).toContain('$officialRepositories -ccontains $repository');
     expect(installer).toContain('This Windows release is unsigned');
     expect(installer).not.toContain('Get-AuthenticodeSignature');
   });
