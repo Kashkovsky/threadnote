@@ -162,6 +162,45 @@ describe('matched token-efficiency study preparation', () => {
     ).toThrow('unexpected handoff');
     expect(() =>
       assertMatchedTokenEfficiencyLinkedBriefV1(
+        {
+          activeHandoffs: [
+            {
+              uri: 'threadnote://user/evaluation-user/memories/handoffs/active/threadnote/continuation-checkpoint.md',
+            },
+          ],
+          briefVersion: 2,
+          durableDecisions: [
+            {
+              uri: 'threadnote://user/evaluation-user/memories/durable/projects/threadnote/parser-contract.md',
+            },
+          ],
+          type: 'context-brief-agent-view',
+          version: 1,
+        },
+        'threadnote',
+        'tsk_1234567890abcdef',
+        ['parser-contract', 'serializer-contract'],
+        ['continuation-checkpoint'],
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedTokenEfficiencyLinkedBriefV1(
+        {
+          activeHandoffs: [],
+          briefVersion: 2,
+          durableDecisions: [
+            {uri: 'threadnote://user/evaluation-user/memories/durable/projects/other/parser-contract.md'},
+          ],
+          type: 'context-brief-agent-view',
+          version: 1,
+        },
+        'threadnote',
+        'tsk_1234567890abcdef',
+        ['parser-contract'],
+      ),
+    ).toThrow('unexpected durable');
+    expect(() =>
+      assertMatchedTokenEfficiencyLinkedBriefV1(
         {...brief, durableDecisions: brief.durableDecisions.slice(0, 1)},
         'threadnote',
         'tsk_1234567890abcdef',
@@ -171,7 +210,13 @@ describe('matched token-efficiency study preparation', () => {
   });
 
   it('accepts exactly one successful agent-facing MCP context payload', () => {
-    const brief = {activeHandoffs: [], durableDecisions: [], type: 'context-brief', version: 3};
+    const brief = {
+      activeHandoffs: [],
+      briefVersion: 2,
+      durableDecisions: [],
+      type: 'context-brief-agent-view',
+      version: 1,
+    };
     expect(
       parseMatchedTokenEfficiencyAgentContextBriefResultV1({
         content: [{text: JSON.stringify(brief), type: 'text'}],

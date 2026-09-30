@@ -1139,31 +1139,37 @@ export function assertMatchedTokenEfficiencyLinkedBriefV1(
   expectedHandoffTopics: readonly string[] = [],
 ): void {
   const brief = object(value, 'linked-memory Context Brief');
-  if (brief.type !== 'context-brief' || (brief.version !== 2 && brief.version !== 3)) {
+  const isAgentView = brief.type === 'context-brief-agent-view' && brief.version === 1 && brief.briefVersion === 2;
+  const isCanonicalBrief = brief.type === 'context-brief' && (brief.version === 2 || brief.version === 3);
+  if (!isAgentView && !isCanonicalBrief) {
     throw new Error('Linked home did not return a supported Context Brief.');
   }
   if (!Array.isArray(brief.durableDecisions) || !Array.isArray(brief.activeHandoffs)) {
     throw new Error('Linked-memory Context Brief is missing its memory evidence arrays.');
   }
-  const surfacedHandoffTopics = brief.activeHandoffs.map((entry, index) => {
-    const handoff = object(entry, `linked-memory Context Brief handoff ${index}`);
-    if (handoff.kind !== 'handoff' || handoff.project !== project) {
-      throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected handoff.`);
-    }
-    return boundedText(handoff.topic, 1, 512, `linked-memory Context Brief handoff ${index} topic`);
-  });
+  const surfacedHandoffTopics = isAgentView
+    ? agentViewMemoryTopics(brief.activeHandoffs, 'handoff', project, taskId)
+    : brief.activeHandoffs.map((entry, index) => {
+        const handoff = object(entry, `linked-memory Context Brief handoff ${index}`);
+        if (handoff.kind !== 'handoff' || handoff.project !== project) {
+          throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected handoff.`);
+        }
+        return boundedText(handoff.topic, 1, 512, `linked-memory Context Brief handoff ${index} topic`);
+      });
   const expectedHandoffs = [...expectedHandoffTopics].sort((left, right) => left.localeCompare(right));
   const surfacedHandoffs = [...surfacedHandoffTopics].sort((left, right) => left.localeCompare(right));
   if (JSON.stringify(surfacedHandoffs) !== JSON.stringify(expectedHandoffs)) {
     throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected handoff.`);
   }
-  const surfacedTopics = brief.durableDecisions.map((entry, index) => {
-    const decision = object(entry, `linked-memory Context Brief decision ${index}`);
-    if (decision.kind !== 'durable' || decision.project !== project) {
-      throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected memory.`);
-    }
-    return boundedText(decision.topic, 1, 512, `linked-memory Context Brief decision ${index} topic`);
-  });
+  const surfacedTopics = isAgentView
+    ? agentViewMemoryTopics(brief.durableDecisions, 'durable', project, taskId)
+    : brief.durableDecisions.map((entry, index) => {
+        const decision = object(entry, `linked-memory Context Brief decision ${index}`);
+        if (decision.kind !== 'durable' || decision.project !== project) {
+          throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected memory.`);
+        }
+        return boundedText(decision.topic, 1, 512, `linked-memory Context Brief decision ${index} topic`);
+      });
   const expected = [...expectedTopics].sort((left, right) => left.localeCompare(right));
   const surfaced = [...surfacedTopics].sort((left, right) => left.localeCompare(right));
   const durableRosterIsValid =
@@ -1173,6 +1179,32 @@ export function assertMatchedTokenEfficiencyLinkedBriefV1(
   if (!durableRosterIsValid) {
     throw new Error(`Task ${taskId} exact prompt does not surface its complete reviewed memory roster.`);
   }
+}
+
+function agentViewMemoryTopics(
+  entries: readonly unknown[],
+  kind: 'durable' | 'handoff',
+  project: string,
+  taskId: string,
+): readonly string[] {
+  const namespace =
+    kind === 'durable' ? `/memories/durable/projects/${project}/` : `/memories/handoffs/active/${project}/`;
+  return entries.map((entry, index) => {
+    const memory = object(entry, `linked-memory agent Context Brief ${kind} ${index}`);
+    const uri = boundedText(memory.uri, 1, 4_096, `linked-memory agent Context Brief ${kind} ${index} URI`);
+    const namespaceIndex = uri.indexOf(namespace);
+    const topicPath = namespaceIndex === -1 ? '' : uri.slice(namespaceIndex + namespace.length);
+    if (
+      !uri.startsWith('threadnote://user/') ||
+      namespaceIndex === -1 ||
+      !topicPath.endsWith('.md') ||
+      topicPath.length <= 3 ||
+      topicPath.slice(0, -3).includes('/')
+    ) {
+      throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected ${kind}.`);
+    }
+    return topicPath.slice(0, -3);
+  });
 }
 
 function linkReceiptsForTask(
