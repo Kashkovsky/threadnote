@@ -1,7 +1,7 @@
 import {Schema} from 'effect';
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed adapter validates app-server actions before execution. */
 import {createHash} from 'node:crypto';
-import {isAbsolute, resolve, sep} from 'node:path';
+import {isAbsolute, relative, resolve, sep} from 'node:path';
 import {codeMemoryLinkAppServerOpaqueIdDigest} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 
 export interface CodeMemoryLinkAppServerApprovalReceiptV1 {
@@ -661,7 +661,7 @@ function tokenize(command: string): readonly string[] {
 function containedPath(value: string, rootInput: string, cwdInput = rootInput): string {
   if (value.includes('\0') || value.includes('\\')) throw new Error('Repository path is invalid.');
   const segments = value.split('/');
-  if (segments.some(segment => segment === '..' || FORBIDDEN_PATH_SEGMENTS.has(segment))) {
+  if (segments.some(segment => segment === '..')) {
     throw new Error('Repository path contains a forbidden parent or control segment.');
   }
   const root = resolve(rootInput);
@@ -669,6 +669,10 @@ function containedPath(value: string, rootInput: string, cwdInput = rootInput): 
   const candidate = resolve(isAbsolute(value) ? value : resolve(cwd, value));
   if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
     throw new Error('App-server action referenced a path outside the public task repository.');
+  }
+  const repositoryRelativeSegments = candidate === root ? [] : relative(root, candidate).split(sep);
+  if (repositoryRelativeSegments.some(segment => FORBIDDEN_PATH_SEGMENTS.has(segment))) {
+    throw new Error('Repository path contains a forbidden parent or control segment.');
   }
   return candidate;
 }

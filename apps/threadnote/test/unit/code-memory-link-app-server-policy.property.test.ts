@@ -81,6 +81,31 @@ describe('Code Memory Link pre-execution app-server policy', () => {
     }
   });
 
+  it('evaluates forbidden control directories relative to the selected repository root', () => {
+    const repositoryRoot = '/Users/test/.codex/worktrees/evaluation/repository';
+    const scope = {...SCOPE, repositoryRoot};
+    const safe = commandApproval("sed -n '1p' src/service.ts", 'src/service.ts', repositoryRoot);
+
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: safe.params,
+        scope,
+        startedItem: safe.item,
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
+
+    const control = commandApproval("sed -n '1p' .git/config", '.git/config', repositoryRoot);
+    expect(() =>
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: control.params,
+        scope,
+        startedItem: control.item,
+      }),
+    ).toThrow('forbidden parent or control segment');
+  });
+
   it('accepts the pinned code-mode shell wrapper only when every projected command is a bounded read', () => {
     const projected = "pwd && sed -n '1,40p' src/service.ts";
     const command = `/bin/zsh -lc ${shellWord(projected)}`;
@@ -357,12 +382,12 @@ describe('Code Memory Link pre-execution app-server policy', () => {
   });
 });
 
-function commandApproval(command: string, path: string) {
-  const commandActions = [{command, name: path.split('/').at(-1), path: `${ROOT}/${path}`, type: 'read'}];
+function commandApproval(command: string, path: string, repositoryRoot = ROOT) {
+  const commandActions = [{command, name: path.split('/').at(-1), path: `${repositoryRoot}/${path}`, type: 'read'}];
   const item = {
     command,
     commandActions,
-    cwd: ROOT,
+    cwd: repositoryRoot,
     id: 'item_command',
     status: 'inProgress',
     type: 'commandExecution',
@@ -373,7 +398,7 @@ function commandApproval(command: string, path: string) {
       approvalId: null,
       command,
       commandActions,
-      cwd: ROOT,
+      cwd: repositoryRoot,
       environmentId: null,
       itemId: item.id,
       networkApprovalContext: null,
