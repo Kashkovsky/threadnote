@@ -51,6 +51,7 @@ import {
 } from './source_projection.js';
 import {jsonStringPrefix, utf8Prefix} from './projection_text.js';
 import {compactContinuationCard, preservesBaselineEvidence, projectContextBriefAgentView} from './projection_view.js';
+import {preservesResumeBaselineEvidence} from './projection_view.js';
 
 export {
   CONTEXT_BRIEF_AGENT_VIEW_CITATION_RECEIPT_FIELD_POLICY,
@@ -130,7 +131,8 @@ export function projectContextBrief(
   };
   const baseline = projectContextBriefCore(withoutCards, maximumEstimatedTokens, responseFormat);
   const withCards = projectContextBriefCore(logical, maximumEstimatedTokens, responseFormat);
-  return preservesBaselineEvidence(withCards.structuredContent, baseline.structuredContent) ? withCards : baseline;
+  const preservesBaseline = logical.mode === 'resume' ? preservesResumeBaselineEvidence : preservesBaselineEvidence;
+  return preservesBaseline(withCards.structuredContent, baseline.structuredContent) ? withCards : baseline;
 }
 
 function projectContextBriefCore(

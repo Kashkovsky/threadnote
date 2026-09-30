@@ -171,6 +171,45 @@ export function preservesBaselineEvidence(candidate: ContextBriefV1, baseline: C
   );
 }
 
+/**
+ * Resume cards may replace optional breadth, but never the evidence needed to
+ * validate the continuation. Keep the primary handoff and graph hit plus all
+ * exact source, relationship, gap, conflict, and procedure evidence that fit
+ * without the card.
+ */
+export function preservesResumeBaselineEvidence(candidate: ContextBriefV1, baseline: ContextBriefV1): boolean {
+  const contains = (left: readonly string[], right: readonly string[]) => right.every(value => left.includes(value));
+  const candidateMemories = [...candidate.activeHandoffs, ...candidate.durableDecisions];
+  const primaryBaselineMemory = baseline.activeHandoffs[0] ?? baseline.durableDecisions[0];
+  const retainedContinuation = candidateMemories.find(
+    memory =>
+      memory.continuationCard !== undefined &&
+      (primaryBaselineMemory === undefined || memory.uri === primaryBaselineMemory.uri),
+  );
+  const primaryBaselineCard = baseline.graph.cards[0];
+  return (
+    retainedContinuation !== undefined &&
+    (primaryBaselineCard === undefined || candidate.graph.cards.some(card => card.id === primaryBaselineCard.id)) &&
+    contains(
+      candidate.graph.contracts.map(contract => contract.id),
+      baseline.graph.contracts.map(contract => contract.id),
+    ) &&
+    contains(
+      (candidate.graph.sources ?? []).map(source => source.id),
+      (baseline.graph.sources ?? []).map(source => source.id),
+    ) &&
+    contains(candidate.coverage.gaps, baseline.coverage.gaps) &&
+    contains(
+      candidate.stalenessAndConflicts.map(issue => issue.id),
+      baseline.stalenessAndConflicts.map(issue => issue.id),
+    ) &&
+    contains(
+      (candidate.verifiedProcedures ?? []).map(procedureProjectionId),
+      (baseline.verifiedProcedures ?? []).map(procedureProjectionId),
+    )
+  );
+}
+
 function procedureProjectionId(procedure: NonNullable<ContextBriefV1['verifiedProcedures']>[number]): string {
   return `${procedure.artifact.id}@${procedure.artifact.semanticVersion}`;
 }

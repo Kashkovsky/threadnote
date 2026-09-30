@@ -163,6 +163,35 @@ describe('Context Brief continuation contracts', () => {
     }
   });
 
+  it('keeps a decision-rich continuation card ahead of optional graph breadth at every public budget', () => {
+    for (const budgetTokens of [800, 900, 1_000, 1_250, 1_500]) {
+      const projected = project('resume', realisticHandoff(), budgetTokens, denseGraph()).structuredContent;
+      expect(projected.activeHandoffs[0]).toMatchObject({
+        continuationCard: {
+          decisions: expect.stringContaining('_format_marker'),
+          invariants: expect.stringContaining('public marker formatting'),
+          nextStep: expect.stringContaining('minimal formatter fix'),
+          rationale: expect.stringContaining('Marker.__str__'),
+          verification: expect.stringContaining('precedence-related tests'),
+        },
+        excerpt: '',
+      });
+      expect(projected.graph.cards[0]?.id).toBe('card-1');
+    }
+  });
+
+  it('retains the continuation core for arbitrary supported token budgets', () => {
+    fc.assert(
+      fc.property(fc.integer({min: 800, max: 1_500}), budgetTokens => {
+        const projected = project('resume', realisticHandoff(), budgetTokens, denseGraph());
+        expect(projected.structuredContent.activeHandoffs[0]?.continuationCard).toBeDefined();
+        expect(projected.structuredContent.graph.cards[0]?.id).toBe('card-1');
+        expect(projected.measurement.totalBytes).toBeLessThanOrEqual(projected.maximumBytes);
+      }),
+      {numRuns: 50},
+    );
+  });
+
   it('parses continuation labels deterministically under field-order permutations and remains UTF-8 safe', () => {
     fc.assert(
       fc.property(
@@ -199,10 +228,15 @@ function request(mode: 'brief' | 'resume', detail: 'compact' | 'source' = 'sourc
   };
 }
 
-function project(mode: 'brief' | 'resume', candidate?: ReturnType<typeof handoff>, budgetTokens = 1_500) {
+function project(
+  mode: 'brief' | 'resume',
+  candidate?: ReturnType<typeof handoff>,
+  budgetTokens = 1_500,
+  graphEvidence = graph(true),
+) {
   return projectContextBrief(
     assembleContextBriefLogicalResult({
-      graph: graph(true),
+      graph: graphEvidence,
       memory: {
         ...emptyMemory(),
         candidates: candidate === undefined ? [] : [candidate],
@@ -272,6 +306,25 @@ function graph(withSource: boolean): ContextBriefGraphEvidenceV1 {
   };
 }
 
+function denseGraph(): ContextBriefGraphEvidenceV1 {
+  const base = graph(true);
+  return {
+    ...base,
+    cards: Array.from({length: 16}, (_, index) => ({
+      ...base.cards[0],
+      id: `card-${index + 1}`,
+      rank: index,
+      ref: index === 0 ? REF : `cgs_${index.toString(16).padStart(32, '0')}`,
+      symbol: {
+        ...base.cards[0].symbol,
+        line: index + 1,
+        name: `compile${index + 1}`,
+        qualifiedName: `compile${index + 1}`,
+      },
+    })),
+  };
+}
+
 function emptyMemory() {
   return {
     candidates: [],
@@ -291,6 +344,27 @@ function handoff(sourceCommit = COMMIT) {
     rank: 0,
     sourceCommit,
     uri: 'threadnote://user/test/memories/handoffs/active/threadnote/resume.md',
+  };
+}
+
+function realisticHandoff(sourceCommit = COMMIT) {
+  return {
+    ...handoff(sourceCommit),
+    continuationCard: {
+      blockers: 'None; implementation and verification remain for the second agent.',
+      decisions:
+        'Fix `_format_marker` so nested lists retain parentheses as operands; add regression coverage for reparsed evaluation equivalence.',
+      invariants:
+        'Preserve public marker formatting except where parentheses are semantically required and avoid unrelated changes.',
+      nextStep:
+        'Implement the minimal formatter fix, add the supplied reproduction and a bounded round-trip invariant, then run focused marker tests.',
+      rationale:
+        '`Marker.__str__` delegates to `_format_marker`; singleton-list unwrapping can erase a nested group and alter precedence.',
+      risks: 'Singleton-list unwrapping also affects canonical formatting, equality, hashes, and pickle state.',
+      task: 'Continue the packaging marker serialization fix without changing the task contract.',
+      verification:
+        'Existing precedence-related tests and combined-marker tests are the focused verification targets; phase one made no edits.',
+    },
   };
 }
 
