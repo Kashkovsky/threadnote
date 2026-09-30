@@ -86,6 +86,7 @@ function approveCommand(
     params,
     [
       'approvalId',
+      'additionalPermissions',
       'availableDecisions',
       'command',
       'commandActions',
@@ -106,11 +107,12 @@ function approveCommand(
   assertApprovalScope(params, scope);
   if (
     params.approvalId != null ||
+    params.additionalPermissions != null ||
     (params.environmentId != null && params.environmentId !== 'local') ||
     params.networkApprovalContext != null ||
     params.proposedNetworkPolicyAmendments != null
   ) {
-    throw new Error('Code Memory Link rejects compound, remote, and network command approvals.');
+    throw new Error('Code Memory Link rejects compound, remote, network, and additional permissions.');
   }
   assertTemporaryCommandApproval(params);
   const item = object(startedItemInput, 'started command item');
@@ -581,9 +583,19 @@ function assertFileChanges(item: Record<string, unknown>, repositoryRoot: string
       throw new Error('Code Memory Link file-change diff is missing or oversized.');
     }
     const kind = object(change.kind, 'file change kind');
-    if (kind.update !== undefined) {
+    if (kind.type !== undefined) {
+      exactKeys(kind, kind.type === 'update' ? ['move_path', 'type'] : ['type'], 'file change kind', false);
+      if (!['add', 'delete', 'update'].includes(String(kind.type))) {
+        throw new Error('Code Memory Link file-change kind is invalid.');
+      }
+      if (kind.type === 'update' && kind.move_path != null) {
+        containedPath(text(kind.move_path, 'file move path'), repositoryRoot);
+      }
+    } else if (kind.update !== undefined) {
       const update = object(kind.update, 'file update');
       if (update.movePath != null) containedPath(text(update.movePath, 'file move path'), repositoryRoot);
+    } else {
+      throw new Error('Code Memory Link file-change kind is invalid.');
     }
   }
 }

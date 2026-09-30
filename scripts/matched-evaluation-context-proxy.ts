@@ -15,7 +15,7 @@ import {EffectSchemaSdkTools} from '@threadnote/threadnote/mcp/effect_schema_sdk
 
 export const MATCHED_EVALUATION_CONTEXT_PACKET_ENV = 'MATCHED_EVALUATION_CONTEXT_PACKET' as const;
 export const MATCHED_EVALUATION_CONTEXT_SERVER_NAME = 'matched_evaluation_context' as const;
-export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 4 as const;
+export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 5 as const;
 
 type MatchedEvaluationContextBriefMode = 'brief' | 'resume';
 
@@ -36,6 +36,7 @@ export interface MatchedEvaluationContextProxyPacketV1 {
     readonly automaticHandoffUri: string;
     readonly resumeEvidenceMarker: string;
   } | null;
+  readonly maximumFollowupCalls: number;
   readonly project: string;
   readonly prompt: string;
   readonly repositoryRoot: string;
@@ -330,6 +331,16 @@ export async function handleMatchedEvaluationFollowupRequest(
   }
 }
 
+export function assertMatchedEvaluationFollowupBudgetV1(packetInput: unknown, attemptedCalls: number): void {
+  const packet = parseMatchedEvaluationContextProxyPacketV1(packetInput);
+  if (!Number.isSafeInteger(attemptedCalls) || attemptedCalls < 1) {
+    throw new Error('Follow-up call count must be a positive safe integer.');
+  }
+  if (attemptedCalls > packet.maximumFollowupCalls) {
+    throw new Error('Context follow-up call exceeds the sealed treatment budget.');
+  }
+}
+
 async function runThreadnoteTool(
   packet: MatchedEvaluationContextProxyPacketV1,
   name: string,
@@ -374,6 +385,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'mode',
     'expectedContext',
     'expectedResume',
+    'maximumFollowupCalls',
     'project',
     'prompt',
     'repositoryRoot',
@@ -387,7 +399,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'threadnoteUser',
     'version',
   ]);
-  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 4');
+  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 5');
   const expected = object(packet.expectedContext, 'expected context');
   exactKeys(expected, [
     'graphContentHash',
@@ -404,6 +416,8 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   }
   const linkReceiptsHash = nullableHash(expected.linkReceiptsHash, 'link receipts hash');
   const taskContextHash = nullableHash(expected.taskContextHash, 'task context hash');
+  const mode = literal(packet.mode, ['brief', 'resume'] as const, 'Context Brief mode');
+  const maximumFollowupCalls = integer(packet.maximumFollowupCalls, 0, 4, 'maximum follow-up calls');
   const expectedResume =
     packet.expectedResume === null
       ? null
@@ -415,8 +429,11 @@ export function parseMatchedEvaluationContextProxyPacketV1(
             resumeEvidenceMarker: boundedText(resume.resumeEvidenceMarker, 1, 4_096, 'resume evidence marker'),
           };
         })();
-  if ((packet.mode === 'resume') !== (expectedResume !== null)) {
+  if ((mode === 'resume') !== (expectedResume !== null)) {
     invalid('resume mode and expected resume evidence disagree');
+  }
+  if ((detail === 'source' && maximumFollowupCalls !== 0) || (mode === 'resume' && maximumFollowupCalls > 1)) {
+    invalid('context detail or resume mode disagrees with the follow-up call budget');
   }
   if (
     (memoryAccess === 'disabled' && (linkReceiptsHash !== null || taskContextHash !== null)) ||
@@ -427,7 +444,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   return {
     budgetTokens: integer(packet.budgetTokens, 800, 1_500, 'context budget'),
     detail,
-    mode: literal(packet.mode, ['brief', 'resume'] as const, 'Context Brief mode'),
+    mode,
     expectedContext: {
       graphContentHash: matching(expected.graphContentHash, HASH, 'graph content hash'),
       graphSnapshotHash: matching(expected.graphSnapshotHash, HASH, 'graph snapshot hash'),
@@ -437,6 +454,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
       taskContextHash,
     },
     expectedResume,
+    maximumFollowupCalls,
     project: matching(packet.project, PROJECT, 'project'),
     prompt: boundedText(packet.prompt, 1, 4_096, 'prompt'),
     repositoryRoot: absolutePath(packet.repositoryRoot, 'repository root'),
@@ -625,6 +643,7 @@ export async function runMatchedEvaluationContextProxy(): Promise<void> {
   const tools = new EffectSchemaSdkTools();
   let briefStarted = false;
   let briefReady = false;
+  let followupCalls = 0;
   tools.register(
     'context_brief',
     {
@@ -673,6 +692,8 @@ export async function runMatchedEvaluationContextProxy(): Promise<void> {
       },
       async request => {
         if (!briefReady) throw new Error('Read the initial context brief before follow-up calls.');
+        followupCalls += 1;
+        assertMatchedEvaluationFollowupBudgetV1(packet, followupCalls);
         const result = await handleMatchedEvaluationFollowupRequest(packet, name, request);
         return {content: [...result.content], _meta: result.meta, ...(result.isError ? {isError: true} : {})};
       },

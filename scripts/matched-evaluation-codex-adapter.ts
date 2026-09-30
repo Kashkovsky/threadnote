@@ -44,6 +44,10 @@ import {
   assertWithinTaskBudget,
   type CodeMemoryLinkAppServerCommand,
 } from './code-memory-link-app-server-client.js';
+import {
+  CodeMemoryLinkActionDeniedError,
+  approveCodeMemoryLinkAppServerRequest,
+} from './code-memory-link-app-server-policy.js';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
 import {
   CodeMemoryLinkCodexTerminalError,
@@ -56,14 +60,15 @@ export const MATCHED_EVALUATION_ADAPTER_CONFIG_ENV = 'MATCHED_EVALUATION_ADAPTER
 export const MATCHED_EVALUATION_ADAPTER_EXECUTABLE_ENV = 'MATCHED_EVALUATION_ADAPTER_EXECUTABLE' as const;
 export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
   apps: 'disabled',
-  approvals: 'sandbox-escape-user-reviewed',
-  commandReview: 'prompt-before-execution',
+  approvals: 'one-shot-client-reviewed',
+  commandReview: 'pre-execution-policy',
   hooks: 'disabled',
   network: 'disabled',
   plugins: 'disabled',
+  sandbox: 'workspace-write-no-network',
   subagents: 'disabled',
   userInstructions: 'disabled',
-  version: 2,
+  version: 3,
   workspace: 'isolated-worktree',
 });
 
@@ -234,6 +239,16 @@ interface AppServerTurnEvidence {
   readonly usage: ProviderTokens;
 }
 
+export interface MatchedEvaluationActionPreflightReceiptV1 {
+  readonly appliedAndReverted: true;
+  readonly approvedActions: number;
+  readonly receiptHash: string;
+  readonly rejectedActions: number;
+  readonly sourcePath: string;
+  readonly sourceReadSha256: string;
+  readonly version: 1;
+}
+
 type AppServerTurnResult = AppServerTurnEvidence &
   (
     | {readonly final: Record<string, unknown>; readonly terminal: null}
@@ -295,6 +310,14 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     await runGit(config, process.cwd(), ['worktree', 'add', '--detach', repositoryRoot, request.repository.revision]);
     worktreeCreated = true;
     await assertMatchedEvaluationRepositoryV1(repositoryRoot, request.repository);
+    const actionPreflight = await runMatchedEvaluationActionPreflightV1({
+      repositoryRoot,
+      runNonce: request.runNonce,
+      safeExecutablePath: config.safeExecutablePath,
+      sourcePath: await selectMatchedEvaluationPreflightSourceV1(config, repositoryRoot),
+    });
+    await assertMatchedEvaluationRepositoryV1(repositoryRoot, request.repository);
+    await writeBoundedJson(`${request.transcriptPath}.preflight.json`, actionPreflight, 64 * 1_024);
     const context = contextForRequest(request);
     const prepared = await prepareContextHome(config, request, context, root);
     const agentIsolation = await createCodexIsolation({
@@ -316,6 +339,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
                 automaticHandoffUri: request.continuationTreatment.automaticHandoffUri,
                 resumeEvidenceMarker: request.continuationTreatment.resumeEvidenceMarker,
               },
+      maximumFollowupCalls: maximumContextFollowupCalls(request, context),
       useJudgeModel: false,
       runNonce: request.runNonce,
       tool: request.tool,
@@ -329,7 +353,10 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     const agentTurn = await runAppServerTurn({
       command: agentIsolation.command,
       cwd: repositoryRoot,
-      developerInstructions: renderMatchedEvaluationAgentInstructionsV1(context === null ? null : request.tool.detail),
+      developerInstructions: renderMatchedEvaluationAgentInstructionsV1(
+        context === null ? null : request.tool.detail,
+        maximumContextFollowupCalls(request, context),
+      ),
       environment: agentIsolation.environment,
       expectedMcpServer: context === null ? null : MATCHED_EVALUATION_CONTEXT_SERVER_NAME,
       expectedContextDetail: context === null ? null : (request.tool.detail ?? 'compact'),
@@ -362,8 +389,12 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     await writeBoundedJson(request.artifactPath, artifact, MAXIMUM_PATCH_BYTES + 1_024 * 1_024);
     const artifactHash = await sha256File(request.artifactPath);
     let contextDeliveryFailure: Error | null = null;
+    let contextDelivery: MatchedEvaluationContextDeliveryDiagnosticsV1 | null = null;
     try {
-      assertMatchedEvaluationContextDeliveryV1(agentTurn.events, agentIsolation.expectedContextDelivery);
+      contextDelivery = assertMatchedEvaluationContextDeliveryV1(
+        agentTurn.events,
+        agentIsolation.expectedContextDelivery,
+      );
     } catch (cause) {
       contextDeliveryFailure = cause instanceof Error ? cause : new Error('Context delivery validation failed.');
     }
@@ -371,6 +402,8 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     // Keep spent tokens, elapsed work, and the actual failed response even when
     // treatment delivery fails closed before the verifier, judge, or outcome ledger.
     const agentTranscript = {
+      actionPreflight,
+      contextDelivery,
       events: agentTurn.events,
       kind: 'agent',
       stderr: agentTurn.stderr,
@@ -424,6 +457,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       taskPrompt: request.agentTask.prompt,
       contextMode: null,
       expectedResume: null,
+      maximumFollowupCalls: 0,
       useJudgeModel: true,
       runNonce: request.runNonce,
       tool: request.tool,
@@ -538,6 +572,220 @@ export async function runMatchedEvaluationCodexAdapter(input: {
   if (cleanupFailures.length > 0) throw new AggregateError(cleanupFailures, 'Adapter cleanup failed.');
 }
 
+export async function runMatchedEvaluationActionPreflightV1(input: {
+  readonly repositoryRoot: string;
+  readonly runNonce: string;
+  readonly safeExecutablePath: string;
+  readonly sourcePath: string;
+}): Promise<MatchedEvaluationActionPreflightReceiptV1> {
+  const repositoryRoot = await realpath(input.repositoryRoot);
+  const sourcePath = containedPath(repositoryRoot, input.sourcePath);
+  const sourceMetadata = await lstat(sourcePath);
+  if (!sourceMetadata.isFile() || sourceMetadata.isSymbolicLink()) {
+    throw new Error('Matched evaluation action preflight source must be one regular repository file.');
+  }
+  const scope = {repositoryRoot, threadId: 'preflight-thread', turnId: 'preflight-turn'} as const;
+  const approvals = [
+    preflightCommandApproval(scope, 'pwd', {command: 'pwd', type: 'unknown'}, 'pwd'),
+    preflightCommandApproval(scope, 'ls -- .', {command: 'ls -- .', path: repositoryRoot, type: 'listFiles'}, 'ls'),
+    preflightCommandApproval(
+      scope,
+      `rg -n -F threadnote-evaluation-preflight ${shellWord(input.sourcePath)}`,
+      {
+        command: `rg -n -F threadnote-evaluation-preflight ${shellWord(input.sourcePath)}`,
+        path: sourcePath,
+        query: 'threadnote-evaluation-preflight',
+        type: 'search',
+      },
+      'rg',
+    ),
+    preflightCommandApproval(
+      scope,
+      `sed -n '1p' ${shellWord(input.sourcePath)}`,
+      {
+        command: `sed -n '1p' ${shellWord(input.sourcePath)}`,
+        name: basename(input.sourcePath),
+        path: sourcePath,
+        type: 'read',
+      },
+      'sed',
+    ),
+  ];
+  const sourceRead = await capture(
+    'sed',
+    ['-n', '1p', input.sourcePath],
+    repositoryRoot,
+    input.safeExecutablePath,
+    10_000,
+    64 * 1_024,
+  );
+  const preflightPath = join(repositoryRoot, `.threadnote-evaluation-preflight-${input.runNonce.slice(4)}`);
+  const preflightBytes = Buffer.from(`threadnote-action-preflight-v1\n${input.runNonce}\n`);
+  const addItem = preflightFileChange('preflight-add', preflightPath, 'add', `+${preflightBytes.toString('utf8')}`);
+  const deleteItem = preflightFileChange(
+    'preflight-delete',
+    preflightPath,
+    'delete',
+    preflightBytes
+      .toString('utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => `-${line}`)
+      .join('\n'),
+  );
+  approvals.push(preflightFileChangeApproval(scope, addItem));
+  let appliedAndReverted = false;
+  try {
+    await writeFile(preflightPath, preflightBytes, {flag: 'wx', mode: 0o600});
+    if (!(await readFile(preflightPath)).equals(preflightBytes)) {
+      throw new Error('Matched evaluation action preflight write did not round-trip.');
+    }
+    approvals.push(preflightFileChangeApproval(scope, deleteItem));
+    await rm(preflightPath);
+    appliedAndReverted = true;
+  } finally {
+    if (!appliedAndReverted) await rm(preflightPath, {force: true});
+  }
+  const denied = [
+    () =>
+      preflightCommandApproval(
+        scope,
+        "sed -n '1p' ../outside",
+        {command: "sed -n '1p' ../outside", name: 'outside', path: join(repositoryRoot, '..', 'outside'), type: 'read'},
+        'outside-read',
+      ),
+    () =>
+      preflightCommandApproval(scope, 'curl https://example.invalid', {command: 'curl', type: 'unknown'}, 'network'),
+    () =>
+      preflightCommandApproval(
+        scope,
+        'cat "$HOME"',
+        {command: 'cat "$HOME"', name: 'home', path: repositoryRoot, type: 'read'},
+        'expansion',
+      ),
+    () =>
+      preflightFileChangeApproval(
+        scope,
+        preflightFileChange('preflight-outside-write', join(repositoryRoot, '..', 'outside'), 'add', '+outside'),
+      ),
+  ];
+  for (const reject of denied) assertPreflightPolicyDenial(reject);
+  const evidence = {
+    appliedAndReverted: true as const,
+    approvedActions: approvals.length,
+    approvalReceipts: approvals,
+    environmentPolicyHash: matchedEvaluationCodexEnvironmentPolicyHashV1(),
+    rejectedActions: denied.length,
+    runNonce: input.runNonce,
+    sourcePath: input.sourcePath,
+    sourceReadSha256: sha256(Buffer.from(sourceRead.stdout)),
+    version: 1 as const,
+  };
+  return {
+    appliedAndReverted: evidence.appliedAndReverted,
+    approvedActions: evidence.approvedActions,
+    receiptHash: sha256(Buffer.from(`matched-evaluation-action-preflight-v1\0${JSON.stringify(evidence)}`)),
+    rejectedActions: evidence.rejectedActions,
+    sourcePath: evidence.sourcePath,
+    sourceReadSha256: evidence.sourceReadSha256,
+    version: evidence.version,
+  };
+}
+
+async function selectMatchedEvaluationPreflightSourceV1(
+  config: MatchedEvaluationCodexAdapterConfigV1,
+  repositoryRoot: string,
+): Promise<string> {
+  const listed = await runGit(config, repositoryRoot, ['ls-files', '-z', '--', '.']);
+  for (const path of listed.stdout.split('\0').filter(Boolean)) {
+    try {
+      const metadata = await lstat(containedPath(repositoryRoot, path));
+      if (metadata.isFile() && !metadata.isSymbolicLink()) return path;
+    } catch {
+      // Continue until the first tracked regular file.
+    }
+  }
+  throw new Error('Matched evaluation repository has no tracked regular file for the action preflight.');
+}
+
+function preflightCommandApproval(
+  scope: {readonly repositoryRoot: string; readonly threadId: string; readonly turnId: string},
+  innerCommand: string,
+  commandAction: Record<string, unknown>,
+  id: string,
+) {
+  const command = `/bin/zsh -c ${shellWord(innerCommand)}`;
+  const item = {
+    command,
+    commandActions: [commandAction],
+    cwd: scope.repositoryRoot,
+    id: `preflight-${id}`,
+    source: 'agent',
+    status: 'inProgress',
+    type: 'commandExecution',
+  };
+  return approveCodeMemoryLinkAppServerRequest({
+    method: 'item/commandExecution/requestApproval',
+    params: {
+      additionalPermissions: null,
+      approvalId: null,
+      availableDecisions: ['accept', 'decline', 'cancel'],
+      command,
+      commandActions: item.commandActions,
+      cwd: scope.repositoryRoot,
+      environmentId: 'local',
+      itemId: item.id,
+      networkApprovalContext: null,
+      proposedExecpolicyAmendment: null,
+      proposedNetworkPolicyAmendments: null,
+      reason: null,
+      startedAtMs: 1,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+    },
+    scope,
+    startedItem: item,
+  });
+}
+
+function preflightFileChange(id: string, path: string, type: 'add' | 'delete', diff: string) {
+  return {
+    changes: [{diff, kind: {type}, path}],
+    id,
+    status: 'inProgress',
+    type: 'fileChange',
+  };
+}
+
+function preflightFileChangeApproval(
+  scope: {readonly repositoryRoot: string; readonly threadId: string; readonly turnId: string},
+  item: ReturnType<typeof preflightFileChange>,
+) {
+  return approveCodeMemoryLinkAppServerRequest({
+    method: 'item/fileChange/requestApproval',
+    params: {
+      grantRoot: null,
+      itemId: item.id,
+      reason: null,
+      startedAtMs: 1,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+    },
+    scope,
+    startedItem: item,
+  });
+}
+
+function assertPreflightPolicyDenial(action: () => unknown): void {
+  try {
+    action();
+  } catch (cause) {
+    if (Schema.is(CodeMemoryLinkActionDeniedError)(cause)) return;
+    throw cause;
+  }
+  throw new Error('Matched evaluation action preflight admitted an unsafe action.');
+}
+
 export function parseMatchedEvaluationCodexAdapterConfigV1(
   value: MatchedEvaluationCodexAdapterConfigV1 | unknown,
 ): MatchedEvaluationCodexAdapterConfigV1 {
@@ -637,7 +885,7 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
 export function matchedEvaluationCodexEnvironmentPolicyHashV1(): string {
   return sha256(
     Buffer.from(
-      `matched-evaluation-codex-environment-policy-v2\n${JSON.stringify(MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1)}`,
+      `matched-evaluation-codex-environment-policy-v3\n${JSON.stringify(MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1)}`,
     ),
   );
 }
@@ -1234,6 +1482,7 @@ async function createCodexIsolation(input: {
   readonly context: ParsedContext | null;
   readonly contextMode: 'brief' | 'resume' | null;
   readonly expectedResume: MatchedEvaluationContextProxyPacketV1['expectedResume'];
+  readonly maximumFollowupCalls: number;
   readonly prepared: {
     readonly home: string;
     readonly identity: MatchedEvaluationPreparedContextHomeV1['identity'];
@@ -1288,6 +1537,7 @@ async function createCodexIsolation(input: {
       mode: input.contextMode ?? 'brief',
       expectedContext: input.context,
       expectedResume: input.expectedResume,
+      maximumFollowupCalls: input.maximumFollowupCalls,
       project: input.prepared.project,
       prompt: input.taskPrompt,
       repositoryRoot: input.repositoryRoot,
@@ -1306,6 +1556,7 @@ async function createCodexIsolation(input: {
       detail: packet.detail,
       mode: packet.mode,
       frozenPromptSha256: hashMatchedEvaluationContextContent(input.taskPrompt),
+      maximumFollowupCalls: packet.maximumFollowupCalls,
       runNonce: input.runNonce,
       runtimeManifestSha256: packet.runtimeManifestSha256,
       expectedResumeHash: hashExpectedResume(packet.expectedResume),
@@ -1403,7 +1654,7 @@ async function runAppServerTurn(input: {
         model: input.model.id,
         modelProvider: input.model.provider,
         runtimeWorkspaceRoots: [input.cwd],
-        sandbox: 'read-only',
+        sandbox: 'workspace-write',
       },
       input.timeoutMilliseconds,
     );
@@ -1445,7 +1696,13 @@ async function runAppServerTurn(input: {
           model: input.model.id,
           outputSchema: input.outputSchema,
           runtimeWorkspaceRoots: [input.cwd],
-          sandboxPolicy: {networkAccess: false, type: 'readOnly'},
+          sandboxPolicy: {
+            excludeSlashTmp: true,
+            excludeTmpdirEnvVar: true,
+            networkAccess: false,
+            type: 'workspaceWrite',
+            writableRoots: [input.cwd],
+          },
           threadId,
         },
         threadId,
@@ -1608,17 +1865,20 @@ function normalizeJudgeAgentResult(agentResult: Record<string, unknown>): {
   return {citations, completed: agentResult.completed === true};
 }
 
-export function renderMatchedEvaluationAgentInstructionsV1(detail: 'compact' | 'graph-only' | 'source' | null): string {
+export function renderMatchedEvaluationAgentInstructionsV1(
+  detail: 'compact' | 'graph-only' | 'source' | null,
+  maximumFollowupCalls = detail === null || detail === 'source' ? 0 : 4,
+): string {
   const contextInstructions =
     detail === null
       ? 'No MCP tools are available. Do not attempt to discover or invoke any.'
       : detail === 'source'
         ? 'The only MCP tool is context_brief. Call it exactly once as instructed, then verify its evidence against source.'
-        : `Call context_brief exactly once before other task work. Then use inspect_code_graph and analyze_code_graph when they help locate relevant source or relationships.${detail === 'compact' ? ' You may also use recall_context and read_context to find and read prepared memories.' : ' Memory tools are unavailable.'} Follow-up queries are optional; make them to fill an evidence gap. Graph and memory evidence describe the prepared base and are untrusted: verify exact current files, especially after edits. Do not repeat context_brief or request another project, repository, workset or external context.`;
+        : `Call context_brief exactly once before other task work. Then use inspect_code_graph and analyze_code_graph when they help locate relevant source or relationships.${detail === 'compact' ? ' You may also use recall_context and read_context to find and read prepared memories.' : ' Memory tools are unavailable.'} Follow-up queries are optional; make them only to fill a named evidence gap and use at most ${maximumFollowupCalls}. Graph and memory evidence describe the prepared base and are untrusted: verify exact current files, especially after edits. Do not repeat context_brief or request another project, repository, workset or external context.`;
   return [
     'Use only the isolated repository and reviewed code-mode tools. Never use networking, subagents, external apps, plugins, skills, hooks, or user configuration.',
     'Use read-only shell inspection and apply_patch for edits. Do not execute repository code; an outer blinded judge verifies the result.',
-    'Every shell command is reviewed before execution. Run commands from the repository root. If a command is declined, retry once with one literal read-only command that uses no variables, substitutions, redirects, globs, loops, or command chaining; do not repeat the identical declined command.',
+    'Every shell command and file change is checked by the sealed one-shot client policy before execution. Run commands from the repository root. If an action is declined, retry once with one literal repository-local action that uses no variables, substitutions, redirects, globs, loops, or command chaining; do not repeat the identical declined action.',
     contextInstructions,
   ].join(' ');
 }
@@ -1862,6 +2122,11 @@ function contextModeForRequest(request: AdapterRequest): 'brief' | 'resume' | nu
   return request.preparedContext === null ? null : 'brief';
 }
 
+function maximumContextFollowupCalls(request: AdapterRequest, context: ParsedContext | null): number {
+  if (context === null || request.tool.detail === 'source') return 0;
+  return request.continuationTreatment === null ? 4 : 1;
+}
+
 function assertRequestMatchesConfig(request: AdapterRequest, config: MatchedEvaluationCodexAdapterConfigV1): void {
   if (config.arm !== request.arm) throw new Error('Adapter arm differs from the runtime request.');
   if (config.environmentPolicyHash !== request.environmentPolicyHash) {
@@ -2057,6 +2322,7 @@ function parseJudgeResult(value: unknown, allowedEvidenceIds: readonly string[])
 
 export interface MatchedEvaluationExpectedContextDeliveryV1 extends ParsedContext {
   readonly frozenPromptSha256: string;
+  readonly maximumFollowupCalls: number;
   readonly mode: 'brief' | 'resume';
   readonly runNonce: string;
   readonly runtimeManifestSha256: string;
@@ -2064,11 +2330,18 @@ export interface MatchedEvaluationExpectedContextDeliveryV1 extends ParsedContex
   readonly expectedResumeHash: string | null;
 }
 
+export interface MatchedEvaluationContextDeliveryDiagnosticsV1 {
+  readonly incompleteOptionalFailures: number;
+  readonly optionalFailures: number;
+  readonly version: 1;
+}
+
 /** Treatment assignment is not proof that a successful response reached the agent. */
 export function assertMatchedEvaluationContextDeliveryV1(
   events: readonly Record<string, unknown>[],
   expected: MatchedEvaluationExpectedContextDeliveryV1 | null,
-): void {
+): MatchedEvaluationContextDeliveryDiagnosticsV1 {
+  const diagnostics = {incompleteOptionalFailures: 0, optionalFailures: 0, version: 1 as const};
   const calls = events.flatMap(event => {
     if (event.method !== 'item/completed') return [];
     const item = object(object(event.params, 'completed item params').item, 'completed item');
@@ -2076,7 +2349,7 @@ export function assertMatchedEvaluationContextDeliveryV1(
   });
   if (expected === null) {
     if (calls.length !== 0) throw new Error('Files-only arm received an unexpected MCP context call.');
-    return;
+    return diagnostics;
   }
   const ids = new Set<string>();
   let briefCount = 0;
@@ -2096,16 +2369,26 @@ export function assertMatchedEvaluationContextDeliveryV1(
       throw new Error('Context delivery repeated context_brief.');
     }
     if (tool === 'context_brief') briefCount += 1;
-    const result = object(call.result, 'context delivery result');
-    const isError = result.isError === true;
-    if (call.error !== null && call.error !== undefined) {
-      throw new Error('Context delivery MCP item reported an error.');
-    }
     const status = call.status;
-    if (tool === 'context_brief' && briefCount === 1 && (status !== 'completed' || isError)) {
+    if (status !== 'completed' && status !== 'failed') throw new Error('Context delivery has an invalid MCP status.');
+    if (tool === 'context_brief' && briefCount === 1 && status !== 'completed') {
       throw new Error('Context delivery failed: context_brief did not complete successfully.');
     }
-    if (status !== 'completed' && status !== 'failed') throw new Error('Context delivery has an invalid MCP status.');
+    if (status === 'failed' && tool !== 'context_brief') {
+      diagnostics.optionalFailures += 1;
+      if (call.result === null || call.result === undefined) {
+        diagnostics.incompleteOptionalFailures += 1;
+        continue;
+      }
+    }
+    const result = object(call.result, 'context delivery result');
+    const isError = result.isError === true;
+    if (status === 'completed' && call.error !== null && call.error !== undefined) {
+      throw new Error('Context delivery MCP item reported an error.');
+    }
+    if (tool === 'context_brief' && briefCount === 1 && isError) {
+      throw new Error('Context delivery failed: context_brief did not complete successfully.');
+    }
     if (status === 'failed' && !isError) throw new Error('Failed MCP context call lacks an error result.');
     if (result.structuredContent !== null && result.structuredContent !== undefined) {
       throw new Error('Context delivery contains a duplicated structured body.');
@@ -2148,12 +2431,16 @@ export function assertMatchedEvaluationContextDeliveryV1(
     }
   }
   if (briefCount !== 1) throw new Error('Context delivery requires exactly one initial context_brief call.');
+  if (calls.length - 1 > expected.maximumFollowupCalls) {
+    throw new Error('Context delivery exceeded the sealed follow-up call budget.');
+  }
   if (
     expected.detail === 'graph-only' &&
     calls.some(call => call.tool === 'recall_context' || call.tool === 'read_context')
   ) {
     throw new Error('Graph-only context delivery unexpectedly used memory tools.');
   }
+  return diagnostics;
 }
 
 function parseMcpArguments(value: unknown): unknown {
@@ -2252,8 +2539,8 @@ function assertEffectiveThread(response: Record<string, unknown>, input: Paramet
     throw new Error('Codex did not honor the pinned model, provider, effort, cwd, or instruction isolation.');
   }
   const sandbox = object(response.sandbox, 'thread sandbox');
-  if (sandbox.type !== 'readOnly' || sandbox.networkAccess !== false) {
-    throw new Error('Codex did not enforce the no-network read-only sandbox.');
+  if (sandbox.type !== 'workspaceWrite' || sandbox.networkAccess !== false) {
+    throw new Error('Codex did not enforce the no-network workspace-write sandbox.');
   }
 }
 
@@ -2327,7 +2614,7 @@ function buildCodexConfig(input: {
     `model_reasoning_effort = ${toml(input.model.reasoningEffort)}`,
     'approval_policy = "untrusted"',
     'approvals_reviewer = "user"',
-    'sandbox_mode = "read-only"',
+    'sandbox_mode = "workspace-write"',
     'allow_login_shell = false',
     'file_opener = "none"',
     'hide_agent_reasoning = true',
@@ -2641,6 +2928,10 @@ function sha256(value: Uint8Array): string {
 
 function localEnvironment(cwd: string) {
   return {cwd, environmentId: 'local' as const, runtimeWorkspaceRoots: [cwd] as const};
+}
+
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function toml(value: string): string {

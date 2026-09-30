@@ -13,9 +13,64 @@ if (process.argv[2] !== 'app-server') {
 
 const lines = createInterface({input: process.stdin});
 let turnIndex = 0;
+let pendingApproval:
+  | {
+      readonly final: Record<string, unknown>;
+      readonly fileItem: Record<string, unknown>;
+      readonly requestId: number;
+      readonly stage: 'command' | 'file';
+      readonly threadId: string;
+      readonly turnId: string;
+    }
+  | undefined;
 
 lines.on('line', line => {
   const request = JSON.parse(line) as {id?: number; method?: string; params?: Record<string, unknown>};
+  if (pendingApproval && request.id === pendingApproval.requestId && request.method === undefined) {
+    const decision = (request as {result?: {decision?: string}}).result?.decision;
+    if (decision !== 'accept') {
+      respondError(request.id, -32_000, 'fake approval was not accepted');
+      return;
+    }
+    if (pendingApproval.stage === 'command') {
+      const commandItem = approvalCommandItem(pendingApproval.threadId, pendingApproval.turnId).item;
+      notify('item/completed', {
+        item: {
+          ...commandItem,
+          aggregatedOutput: 'export const value = 1;\n',
+          durationMs: 1,
+          exitCode: 0,
+          status: 'completed',
+        },
+        threadId: pendingApproval.threadId,
+        turnId: pendingApproval.turnId,
+      });
+      notify('item/started', {
+        item: pendingApproval.fileItem,
+        threadId: pendingApproval.threadId,
+        turnId: pendingApproval.turnId,
+      });
+      const requestId = pendingApproval.requestId + 1;
+      sendRequest(requestId, 'item/fileChange/requestApproval', {
+        grantRoot: null,
+        itemId: pendingApproval.fileItem.id,
+        reason: null,
+        startedAtMs: 2,
+        threadId: pendingApproval.threadId,
+        turnId: pendingApproval.turnId,
+      });
+      pendingApproval = {...pendingApproval, requestId, stage: 'file'};
+      return;
+    }
+    notify('item/completed', {
+      item: {...pendingApproval.fileItem, status: 'completed'},
+      threadId: pendingApproval.threadId,
+      turnId: pendingApproval.turnId,
+    });
+    finishTurn(pendingApproval.threadId, pendingApproval.turnId, pendingApproval.final);
+    pendingApproval = undefined;
+    return;
+  }
   if (request.method === 'initialized') return;
   if (request.method === 'initialize') {
     respond(request.id, {serverInfo: {name: 'fake-matched-evaluation-app-server', version: 'test-v1'}});
@@ -98,6 +153,26 @@ lines.on('line', line => {
       tokenUsage: {last: usage, modelContextWindow: 200_000, total: usage},
       turnId,
     });
+    if (!judge && process.argv.includes('--exercise-approvals')) {
+      const approval = approvalCommandItem(threadId, turnId);
+      const fileItem = {
+        changes: [
+          {
+            diff: '@@ -1 +1 @@\n-export const value = 1;\n+export const value = 2;\n',
+            kind: {move_path: null, type: 'update'},
+            path: `${String(params.cwd)}/service.ts`,
+          },
+        ],
+        id: `file_matched_${turnIndex}`,
+        status: 'inProgress',
+        type: 'fileChange',
+      };
+      notify('item/started', {item: approval.item, threadId, turnId});
+      const requestId = 10_000 + turnIndex * 2;
+      sendRequest(requestId, 'item/commandExecution/requestApproval', approval.params);
+      pendingApproval = {fileItem, final, requestId, stage: 'command', threadId, turnId};
+      return;
+    }
     if (!judge && process.argv.includes('--failed-context')) {
       const failed = {
         id: 'context_failed',
@@ -114,22 +189,70 @@ lines.on('line', line => {
       notify('item/started', {item: {...failed, status: 'inProgress', result: null}, threadId, turnId});
       notify('item/completed', {item: failed, threadId, turnId});
     }
-    const item = {
-      id: `item_matched_${turnIndex}`,
-      phase: 'final_answer',
-      text: JSON.stringify(final),
-      type: 'agentMessage',
-    };
-    notify('item/started', {item, threadId, turnId});
-    notify('item/completed', {item, threadId, turnId});
-    notify('turn/completed', {threadId, turn: {error: null, id: turnId, items: [], status: 'completed'}});
+    finishTurn(threadId, turnId, final);
     return;
   }
   respondError(request.id, -32_601, 'unsupported fake request');
 });
 
+function approvalCommandItem(threadId: string, turnId: string) {
+  const command = `/bin/zsh -c "sed -n '1p' service.ts"`;
+  const commandActions = [
+    {command: "sed -n '1p' service.ts", name: 'service.ts', path: `${process.cwd()}/service.ts`, type: 'read'},
+  ];
+  const item = {
+    aggregatedOutput: null,
+    command,
+    commandActions,
+    cwd: process.cwd(),
+    durationMs: null,
+    exitCode: null,
+    id: `command_matched_${turnIndex}`,
+    processId: null,
+    source: 'agent',
+    status: 'inProgress',
+    type: 'commandExecution',
+  };
+  return {
+    item,
+    params: {
+      additionalPermissions: null,
+      approvalId: null,
+      availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
+      command,
+      commandActions,
+      cwd: process.cwd(),
+      environmentId: 'local',
+      itemId: item.id,
+      networkApprovalContext: null,
+      proposedExecpolicyAmendment: ['/bin/zsh'],
+      proposedNetworkPolicyAmendments: null,
+      reason: null,
+      startedAtMs: 1,
+      threadId,
+      turnId,
+    },
+  };
+}
+
+function finishTurn(threadId: string, turnId: string, final: Record<string, unknown>): void {
+  const item = {
+    id: `item_matched_${turnIndex}`,
+    phase: 'final_answer',
+    text: JSON.stringify(final),
+    type: 'agentMessage',
+  };
+  notify('item/started', {item, threadId, turnId});
+  notify('item/completed', {item, threadId, turnId});
+  notify('turn/completed', {threadId, turn: {error: null, id: turnId, items: [], status: 'completed'}});
+}
+
 function notify(method: string, params: unknown): void {
   process.stdout.write(`${JSON.stringify({method, params})}\n`);
+}
+
+function sendRequest(id: number, method: string, params: unknown): void {
+  process.stdout.write(`${JSON.stringify({id, method, params})}\n`);
 }
 
 function respond(id: number | undefined, result: unknown): void {

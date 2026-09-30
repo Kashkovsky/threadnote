@@ -19,6 +19,22 @@ describe('Code Memory Link pre-execution app-server policy', () => {
     expect(
       approveCodeMemoryLinkAppServerRequest({
         method: 'item/commandExecution/requestApproval',
+        params: {...params, additionalPermissions: null},
+        scope: SCOPE,
+        startedItem: item,
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
+    expect(() =>
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: {...params, additionalPermissions: {fileSystem: null, network: {enabled: true}}},
+        scope: SCOPE,
+        startedItem: item,
+      }),
+    ).toThrow('additional permissions');
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
         params: {...params, proposedExecpolicyAmendment: Array.from({length: 64}, () => 'pwd')},
         scope: SCOPE,
         startedItem: item,
@@ -293,6 +309,49 @@ describe('Code Memory Link pre-execution app-server policy', () => {
         params: {...params, grantRoot: null},
         scope: SCOPE,
         startedItem: {...item, changes: [{...item.changes[0], path: '/private/rubric.json'}]},
+      }),
+    ).toThrow('outside the public task repository');
+  });
+
+  it('accepts the current app-server file-change shape only for contained bounded changes', () => {
+    const item = {
+      changes: [
+        {
+          diff: '@@ -1 +1 @@\n-old\n+new\n',
+          kind: {move_path: null, type: 'update'},
+          path: `${ROOT}/src/service.ts`,
+        },
+      ],
+      id: 'item_current_change',
+      status: 'inProgress',
+      type: 'fileChange',
+    };
+    const params = {
+      grantRoot: null,
+      itemId: item.id,
+      reason: null,
+      startedAtMs: 1,
+      threadId: SCOPE.threadId,
+      turnId: SCOPE.turnId,
+    };
+
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/fileChange/requestApproval',
+        params,
+        scope: SCOPE,
+        startedItem: item,
+      }),
+    ).toMatchObject({itemType: 'fileChange'});
+    expect(() =>
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/fileChange/requestApproval',
+        params,
+        scope: SCOPE,
+        startedItem: {
+          ...item,
+          changes: [{...item.changes[0], kind: {move_path: '/private/escape', type: 'update'}}],
+        },
       }),
     ).toThrow('outside the public task repository');
   });

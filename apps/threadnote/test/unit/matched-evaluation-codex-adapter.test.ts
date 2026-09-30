@@ -29,6 +29,7 @@ import {
   renderMatchedEvaluationJudgePromptV1,
   renderMatchedEvaluationCommandReviewRulesV1,
   renderMatchedEvaluationAgentInstructionsV1,
+  runMatchedEvaluationActionPreflightV1,
   runMatchedEvaluationCodexAdapter,
   runMatchedEvaluationDeterministicVerifierV1,
   type MatchedEvaluationExpectedContextDeliveryV1,
@@ -59,6 +60,7 @@ describe('matched evaluation Codex adapter', () => {
     }
     expect(renderMatchedEvaluationAgentInstructionsV1('compact')).toContain('recall_context and read_context');
     expect(renderMatchedEvaluationAgentInstructionsV1('graph-only')).toContain('Memory tools are unavailable');
+    expect(renderMatchedEvaluationAgentInstructionsV1('compact', 1)).toContain('use at most 1');
     expect(renderMatchedEvaluationAgentInstructionsV1('source')).toContain('only MCP tool is context_brief');
     expect(renderMatchedEvaluationAgentInstructionsV1(null)).toContain('No MCP tools are available');
   });
@@ -276,6 +278,38 @@ describe('matched evaluation Codex adapter', () => {
     expect(() => assertMatchedEvaluationContextDeliveryV1([base.event, graph.event], sourceExpected)).toThrow(
       'unexpected MCP server or tool',
     );
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1([base.event, graph.event, memory.event], {
+        ...base.expected,
+        maximumFollowupCalls: 1,
+      }),
+    ).toThrow('follow-up call budget');
+  });
+
+  it('retains an auditable optional MCP failure when app-server omits its error payload', () => {
+    const base = contextDelivery();
+    const failed = contextFollowup(base, 'inspect_code_graph', {query: 'service'}, 'failed', false);
+    const missingFailurePayload = {
+      ...failed.event,
+      params: {item: {...failed.item, error: null, result: null}},
+    };
+
+    expect(assertMatchedEvaluationContextDeliveryV1([base.event, missingFailurePayload], base.expected)).toEqual({
+      incompleteOptionalFailures: 1,
+      optionalFailures: 1,
+      version: 1,
+    });
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1(
+        [
+          {
+            ...base.event,
+            params: {item: {...base.item, error: null, result: null, status: 'failed'}},
+          },
+        ],
+        base.expected,
+      ),
+    ).toThrow('context_brief did not complete successfully');
   });
 
   it('counts declined command and edit attempts separately from executed actions', () => {
@@ -285,6 +319,33 @@ describe('matched evaluation Codex adapter', () => {
       ),
     );
     expect(countMatchedEvaluationBlockedActionsV1(events)).toBe(2);
+  });
+
+  it('preflights source reads, one-shot file changes, and unsafe-action rejection before a provider turn', async () => {
+    const root = await temporaryRoot(roots);
+    const repository = join(root, 'repository');
+    await mkdir(repository);
+    await writeFile(join(repository, 'service.ts'), 'export const value = 1;\nsecond line\n');
+
+    const receipt = await runMatchedEvaluationActionPreflightV1({
+      repositoryRoot: repository,
+      runNonce: 'run_0123456789abcdef0123456789abcdef',
+      safeExecutablePath: '/usr/bin:/bin',
+      sourcePath: 'service.ts',
+    });
+
+    expect(receipt).toMatchObject({
+      appliedAndReverted: true,
+      approvedActions: 6,
+      rejectedActions: 4,
+      sourcePath: 'service.ts',
+      version: 1,
+    });
+    expect(receipt.receiptHash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(receipt.sourceReadSha256).toBe(sha256HexSync('export const value = 1;\n'));
+    expect((await readdir(repository)).filter(name => name.startsWith('.threadnote-evaluation-preflight-'))).toEqual(
+      [],
+    );
   });
 
   it('parses a pinned files-only adapter configuration and rejects treatment context in that arm', () => {
@@ -830,7 +891,7 @@ describe('matched evaluation Codex adapter', () => {
     const config = {
       ...adapterConfig(),
       appServer: {
-        argumentsAfterSubcommand: [],
+        argumentsAfterSubcommand: ['--exercise-approvals'],
         argumentsBeforeSubcommand: [fakeAppServer],
         executable: bunExecutable,
         executableSha256: sha256HexSync(await readFile(bunExecutable)),
@@ -1057,6 +1118,7 @@ function contextDelivery(text = '{"answer":"Relevant evidence","graph":{"cards":
     detail: 'compact',
     mode: 'brief',
     frozenPromptSha256: sha256HexSync('Task with `formatting` and trailing space. '),
+    maximumFollowupCalls: 4,
     runNonce: 'run_0123456789abcdef0123456789abcdef',
     runtimeManifestSha256: '6'.repeat(64),
     expectedResumeHash: null,

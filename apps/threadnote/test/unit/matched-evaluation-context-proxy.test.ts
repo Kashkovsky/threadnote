@@ -7,6 +7,7 @@ import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
+  assertMatchedEvaluationFollowupBudgetV1,
   handleMatchedEvaluationContextRequest,
   handleMatchedEvaluationFollowupRequest,
   hashMatchedEvaluationContextContent,
@@ -41,7 +42,7 @@ describe('matched evaluation context proxy', () => {
         runtimeManifestSha256: fixture.packet.runtimeManifestSha256,
         contentResponseSha256: sha256HexSync(Buffer.from(result.content[0].text)),
         frozenPromptSha256: sha256HexSync(Buffer.from(fixture.packet.prompt)),
-        version: 4,
+        version: 5,
       },
     });
   });
@@ -114,7 +115,7 @@ describe('matched evaluation context proxy', () => {
       expect('structuredContent' in result).toBe(false);
       expect(result._meta).toMatchObject({
         matchedEvaluation: {
-          version: 4,
+          version: 5,
           runNonce: fixture.packet.runNonce,
           runtimeManifestSha256: fixture.packet.runtimeManifestSha256,
           contentResponseSha256: sha256HexSync(Buffer.from(content[0].text)),
@@ -177,6 +178,15 @@ describe('matched evaluation context proxy', () => {
         mode: 'brief',
       }),
     ).rejects.toThrow('mode differs from the sealed treatment');
+  });
+
+  it('bounds continuation follow-ups with the sealed packet budget', async () => {
+    const fixture = await contextFixture(roots, 'resume prompt', 'graph-only', 'disabled', 'resume');
+    const packet = {...fixture.packet, maximumFollowupCalls: 1};
+
+    expect(() => assertMatchedEvaluationFollowupBudgetV1(packet, 1)).not.toThrow();
+    expect(() => assertMatchedEvaluationFollowupBudgetV1(packet, 2)).toThrow('sealed treatment budget');
+    expect(() => assertMatchedEvaluationFollowupBudgetV1(packet, 0)).toThrow('positive safe integer');
   });
 
   it('fails closed when sealed resume evidence is missing or incomplete', async () => {
@@ -428,6 +438,7 @@ printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
         mode === 'resume'
           ? {automaticHandoffUri: 'prepared context', resumeEvidenceMarker: 'implementation contract'}
           : null,
+      maximumFollowupCalls: mode === 'resume' ? 1 : detail === 'source' ? 0 : 4,
       project,
       prompt,
       repositoryRoot: repository,
@@ -439,7 +450,7 @@ printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
       threadnoteExecutableSha256: sha256HexSync(await readFile(executable)),
       threadnoteHome,
       threadnoteUser: 'evaluation-user',
-      version: 4,
+      version: 5,
     },
     repository,
     root,
