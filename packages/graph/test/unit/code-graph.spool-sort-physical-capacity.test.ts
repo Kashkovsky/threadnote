@@ -9,6 +9,7 @@ import {observeCodeGraphSpoolSortCapacity} from '@threadnote/graph/materializati
 import {
   CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES,
   initializeCodeGraphMaterializationSpoolSurfaces,
+  recordCodeGraphMaterializationSpoolSurfaceCapacity,
   sortCodeGraphMaterializationSpoolSurface,
 } from '@threadnote/graph/materialization/spool/surfaces';
 import {codeGraphSqliteGet} from '@threadnote/graph/sqlite_statement';
@@ -36,6 +37,7 @@ describe('code graph spool sort physical capacity', () => {
               1.0,
             );
           }
+          recordCodeGraphMaterializationSpoolSurfaceCapacity(database, 'symbol_terms', 0, 10_000);
         })();
         insert.finalize();
 

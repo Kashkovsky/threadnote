@@ -1,19 +1,22 @@
+import {Database} from 'bun:sqlite';
 import {TestSystemInfoLayer} from '../helpers/system-layer.js';
 import {fcEffectProp} from '@threadnote/testing/fast-check-property';
 import {TestError} from '@threadnote/testing/test-error';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Clock, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Option, Path, Ref} from 'effect';
+import {Clock, Crypto, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Option, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
 import {
   CodeGraphDiskCapacityObservationError,
+  codeGraphDiskCapacityReservationProjection,
   type CodeGraphDirectPersistentCapacityBoundary,
 } from '@threadnote/graph/disk/capacity';
 import {
   acquireCodeGraphDiskReservation,
+  codeGraphDiskReservationFilesystemKey,
   parseCodeGraphDiskReservationReceipt,
   releaseCodeGraphDiskReservation,
   serializeCodeGraphDiskReservationReceipt,
@@ -22,6 +25,10 @@ import {
   type CodeGraphDiskReservationObservation,
   type CodeGraphDiskReservationOptions,
 } from '@threadnote/graph/disk/reservation';
+import {codeGraphLayout} from '@threadnote/graph/layout';
+import {observeDirectPersistentCapacityForTest} from '@threadnote/graph/indexer/materialization';
+import type {DirectPersistentCapacityProtection} from '@threadnote/graph/indexer/types';
+import type {RepositoryIdentity} from '@threadnote/graph/types';
 import {SystemInfo} from '@threadnote/platform/system';
 
 const filesystemKey = 'a'.repeat(64);
@@ -83,6 +90,104 @@ interface ReservationChildEvent {
 }
 
 describe('code graph disk reservation ledger', () => {
+  effectIt.effect('observes a spool sort across durable and selected SQLite TEMP filesystems', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const crypto = yield* Crypto.Crypto;
+      const system = yield* SystemInfo;
+      const threadnoteHome = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-capacity-observation-home-'});
+      const sqliteTemporaryDirectory = yield* fs.makeTempDirectoryScoped({
+        prefix: 'threadnote-capacity-observation-sqlite-tmp-',
+      });
+      const layout = codeGraphLayout(path, threadnoteHome, 'c'.repeat(64), 'd'.repeat(64));
+      const identity: RepositoryIdentity = {
+        caseMode: 'sensitive',
+        checkoutId: layout.checkoutId,
+        displayName: 'capacity-observation-fixture',
+        gitCommonDirectory: layout.repositoryRoot,
+        headCommit: '1'.repeat(40),
+        objectFormat: 'sha1',
+        repoRoot: layout.repositoryRoot,
+        repositoryId: 'a'.repeat(64),
+        worktreeId: layout.worktreeId,
+      };
+      yield* fs.makeDirectory(layout.repositoryRoot, {recursive: true});
+      yield* Effect.sync(() => {
+        const database = new Database(layout.databasePath, {strict: true});
+        try {
+          database.exec('CREATE TABLE capacity_observation_fixture (value TEXT NOT NULL)');
+        } finally {
+          database.close(true);
+        }
+      });
+
+      const probePaths: string[] = [];
+      const topologyFs: FileSystem.FileSystem = {
+        ...fs,
+        stat: target =>
+          fs.stat(target).pipe(
+            Effect.map(info => ({
+              ...info,
+              dev: target === layout.repositoryRoot ? 101 : target === sqliteTemporaryDirectory ? 202 : info.dev,
+            })),
+          ),
+      };
+      const protection = {
+        availableDiskBytes: (target: string) =>
+          Effect.sync(() => {
+            probePaths.push(target);
+            return target === layout.repositoryRoot ? 9_000_000 : 8_000_000;
+          }),
+        crypto,
+        maintenance: {} as never,
+        path,
+        system: {
+          ...system,
+          environment: () => ({...system.environment(), SQLITE_TMPDIR: sqliteTemporaryDirectory}),
+        },
+        temporaryDirectory: threadnoteHome,
+        walAutoCheckpointPages: 16,
+      } satisfies DirectPersistentCapacityProtection;
+      const observation = yield* observeDirectPersistentCapacityForTest({
+        boundary: {
+          finalFactBytes: 1_000,
+          mainSortPayloadBytes: 1_500,
+          operation: 'sort persistent code graph materialization spool',
+          rowCount: 10,
+          transientFilesystem: 'temporary',
+        },
+        fs: topologyFs,
+        identity,
+        layout,
+        protection,
+        threadnoteHome,
+      });
+      const durableKey = codeGraphDiskReservationFilesystemKey(system.platform, 101);
+      const temporaryKey = codeGraphDiskReservationFilesystemKey(system.platform, 202);
+      expect(probePaths).toEqual(expect.arrayContaining([layout.repositoryRoot, sqliteTemporaryDirectory]));
+      expect(observation.durableFilesystemKey).toBe(durableKey);
+      expect(observation.temporaryFilesystemKey).toBe(temporaryKey);
+      expect(observation.durableFilesystemKey).not.toBe(observation.temporaryFilesystemKey);
+      expect(observation.freelistBytes).toBe(0);
+      expect(observation.demand).toMatchObject({
+        recoveryFilesystem: 'durable',
+        state: 'measured',
+        transientFilesystem: 'temporary',
+      });
+      const projection = codeGraphDiskCapacityReservationProjection({
+        demand: observation.demand,
+        durableFilesystemKey: observation.durableFilesystemKey,
+        freelistBytes: observation.freelistBytes,
+        temporaryFilesystemKey: observation.temporaryFilesystemKey,
+      });
+      expect(projection.state).toBe('measured');
+      if (projection.state === 'measured') {
+        expect(projection.filesystems.map(filesystem => filesystem.key)).toEqual([durableKey, temporaryKey]);
+      }
+    }).pipe(provideTestLayer(reservationLayer)),
+  );
+
   effectIt.effect('creates private immutable receipts and releases only exact canonical ownership', () =>
     TestClock.withLive(
       withLedgerFixture(fixture =>

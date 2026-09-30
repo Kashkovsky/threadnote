@@ -1,8 +1,8 @@
 import type {Database} from 'bun:sqlite';
 import type {CodeGraphDirectPersistentCapacityBoundary} from '../../disk/capacity.js';
 import {saturatingCapacityAdd} from '../../disk/capacity.js';
-import {codeGraphSqliteAll, codeGraphSqliteGet} from '../../sqlite_statement.js';
-import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from './surfaces.js';
+import {codeGraphSqliteAll} from '../../sqlite_statement.js';
+import {readCodeGraphMaterializationSpoolSurfaceCapacities} from './surfaces.js';
 
 export interface CodeGraphSpoolSortSurfaceLoad {
   readonly bytes: number;
@@ -27,7 +27,7 @@ export function codeGraphSpoolSortCapacityBoundary(
   };
 }
 
-/** Count the actual UTF-8 payload of the raw surfaces instead of every batch's facts. */
+/** Read the append-time counters for the raw surfaces that have not been sorted yet. */
 export function observeCodeGraphSpoolSortCapacity(database: Database): CodeGraphDirectPersistentCapacityBoundary {
   const pending = new Set(
     codeGraphSqliteAll<{readonly name: string}>(
@@ -35,27 +35,10 @@ export function observeCodeGraphSpoolSortCapacity(database: Database): CodeGraph
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'materialization_raw_%'",
     ).map(row => row.name),
   );
-  const loads = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.flatMap(surface => {
-    const table = `materialization_raw_${surface.name}`;
-    if (!pending.has(table)) return [];
-    const payload = surface.columns.map(column => `COALESCE(LENGTH(CAST(${column} AS BLOB)), 0)`).join(' + ');
-    const lexicalTermBytes = surface.name === 'symbol_terms' ? 'COALESCE(SUM(LENGTH(CAST(term AS BLOB))), 0)' : '0';
-    const row = codeGraphSqliteGet<{
-      readonly bytes: bigint | number;
-      readonly lexicalTermBytes: bigint | number;
-      readonly rows: bigint | number;
-    }>(
-      database,
-      `SELECT COALESCE(SUM(${payload}), 0) AS bytes, ${lexicalTermBytes} AS lexicalTermBytes, COUNT(*) AS rows FROM ${table}`,
-    );
-    if (row === null) throw new Error('Code graph materialization spool sort capacity is unavailable.');
-    return [
-      {
-        bytes: Number(row.bytes),
-        lexicalTermBytesUpperBound: Number(row.lexicalTermBytes),
-        rows: Number(row.rows),
-      },
-    ];
-  });
+  const loads = readCodeGraphMaterializationSpoolSurfaceCapacities(database).flatMap(surface =>
+    pending.has(`materialization_raw_${surface.name}`)
+      ? [{bytes: surface.bytes, lexicalTermBytesUpperBound: surface.lexicalTermBytes, rows: surface.rows}]
+      : [],
+  );
   return codeGraphSpoolSortCapacityBoundary(loads);
 }

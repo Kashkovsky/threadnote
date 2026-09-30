@@ -8,9 +8,10 @@ import {
   selectCodeGraphBuilderAdmissionTickets as select,
 } from '@threadnote/graph/builder/admission_scheduler';
 
+const checkoutId = fc.option(fc.constantFrom('a', 'b', 'c'), {nil: undefined});
 const candidate = fc.record({
   admissionClass: fc.constantFrom('background' as const, 'current-required' as const),
-  checkoutId: fc.constantFrom('a', 'b', 'c'),
+  checkoutId,
   createdAt: fc.integer({min: 0, max: aging * 2}),
   token: fc.uuid(),
 });
@@ -21,7 +22,7 @@ describe('checkout-aware builder scheduler properties', () => {
     fc.assert(
       fc.property(
         tickets,
-        fc.array(fc.constantFrom('a', 'b', 'c'), {maxLength: capacity}),
+        fc.array(checkoutId, {maxLength: capacity}),
         fc.integer({min: 0, max: aging * 3}),
         fc.func(fc.integer()),
         (input, active, now, priority) => {
@@ -60,14 +61,17 @@ describe('checkout-aware builder scheduler properties', () => {
 
   it('chooses checkout diversity before a second occupant, including within a single selection', () => {
     fc.assert(
-      fc.property(tickets, fc.array(fc.constantFrom('a', 'b', 'c'), {maxLength: capacity - 1}), (input, active) => {
-        const selected = select(input, active, aging * 2);
-        const occupied = new Set(active);
+      fc.property(tickets, fc.array(checkoutId, {maxLength: capacity - 1}), (input, active) => {
+        const selected = select(input, active, 0);
+        const occupied = new Set(active.filter((value): value is 'a' | 'b' | 'c' => value !== undefined));
         const remaining = [...input];
         for (const ticket of selected) {
-          if (remaining.some(value => !occupied.has(value.checkoutId)))
+          if (
+            ticket.checkoutId !== undefined &&
+            remaining.some(value => value.checkoutId !== undefined && !occupied.has(value.checkoutId))
+          )
             expect(occupied.has(ticket.checkoutId)).toBe(false);
-          occupied.add(ticket.checkoutId);
+          if (ticket.checkoutId !== undefined) occupied.add(ticket.checkoutId);
           remaining.splice(remaining.indexOf(ticket), 1);
         }
       }),
@@ -85,15 +89,25 @@ describe('checkout-aware builder scheduler properties', () => {
     expect(select([first, {...second, admissionClass: 'current-required' as const}], [], 0)).toHaveLength(1);
   });
 
-  it('never selects a background ticket for an occupied checkout', () => {
+  it('never selects speculative background work for an occupied checkout', () => {
     fc.assert(
-      fc.property(tickets, fc.array(fc.constantFrom('a', 'b', 'c'), {maxLength: capacity}), (input, active) => {
-        const occupied = new Set(active);
-        for (const ticket of select(input, active, aging * 2)) {
-          if (ticket.admissionClass === 'background') expect(occupied.has(ticket.checkoutId)).toBe(false);
-          occupied.add(ticket.checkoutId);
-        }
-      }),
+      fc.property(
+        tickets,
+        fc.array(checkoutId, {maxLength: capacity}),
+        fc.integer({min: 0, max: aging * 3}),
+        (input, active, now) => {
+          const occupied = new Set(active.filter((value): value is 'a' | 'b' | 'c' => value !== undefined));
+          for (const ticket of select(input, active, now)) {
+            if (
+              ticket.admissionClass === 'background' &&
+              ticket.checkoutId !== undefined &&
+              now - ticket.createdAt < aging
+            )
+              expect(occupied.has(ticket.checkoutId)).toBe(false);
+            if (ticket.checkoutId !== undefined) occupied.add(ticket.checkoutId);
+          }
+        },
+      ),
       {numRuns: 200},
     );
   });
@@ -136,6 +150,47 @@ describe('checkout-aware builder scheduler properties', () => {
             expect(order([...current, background], createdAt + aging - 1)[0]).not.toBe(background);
         },
       ),
+      {numRuns: 200},
+    );
+  });
+
+  it('reserves an aged background ticket against sustained same-checkout foreground arrivals', () => {
+    fc.assert(
+      fc.property(fc.integer({min: 1, max: 40}), steps => {
+        const oldest = {admissionClass: 'background' as const, checkoutId: 'a', createdAt: 0, token: 'oldest'};
+        const newer = {admissionClass: 'background' as const, checkoutId: 'a', createdAt: 1, token: 'newer'};
+        for (let step = 0; step < steps; step++) {
+          const now = Math.floor((aging * step) / steps);
+          const foreground = {
+            admissionClass: 'current-required' as const,
+            checkoutId: 'a',
+            createdAt: now,
+            token: `foreground-${step}`,
+          };
+          const selected = select([oldest, newer, foreground], ['a'], now);
+          expect(selected).toHaveLength(1);
+          expect(selected[0]).toBe(foreground);
+        }
+        const foreground = {
+          admissionClass: 'current-required' as const,
+          checkoutId: 'a',
+          createdAt: aging + 1,
+          token: 'foreground-aged',
+        };
+        expect(select([oldest, newer, foreground], ['a'], aging + 1)).toEqual([]);
+        expect(select([oldest, newer, foreground], [], aging + 1)).toEqual([oldest]);
+      }),
+      {numRuns: 200},
+    );
+  });
+
+  it('counts legacy checkout identities toward capacity without treating them as shared ownership', () => {
+    fc.assert(
+      fc.property(fc.integer({min: 0, max: aging * 2}), fc.uuid(), (createdAt, token) => {
+        const legacy = {admissionClass: 'background' as const, checkoutId: undefined, createdAt, token};
+        expect(select([legacy], [undefined, undefined], aging * 2)).toEqual([]);
+        expect(select([legacy], [undefined], createdAt)).toEqual([legacy]);
+      }),
       {numRuns: 200},
     );
   });

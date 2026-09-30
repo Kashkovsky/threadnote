@@ -4826,7 +4826,7 @@ describe('native code graph lifecycle', () => {
       }
       expect(
         readdirSync(join(home, 'indexes', 'code-graph', 'repositories', baseline.identity.checkoutId)).filter(
-          candidate => candidate.startsWith('materialization-spool-v1-'),
+          candidate => candidate.startsWith('materialization-spool-v2-'),
         ),
       ).toEqual([]);
     }).pipe(provideTestLayer(ApplicationLayer)),
@@ -6454,7 +6454,7 @@ function codeGraphMaterializationSpoolPath(
     'code-graph',
     'repositories',
     indexed.identity.checkoutId,
-    `materialization-spool-v1-${snapshotId}.sqlite`,
+    `materialization-spool-v2-${snapshotId}.sqlite`,
   );
 }
 

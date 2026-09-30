@@ -129,8 +129,8 @@ describe('bounded code graph maintenance', () => {
       const leasedSnapshot = repairBuildingSnapshot(leasedIdentity, '2');
       const orphanSnapshotId = `cgsn_${'3'.repeat(40)}-direct`;
       const spoolPath = (snapshotId: string) =>
-        path.join(repositoryRoot, `materialization-spool-v1-${snapshotId}.sqlite`);
-      const ignoredPath = path.join(repositoryRoot, `materialization-spool-v2-${orphanSnapshotId}.sqlite`);
+        path.join(repositoryRoot, `materialization-spool-v2-${snapshotId}.sqlite`);
+      const ignoredPath = path.join(repositoryRoot, `materialization-spool-v3-${orphanSnapshotId}.sqlite`);
       const vectorTemporaryPath = path.join(repositoryRoot, 'vectors', 'model', 'scratch.tmp');
       const store = yield* CodeGraphStore;
       yield* store.initialize(databasePath);
@@ -555,6 +555,7 @@ describe('bounded code graph maintenance', () => {
         .map(value => value.join(''));
     fc.assert(
       fc.property(
+        fc.constantFrom(1, 2),
         hexadecimal(40),
         fc.oneof(
           fc.constant(''),
@@ -562,13 +563,15 @@ describe('bounded code graph maintenance', () => {
           hexadecimal(16).map(value => `-full-${value}`),
         ),
         fc.constantFrom('', '-journal', '-shm', '-wal'),
-        (digest, mode, companion) => {
+        (version, digest, mode, companion) => {
           const snapshotId = `cgsn_${digest}${mode}`;
-          const fileName = `materialization-spool-v1-${snapshotId}.sqlite${companion}`;
+          const fileName = `materialization-spool-v${version}-${snapshotId}.sqlite${companion}`;
           expect(codeGraphTemporaryMaterializationSpoolSnapshotId(fileName)).toBe(snapshotId);
           expect(codeGraphTemporaryMaterializationSpoolSnapshotId(`prefix-${fileName}`)).toBeUndefined();
           expect(codeGraphTemporaryMaterializationSpoolSnapshotId(`${fileName}.extra`)).toBeUndefined();
-          expect(codeGraphTemporaryMaterializationSpoolSnapshotId(fileName.replace('-v1-', '-v2-'))).toBeUndefined();
+          expect(
+            codeGraphTemporaryMaterializationSpoolSnapshotId(fileName.replace(`-v${version}-`, '-v3-')),
+          ).toBeUndefined();
         },
       ),
       {numRuns: 100},

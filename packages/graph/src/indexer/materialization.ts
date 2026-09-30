@@ -1024,6 +1024,9 @@ const observeDirectPersistentCapacity = Effect.fn('codeGraph.observeDirectPersis
   };
 });
 
+/** @internal Narrow observation seam for capacity-topology integration coverage. */
+export const observeDirectPersistentCapacityForTest = observeDirectPersistentCapacity;
+
 export function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }

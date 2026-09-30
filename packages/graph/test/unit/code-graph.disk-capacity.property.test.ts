@@ -239,12 +239,12 @@ describe('code graph disk capacity properties', () => {
     it,
     'keeps spool sort demand monotone in pending surface bytes and rows',
     {
-      bytes: fc.integer({min: 0, max: 2 ** 40}),
-      extraBytes: fc.integer({min: 0, max: 2 ** 40}),
-      extraRows: fc.integer({min: 0, max: 100_000_000}),
-      extraTermBytes: fc.integer({min: 0, max: 2 ** 40}),
-      rows: fc.integer({min: 0, max: 100_000_000}),
-      termBytes: fc.integer({min: 0, max: 2 ** 40}),
+      bytes: capacityMagnitude,
+      extraBytes: capacityMagnitude,
+      extraRows: capacityMagnitude,
+      extraTermBytes: capacityMagnitude,
+      rows: capacityMagnitude,
+      termBytes: capacityMagnitude,
     },
     ({bytes, extraBytes, extraRows, extraTermBytes, rows, termBytes}) => {
       const demandFor = (finalFactBytes: number, mainSortPayloadBytes: number, rowCount: number) =>
@@ -259,15 +259,21 @@ describe('code graph disk capacity properties', () => {
           pageSize: 8192,
           walAutoCheckpointPages: 1_000,
         });
-      const base = demandFor(bytes, bytes + termBytes, rows);
+      const increasedBytes = saturatingCapacityAdd(bytes, extraBytes);
+      const base = demandFor(bytes, saturatingCapacityAdd(bytes, termBytes), rows);
       const increased = demandFor(
-        bytes + extraBytes,
-        bytes + extraBytes + termBytes + extraTermBytes,
-        rows + extraRows,
+        increasedBytes,
+        saturatingCapacityAdd(increasedBytes, termBytes, extraTermBytes),
+        saturatingCapacityAdd(rows, extraRows),
       );
       expect(base.state).toBe('measured');
       expect(increased.state).toBe('measured');
       if (base.state !== 'measured' || increased.state !== 'measured') return;
+      for (const demand of [base, increased]) {
+        expect(Number.isSafeInteger(demand.mainHighWaterBytes)).toBe(true);
+        expect(Number.isSafeInteger(demand.transientHighWaterBytes)).toBe(true);
+        expect(Number.isSafeInteger(demand.recoveryFloorBytes)).toBe(true);
+      }
       expect(increased.mainHighWaterBytes).toBeGreaterThanOrEqual(base.mainHighWaterBytes);
       expect(increased.transientHighWaterBytes).toBeGreaterThanOrEqual(base.transientHighWaterBytes);
       expect(increased.recoveryFloorBytes).toBeGreaterThanOrEqual(base.recoveryFloorBytes);

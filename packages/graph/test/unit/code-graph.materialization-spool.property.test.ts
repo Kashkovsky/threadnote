@@ -22,6 +22,7 @@ import {
   codeGraphSpoolSortCapacityBoundary,
   observeCodeGraphSpoolSortCapacity,
 } from '@threadnote/graph/materialization/spool/capacity';
+import {appendCodeGraphMaterializationSpoolFactBatch} from '@threadnote/graph/materialization/spool/writer';
 import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from '@threadnote/graph/sqlite_statement';
 import type {CodeGraphLayout} from '@threadnote/graph/layout';
 
@@ -55,26 +56,44 @@ describe('code graph materialization spool', () => {
     {fastCheck: {numRuns: 100}},
   );
 
-  it('observes only pending raw surface payload, including UTF-8 bytes', () => {
+  it('persists exact pending surface capacity across append replay and spool resume', () => {
     const database = new Database(':memory:', {strict: true});
+    const header = {
+      checkoutId: 'a'.repeat(64),
+      extractorSet: 'extractor-v1',
+      graphContentId: `cgc_${'b'.repeat(40)}`,
+      repositoryId: 'c'.repeat(64),
+      snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+    };
     try {
       configureCodeGraphMaterializationSpoolDatabase(database);
-      initializeCodeGraphMaterializationSpoolDatabase(database, {
-        checkoutId: 'a'.repeat(64),
-        extractorSet: 'extractor-v1',
-        graphContentId: `cgc_${'b'.repeat(40)}`,
-        repositoryId: 'c'.repeat(64),
-        snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
-      });
-      database.exec(`
-        INSERT INTO materialization_raw_reexports (source_path, local_name, target_path, imported_name)
-        VALUES ('src/é.ts', 'α', 'lib.ts', 'x')
-      `);
-      database.exec(`
-        INSERT INTO materialization_raw_symbol_terms (term, symbol_id, weight)
-        VALUES ('δ', 'symbol-1', 1.0), ('δ', 'symbol-2', 0.5)
-      `);
+      initializeCodeGraphMaterializationSpoolDatabase(database, header);
+      const firstBatch = {
+        edges: [],
+        lookup: [],
+        monikers: [],
+        references: [],
+        reexports: [{importedName: 'x', localName: 'α', sourcePath: 'src/é.ts', targetPath: 'lib.ts'}],
+        rowCount: 3,
+        symbolTerms: [
+          {symbolId: 'symbol-1', term: 'δ', weight: 1},
+          {symbolId: 'symbol-2', term: 'δ', weight: 0.5},
+        ],
+        symbols: [],
+      };
+      const firstReceipt = spoolReceipt({reexportCount: 1, rowCount: 3, termCount: 2});
+      expect(
+        commitCodeGraphMaterializationSpoolBatch(database, firstReceipt, () =>
+          appendCodeGraphMaterializationSpoolFactBatch(database, firstBatch),
+        ),
+      ).toBe('appended');
+      expect(
+        commitCodeGraphMaterializationSpoolBatch(database, firstReceipt, () => {
+          throw new Error('exact replay writer must not run');
+        }),
+      ).toBe('resumed');
       const boundary = observeCodeGraphSpoolSortCapacity(database);
+      expect(boundary).toEqual(directCodeGraphSpoolSortCapacity(database));
       expect(boundary).toEqual({
         finalFactBytes: 26,
         mainSortPayloadBytes: 30,
@@ -82,22 +101,39 @@ describe('code graph materialization spool', () => {
         rowCount: 2,
         transientFilesystem: 'temporary',
       });
-      codeGraphSqliteRun(
-        database,
-        'INSERT INTO materialization_raw_reexports (source_path, local_name, target_path, imported_name) VALUES (?, ?, ?, ?)',
-        "src/x'); DROP TABLE materialization_raw_symbol_terms; --",
-        'name',
-        'target',
-        'imported',
-      );
-      expect(observeCodeGraphSpoolSortCapacity(database).finalFactBytes).toBeGreaterThan(boundary.finalFactBytes);
+      expect(initializeCodeGraphMaterializationSpoolDatabase(database, header)).toBe('resumed');
+      const secondReceipt = spoolReceipt({batchId: 'f'.repeat(64), batchIndex: 1, reexportCount: 1, rowCount: 1});
+      expect(
+        commitCodeGraphMaterializationSpoolBatch(database, secondReceipt, () =>
+          appendCodeGraphMaterializationSpoolFactBatch(database, {
+            edges: [],
+            lookup: [],
+            monikers: [],
+            references: [],
+            reexports: [
+              {
+                importedName: 'imported',
+                localName: 'name',
+                sourcePath: "src/x'); DROP TABLE materialization_raw_symbol_terms; --",
+                targetPath: 'target',
+              },
+            ],
+            rowCount: 1,
+            symbolTerms: [],
+            symbols: [],
+          }),
+        ),
+      ).toBe('appended');
+      const resumedBoundary = observeCodeGraphSpoolSortCapacity(database);
+      expect(resumedBoundary).toEqual(directCodeGraphSpoolSortCapacity(database));
+      expect(resumedBoundary.finalFactBytes).toBeGreaterThan(boundary.finalFactBytes);
       expect(
         codeGraphSqliteGet<{readonly count: number}>(
           database,
           "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'materialization_raw_symbol_terms'",
         ),
       ).toEqual({count: 1});
-      sealCodeGraphMaterializationSpool(database, 0);
+      sealCodeGraphMaterializationSpool(database, 2);
       sortCodeGraphMaterializationSpoolSurfaces(database);
       expect(observeCodeGraphSpoolSortCapacity(database)).toEqual({
         ...boundary,
@@ -199,7 +235,7 @@ describe('code graph materialization spool', () => {
       typeof codeGraphMaterializationSpoolPath
     >[0];
     expect(codeGraphMaterializationSpoolPath(path, layout, `cgsn_${'a'.repeat(40)}-direct`)).toBe(
-      `/threadnote/code-graph/repository/materialization-spool-v1-cgsn_${'a'.repeat(40)}-direct.sqlite`,
+      `/threadnote/code-graph/repository/materialization-spool-v2-cgsn_${'a'.repeat(40)}-direct.sqlite`,
     );
     for (const invalid of ['', '../escape', `cgsn_${'a'.repeat(39)}`, `cgsn_${'a'.repeat(40)}-full-xyz`]) {
       expect(() => codeGraphMaterializationSpoolPath(path, layout, invalid)).toThrow(
@@ -581,4 +617,38 @@ function spoolReceipt(overrides: Partial<Parameters<typeof commitCodeGraphMateri
     termCount: 0,
     ...overrides,
   };
+}
+
+function directCodeGraphSpoolSortCapacity(database: Database) {
+  const pending = new Set(
+    codeGraphSqliteAll<{readonly name: string}>(
+      database,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'materialization_raw_%'",
+    ).map(row => row.name),
+  );
+  return codeGraphSpoolSortCapacityBoundary(
+    CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.flatMap(surface => {
+      if (!pending.has(`materialization_raw_${surface.name}`)) return [];
+      const payload = surface.columns.map(column => `COALESCE(LENGTH(CAST(${column} AS BLOB)), 0)`).join(' + ');
+      const lexicalTermBytes = surface.name === 'symbol_terms' ? 'COALESCE(SUM(LENGTH(CAST(term AS BLOB))), 0)' : '0';
+      const row = codeGraphSqliteGet<{
+        readonly bytes: bigint | number;
+        readonly lexicalTermBytes: bigint | number;
+        readonly rows: bigint | number;
+      }>(
+        database,
+        `SELECT COALESCE(SUM(${payload}), 0) AS bytes,
+           ${lexicalTermBytes} AS lexicalTermBytes, COUNT(*) AS rows
+         FROM materialization_raw_${surface.name}`,
+      );
+      if (row === null) throw new Error('Direct spool capacity measurement is unavailable.');
+      return [
+        {
+          bytes: Number(row.bytes),
+          lexicalTermBytesUpperBound: Number(row.lexicalTermBytes),
+          rows: Number(row.rows),
+        },
+      ];
+    }),
+  );
 }
