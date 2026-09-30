@@ -8,7 +8,10 @@ import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   handleMatchedEvaluationContextRequest,
+  handleMatchedEvaluationFollowupRequest,
   hashMatchedEvaluationContextContent,
+  hashMatchedEvaluationContextRequest,
+  matchedEvaluationContextTools,
   renderMatchedEvaluationRuntimeManifestV1,
   type MatchedEvaluationContextProxyPacketV1,
 } from '../../../../scripts/matched-evaluation-context-proxy.js';
@@ -38,7 +41,7 @@ describe('matched evaluation context proxy', () => {
         runtimeManifestSha256: fixture.packet.runtimeManifestSha256,
         contentResponseSha256: sha256HexSync(Buffer.from(result.content[0].text)),
         frozenPromptSha256: sha256HexSync(Buffer.from(fixture.packet.prompt)),
-        version: 2,
+        version: 3,
       },
     });
   });
@@ -71,7 +74,7 @@ describe('matched evaluation context proxy', () => {
     ).rejects.toThrow('Expected no excess property');
   });
 
-  it('preserves the v2 contract across the real MCP stdio transport', async () => {
+  it('preserves the v3 contract across the real MCP stdio transport', async () => {
     if (process.platform === 'win32') return;
     const fixture = await contextFixture(roots, 'Markdown **prompt** with trailing spaces  \n');
     const packetPath = join(fixture.root, 'packet.json');
@@ -87,9 +90,18 @@ describe('matched evaluation context proxy', () => {
     try {
       await client.connect(transport);
       const listed = await client.listTools();
+      expect(listed.tools.map(tool => tool.name).sort()).toEqual(
+        [...matchedEvaluationContextTools(fixture.packet.detail)].sort(),
+      );
       const tool = listed.tools.find(candidate => candidate.name === 'context_brief');
       expect(tool).toBeDefined();
       expect(JSON.stringify(tool?.inputSchema)).not.toContain('task');
+
+      const early = await client.callTool({
+        name: 'inspect_code_graph',
+        arguments: {callerCwd: fixture.repository, operation: 'query', query: 'fixture'},
+      });
+      expect(early.isError).toBe(true);
 
       const result = await client.callTool({
         name: 'context_brief',
@@ -102,7 +114,7 @@ describe('matched evaluation context proxy', () => {
       expect('structuredContent' in result).toBe(false);
       expect(result._meta).toMatchObject({
         matchedEvaluation: {
-          version: 2,
+          version: 3,
           runNonce: fixture.packet.runNonce,
           runtimeManifestSha256: fixture.packet.runtimeManifestSha256,
           contentResponseSha256: sha256HexSync(Buffer.from(content[0].text)),
@@ -118,6 +130,35 @@ describe('matched evaluation context proxy', () => {
     } finally {
       await client.close();
     }
+  });
+
+  it('preserves native memory text when structured content is only metadata and authenticates follow-up errors', async () => {
+    const fixture = await contextFixture(roots, 'memory prompt', 'compact', 'linked');
+    const args = {uri: 'threadnote://memory/tn_prepared'};
+    const result = await handleMatchedEvaluationFollowupRequest(fixture.packet, 'read_context', args, async () => ({
+      content: [{type: 'text' as const, text: 'The actual memory evidence.'}],
+      structuredContent: {type: 'threadnote-read', contentBytes: 27, contentChannel: 'text'},
+    }));
+    expect(result.content).toEqual([{type: 'text', text: 'The actual memory evidence.'}]);
+    expect(result.structuredContent).toBeUndefined();
+    const failed = await handleMatchedEvaluationFollowupRequest(fixture.packet, 'read_context', args, async () => {
+      throw new Error('bounded backend failure');
+    });
+    expect(failed.isError).toBe(true);
+    expect(failed.meta).toMatchObject({
+      matchedEvaluation: {
+        toolName: 'read_context',
+        success: false,
+        requestSha256: hashMatchedEvaluationContextRequest('read_context', args),
+        contentResponseSha256: hashMatchedEvaluationContextContent(failed.content[0].text),
+      },
+    });
+    expect(matchedEvaluationContextTools('compact')).toEqual([
+      ...matchedEvaluationContextTools('graph-only'),
+      'recall_context',
+      'read_context',
+    ]);
+    expect(matchedEvaluationContextTools('source')).toEqual(['context_brief']);
   });
 
   it('rejects tampered, rebound, and escaped runtime manifests', async () => {
@@ -163,6 +204,101 @@ describe('matched evaluation context proxy', () => {
       ),
     ).rejects.toThrow('escaped its isolated private root');
   });
+
+  it('exposes only graph follow-ups for graph-only treatment and binds scope', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = await contextFixture(roots, 'graph prompt', 'graph-only');
+    const invoke = async (_packet: unknown, name: string, args: Record<string, unknown>) => ({
+      content: [{type: 'text' as const, text: JSON.stringify({name, args})}],
+    });
+    const result = await handleMatchedEvaluationFollowupRequest(
+      fixture.packet,
+      'inspect_code_graph',
+      {callerCwd: fixture.repository, project: fixture.packet.project, operation: 'query', query: 'fixture'},
+      invoke,
+    );
+    expect(result.isError).not.toBe(true);
+    await expect(
+      handleMatchedEvaluationFollowupRequest(
+        fixture.packet,
+        'recall_context',
+        {callerCwd: fixture.repository, project: fixture.packet.project, query: 'memory'},
+        invoke,
+      ),
+    ).rejects.toThrow('Tool is not allowed');
+    await expect(
+      handleMatchedEvaluationFollowupRequest(
+        fixture.packet,
+        'inspect_code_graph',
+        {callerCwd: fixture.repository, project: 'other', operation: 'query', query: 'fixture'},
+        invoke,
+      ),
+    ).rejects.toThrow('project');
+    await expect(
+      handleMatchedEvaluationFollowupRequest(
+        fixture.packet,
+        'inspect_code_graph',
+        {callerCwd: fixture.root, project: fixture.packet.project, operation: 'query', query: 'fixture'},
+        invoke,
+      ),
+    ).rejects.toThrow('escaped');
+    await expect(
+      handleMatchedEvaluationFollowupRequest(
+        fixture.packet,
+        'inspect_code_graph',
+        {
+          callerCwd: fixture.repository,
+          project: fixture.packet.project,
+          operation: 'query',
+          query: 'fixture',
+          workset: 'escape',
+        },
+        invoke,
+      ),
+    ).rejects.toThrow('excess property');
+  });
+
+  it('allows compact linked-memory follow-ups and rejects escaped memory reads', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = await contextFixture(roots, 'compact prompt', 'compact', 'linked');
+    const invoke = async () => ({content: [{type: 'text' as const, text: 'linked result'}]});
+    const result = await handleMatchedEvaluationFollowupRequest(
+      fixture.packet,
+      'read_context',
+      {uri: 'threadnote://memory/tn_fixture'},
+      invoke,
+    );
+    expect(result.isError).not.toBe(true);
+    await expect(
+      handleMatchedEvaluationFollowupRequest(
+        fixture.packet,
+        'read_context',
+        {uri: 'threadnote://memory/../escape'},
+        invoke,
+      ),
+    ).rejects.toThrow('outside the isolated');
+    await expect(
+      handleMatchedEvaluationFollowupRequest(
+        fixture.packet,
+        'read_context',
+        {uri: `threadnote://user/${fixture.packet.threadnoteUser}/memories/../../escape`},
+        invoke,
+      ),
+    ).rejects.toThrow('outside the isolated');
+  });
+
+  it('canonicalizes follow-up request hash independently of object key order', () => {
+    fc.assert(
+      fc.property(fc.string({minLength: 1, maxLength: 32}), fc.string({minLength: 1, maxLength: 32}), (a, b) => {
+        const left = {callerCwd: a, project: b, operation: 'stats'};
+        const right = {operation: 'stats', project: b, callerCwd: a};
+        expect(hashMatchedEvaluationContextRequest('inspect_code_graph', left)).toBe(
+          hashMatchedEvaluationContextRequest('inspect_code_graph', right),
+        );
+      }),
+      {numRuns: 50},
+    );
+  });
 });
 
 const preparedEvidence = {
@@ -175,6 +311,8 @@ const preparedEvidence = {
 async function contextFixture(
   roots: string[],
   prompt = 'Inspect the isolated repository.',
+  detail: 'compact' | 'graph-only' | 'source' = 'graph-only',
+  memoryAccess: 'disabled' | 'linked' = 'disabled',
 ): Promise<{
   readonly manifest: string;
   readonly packet: MatchedEvaluationContextProxyPacketV1;
@@ -232,14 +370,14 @@ printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
     manifest,
     packet: {
       budgetTokens: 1_500,
-      detail: 'compact',
+      detail,
       expectedContext: {
         graphContentHash: '1'.repeat(64),
         graphSnapshotHash: '2'.repeat(64),
-        linkReceiptsHash: null,
-        memoryAccess: 'disabled',
+        linkReceiptsHash: memoryAccess === 'linked' ? '4'.repeat(64) : null,
+        memoryAccess,
         studyHash: '3'.repeat(64),
-        taskContextHash: null,
+        taskContextHash: memoryAccess === 'linked' ? '5'.repeat(64) : null,
       },
       project,
       prompt,
@@ -252,7 +390,7 @@ printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
       threadnoteExecutableSha256: sha256HexSync(await readFile(executable)),
       threadnoteHome,
       threadnoteUser: 'evaluation-user',
-      version: 2,
+      version: 3,
     },
     repository,
     root,

@@ -102,6 +102,12 @@ describe('matched token-efficiency claim evaluation', () => {
     expect(report.comparisons).toEqual([
       expect.objectContaining({
         baselineArm: 'files',
+        effect: 'graph',
+        status: 'failed',
+        targetArm: 'threadnote-graph',
+      }),
+      expect.objectContaining({
+        baselineArm: 'files',
         effect: 'total',
         status: 'passed',
         targetArm: 'threadnote-compact',
@@ -119,10 +125,11 @@ describe('matched token-efficiency claim evaluation', () => {
         targetArm: 'threadnote-compact',
       }),
     ]);
-    expect(report.comparisons[0].tokenReductionPercent).toBeCloseTo(30);
-    expect(report.comparisons[1].tokenReductionPercent).toBeCloseTo(40);
-    expect(report.comparisons[2].tokenReductionPercent).toBeCloseTo(17.65, 1);
-    expect(report.comparisons[2].contextStrata.map(stratum => stratum.sufficiency)).toEqual([
+    expect(report.comparisons[0].tokenReductionPercent).toBeCloseTo(15);
+    expect(report.comparisons[1].tokenReductionPercent).toBeCloseTo(30);
+    expect(report.comparisons[2].tokenReductionPercent).toBeCloseTo(40);
+    expect(report.comparisons[3].tokenReductionPercent).toBeCloseTo(17.65, 1);
+    expect(report.comparisons[3].contextStrata.map(stratum => stratum.sufficiency)).toEqual([
       'none',
       'lacking',
       'sufficient',

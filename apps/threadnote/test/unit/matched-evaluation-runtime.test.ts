@@ -15,6 +15,8 @@ import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory
 import {
   parseMatchedEvaluationRuntimeV1,
   resolveMatchedEvaluationRuntimeRepositoriesV1,
+  hashMatchedEvaluationPayloadV1,
+  selectMatchedEvaluationPilotRowsV1,
 } from '../../../../scripts/run-matched-evaluation.js';
 import type {MatchedTokenEfficiencyStudyV1} from '@threadnote/threadnote/evaluation/matched-token-efficiency';
 
@@ -23,6 +25,79 @@ describe('matched evaluation runtime integrity', () => {
 
   afterEach(async () => {
     await Promise.all(roots.splice(0).map(root => rm(root, {force: true, recursive: true})));
+  });
+
+  it('selects exactly one first-repetition row per pilot arm in frozen order', () => {
+    const manifest = {
+      activeArms: ['files', 'threadnote-graph', 'threadnote-compact'],
+      blindAssignment: {
+        A: 'files',
+        B: 'threadnote-graph',
+        C: 'threadnote-compact',
+        D: 'threadnote-source',
+        E: 'reference-scope',
+      },
+      schedule: [
+        {
+          taskId: 'tsk_1234567890abcdef',
+          repetition: 1,
+          position: 2,
+          runNonce: 'run_00000000000000000000000000000001',
+          runOrder: 8,
+          blindLabel: 'B',
+        },
+        {
+          taskId: 'tsk_1234567890abcdef',
+          repetition: 1,
+          position: 1,
+          runNonce: 'run_00000000000000000000000000000002',
+          runOrder: 7,
+          blindLabel: 'A',
+        },
+        {
+          taskId: 'tsk_1234567890abcdef',
+          repetition: 1,
+          position: 3,
+          runNonce: 'run_00000000000000000000000000000003',
+          runOrder: 9,
+          blindLabel: 'C',
+        },
+        {
+          taskId: 'tsk_1234567890abcdef',
+          repetition: 2,
+          position: 1,
+          runNonce: 'run_00000000000000000000000000000004',
+          runOrder: 10,
+          blindLabel: 'A',
+        },
+      ],
+    } as const;
+    expect(selectMatchedEvaluationPilotRowsV1(manifest, 'tsk_1234567890abcdef').map(row => row.runOrder)).toEqual([
+      7, 8, 9,
+    ]);
+    expect(() =>
+      selectMatchedEvaluationPilotRowsV1(
+        {...manifest, activeArms: ['files', 'threadnote-graph', 'threadnote-source']},
+        'tsk_1234567890abcdef',
+      ),
+    ).toThrow('exactly files');
+    expect(() => selectMatchedEvaluationPilotRowsV1(manifest, 'tsk_ffffffffffffffff')).toThrow(
+      'not in the manifest schedule',
+    );
+  });
+
+  it('hashes the complete staged payload deterministically and rejects symlinks', async () => {
+    if (process.platform === 'win32') return;
+    const root = await temporaryRoot(roots);
+    await mkdir(join(root, 'runtime'));
+    await writeFile(join(root, 'threadnote'), 'payload');
+    await writeFile(join(root, 'runtime', 'native'), 'native');
+    const first = await hashMatchedEvaluationPayloadV1(root);
+    expect(await hashMatchedEvaluationPayloadV1(root)).toBe(first);
+    await writeFile(join(root, 'runtime', 'native'), 'changed');
+    expect(await hashMatchedEvaluationPayloadV1(root)).not.toBe(first);
+    await symlink(join(root, 'threadnote'), join(root, 'runtime', 'escape'));
+    await expect(hashMatchedEvaluationPayloadV1(root)).rejects.toThrow('symbolic link');
   });
 
   it('binds repository identity, revision, dirty state, and fixture bytes to the manifest observation', async () => {

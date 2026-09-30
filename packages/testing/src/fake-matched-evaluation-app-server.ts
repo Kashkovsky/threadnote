@@ -81,13 +81,21 @@ lines.on('line', line => {
       : {cachedInputTokens: 10, inputTokens: 100, outputTokens: 50, reasoningOutputTokens: 20, totalTokens: 150};
     respond(request.id, {turn: {error: null, id: turnId, items: [], status: 'inProgress'}});
     notify('turn/started', {threadId, turn: {error: null, id: turnId, items: [], status: 'inProgress'}});
+    const initialUsage = judge
+      ? {cachedInputTokens: 2, inputTokens: 20, outputTokens: 10, reasoningOutputTokens: 4, totalTokens: 30}
+      : {cachedInputTokens: 4, inputTokens: 40, outputTokens: 20, reasoningOutputTokens: 8, totalTokens: 60};
     notify('thread/tokenUsage/updated', {
       threadId,
       tokenUsage: {
-        last: usage,
+        last: initialUsage,
         modelContextWindow: 200_000,
-        total: usage,
+        total: initialUsage,
       },
+      turnId,
+    });
+    notify('thread/tokenUsage/updated', {
+      threadId,
+      tokenUsage: {last: usage, modelContextWindow: 200_000, total: usage},
       turnId,
     });
     if (!judge && process.argv.includes('--failed-context')) {

@@ -39,3 +39,36 @@ Outcome schema v4 requires separate `safety.blockedActions` telemetry; token-eff
 Before spending on a new study, calibrate exact formatted prompts and all three context arms against isolated copies of the frozen homes, verify delivery receipts through MCP and the adapter, and confirm useful graph/memory coverage. Passing delivery checks alone is not evidence that context helps. The unblinded six-task pilot is now development/calibration material; a confirmatory article claim needs a newly sealed, untouched evaluation corpus, declared accounting and thresholds, and a fresh manifest after harness and product changes are fixed.
 
 `provenance.json` records identities, revisions, prompt sources, licensing, context assessments, and verifier selectors. `corpus.json` is the exact evaluator input. The local preparation plan is generated only after the final Threadnote 5.0.6 release commit, exact local binary, ready graph homes, managed memory IDs, known-fix checkouts, and the pinned verifier environment are known.
+
+## Interactive treatments and exploratory pilot
+
+The next local pilot is pinned to the published production **5.0.7** macOS arm64 release, not a development build. Preparation v3 accepts an explicit reviewed `threadnote.productionRelease` record binding the immutable GitHub tag, source commit, archive and executable SHA-256 values. Production mode requires the exact clean release source, package version and plain `threadnote v5.0.7` output plus the binary digest; a version string alone is not provenance. Its `threadnote.lockFile` is the verified complete release archive, preserving adjacent parser/native-runtime assets during isolated staging. Legacy local 5.0.6 preparation retains its separate exact-commit contract. Do not mix observations across these runtime identities. The production hashes and source commit were verified against the [immutable published release](https://github.com/Kashkovsky/threadnote/releases/tag/v5.0.7); they are intentionally platform-specific.
+
+Preparation v3 explicitly declares its active arms; the primary setup selects `files`, `threadnote-graph`, and `threadnote-compact`. The stable latter name now denotes the interactive graph-plus-memory treatment, not a brief-only treatment. The manifest binds the selected subset and a v3 schedule. All five arm definitions remain available for generic studies; `threadnote-source` is an optional, distinct one-shot diagnostic and is not selected in the primary setup. A three-arm confirmatory schedule requires at least six repetitions to preserve complete position counterbalancing. This does not authorize executing that schedule when only a pilot was requested.
+
+Adapter/config and context-proxy v3 expose the following model-facing tools:
+
+| Treatment                  | Initial call        | Optional follow-ups                                     |
+| -------------------------- | ------------------- | ------------------------------------------------------- |
+| Files only                 | None                | File reads/search and edits only                        |
+| Graph                      | One `context_brief` | `inspect_code_graph`, `analyze_code_graph`              |
+| Graph plus memory          | One `context_brief` | Same graph tools, plus `recall_context`, `read_context` |
+| Optional source diagnostic | One `context_brief` | None                                                    |
+
+Both interactive arms bind graph requests to the same prepared repository and pinned executable. Only the memory arm can read its isolated prepared memories. Remote worksets, arbitrary project/root overrides, writes, and unprepared memory namespaces are not exposed. Graph evidence refers to prepared snapshots; agents must verify current files after edits. The memory-enabled brief can change evidence selection as well as add memories, so graph-plus-memory versus graph measures the incremental **memory-enabled workflow**, not a pure identical-graph-dose memory effect.
+
+Every call has one text evidence body and an audit receipt binding its original arguments, tool name, result hash, success flag, frozen task, run, manifest and prepared context identities. The initial brief must succeed exactly once before follow-ups. Authenticated follow-up errors remain in the transcript and cumulative task usage. Skills are not installed in the isolated agent home; brief evaluator instructions and tool schemas still have token cost. This setup does not measure normal installed-skill startup, background-agent or warm-continuation overhead.
+
+For exactly one attempt per primary variant on a common task, prepare a fresh bundle and invoke the separate pilot path:
+
+```sh
+bun scripts/run-matched-evaluation.ts \
+  --corpus /absolute/fresh-study/corpus.json \
+  --manifest /absolute/fresh-study/manifest.json \
+  --runtime /absolute/fresh-study/runtime.json \
+  --study /absolute/fresh-study/study.json \
+  --pilot-task tsk_1c391a7896906b29202da55b \
+  --pilot-directory /absolute/fresh-pilot
+```
+
+The pilot seals three first-repetition rows in frozen schedule order before execution, refuses resume/retry, and writes a descriptive `pilot-report.json` separately from the full-study ledger. Task choice must be recorded before outcomes. Include failed attempts and their checkpoint usage; missing usage is unknown, never zero. Compare deterministic completion first, then provider input/cached/output tokens, wall time, tool selection and evidence use. One task and one attempt per arm do not support confidence intervals, reliable memory attribution or a general token-savings claim. Preserve the frozen original pilot unchanged and do not pool either exploratory run with a later held-out confirmatory study.

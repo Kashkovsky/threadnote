@@ -145,10 +145,10 @@ export interface MatchedTokenEfficiencyComparisonV1 {
   readonly failures: readonly string[];
   readonly hybridCompletionDeltaPercentagePoints: number;
   readonly hybridCompletionDeltaPercentagePoints95: MatchedTokenEfficiencyIntervalV1 | null;
-  readonly effect: 'memory-increment' | 'total';
+  readonly effect: 'graph' | 'memory-increment' | 'total';
   readonly insufficiencies: readonly string[];
   readonly status: 'failed' | 'inconclusive' | 'passed';
-  readonly targetArm: MatchedTokenEfficiencyTargetArm;
+  readonly targetArm: MatchedTokenEfficiencyTargetArm | 'threadnote-graph';
   readonly tokenReductionPercent: number | null;
   readonly tokenReductionPercent95: MatchedTokenEfficiencyIntervalV1 | null;
 }
@@ -278,8 +278,8 @@ export function parseMatchedTokenEfficiencyStudyV1(value: unknown): MatchedToken
     literal(arm, MATCHED_TOKEN_EFFICIENCY_TARGET_ARMS, `study target arm ${index}`),
   );
   unique(targetArms, 'study target arms');
-  if (targetArms.length !== MATCHED_TOKEN_EFFICIENCY_TARGET_ARMS.length) {
-    invalid('study must compare both Threadnote arms');
+  if (targetArms.some(arm => arm === 'threadnote-compact' && !lifecycle.some(entry => entry.arm === arm))) {
+    invalid('study target arm must have a lifecycle entry');
   }
   const taskContexts = array(study.taskContexts, 'study task contexts').map(parseTaskContext);
   unique(
@@ -406,34 +406,65 @@ export function evaluateMatchedTokenEfficiencyV1(input: {
   assertOutcomeContexts(study, manifest, outcomes);
   const taskById = new Map(corpus.tasks.map(task => [task.taskId, task]));
   const contextByTask = new Map(study.taskContexts.map(context => [context.taskId, context]));
-  const arms = MATCHED_EVALUATION_ARMS.map(arm => summarizeArm(arm, manifest, outcomes, study, taskById));
-  const baseline = required(arms.find(arm => arm.arm === 'files'));
-  const graphOnly = required(arms.find(arm => arm.arm === 'threadnote-graph'));
-  const totalComparisons = study.targetArms.map(targetArm =>
-    compareArm({
-      baseline,
-      effect: 'total',
-      contextByTask,
-      manifest,
-      minimumTokenReductionBasisPoints: study.gates.minimumTokenReductionBasisPoints,
-      outcomes,
-      study,
-      target: required(arms.find(arm => arm.arm === targetArm)),
-      targetArm,
-    }),
-  );
-  const memoryComparison = compareArm({
-    baseline: graphOnly,
-    contextByTask,
-    effect: 'memory-increment',
-    manifest,
-    minimumTokenReductionBasisPoints: study.gates.minimumMemoryTokenReductionBasisPoints,
-    outcomes,
-    study,
-    target: required(arms.find(arm => arm.arm === 'threadnote-compact')),
-    targetArm: 'threadnote-compact',
-  });
-  const comparisons = [...totalComparisons, memoryComparison];
+  const selectedArms = manifest.activeArms ?? MATCHED_EVALUATION_ARMS;
+  const arms = selectedArms.map(arm => summarizeArm(arm, manifest, outcomes, study, taskById));
+  const baseline = arms.find(arm => arm.arm === 'files');
+  const graphOnly = arms.find(arm => arm.arm === 'threadnote-graph');
+  const totalComparisons =
+    baseline === undefined
+      ? []
+      : study.targetArms.flatMap(targetArm => {
+          const target = arms.find(arm => arm.arm === targetArm);
+          return target === undefined
+            ? []
+            : [
+                compareArm({
+                  baseline,
+                  effect: 'total',
+                  contextByTask,
+                  manifest,
+                  minimumTokenReductionBasisPoints: study.gates.minimumTokenReductionBasisPoints,
+                  outcomes,
+                  study,
+                  target,
+                  targetArm,
+                }),
+              ];
+        });
+  const graphComparison =
+    baseline === undefined || graphOnly === undefined
+      ? []
+      : [
+          compareArm({
+            baseline,
+            effect: 'graph',
+            contextByTask,
+            manifest,
+            minimumTokenReductionBasisPoints: study.gates.minimumTokenReductionBasisPoints,
+            outcomes,
+            study,
+            target: graphOnly,
+            targetArm: 'threadnote-graph',
+          }),
+        ];
+  const compact = arms.find(arm => arm.arm === 'threadnote-compact');
+  const memoryComparison =
+    graphOnly === undefined || compact === undefined || !study.targetArms.includes('threadnote-compact')
+      ? []
+      : [
+          compareArm({
+            baseline: graphOnly,
+            contextByTask,
+            effect: 'memory-increment',
+            manifest,
+            minimumTokenReductionBasisPoints: study.gates.minimumMemoryTokenReductionBasisPoints,
+            outcomes,
+            study,
+            target: compact,
+            targetArm: 'threadnote-compact',
+          }),
+        ];
+  const comparisons = [...graphComparison, ...totalComparisons, ...memoryComparison];
   const supportedClaims = comparisons.flatMap(comparison =>
     comparison.status !== 'passed' || comparison.tokenReductionPercent === null
       ? []
@@ -696,7 +727,7 @@ function compareArm(input: {
   readonly outcomes: readonly MatchedEvaluationOutcomeV1[];
   readonly study: MatchedTokenEfficiencyStudyV1;
   readonly target: MatchedTokenEfficiencyArmResultV1;
-  readonly targetArm: MatchedTokenEfficiencyTargetArm;
+  readonly targetArm: MatchedTokenEfficiencyTargetArm | 'threadnote-graph';
 }): MatchedTokenEfficiencyComparisonV1 {
   const insufficiencies: string[] = [];
   const failures: string[] = [];
@@ -777,7 +808,7 @@ function summarizeContextStrata(input: {
   readonly manifest: MatchedEvaluationManifestV1;
   readonly outcomes: readonly MatchedEvaluationOutcomeV1[];
   readonly study: MatchedTokenEfficiencyStudyV1;
-  readonly targetArm: MatchedTokenEfficiencyTargetArm;
+  readonly targetArm: MatchedTokenEfficiencyTargetArm | 'threadnote-graph';
 }): readonly MatchedTokenEfficiencyContextStratumV1[] {
   const baselineOutcomes = outcomesForArm(input.manifest, input.outcomes, input.baseline.arm);
   const targetOutcomes = outcomesForArm(input.manifest, input.outcomes, input.targetArm);
@@ -819,7 +850,7 @@ function bootstrapIntervals(input: {
   readonly manifest: MatchedEvaluationManifestV1;
   readonly outcomes: readonly MatchedEvaluationOutcomeV1[];
   readonly study: MatchedTokenEfficiencyStudyV1;
-  readonly targetArm: MatchedTokenEfficiencyTargetArm;
+  readonly targetArm: MatchedTokenEfficiencyTargetArm | 'threadnote-graph';
 }): {
   readonly completionDelta: MatchedTokenEfficiencyIntervalV1;
   readonly hybridCompletionDelta: MatchedTokenEfficiencyIntervalV1;

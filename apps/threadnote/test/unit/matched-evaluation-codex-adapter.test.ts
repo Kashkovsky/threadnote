@@ -24,11 +24,13 @@ import {
   matchedEvaluationVerifierEnvironmentHashV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
   renderMatchedEvaluationCommandReviewRulesV1,
+  renderMatchedEvaluationAgentInstructionsV1,
   runMatchedEvaluationCodexAdapter,
   runMatchedEvaluationDeterministicVerifierV1,
   type MatchedEvaluationExpectedContextDeliveryV1,
 } from '../../../../scripts/matched-evaluation-codex-adapter.js';
 import {MATCHED_EVALUATION_CONTEXT_PROXY_VERSION} from '../../../../scripts/matched-evaluation-context-proxy.js';
+import {hashMatchedEvaluationContextRequest} from '../../../../scripts/matched-evaluation-context-proxy.js';
 import {
   createMatchedEvaluationVerificationCalibrationV1,
   createMatchedEvaluationVerificationPlanV1,
@@ -44,13 +46,26 @@ describe('matched evaluation Codex adapter', () => {
     await Promise.all(roots.splice(0).map(root => rm(root, {force: true, recursive: true})));
   });
 
+  it('instructs both interactive arms to use graph follow-ups and only the linked arm to use memory', () => {
+    for (const detail of ['compact', 'graph-only'] as const) {
+      const instructions = renderMatchedEvaluationAgentInstructionsV1(detail);
+      expect(instructions).toContain('inspect_code_graph and analyze_code_graph');
+      expect(instructions).not.toContain('only MCP tool is context_brief');
+      expect(instructions).toContain('prepared base');
+    }
+    expect(renderMatchedEvaluationAgentInstructionsV1('compact')).toContain('recall_context and read_context');
+    expect(renderMatchedEvaluationAgentInstructionsV1('graph-only')).toContain('Memory tools are unavailable');
+    expect(renderMatchedEvaluationAgentInstructionsV1('source')).toContain('only MCP tool is context_brief');
+    expect(renderMatchedEvaluationAgentInstructionsV1(null)).toContain('No MCP tools are available');
+  });
+
   it('requires successful context delivery bound to the sealed prompt, run, home and response', () => {
     const {event, expected, item, receipt, result} = contextDelivery();
     expect(() => assertMatchedEvaluationContextDeliveryV1([event], expected)).not.toThrow();
     expect(() => assertMatchedEvaluationContextDeliveryV1([], null)).not.toThrow();
     expect(() => assertMatchedEvaluationContextDeliveryV1([event], null)).toThrow('Files-only arm');
     for (const events of [[], [event, event]]) {
-      expect(() => assertMatchedEvaluationContextDeliveryV1(events, expected)).toThrow('exactly one');
+      expect(() => assertMatchedEvaluationContextDeliveryV1(events, expected)).toThrow();
     }
     const withItem = (patch: Record<string, unknown>) => [{...event, params: {item: {...item, ...patch}}}];
     const withResult = (patch: Record<string, unknown>) => withItem({result: {...result, ...patch}});
@@ -64,12 +79,7 @@ describe('matched evaluation Codex adapter', () => {
         expected,
       ),
     ).toThrow('did not complete successfully');
-    for (const patch of [
-      {status: 'inProgress'},
-      {error: {message: 'failed'}},
-      {server: 'other'},
-      {tool: 'read_context'},
-    ]) {
+    for (const patch of [{status: 'inProgress'}, {error: {message: 'failed'}}, {server: 'other'}]) {
       expect(() => assertMatchedEvaluationContextDeliveryV1(withItem(patch), expected)).toThrow();
     }
     for (const patch of [
@@ -114,6 +124,46 @@ describe('matched evaluation Codex adapter', () => {
         expect(() => assertMatchedEvaluationContextDeliveryV1([changed], expected)).toThrow('contentResponseSha256');
       }),
       {numRuns: 40},
+    );
+  });
+
+  it('accepts compact graph and memory follow-ups, binds original arguments, and retains failed receipts', () => {
+    const base = contextDelivery();
+    const graph = contextFollowup(base, 'inspect_code_graph', {query: 'service'}, 'completed', false);
+    const memory = contextFollowup(
+      {...base, event: graph.event},
+      'recall_context',
+      {query: 'prior decision'},
+      'completed',
+      false,
+      'memory-call',
+    );
+    const failed = contextFollowup(
+      {...base, event: memory.event},
+      'read_context',
+      {uri: 'threadnote://bounded'},
+      'failed',
+      true,
+      'failed-call',
+    );
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1([base.event, graph.event, memory.event, failed.event], base.expected),
+    ).not.toThrow();
+    const tampered = {...graph.event, params: {item: {...graph.item, arguments: {query: 'changed'}}}};
+    expect(() => assertMatchedEvaluationContextDeliveryV1([base.event, tampered], base.expected)).toThrow(
+      'requestSha256',
+    );
+    for (const field of ['runNonce', 'frozenPromptSha256', 'runtimeManifestSha256'] as const) {
+      const receipt = {...base.receipt, [field]: 'tampered'};
+      const event = {
+        ...base.event,
+        params: {item: {...base.item, result: {...base.result, _meta: {matchedEvaluation: receipt}}}},
+      };
+      expect(() => assertMatchedEvaluationContextDeliveryV1([event], base.expected)).toThrow('receipt mismatch');
+    }
+    const sourceExpected = {...base.expected, detail: 'source' as const};
+    expect(() => assertMatchedEvaluationContextDeliveryV1([base.event, graph.event], sourceExpected)).toThrow(
+      'unexpected MCP server or tool',
     );
   });
 
@@ -201,14 +251,16 @@ describe('matched evaluation Codex adapter', () => {
       assertMatchedEvaluationMcpInventoryV1(
         inventory({...base, tools: {context_brief: {name: 'context_brief'}}}),
         base.name,
+        'source',
       ),
     ).not.toThrow();
     expect(() =>
       assertMatchedEvaluationMcpInventoryV1(
         inventory({...base, tools: {recall_context: {name: 'recall_context'}}}),
         base.name,
+        'graph-only',
       ),
-    ).toThrow('must expose only context_brief');
+    ).toThrow('unexpected context tool');
     expect(() =>
       assertMatchedEvaluationMcpInventoryV1(
         inventory({...base, tools: {context_brief: {name: 'recall_context'}}}),
@@ -274,10 +326,10 @@ describe('matched evaluation Codex adapter', () => {
             extractMatchedEvaluationProviderUsageV1([
               usageEvent({
                 cachedInputTokens: 0,
-                inputTokens: 1,
-                outputTokens: 1,
+                inputTokens: 0,
+                outputTokens: 0,
                 reasoningOutputTokens: 0,
-                totalTokens: 2,
+                totalTokens: 0,
               }),
               usageEvent(expected),
             ]),
@@ -663,14 +715,26 @@ function contextDelivery(text = '{"answer":"Relevant evidence","graph":{"cards":
     memoryAccess: 'linked',
     studyHash: '4'.repeat(64),
     taskContextHash: '5'.repeat(64),
+    detail: 'compact',
     frozenPromptSha256: sha256HexSync('Task with `formatting` and trailing space. '),
     runNonce: 'run_0123456789abcdef0123456789abcdef',
     runtimeManifestSha256: '6'.repeat(64),
   };
   const receipt = {
-    ...expected,
+    graphContentHash: expected.graphContentHash,
+    graphSnapshotHash: expected.graphSnapshotHash,
+    linkReceiptsHash: expected.linkReceiptsHash,
+    memoryAccess: expected.memoryAccess,
+    studyHash: expected.studyHash,
+    taskContextHash: expected.taskContextHash,
     contentResponseSha256: sha256HexSync(text),
     graphReady: true,
+    frozenPromptSha256: expected.frozenPromptSha256,
+    runNonce: expected.runNonce,
+    runtimeManifestSha256: expected.runtimeManifestSha256,
+    requestSha256: hashMatchedEvaluationContextRequest('context_brief', {}),
+    success: true,
+    toolName: 'context_brief',
     version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
   };
   const result = {content: [{type: 'text', text}], _meta: {matchedEvaluation: receipt}};
@@ -679,12 +743,56 @@ function contextDelivery(text = '{"answer":"Relevant evidence","graph":{"cards":
     id: 'context-call',
     server: 'matched_evaluation_context',
     tool: 'context_brief',
+    arguments: {},
     status: 'completed',
     error: null,
     result,
   };
   const event = {method: 'item/completed', params: {item}};
   return {event, expected, item, receipt, result};
+}
+
+function contextFollowup(
+  base: ReturnType<typeof contextDelivery>,
+  tool: 'inspect_code_graph' | 'recall_context' | 'read_context',
+  arguments_: Record<string, unknown>,
+  status: 'completed' | 'failed',
+  isError: boolean,
+  id = `${tool}-call`,
+) {
+  const text = JSON.stringify({tool, arguments: arguments_});
+  const item = {
+    ...base.item,
+    arguments: arguments_,
+    id,
+    result: {
+      content: [{type: 'text', text}],
+      isError,
+      _meta: {
+        matchedEvaluation: {
+          graphContentHash: base.expected.graphContentHash,
+          graphSnapshotHash: base.expected.graphSnapshotHash,
+          linkReceiptsHash: base.expected.linkReceiptsHash,
+          memoryAccess: base.expected.memoryAccess,
+          studyHash: base.expected.studyHash,
+          taskContextHash: base.expected.taskContextHash,
+          frozenPromptSha256: base.expected.frozenPromptSha256,
+          runNonce: base.expected.runNonce,
+          runtimeManifestSha256: base.expected.runtimeManifestSha256,
+          contentResponseSha256: sha256HexSync(text),
+          graphReady: true,
+          requestSha256: hashMatchedEvaluationContextRequest(tool, arguments_),
+          success: status === 'completed' && !isError,
+          toolName: tool,
+          version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
+        },
+      },
+      structuredContent: undefined,
+    },
+    status,
+    tool,
+  };
+  return {event: {method: 'item/completed', params: {item}}, item};
 }
 
 function adapterConfig() {
@@ -710,7 +818,7 @@ function adapterConfig() {
     taskBudget: {steps: 100, tokens: 100_000},
     temporaryRoot: '/tmp',
     verificationPlan: null,
-    version: 2 as const,
+    version: 3 as const,
   };
 }
 

@@ -8,12 +8,14 @@ import {readFile, realpath, stat, unlink} from 'node:fs/promises';
 import {dirname, isAbsolute, relative, resolve, sep} from 'node:path';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {Schema} from 'effect';
 import {EffectSchemaSdkTools} from '@threadnote/threadnote/mcp/effect_schema_sdk_tools';
 
 export const MATCHED_EVALUATION_CONTEXT_PACKET_ENV = 'MATCHED_EVALUATION_CONTEXT_PACKET' as const;
 export const MATCHED_EVALUATION_CONTEXT_SERVER_NAME = 'matched_evaluation_context' as const;
-export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 2 as const;
+export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 3 as const;
 
 export interface MatchedEvaluationContextProxyPacketV1 {
   readonly budgetTokens: number;
@@ -60,6 +62,121 @@ export function hashMatchedEvaluationContextContent(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+export function hashMatchedEvaluationContextRequest(toolName: string, requestInput: unknown): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (typeof value === 'object' && value !== null) {
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([a], [b]) => a.localeCompare(b, 'en'))
+          .map(([key, item]) => [key, canonical(item)]),
+      );
+    }
+    return value;
+  };
+  return hashMatchedEvaluationContextContent(JSON.stringify(canonical({toolName, arguments: requestInput})));
+}
+
+export function matchedEvaluationContextTools(
+  detail: MatchedEvaluationContextProxyPacketV1['detail'],
+): readonly string[] {
+  if (detail === 'source') return ['context_brief'];
+  const graph = ['context_brief', 'inspect_code_graph', 'analyze_code_graph'];
+  return detail === 'compact' ? [...graph, 'recall_context', 'read_context'] : graph;
+}
+
+const ScopeFields = {
+  callerCwd: PathOrId,
+  project: Schema.optionalKey(NonEmptyText.check(Schema.isMaxLength(128))),
+};
+const optionalText = Schema.optionalKey(PathOrId);
+const optionalBoolean = Schema.optionalKey(Schema.Boolean);
+const boundedInt = (minimum: number, maximum: number) =>
+  Schema.optionalKey(Schema.Int.check(Schema.isBetween({minimum, maximum})));
+export const MATCHED_EVALUATION_INSPECT_INPUT_SCHEMA = Schema.Struct({
+  ...ScopeFields,
+  operation: Schema.Literals(['query', 'node', 'neighbors', 'explain', 'path', 'impact']),
+  query: optionalText,
+  symbol: optionalText,
+  nodeId: optionalText,
+  from: optionalText,
+  to: optionalText,
+  package: optionalText,
+  cursor: optionalText,
+  depth: boundedInt(0, 8),
+  nodeLimit: boundedInt(1, 200),
+  edgeLimit: boundedInt(1, 500),
+  budgetTokens: boundedInt(1, 1_500),
+  readTimeoutMilliseconds: boundedInt(4_000, 55_000),
+  direction: Schema.optionalKey(Schema.Literals(['incoming', 'outgoing', 'both'])),
+  includeHeuristic: optionalBoolean,
+  includeModelAssociations: optionalBoolean,
+});
+export const MATCHED_EVALUATION_ANALYZE_INPUT_SCHEMA = Schema.Struct({
+  ...ScopeFields,
+  operation: Schema.Literals([
+    'stats',
+    'communities',
+    'community',
+    'groups',
+    'hubs',
+    'surprises',
+    'confidence',
+    'full',
+  ]),
+  communityId: optionalText,
+  memberLimit: boundedInt(1, 100),
+  includeHeuristic: optionalBoolean,
+  includeModelAssociations: optionalBoolean,
+});
+export const MATCHED_EVALUATION_RECALL_INPUT_SCHEMA = Schema.Struct({
+  ...ScopeFields,
+  query: PathOrId,
+  budgetTokens: boundedInt(700, 1_500),
+  nodeLimit: boundedInt(1, 20),
+});
+export const MATCHED_EVALUATION_READ_INPUT_SCHEMA = Schema.Struct({
+  uri: PathOrId,
+  mode: Schema.optionalKey(Schema.Literals(['content', 'outline'])),
+  offsetBytes: boundedInt(0, 10_000_000),
+  section: optionalText,
+  sourceHash: optionalText,
+});
+
+type ContextResult = {
+  readonly content: readonly [{readonly text: string; readonly type: 'text'}];
+  readonly meta: Readonly<Record<string, unknown>>;
+  readonly isError?: boolean;
+  readonly structuredContent?: never;
+};
+
+function receipt(
+  packet: MatchedEvaluationContextProxyPacketV1,
+  toolName: string,
+  request: unknown,
+  text: string,
+  success: boolean,
+): ContextResult {
+  return {
+    content: [{type: 'text', text}],
+    ...(success ? {} : {isError: true}),
+    meta: {
+      matchedEvaluation: {
+        ...packet.expectedContext,
+        graphReady: true,
+        runNonce: packet.runNonce,
+        runtimeManifestSha256: packet.runtimeManifestSha256,
+        contentResponseSha256: hashMatchedEvaluationContextContent(text),
+        frozenPromptSha256: hashMatchedEvaluationContextContent(packet.prompt),
+        toolName,
+        requestSha256: hashMatchedEvaluationContextRequest(toolName, request),
+        success,
+        version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
+      },
+    },
+  };
+}
+
 export const MATCHED_EVALUATION_CONTEXT_INPUT_SCHEMA = Schema.Struct({
   budgetTokens: Schema.optionalKey(Schema.Int.check(Schema.isBetween({minimum: 800, maximum: 1_500}))),
   callerCwd: PathOrId,
@@ -71,11 +188,7 @@ export const MATCHED_EVALUATION_CONTEXT_INPUT_SCHEMA = Schema.Struct({
 export async function handleMatchedEvaluationContextRequest(
   packetInput: MatchedEvaluationContextProxyPacketV1 | unknown,
   requestInput: MatchedEvaluationContextProxyRequestV1 | unknown,
-): Promise<{
-  readonly content: readonly [{readonly text: string; readonly type: 'text'}];
-  readonly meta: Readonly<Record<string, unknown>>;
-  readonly structuredContent?: never;
-}> {
+): Promise<ContextResult> {
   const packet = parseMatchedEvaluationContextProxyPacketV1(packetInput);
   const request = Schema.decodeUnknownSync(MATCHED_EVALUATION_CONTEXT_INPUT_SCHEMA, {
     onExcessProperty: 'error',
@@ -104,20 +217,124 @@ export async function handleMatchedEvaluationContextRequest(
     mode: request.mode ?? 'brief',
   });
   const responseText = JSON.stringify(structuredContent);
-  return {
-    content: [{text: responseText, type: 'text'}],
-    meta: {
-      matchedEvaluation: {
-        ...packet.expectedContext,
-        graphReady: true,
-        runNonce: packet.runNonce,
-        runtimeManifestSha256: packet.runtimeManifestSha256,
-        contentResponseSha256: hashMatchedEvaluationContextContent(responseText),
-        frozenPromptSha256: hashMatchedEvaluationContextContent(packet.prompt),
-        version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
-      },
-    },
+  return receipt(packet, 'context_brief', requestInput, responseText, true);
+}
+
+export async function handleMatchedEvaluationFollowupRequest(
+  packetInput: unknown,
+  toolName: string,
+  requestInput: unknown,
+  invoke: typeof runThreadnoteTool = runThreadnoteTool,
+): Promise<ContextResult> {
+  const packet = parseMatchedEvaluationContextProxyPacketV1(packetInput);
+  if (toolName === 'context_brief' || !matchedEvaluationContextTools(packet.detail).includes(toolName)) {
+    throw new Error('Tool is not allowed by the sealed treatment.');
+  }
+  const schemas = {
+    inspect_code_graph: MATCHED_EVALUATION_INSPECT_INPUT_SCHEMA,
+    analyze_code_graph: MATCHED_EVALUATION_ANALYZE_INPUT_SCHEMA,
+    recall_context: MATCHED_EVALUATION_RECALL_INPUT_SCHEMA,
+    read_context: MATCHED_EVALUATION_READ_INPUT_SCHEMA,
   };
+  const schema = schemas[toolName as keyof typeof schemas];
+  const request = Schema.decodeUnknownSync(schema, {onExcessProperty: 'error'})(requestInput) as Record<
+    string,
+    unknown
+  >;
+  const preparedHome = await realpath(packet.threadnoteHome);
+  if (!isContained(dirname(packet.repositoryRoot), preparedHome) || isContained(packet.repositoryRoot, preparedHome)) {
+    throw new Error('Prepared Threadnote home escaped its isolated private root.');
+  }
+  if (toolName !== 'read_context') {
+    if ((await realpath(request.callerCwd as string)) !== packet.repositoryRoot)
+      throw new Error('Context request escaped the isolated repository.');
+    if (request.project !== undefined && request.project !== packet.project)
+      throw new Error('Context request project differs from the prepared project.');
+  } else {
+    const uri = String(request.uri);
+    const personalPrefix = `threadnote://user/${packet.threadnoteUser}/memories/`;
+    const path = uri.startsWith(personalPrefix) ? uri.slice(personalPrefix.length) : undefined;
+    if (
+      !/^threadnote:\/\/memory\/tn_[A-Za-z0-9_-]+$/u.test(uri) &&
+      !(
+        path &&
+        !/[\\%?#]/u.test(path) &&
+        !path.includes('\0') &&
+        path.split('/').every(part => part.length > 0 && part !== '.' && part !== '..')
+      )
+    ) {
+      throw new Error('Memory URI is outside the isolated prepared memory namespace.');
+    }
+  }
+  await Promise.all([
+    assertPinnedExecutable(packet.threadnoteExecutable, packet.threadnoteExecutableSha256),
+    assertRuntimeManifest(packet, preparedHome),
+  ]);
+  const arguments_ =
+    toolName === 'read_context'
+      ? {...request, responseFormat: 'text'}
+      : {
+          ...request,
+          callerCwd: packet.repositoryRoot,
+          project: packet.project,
+          ...(toolName === 'analyze_code_graph' ? {freshness: 'allow-stale'} : {}),
+          responseFormat: 'agent',
+        };
+  try {
+    const result = await invoke(packet, toolName, arguments_);
+    // read_context has structured metadata, not a second evidence body. Prefer
+    // the native text projection so neither metadata nor dual output replaces it.
+    const nativeText = (result.content as {type: string; text?: string}[])
+      .filter(item => item.type === 'text')
+      .map(item => item.text ?? '')
+      .join('\n');
+    const text = nativeText || (result.structuredContent === undefined ? '' : JSON.stringify(result.structuredContent));
+    if (!text || Buffer.byteLength(text) > 256 * 1_024)
+      throw new Error('Tool response is empty or exceeds the bounded response limit.');
+    return receipt(packet, toolName, requestInput, text, result.isError !== true);
+  } catch (cause) {
+    return receipt(
+      packet,
+      toolName,
+      requestInput,
+      JSON.stringify({error: cause instanceof Error ? cause.message : 'Threadnote follow-up failed.'}),
+      false,
+    );
+  }
+}
+
+async function runThreadnoteTool(
+  packet: MatchedEvaluationContextProxyPacketV1,
+  name: string,
+  arguments_: Record<string, unknown>,
+) {
+  const client = new Client({
+    name: 'matched-evaluation-pinned-backend',
+    version: String(MATCHED_EVALUATION_CONTEXT_PROXY_VERSION),
+  });
+  const transport = new StdioClientTransport({
+    command: packet.threadnoteExecutable,
+    args: ['mcp-server'],
+    cwd: packet.repositoryRoot,
+    env: {
+      ...threadnoteEnvironment(packet),
+      THREADNOTE_MANIFEST: packet.runtimeManifestPath,
+      LOGNAME: packet.threadnoteUser,
+      USER: packet.threadnoteUser,
+      SHELL: '/bin/sh',
+      TERM: 'dumb',
+    },
+    stderr: 'pipe',
+    maxBufferSize: 2 * 1_024 * 1_024,
+  });
+  transport.stderr?.on('data', () => undefined);
+  try {
+    await client.connect(transport, {timeout: 30_000});
+    return await client.callTool({name, arguments: arguments_}, undefined, {timeout: 120_000});
+  } finally {
+    await client.close();
+    await transport.close();
+  }
 }
 
 export function parseMatchedEvaluationContextProxyPacketV1(
@@ -141,7 +358,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'threadnoteUser',
     'version',
   ]);
-  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 2');
+  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 3');
   const expected = object(packet.expectedContext, 'expected context');
   exactKeys(expected, [
     'graphContentHash',
@@ -152,6 +369,10 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'taskContextHash',
   ]);
   const memoryAccess = literal(expected.memoryAccess, ['disabled', 'linked'] as const, 'memory access');
+  const detail = literal(packet.detail, ['compact', 'graph-only', 'source'] as const, 'context detail');
+  if ((detail === 'graph-only') !== (memoryAccess === 'disabled')) {
+    invalid('treatment detail and memory access disagree');
+  }
   const linkReceiptsHash = nullableHash(expected.linkReceiptsHash, 'link receipts hash');
   const taskContextHash = nullableHash(expected.taskContextHash, 'task context hash');
   if (
@@ -162,7 +383,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   }
   return {
     budgetTokens: integer(packet.budgetTokens, 800, 1_500, 'context budget'),
-    detail: literal(packet.detail, ['compact', 'graph-only', 'source'] as const, 'context detail'),
+    detail,
     expectedContext: {
       graphContentHash: matching(expected.graphContentHash, HASH, 'graph content hash'),
       graphSnapshotHash: matching(expected.graphSnapshotHash, HASH, 'graph snapshot hash'),
@@ -232,7 +453,16 @@ async function runThreadnoteContextBrief(
     String(packet.budgetTokens),
     ...request.codeRefs.flatMap(reference => ['--code-ref', reference]),
   ];
-  const result = await capture(packet.threadnoteExecutable, arguments_, {
+  const result = await capture(packet.threadnoteExecutable, arguments_, threadnoteEnvironment(packet));
+  try {
+    return object(JSON.parse(result) as unknown, 'Threadnote Context Brief');
+  } catch (cause) {
+    throw new Error('Threadnote returned invalid Context Brief JSON.', {cause});
+  }
+}
+
+function threadnoteEnvironment(packet: MatchedEvaluationContextProxyPacketV1): Record<string, string> {
+  return {
     CI: '1',
     HOME: packet.threadnoteHome,
     LANG: 'C.UTF-8',
@@ -244,12 +474,7 @@ async function runThreadnoteContextBrief(
     THREADNOTE_NO_SPINNER: '1',
     THREADNOTE_NO_UPDATE_CHECK: '1',
     THREADNOTE_USER: packet.threadnoteUser,
-  });
-  try {
-    return object(JSON.parse(result) as unknown, 'Threadnote Context Brief');
-  } catch (cause) {
-    throw new Error('Threadnote returned invalid Context Brief JSON.', {cause});
-  }
+  };
 }
 
 async function assertRuntimeManifest(
@@ -353,6 +578,8 @@ export async function runMatchedEvaluationContextProxy(): Promise<void> {
     {capabilities: {tools: {listChanged: false}}},
   );
   const tools = new EffectSchemaSdkTools();
+  let briefStarted = false;
+  let briefReady = false;
   tools.register(
     'context_brief',
     {
@@ -361,10 +588,51 @@ export async function runMatchedEvaluationContextProxy(): Promise<void> {
       inputSchema: MATCHED_EVALUATION_CONTEXT_INPUT_SCHEMA,
     },
     async request => {
+      if (briefStarted) throw new Error('The initial context brief may only be requested once.');
+      briefStarted = true;
       const result = await handleMatchedEvaluationContextRequest(packet, request);
+      briefReady = true;
       return {content: [...result.content], _meta: result.meta};
     },
   );
+  const followups = [
+    [
+      'inspect_code_graph',
+      MATCHED_EVALUATION_INSPECT_INPUT_SCHEMA,
+      'Query or traverse the isolated prepared code graph. Verify returned paths against current files after edits.',
+    ],
+    [
+      'analyze_code_graph',
+      MATCHED_EVALUATION_ANALYZE_INPUT_SCHEMA,
+      'Analyze the existing prepared graph snapshot. No remote worksets or cold indexing.',
+    ],
+    [
+      'recall_context',
+      MATCHED_EVALUATION_RECALL_INPUT_SCHEMA,
+      'Recall task-relevant memories from the isolated prepared memory store.',
+    ],
+    [
+      'read_context',
+      MATCHED_EVALUATION_READ_INPUT_SCHEMA,
+      'Read a prepared memory URI returned by the brief or recall.',
+    ],
+  ] as const;
+  for (const [name, inputSchema, description] of followups) {
+    if (!matchedEvaluationContextTools(packet.detail).includes(name)) continue;
+    tools.register(
+      name,
+      {
+        annotations: {destructiveHint: false, readOnlyHint: true},
+        description,
+        inputSchema,
+      },
+      async request => {
+        if (!briefReady) throw new Error('Read the initial context brief before follow-up calls.');
+        const result = await handleMatchedEvaluationFollowupRequest(packet, name, request);
+        return {content: [...result.content], _meta: result.meta, ...(result.isError ? {isError: true} : {})};
+      },
+    );
+  }
   tools.install(server);
   await server.connect(new StdioServerTransport(process.stdin, process.stdout, {maxBufferSize: 2 * 1_024 * 1_024}));
 }

@@ -46,6 +46,63 @@ describe('matched Threadnote, reference, and files evaluation', () => {
     }
   });
 
+  it('binds a canonical selected-arm subset and counterbalances only selected positions', async () => {
+    const corpus = await fixture();
+    const full = createManifest(corpus);
+    const manifest = createMatchedEvaluationManifestV1({
+      activeArms: ['files', 'threadnote-graph', 'threadnote-compact'],
+      arms: full.arms,
+      corpus,
+      model: full.model,
+      repetitions: 6,
+      repository: full.repository,
+      scheduleSeed: full.scheduleSeed,
+    });
+    expect(manifest.activeArms).toEqual(['files', 'threadnote-graph', 'threadnote-compact']);
+    expect(manifest.schedule).toHaveLength(6 * 6 * 3);
+    expect(new Set(manifest.schedule.map(entry => entry.position))).toEqual(new Set([1, 2, 3]));
+    expect(new Set(manifest.schedule.map(entry => manifest.blindAssignment[entry.blindLabel]))).toEqual(
+      new Set(manifest.activeArms),
+    );
+    expect(parseMatchedEvaluationManifestV1(manifest)).toEqual(manifest);
+    expect(() =>
+      createMatchedEvaluationManifestV1({
+        activeArms: manifest.activeArms,
+        arms: manifest.arms,
+        corpus,
+        model: manifest.model,
+        repetitions: 5,
+        repository: manifest.repository,
+        scheduleSeed: manifest.scheduleSeed,
+      }),
+    ).toThrow('divisible by selected arm count');
+    fc.assert(
+      fc.property(fc.subarray([...MATCHED_EVALUATION_ARMS], {minLength: 1}), selected => {
+        const repetitions = selected.length === 1 ? 5 : Math.max(6, selected.length * 2);
+        const candidate = createMatchedEvaluationManifestV1({
+          activeArms: selected,
+          arms: full.arms,
+          corpus,
+          model: full.model,
+          repetitions,
+          repository: full.repository,
+          scheduleSeed: full.scheduleSeed,
+        });
+        expect(new Set(candidate.schedule.map(entry => candidate.blindAssignment[entry.blindLabel]))).toEqual(
+          new Set(selected),
+        );
+        for (const task of candidate.tasks) {
+          const entries = candidate.schedule.filter(entry => entry.taskId === task.taskId);
+          expect(new Set(entries.map(entry => entry.position))).toEqual(
+            new Set(Array.from({length: selected.length}, (_, index) => index + 1)),
+          );
+        }
+        expect(candidate.manifestHash).not.toBe(full.manifestHash);
+      }),
+      {numRuns: 20},
+    );
+  });
+
   it('admits an unmixed historical as-issued corpus without inventing synthetic task conditions', async () => {
     const corpus = await fixture();
     const historical = {

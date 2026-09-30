@@ -2,7 +2,8 @@ import {sha256HexSync} from '@threadnote/platform/sha256';
 
 export const MATCHED_EVALUATION_VERSION = 1 as const;
 export const MATCHED_EVALUATION_ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v4' as const;
-export const MATCHED_EVALUATION_SCHEDULE_ALGORITHM = 'sha256-counterbalanced-v2' as const;
+export const MATCHED_EVALUATION_SCHEDULE_ALGORITHM = 'sha256-counterbalanced-v3' as const;
+export const MATCHED_EVALUATION_LEGACY_SCHEDULE_ALGORITHM = 'sha256-counterbalanced-v2' as const;
 export const MATCHED_EVALUATION_ARMS = [
   'files',
   'threadnote-graph',
@@ -123,6 +124,8 @@ export interface MatchedEvaluationScheduleEntryV1 {
 }
 
 export interface MatchedEvaluationManifestV1 {
+  /** Canonical selected subset. Omitted by legacy manifests, which means all five arms. */
+  readonly activeArms?: readonly MatchedEvaluationArm[];
   readonly arms: readonly MatchedEvaluationArmDefinitionV1[];
   readonly blindAssignment: Readonly<Record<MatchedEvaluationBlindLabel, MatchedEvaluationArm>>;
   readonly corpusHash: string;
@@ -140,7 +143,8 @@ export interface MatchedEvaluationManifestV1 {
     readonly revision: string;
   };
   readonly schedule: readonly MatchedEvaluationScheduleEntryV1[];
-  readonly scheduleAlgorithm: typeof MATCHED_EVALUATION_SCHEDULE_ALGORITHM;
+  readonly scheduleAlgorithm:
+    typeof MATCHED_EVALUATION_SCHEDULE_ALGORITHM | typeof MATCHED_EVALUATION_LEGACY_SCHEDULE_ALGORITHM;
   readonly scheduleSeed: string;
   readonly tasks: readonly MatchedEvaluationManifestTaskV1[];
   readonly version: typeof MATCHED_EVALUATION_VERSION;
@@ -191,6 +195,7 @@ export function matchedEvaluationCorpusHashV1(value: MatchedEvaluationCorpusV1 |
 }
 
 export function createMatchedEvaluationManifestV1(input: {
+  readonly activeArms?: readonly MatchedEvaluationArm[];
   readonly arms: readonly MatchedEvaluationArmDefinitionV1[];
   readonly corpus: MatchedEvaluationCorpusV1 | unknown;
   readonly model: MatchedEvaluationManifestV1['model'];
@@ -203,9 +208,11 @@ export function createMatchedEvaluationManifestV1(input: {
   const repetitions = repetitionsValue(input.repetitions);
   const scheduleSeed = matchingString(input.scheduleSeed, HASH, 'schedule seed');
   const tasks = corpus.tasks.map(projectManifestTask);
+  const activeArms = canonicalActiveArms(input.activeArms);
   const blindAssignment = deriveMatchedEvaluationBlindAssignmentV1(scheduleSeed);
-  const schedule = deriveMatchedEvaluationScheduleV1({blindAssignment, repetitions, scheduleSeed, tasks});
+  const schedule = deriveMatchedEvaluationScheduleV1({activeArms, blindAssignment, repetitions, scheduleSeed, tasks});
   const withoutHash = {
+    activeArms,
     arms,
     blindAssignment,
     corpusHash: matchedEvaluationCorpusHashV1(corpus),
@@ -226,6 +233,7 @@ export function parseMatchedEvaluationManifestV1(value: unknown): MatchedEvaluat
   exactKeys(
     manifest,
     [
+      ...(manifest.activeArms === undefined ? [] : ['activeArms']),
       'arms',
       'blindAssignment',
       'corpusHash',
@@ -242,10 +250,23 @@ export function parseMatchedEvaluationManifestV1(value: unknown): MatchedEvaluat
     'manifest',
   );
   if (manifest.version !== MATCHED_EVALUATION_VERSION) invalid('manifest version must be 1');
-  if (manifest.scheduleAlgorithm !== MATCHED_EVALUATION_SCHEDULE_ALGORITHM) {
+  if (
+    manifest.scheduleAlgorithm !== MATCHED_EVALUATION_SCHEDULE_ALGORITHM &&
+    manifest.scheduleAlgorithm !== MATCHED_EVALUATION_LEGACY_SCHEDULE_ALGORITHM
+  ) {
     invalid('manifest schedule algorithm is unsupported');
   }
   const arms = parseArmDefinitions(array(manifest.arms, 'manifest arms'));
+  const activeArms = manifest.activeArms === undefined ? undefined : canonicalActiveArms(manifest.activeArms);
+  if (manifest.scheduleAlgorithm === MATCHED_EVALUATION_SCHEDULE_ALGORITHM && activeArms === undefined) {
+    invalid('v3 schedule must declare active arms');
+  }
+  if (
+    manifest.scheduleAlgorithm === MATCHED_EVALUATION_LEGACY_SCHEDULE_ALGORITHM &&
+    manifest.activeArms !== undefined
+  ) {
+    invalid('legacy schedule algorithm cannot declare active arms');
+  }
   const repetitions = repetitionsValue(manifest.repetitions);
   const scheduleSeed = matchingString(manifest.scheduleSeed, HASH, 'manifest schedule seed');
   const tasks = array(manifest.tasks, 'manifest tasks').map((task, index) => parseManifestTask(task, index));
@@ -262,11 +283,18 @@ export function parseMatchedEvaluationManifestV1(value: unknown): MatchedEvaluat
   const schedule = array(manifest.schedule, 'manifest schedule').map((entry, index) =>
     parseScheduleEntry(entry, index),
   );
-  const expectedSchedule = deriveMatchedEvaluationScheduleV1({blindAssignment, repetitions, scheduleSeed, tasks});
+  const expectedSchedule = deriveMatchedEvaluationScheduleV1({
+    activeArms,
+    blindAssignment,
+    repetitions,
+    scheduleSeed,
+    tasks,
+  });
   if (JSON.stringify(schedule) !== JSON.stringify(expectedSchedule)) {
     invalid('schedule does not match the content-addressed counterbalanced derivation');
   }
   const withoutHash = {
+    ...(activeArms === undefined ? {} : {activeArms}),
     arms,
     blindAssignment,
     corpusHash: matchingString(manifest.corpusHash, HASH, 'manifest corpus hash'),
@@ -274,7 +302,7 @@ export function parseMatchedEvaluationManifestV1(value: unknown): MatchedEvaluat
     repetitions,
     repository: parseRepository(manifest.repository),
     schedule,
-    scheduleAlgorithm: MATCHED_EVALUATION_SCHEDULE_ALGORITHM,
+    scheduleAlgorithm: manifest.scheduleAlgorithm,
     scheduleSeed,
     tasks,
     version: MATCHED_EVALUATION_VERSION,
@@ -305,6 +333,7 @@ export function deriveMatchedEvaluationBlindAssignmentV1(
 }
 
 export function deriveMatchedEvaluationScheduleV1(input: {
+  readonly activeArms?: readonly MatchedEvaluationArm[];
   readonly blindAssignment: Readonly<Record<MatchedEvaluationBlindLabel, MatchedEvaluationArm>>;
   readonly repetitions: number;
   readonly scheduleSeed: string;
@@ -312,6 +341,10 @@ export function deriveMatchedEvaluationScheduleV1(input: {
 }): readonly MatchedEvaluationScheduleEntryV1[] {
   const scheduleSeed = matchingString(input.scheduleSeed, HASH, 'schedule seed');
   const repetitions = repetitionsValue(input.repetitions);
+  const activeArms = canonicalActiveArms(input.activeArms);
+  if (repetitions % activeArms.length !== 0) {
+    invalid(`repetitions must be divisible by selected arm count (${activeArms.length})`);
+  }
   const tasks = [...input.tasks].sort((left, right) => left.taskId.localeCompare(right.taskId));
   canonicalUnique(
     tasks.map(task => matchingString(task.taskId, TASK_ID, 'schedule task id')),
@@ -325,9 +358,9 @@ export function deriveMatchedEvaluationScheduleV1(input: {
   for (let repetition = 0; repetition < repetitions; repetition += 1) {
     const taskOrder = hashOrder(tasks, task => `${scheduleSeed}\0task-order\0${repetition}\0${task.taskId}`);
     for (const task of taskOrder) {
-      const base = hashOrder(MATCHED_EVALUATION_ARMS, arm => `${scheduleSeed}\0arm-order\0${task.taskId}\0${arm}`);
-      const offset = digestInteger(`${scheduleSeed}\0rotation\0${task.taskId}`) % MATCHED_EVALUATION_ARMS.length;
-      const rotation = (offset + repetition) % MATCHED_EVALUATION_ARMS.length;
+      const base = hashOrder(activeArms, arm => `${scheduleSeed}\0arm-order\0${task.taskId}\0${arm}`);
+      const offset = digestInteger(`${scheduleSeed}\0rotation\0${task.taskId}`) % activeArms.length;
+      const rotation = (offset + repetition) % activeArms.length;
       const order = [...base.slice(rotation), ...base.slice(0, rotation)];
       for (let position = 0; position < order.length; position += 1) {
         const arm = order[position];
@@ -717,10 +750,23 @@ function assertVariantDesign(tasks: readonly MatchedEvaluationCorpusTaskV1[]): v
 
 function repetitionsValue(value: unknown): number {
   const repetitions = positiveInteger(value, 'manifest repetitions');
-  if (repetitions < MATCHED_EVALUATION_MINIMUM_REPETITIONS || repetitions > 40 || repetitions % 5 !== 0) {
-    invalid('manifest repetitions must be between 5 and 40 and divisible by five');
+  if (repetitions < MATCHED_EVALUATION_MINIMUM_REPETITIONS || repetitions > 40) {
+    invalid('manifest repetitions must be between 5 and 40');
   }
   return repetitions;
+}
+
+function canonicalActiveArms(value: unknown): readonly MatchedEvaluationArm[] {
+  const arms =
+    value === undefined
+      ? [...MATCHED_EVALUATION_ARMS]
+      : array(value, 'active arms').map((arm, index) => literal(arm, MATCHED_EVALUATION_ARMS, `active arm ${index}`));
+  if (arms.length === 0 || arms.length > MATCHED_EVALUATION_ARMS.length)
+    invalid('active arms must select at least one arm');
+  unique(arms, 'active arms');
+  return [...arms].sort(
+    (left, right) => MATCHED_EVALUATION_ARMS.indexOf(left) - MATCHED_EVALUATION_ARMS.indexOf(right),
+  );
 }
 
 function hashOrder<T>(values: readonly T[], key: (value: T) => string): T[] {

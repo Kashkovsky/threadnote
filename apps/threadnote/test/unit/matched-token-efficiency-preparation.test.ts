@@ -20,6 +20,7 @@ import {
   MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION,
   assertMatchedTokenEfficiencyLinkedBriefV1,
   assertMatchedTokenEfficiencyThreadnoteVersionOutputV1,
+  assertMatchedTokenEfficiencyProductionReleaseV1,
   prepareMatchedTokenEfficiencyStudyV1,
 } from '../../../../scripts/prepare-matched-token-efficiency-study.js';
 import {parseMatchedEvaluationRuntimeV1} from '../../../../scripts/run-matched-evaluation.js';
@@ -29,6 +30,43 @@ describe('matched token-efficiency study preparation', () => {
 
   afterEach(async () => {
     await Promise.all(roots.splice(0).map(root => rm(root, {force: true, recursive: true})));
+  });
+
+  it('binds plain production version output to the reviewed immutable release digest and source', () => {
+    const release = {
+      version: '5.0.7',
+      immutable: true,
+      sourceCommit: '78eab789ba33e3b7e3abf44d73dd48f8bc58f8d7',
+      executableSha256: 'e8cef51bc029705614928c7ea69a5cb39e1b05f43f272ca495a947f5d5e32c15',
+      archiveSha256: 'c234c12d56807fdd94ad0ffbfceafb45140ee73304fc6399da65051a35670fb1',
+      releaseUrl: 'https://github.com/Kashkovsky/threadnote/releases/tag/v5.0.7',
+      archiveUrl: 'https://github.com/Kashkovsky/threadnote/releases/download/v5.0.7/threadnote-darwin-arm64.tar.gz',
+    } as const;
+    const check = (
+      version = 'threadnote v5.0.7\n',
+      commit = release.sourceCommit,
+      digest: string = release.executableSha256,
+    ) => assertMatchedTokenEfficiencyProductionReleaseV1(version, commit, digest, release);
+    expect(() => check()).not.toThrow();
+    expect(() => check(`threadnote v5.0.7-local.g${release.sourceCommit}\n`)).toThrow('exact production');
+    expect(() => check('threadnote v5.0.6\n')).toThrow('exact production');
+    expect(() => check(undefined, undefined, 'f'.repeat(64))).toThrow('hash differs');
+    expect(() =>
+      assertMatchedTokenEfficiencyProductionReleaseV1(
+        'threadnote v5.0.7\n',
+        'f'.repeat(40),
+        release.executableSha256,
+        release,
+      ),
+    ).toThrow('exact production');
+    expect(() =>
+      assertMatchedTokenEfficiencyProductionReleaseV1(
+        'threadnote v5.0.7\n',
+        release.sourceCommit,
+        release.executableSha256,
+        {...release, archiveSha256: 'f'.repeat(64)},
+      ),
+    ).toThrow('provenance');
   });
 
   it('accepts only an exact commit-reporting 5.0.6 local build', () => {
@@ -276,9 +314,10 @@ describe('matched token-efficiency study preparation', () => {
             minimumMemoryTokenReductionBasisPoints: 500,
             minimumTokenReductionBasisPoints: 500,
           },
+          activeArms: ['files', 'threadnote-graph', 'threadnote-compact'],
           lifecycle: lifecycle(),
           project: 'threadnote',
-          repetitions: 5,
+          repetitions: 6,
           scheduleSeed: '8'.repeat(64),
           studyId: 'matched-preparation-test',
           taskContexts,
@@ -303,7 +342,7 @@ describe('matched token-efficiency study preparation', () => {
             })),
             timeoutMilliseconds: 10_000,
           },
-          version: 2,
+          version: 3,
         },
         undefined,
         2,
@@ -339,7 +378,7 @@ describe('matched token-efficiency study preparation', () => {
       studyHash: study.studyHash,
       threadnoteSourceCommit: sourceCommit,
     });
-    expect(manifest.schedule).toHaveLength(150);
+    expect(manifest.schedule).toHaveLength(108);
     expect(runtime.arms.map(arm => arm.arm)).toEqual([
       'files',
       'threadnote-graph',
@@ -377,7 +416,6 @@ describe('matched token-efficiency study preparation', () => {
     expect(study.clusters).toHaveLength(2);
     expect(study.verificationPlanHash).toBe(receipt.verificationPlanHash);
     expect(runtime.verificationPlanHash).toBe(study.verificationPlanHash);
-    expect(receipt.outputHashes).toHaveProperty('verification-plan.json');
     expect(configs.every(entry => entry.config.verificationPlan?.planHash === study.verificationPlanHash)).toBe(true);
     expect(study.taskContexts.every(context => context.linkReceipts.length > 0)).toBe(true);
     for (const context of study.taskContexts) {

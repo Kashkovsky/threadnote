@@ -60,10 +60,27 @@ import {
   type MatchedEvaluationRuntimeV1,
 } from './run-matched-evaluation.js';
 
-export const MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION = 2 as const;
+export const MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION = 3 as const;
 export const MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION = '5.0.6' as const;
+export const MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION = '5.0.7' as const;
+const PRODUCTION_SOURCE_COMMIT = '78eab789ba33e3b7e3abf44d73dd48f8bc58f8d7' as const;
+const PRODUCTION_RELEASE_URL = 'https://github.com/Kashkovsky/threadnote/releases/tag/v5.0.7' as const;
+const PRODUCTION_ARCHIVE_URL =
+  'https://github.com/Kashkovsky/threadnote/releases/download/v5.0.7/threadnote-darwin-arm64.tar.gz' as const;
+
+export interface MatchedTokenEfficiencyProductionReleaseV1 {
+  readonly archiveSha256: string;
+  readonly archiveUrl: typeof PRODUCTION_ARCHIVE_URL;
+  readonly executableSha256: string;
+  readonly immutable: true;
+  readonly releaseUrl: typeof PRODUCTION_RELEASE_URL;
+  readonly sourceCommit: string;
+  readonly version: typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
+}
 
 interface PreparationPlanV1 {
+  /** Selected runtime subset; v3 plans must declare this explicitly. */
+  readonly activeArms: readonly MatchedEvaluationArm[];
   readonly adapter: {
     readonly appServer: {
       readonly argumentsAfterSubcommand: readonly string[];
@@ -95,6 +112,7 @@ interface PreparationPlanV1 {
   readonly repetitions: number;
   readonly scheduleSeed: string;
   readonly studyId: string;
+  readonly targetArms?: readonly ('threadnote-compact' | 'threadnote-source')[];
   readonly taskContexts: readonly TaskContextPlanV1[];
   readonly threadnote: {
     readonly account: string;
@@ -103,6 +121,7 @@ interface PreparationPlanV1 {
     readonly requiredReleaseCommit: string;
     readonly sourceDirectory: string;
     readonly user: string;
+    readonly productionRelease?: MatchedTokenEfficiencyProductionReleaseV1;
   };
   readonly timeoutMilliseconds: number;
   readonly verification: VerificationPreparationPlanV1;
@@ -166,7 +185,10 @@ export interface MatchedTokenEfficiencyPreparationReceiptV1 {
   readonly outputHashes: Readonly<Record<string, string>>;
   readonly receiptHash: string;
   readonly referenceArm: 'unavailable';
-  readonly requiredProductVersion: typeof MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION;
+  readonly requiredProductVersion:
+    | typeof MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION
+    | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
+  readonly productionRelease: MatchedTokenEfficiencyProductionReleaseV1 | null;
   readonly studyHash: string;
   readonly threadnoteArtifactHash: string;
   readonly threadnoteLockHash: string;
@@ -184,6 +206,7 @@ const CLUSTER_ID = /^cluster_[0-9a-f]{16,64}$/u;
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const VERIFIER_SELECTOR = /^[a-z][a-z0-9-]{0,63}$/u;
 const VERSION_OUTPUT = /^threadnote v5\.0\.6-local\.g([0-9a-f]{40})\s*$/u;
+const PRODUCTION_VERSION_OUTPUT = /^threadnote v5\.0\.7\s*$/u;
 const MAXIMUM_JSON_BYTES = 8 * 1_024 * 1_024;
 
 const program = Effect.gen(function* () {
@@ -203,13 +226,15 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
     readJson(options.corpusPath).then(parseMatchedEvaluationCorpusV1),
     readJson(options.planPath).then(parsePreparationPlanV1),
   ]);
+  const activeArms = plan.activeArms;
   const outputRoot = absolutePath(options.outputRoot, 'output root');
   if (!outputRoot.split(sep).includes('.context'))
     throw new Error('Output root must be inside a local .context directory.');
   const outputParent = await canonicalDirectory(dirname(outputRoot), 'output parent');
   if (dirname(outputRoot) !== outputParent) throw new Error('Output parent must use its canonical path.');
   await assertAbsent(outputRoot, 'output root');
-  const sourceCommit = await assertThreadnote506SourceAndExecutable(plan.threadnote);
+  const product = await assertThreadnoteSourceAndExecutable(plan.threadnote);
+  const sourceCommit = product.sourceCommit;
   const [adapterExecutable, adapterArtifactHash, threadnoteArtifactHash, threadnoteLockHash] = await Promise.all([
     canonicalRegularFile(plan.adapter.executable, true, 'adapter executable'),
     hashCanonicalFile(plan.adapter.executable, true, 'adapter executable'),
@@ -226,6 +251,7 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
   const clusterObservations = await prepareClusters(plan, corpus);
   const verificationPlan = await prepareVerificationPlan(plan, corpus, clusterObservations);
   const provisionalManifest = createMatchedEvaluationManifestV1({
+    activeArms,
     arms: placeholderArmDefinitions(),
     corpus,
     model: manifestModel(plan.adapter.model),
@@ -255,8 +281,10 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
     referenceArtifactHash: unavailableReferenceHash,
     threadnoteArtifactHash,
     threadnoteLockHash,
+    productVersion: product.version,
   });
   const manifest = createMatchedEvaluationManifestV1({
+    activeArms,
     arms,
     corpus,
     model: manifestModel(plan.adapter.model),
@@ -285,7 +313,9 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
     manifestHash: manifest.manifestHash,
     promptPolicy: 'identical-as-issued',
     studyId: plan.studyId,
-    targetArms: ['threadnote-compact', 'threadnote-source'],
+    targetArms: (plan.targetArms ?? ['threadnote-compact', 'threadnote-source']).filter(arm =>
+      activeArms.includes(arm),
+    ),
     taskContexts: tasks.map(task => task.taskContext),
     verificationPlanHash: verificationPlan.planHash,
   });
@@ -313,7 +343,8 @@ export async function prepareMatchedTokenEfficiencyStudyV1(options: {
     manifestHash: manifest.manifestHash,
     outputHashes,
     referenceArm: 'unavailable' as const,
-    requiredProductVersion: MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION,
+    requiredProductVersion: product.version,
+    productionRelease: product.productionRelease,
     studyHash: study.studyHash,
     threadnoteArtifactHash,
     threadnoteLockHash,
@@ -371,7 +402,7 @@ async function assertPreparationInputsUnchanged(input: {
   readonly threadnoteLockHash: string;
   readonly verificationPlan: MatchedEvaluationVerificationPlanV1;
 }): Promise<void> {
-  const sourceCommit = await assertThreadnote506SourceAndExecutable(input.plan.threadnote);
+  const sourceCommit = (await assertThreadnoteSourceAndExecutable(input.plan.threadnote)).sourceCommit;
   if (sourceCommit !== input.sourceCommit) throw new Error('Threadnote source changed during preparation.');
   const [adapterHash, threadnoteHash, lockHash] = await Promise.all([
     hashCanonicalFile(input.plan.adapter.executable, true, 'adapter executable'),
@@ -805,6 +836,9 @@ function runtimeArm(
 
 function armDefinitions(input: {
   readonly adapterArtifactHash: string;
+  readonly productVersion:
+    | typeof MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION
+    | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
   readonly configHashes: Readonly<Record<MatchedEvaluationArm, string>>;
   readonly referenceArtifactHash: string;
   readonly threadnoteArtifactHash: string;
@@ -833,7 +867,7 @@ function armDefinitions(input: {
               artifactHash: input.threadnoteArtifactHash,
               lockIdentityHash: input.threadnoteLockHash,
               name: 'threadnote',
-              version: MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION,
+              version: input.productVersion,
             },
   }));
 }
@@ -847,6 +881,7 @@ function placeholderArmDefinitions(): readonly MatchedEvaluationArmDefinitionV1[
     referenceArtifactHash: '3'.repeat(64),
     threadnoteArtifactHash: '4'.repeat(64),
     threadnoteLockHash: '5'.repeat(64),
+    productVersion: MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION,
   });
 }
 
@@ -1134,43 +1169,108 @@ async function prepareAsIssuedContext(
   };
 }
 
-async function assertThreadnote506SourceAndExecutable(input: PreparationPlanV1['threadnote']): Promise<string> {
+async function assertThreadnoteSourceAndExecutable(input: PreparationPlanV1['threadnote']): Promise<{
+  readonly productionRelease: MatchedTokenEfficiencyProductionReleaseV1 | null;
+  readonly sourceCommit: string;
+  readonly version:
+    | typeof MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION
+    | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
+}> {
   const [sourceDirectory, executable] = await Promise.all([
     canonicalDirectory(input.sourceDirectory, 'Threadnote source directory'),
     canonicalRegularFile(input.executable, true, 'Threadnote executable'),
   ]);
   const status = await captureGit(sourceDirectory, ['status', '--porcelain=v1']);
-  if (status.stdout !== '') throw new Error('Threadnote 5.0.6 source checkout must be clean.');
+  if (status.stdout !== '') throw new Error('Threadnote source checkout must be clean.');
   const head = singleLine(
     (await captureGit(sourceDirectory, ['rev-parse', 'HEAD'])).stdout,
     'Threadnote source commit',
   );
   if (!COMMIT.test(head)) throw new Error('Threadnote source commit is invalid.');
-  const requiredReleaseCommit = matching(input.requiredReleaseCommit, COMMIT, 'required 5.0.6 release commit');
+  const productionRelease = input.productionRelease;
+  if (productionRelease !== undefined) {
+    validateProductionRelease(productionRelease);
+  }
+  const requiredReleaseCommit = matching(
+    input.requiredReleaseCommit,
+    COMMIT,
+    productionRelease === undefined ? 'required 5.0.6 release commit' : 'required 5.0.7 release commit',
+  );
   const ancestry = await captureGit(
     sourceDirectory,
     ['merge-base', '--is-ancestor', requiredReleaseCommit, head],
     true,
   );
-  if (ancestry.exitCode !== 0)
+  if (productionRelease !== undefined) {
+    if (head !== productionRelease.sourceCommit || requiredReleaseCommit !== productionRelease.sourceCommit)
+      throw new Error(
+        'Production source HEAD and required release commit must equal the immutable release source commit.',
+      );
+  } else if (ancestry.exitCode !== 0) {
     throw new Error('Threadnote source commit does not contain the required 5.0.6 release commit.');
+  }
   const packageVersion = JSON.parse(await readFile(join(sourceDirectory, 'package.json'), 'utf8')) as {
     version?: unknown;
   };
-  if (packageVersion.version !== MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION) {
-    throw new Error('Threadnote source checkout is not version 5.0.6.');
+  const expectedVersion =
+    productionRelease === undefined
+      ? MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION
+      : MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
+  if (packageVersion.version !== expectedVersion) {
+    throw new Error(`Threadnote source checkout is not version ${expectedVersion}.`);
   }
   const version = await captureCodeMemoryLinkProcessGroup({
     arguments: ['--version'],
     command: executable,
     cwd: sourceDirectory,
     environment: {HOME: '/nonexistent', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', PATH: '/usr/bin:/bin'},
-    label: 'Threadnote 5.0.6 version',
+    label: `Threadnote ${expectedVersion} version`,
     maxOutputBytes: 16 * 1_024,
     timeoutMilliseconds: 30_000,
   });
-  assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(version.stdout, head);
-  return head;
+  if (productionRelease === undefined) assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(version.stdout, head);
+  else {
+    assertMatchedTokenEfficiencyProductionReleaseV1(
+      version.stdout,
+      head,
+      sha256(await readFile(executable)),
+      productionRelease,
+    );
+    if (
+      (await hashCanonicalFile(input.lockFile, false, 'production release archive')) !== productionRelease.archiveSha256
+    ) {
+      throw new Error('Production tool lock must be the exact immutable release archive.');
+    }
+  }
+  return {productionRelease: productionRelease ?? null, sourceCommit: head, version: expectedVersion};
+}
+
+export function assertMatchedTokenEfficiencyProductionReleaseV1(
+  versionOutput: string,
+  sourceCommit: string,
+  executableSha256: string,
+  release: MatchedTokenEfficiencyProductionReleaseV1,
+): void {
+  validateProductionRelease(release);
+  // Production --version does not embed a commit. Identity comes from the
+  // reviewed immutable release's exact binary digest and tag-to-commit binding.
+  if (!PRODUCTION_VERSION_OUTPUT.test(versionOutput) || sourceCommit !== release.sourceCommit)
+    throw new Error('Threadnote executable is not the exact production 5.0.7 build.');
+  if (executableSha256 !== release.executableSha256)
+    throw new Error('Threadnote executable hash differs from immutable production provenance.');
+}
+
+function validateProductionRelease(value: MatchedTokenEfficiencyProductionReleaseV1): void {
+  if (
+    value.version !== MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION ||
+    value.sourceCommit !== PRODUCTION_SOURCE_COMMIT ||
+    value.releaseUrl !== PRODUCTION_RELEASE_URL ||
+    value.archiveUrl !== PRODUCTION_ARCHIVE_URL ||
+    value.immutable !== true ||
+    value.executableSha256 !== 'e8cef51bc029705614928c7ea69a5cb39e1b05f43f272ca495a947f5d5e32c15' ||
+    value.archiveSha256 !== 'c234c12d56807fdd94ad0ffbfceafb45140ee73304fc6399da65051a35670fb1'
+  )
+    throw new Error('Production release provenance is not the pinned immutable v5.0.7 record.');
 }
 
 export function assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(output: string, sourceCommit: string): void {
@@ -1187,6 +1287,8 @@ export function assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(output: st
 function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
   const plan = object(value, 'preparation plan');
   exactKeys(plan, [
+    'activeArms',
+    ...(plan.targetArms === undefined ? [] : ['targetArms']),
     'adapter',
     'bootstrap',
     'clusters',
@@ -1202,7 +1304,7 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
     'verification',
     'version',
   ]);
-  if (plan.version !== MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION) invalid('preparation plan version must be 2');
+  if (plan.version !== MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION) invalid('preparation plan version must be 3');
   const adapter = object(plan.adapter, 'adapter plan');
   exactKeys(adapter, [
     'appServer',
@@ -1221,7 +1323,15 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
   const appServer = object(adapter.appServer, 'app server plan');
   exactKeys(appServer, ['argumentsAfterSubcommand', 'argumentsBeforeSubcommand', 'executable', 'version']);
   const threadnote = object(plan.threadnote, 'Threadnote plan');
-  exactKeys(threadnote, ['account', 'executable', 'lockFile', 'requiredReleaseCommit', 'sourceDirectory', 'user']);
+  exactKeys(threadnote, [
+    'account',
+    'executable',
+    'lockFile',
+    'requiredReleaseCommit',
+    'sourceDirectory',
+    'user',
+    ...(threadnote.productionRelease === undefined ? [] : ['productionRelease']),
+  ]);
   const clusters = array(plan.clusters, 'clusters').map(parseClusterPlan);
   unique(
     clusters.map(cluster => cluster.clusterId),
@@ -1265,7 +1375,24 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
   );
   const taskBudget = object(adapter.taskBudget, 'task budget');
   exactKeys(taskBudget, ['steps', 'tokens']);
+  const productionRelease =
+    threadnote.productionRelease === undefined ? undefined : parseProductionRelease(threadnote.productionRelease);
+  const activeArms = array(plan.activeArms, 'active arms').map((arm, index) => {
+    if (!MATCHED_EVALUATION_ARMS.includes(arm as MatchedEvaluationArm)) invalid(`active arm ${index} is invalid`);
+    return arm as MatchedEvaluationArm;
+  });
+  unique(activeArms, 'active arms');
+  if (activeArms.length === 0) invalid('active arms must not be empty');
+  const targetArms =
+    plan.targetArms === undefined
+      ? undefined
+      : array(plan.targetArms, 'target arms').map((arm, index) => {
+          if (arm !== 'threadnote-compact' && arm !== 'threadnote-source') invalid(`target arm ${index} is invalid`);
+          return arm;
+        });
+  if (targetArms !== undefined) unique(targetArms, 'target arms');
   return {
+    activeArms,
     adapter: {
       appServer: {
         argumentsAfterSubcommand: stringArray(appServer.argumentsAfterSubcommand, 'app-server trailing arguments'),
@@ -1308,11 +1435,14 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
     project: matching(plan.project, PROJECT, 'project'),
     repetitions: (() => {
       const repetitions = integer(plan.repetitions, 5, 1_000, 'repetitions');
-      if (repetitions % 5 !== 0) invalid('repetitions must be a multiple of 5');
+      const selectedCount = activeArms.length;
+      if (repetitions % selectedCount !== 0)
+        invalid(`repetitions must be divisible by selected arm count (${selectedCount})`);
       return repetitions;
     })(),
     scheduleSeed: matching(plan.scheduleSeed, HASH, 'schedule seed'),
     studyId: boundedText(plan.studyId, 3, 64, 'study id'),
+    targetArms,
     taskContexts,
     threadnote: {
       account: matching(threadnote.account, PROJECT, 'Threadnote account'),
@@ -1321,6 +1451,7 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
       requiredReleaseCommit: matching(threadnote.requiredReleaseCommit, COMMIT, 'required release commit'),
       sourceDirectory: absolutePath(threadnote.sourceDirectory, 'Threadnote source directory'),
       user: matching(threadnote.user, PROJECT, 'Threadnote user'),
+      ...(productionRelease === undefined ? {} : {productionRelease}),
     },
     timeoutMilliseconds: integer(plan.timeoutMilliseconds, 60_000, 7_200_000, 'runtime timeout'),
     verification: {
@@ -1346,6 +1477,31 @@ function parseClusterPlan(value: unknown, index: number): ClusterPlanV1 {
     repositoryDirectory: absolutePath(cluster.repositoryDirectory, `cluster ${index} repository`),
     repositoryUrl,
   };
+}
+
+function parseProductionRelease(value: unknown): MatchedTokenEfficiencyProductionReleaseV1 {
+  const release = object(value, 'production release');
+  exactKeys(release, [
+    'archiveSha256',
+    'archiveUrl',
+    'executableSha256',
+    'immutable',
+    'releaseUrl',
+    'sourceCommit',
+    'version',
+  ]);
+  const parsed = {
+    archiveSha256: matching(release.archiveSha256, HASH, 'production archive hash'),
+    archiveUrl: boundedText(release.archiveUrl, 1, 2_048, 'production archive URL') as typeof PRODUCTION_ARCHIVE_URL,
+    executableSha256: matching(release.executableSha256, HASH, 'production executable hash'),
+    immutable: release.immutable,
+    releaseUrl: boundedText(release.releaseUrl, 1, 2_048, 'production release URL') as typeof PRODUCTION_RELEASE_URL,
+    sourceCommit: matching(release.sourceCommit, COMMIT, 'production source commit'),
+    version: release.version,
+  };
+  if (parsed.immutable !== true || parsed.version !== MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION)
+    invalid('production release must be immutable version 5.0.7');
+  return parsed as MatchedTokenEfficiencyProductionReleaseV1;
 }
 
 function parseTaskContextPlan(value: unknown, index: number): TaskContextPlanV1 {

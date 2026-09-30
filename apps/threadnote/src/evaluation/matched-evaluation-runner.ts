@@ -490,6 +490,7 @@ function assertCorpusMatchesManifest(corpus: MatchedEvaluationCorpusV1, manifest
     invalid('corpus hash differs from the frozen manifest');
   }
   const reproduced = createMatchedEvaluationManifestV1({
+    activeArms: manifest.activeArms,
     arms: manifest.arms,
     corpus,
     model: manifest.model,

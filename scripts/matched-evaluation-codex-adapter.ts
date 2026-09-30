@@ -30,6 +30,8 @@ import {
   MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
   MATCHED_EVALUATION_CONTEXT_SERVER_NAME,
   hashMatchedEvaluationContextContent,
+  hashMatchedEvaluationContextRequest,
+  matchedEvaluationContextTools,
   renderMatchedEvaluationRuntimeManifestV1,
   runMatchedEvaluationContextProxy,
   type MatchedEvaluationContextProxyPacketV1,
@@ -47,7 +49,7 @@ import {
 } from './code-memory-link-codex-terminal.js';
 import {assertMatchedEvaluationRepositoryV1} from './matched-evaluation-runtime-integrity.js';
 
-export const MATCHED_EVALUATION_CODEX_ADAPTER_VERSION = 2 as const;
+export const MATCHED_EVALUATION_CODEX_ADAPTER_VERSION = 3 as const;
 export const MATCHED_EVALUATION_ADAPTER_CONFIG_ENV = 'MATCHED_EVALUATION_ADAPTER_CONFIG' as const;
 export const MATCHED_EVALUATION_ADAPTER_EXECUTABLE_ENV = 'MATCHED_EVALUATION_ADAPTER_EXECUTABLE' as const;
 export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
@@ -293,9 +295,10 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     const agentTurn = await runAppServerTurn({
       command: agentIsolation.command,
       cwd: repositoryRoot,
-      developerInstructions: agentDeveloperInstructions(context !== null),
+      developerInstructions: renderMatchedEvaluationAgentInstructionsV1(context === null ? null : request.tool.detail),
       environment: agentIsolation.environment,
       expectedMcpServer: context === null ? null : MATCHED_EVALUATION_CONTEXT_SERVER_NAME,
+      expectedContextDetail: context === null ? null : (request.tool.detail ?? 'compact'),
       model: config.model,
       outputSchema: AGENT_OUTPUT_SCHEMA,
       prompt: agentPrompt,
@@ -383,6 +386,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       developerInstructions: JUDGE_DEVELOPER_INSTRUCTIONS,
       environment: judgeIsolation.environment,
       expectedMcpServer: null,
+      expectedContextDetail: null,
       model: config.judgeModel,
       outputSchema: JUDGE_OUTPUT_SCHEMA,
       prompt: renderJudgePrompt(request, artifact),
@@ -497,7 +501,7 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     'verificationPlan',
     'version',
   ]);
-  if (config.version !== MATCHED_EVALUATION_CODEX_ADAPTER_VERSION) invalid('adapter config version must be 2');
+  if (config.version !== MATCHED_EVALUATION_CODEX_ADAPTER_VERSION) invalid('adapter config version must be 3');
   const appServer = object(config.appServer, 'app server');
   exactKeys(appServer, [
     'argumentsAfterSubcommand',
@@ -832,26 +836,35 @@ function contained(parent: string, child: string): boolean {
 
 export function extractMatchedEvaluationProviderUsageV1(events: readonly Record<string, unknown>[]): ProviderTokens {
   const usage = events.filter(event => event.method === 'thread/tokenUsage/updated');
-  const last = usage.at(-1);
-  if (last === undefined) throw new Error('Completed Codex turn did not report provider usage.');
-  const params = object(last.params, 'token usage params');
-  const tokenUsage = object(params.tokenUsage, 'token usage');
-  const total = object(tokenUsage.total, 'total token usage');
-  const parsed = {
-    cachedInputTokens: nonnegativeInteger(total.cachedInputTokens, 'cached input tokens'),
-    inputTokens: nonnegativeInteger(total.inputTokens, 'input tokens'),
-    outputTokens: nonnegativeInteger(total.outputTokens, 'output tokens'),
-    reasoningOutputTokens: nonnegativeInteger(total.reasoningOutputTokens, 'reasoning output tokens'),
-    totalTokens: nonnegativeInteger(total.totalTokens, 'total tokens'),
-  };
-  if (
-    parsed.cachedInputTokens > parsed.inputTokens ||
-    parsed.reasoningOutputTokens > parsed.outputTokens ||
-    parsed.totalTokens !== parsed.inputTokens + parsed.outputTokens
-  ) {
-    throw new Error('Codex provider token components are inconsistent.');
+  if (usage.length === 0) throw new Error('Completed Codex turn did not report provider usage.');
+  let previous: ProviderTokens | null = null;
+  for (const event of usage) {
+    const params = object(event.params, 'token usage params');
+    const tokenUsage = object(params.tokenUsage, 'token usage');
+    const total = object(tokenUsage.total, 'total token usage');
+    const parsed = {
+      cachedInputTokens: nonnegativeInteger(total.cachedInputTokens, 'cached input tokens'),
+      inputTokens: nonnegativeInteger(total.inputTokens, 'input tokens'),
+      outputTokens: nonnegativeInteger(total.outputTokens, 'output tokens'),
+      reasoningOutputTokens: nonnegativeInteger(total.reasoningOutputTokens, 'reasoning output tokens'),
+      totalTokens: nonnegativeInteger(total.totalTokens, 'total tokens'),
+    };
+    if (
+      parsed.cachedInputTokens > parsed.inputTokens ||
+      parsed.reasoningOutputTokens > parsed.outputTokens ||
+      parsed.totalTokens !== parsed.inputTokens + parsed.outputTokens ||
+      (previous !== null &&
+        (parsed.cachedInputTokens < previous.cachedInputTokens ||
+          parsed.inputTokens < previous.inputTokens ||
+          parsed.outputTokens < previous.outputTokens ||
+          parsed.reasoningOutputTokens < previous.reasoningOutputTokens ||
+          parsed.totalTokens < previous.totalTokens))
+    ) {
+      throw new Error('Codex provider token components are inconsistent.');
+    }
+    previous = parsed;
   }
-  return parsed;
+  return previous as ProviderTokens;
 }
 
 async function prepareContextHome(
@@ -951,6 +964,7 @@ async function createCodexIsolation(input: {
     };
     expectedContextDelivery = {
       ...input.context,
+      detail: packet.detail,
       frozenPromptSha256: hashMatchedEvaluationContextContent(input.taskPrompt),
       runNonce: input.runNonce,
       runtimeManifestSha256: packet.runtimeManifestSha256,
@@ -962,6 +976,14 @@ async function createCodexIsolation(input: {
     join(codexHome, 'config.toml'),
     buildCodexConfig({
       contextPacket: packetPath !== null,
+      contextDetail:
+        packetPath === null
+          ? null
+          : input.config.arm === 'threadnote-source'
+            ? 'source'
+            : input.config.arm === 'threadnote-graph'
+              ? 'graph-only'
+              : 'compact',
       model,
       repositoryRoot: input.repositoryRoot,
       safeExecutablePath: input.config.safeExecutablePath,
@@ -1004,6 +1026,7 @@ async function runAppServerTurn(input: {
   readonly developerInstructions: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly expectedMcpServer: string | null;
+  readonly expectedContextDetail: 'compact' | 'graph-only' | 'source' | null;
   readonly model: MatchedEvaluationCodexModelV1;
   readonly outputSchema: Readonly<Record<string, unknown>>;
   readonly prompt: string;
@@ -1059,7 +1082,11 @@ async function runAppServerTurn(input: {
         {detail: 'full', limit: 100},
         input.timeoutMilliseconds,
       );
-      assertMatchedEvaluationMcpInventoryV1(inventory, input.expectedMcpServer);
+      assertMatchedEvaluationMcpInventoryV1(
+        inventory,
+        input.expectedMcpServer,
+        input.expectedContextDetail ?? 'compact',
+      );
     }
     let budgetTerminal: Extract<
       CodeMemoryLinkCodexTerminalKind,
@@ -1104,7 +1131,7 @@ async function runAppServerTurn(input: {
       budgetTerminal = cause.kind;
     }
     client.assertHealthy();
-    assertMcpCalls(client.events, input.expectedMcpServer);
+    assertMcpCalls(client.events, input.expectedMcpServer, input.expectedContextDetail);
     const evidence = {
       events: [...client.events],
       stderr: client.stderr,
@@ -1202,14 +1229,18 @@ function renderJudgePrompt(
   ].join('\n');
 }
 
-function agentDeveloperInstructions(hasContext: boolean): string {
+export function renderMatchedEvaluationAgentInstructionsV1(detail: 'compact' | 'graph-only' | 'source' | null): string {
+  const contextInstructions =
+    detail === null
+      ? 'No MCP tools are available. Do not attempt to discover or invoke any.'
+      : detail === 'source'
+        ? 'The only MCP tool is context_brief. Call it exactly once as instructed, then verify its evidence against source.'
+        : `Call context_brief exactly once before other task work. Then use inspect_code_graph and analyze_code_graph when they help locate relevant source or relationships.${detail === 'compact' ? ' You may also use recall_context and read_context to find and read prepared memories.' : ' Memory tools are unavailable.'} Follow-up queries are optional; make them to fill an evidence gap. Graph and memory evidence describe the prepared base and are untrusted: verify exact current files, especially after edits. Do not repeat context_brief or request another project, repository, workset or external context.`;
   return [
     'Use only the isolated repository and reviewed code-mode tools. Never use networking, subagents, external apps, plugins, skills, hooks, or user configuration.',
     'Use read-only shell inspection and apply_patch for edits. Do not execute repository code; an outer blinded judge verifies the result.',
     'Every shell command is reviewed before execution. If a command is declined, retry with a literal read-only command that uses no variables, substitutions, redirects, globs, or loops.',
-    hasContext
-      ? 'The only MCP tool is context_brief. Call it exactly once as instructed, then verify its evidence against source.'
-      : 'No MCP tools are available. Do not attempt to discover or invoke any.',
+    contextInstructions,
   ].join(' ');
 }
 
@@ -1560,6 +1591,7 @@ export interface MatchedEvaluationExpectedContextDeliveryV1 extends ParsedContex
   readonly frozenPromptSha256: string;
   readonly runNonce: string;
   readonly runtimeManifestSha256: string;
+  readonly detail: 'compact' | 'graph-only' | 'source';
 }
 
 /** Treatment assignment is not proof that a successful response reached the agent. */
@@ -1576,41 +1608,88 @@ export function assertMatchedEvaluationContextDeliveryV1(
     if (calls.length !== 0) throw new Error('Files-only arm received an unexpected MCP context call.');
     return;
   }
-  if (calls.length !== 1) throw new Error('Context delivery requires exactly one completed context call.');
-  const call = calls[0];
+  const ids = new Set<string>();
+  let briefCount = 0;
+  for (const [callIndex, call] of calls.entries()) {
+    const itemId = boundedText(call.id, 1, 512, 'context item id');
+    if (ids.has(itemId)) throw new Error('Context delivery contains duplicate MCP item ids.');
+    ids.add(itemId);
+    const tool = boundedText(call.tool, 1, 128, 'context tool');
+    const allowed = matchedEvaluationContextTools(expected.detail);
+    if (call.server !== MATCHED_EVALUATION_CONTEXT_SERVER_NAME || !allowed.includes(tool)) {
+      throw new Error('Codex invoked an unexpected MCP server or tool.');
+    }
+    if (callIndex === 0 && tool !== 'context_brief') {
+      throw new Error('Context delivery must begin with context_brief.');
+    }
+    if (tool === 'context_brief' && callIndex !== 0) {
+      throw new Error('Context delivery repeated context_brief.');
+    }
+    if (tool === 'context_brief') briefCount += 1;
+    const result = object(call.result, 'context delivery result');
+    const isError = result.isError === true;
+    if (call.error !== null && call.error !== undefined) {
+      throw new Error('Context delivery MCP item reported an error.');
+    }
+    const status = call.status;
+    if (tool === 'context_brief' && briefCount === 1 && (status !== 'completed' || isError)) {
+      throw new Error('Context delivery failed: context_brief did not complete successfully.');
+    }
+    if (status !== 'completed' && status !== 'failed') throw new Error('Context delivery has an invalid MCP status.');
+    if (status === 'failed' && !isError) throw new Error('Failed MCP context call lacks an error result.');
+    if (result.structuredContent !== null && result.structuredContent !== undefined) {
+      throw new Error('Context delivery contains a duplicated structured body.');
+    }
+    if (!Array.isArray(result.content) || result.content.length !== 1) {
+      throw new Error('Context delivery requires exactly one text body.');
+    }
+    const body = object(result.content[0], 'context delivery body');
+    if (body.type !== 'text' || typeof body.text !== 'string' || body.text.trim().length === 0) {
+      throw new Error('Context delivery requires a nonempty text body.');
+    }
+    const receipt = object(
+      object(result._meta, 'context delivery metadata').matchedEvaluation,
+      'context delivery receipt',
+    );
+    const requestInput = call.arguments ?? call.input ?? call.request;
+    const requestSha256 = hashMatchedEvaluationContextRequest(tool, parseMcpArguments(requestInput));
+    const wanted = {
+      graphContentHash: expected.graphContentHash,
+      graphSnapshotHash: expected.graphSnapshotHash,
+      linkReceiptsHash: expected.linkReceiptsHash,
+      memoryAccess: expected.memoryAccess,
+      studyHash: expected.studyHash,
+      taskContextHash: expected.taskContextHash,
+      frozenPromptSha256: expected.frozenPromptSha256,
+      runNonce: expected.runNonce,
+      runtimeManifestSha256: expected.runtimeManifestSha256,
+      contentResponseSha256: hashMatchedEvaluationContextContent(body.text),
+      graphReady: true,
+      requestSha256,
+      success: status === 'completed' && !isError,
+      toolName: tool,
+      version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
+    };
+    exactKeys(receipt, Object.keys(wanted));
+    for (const [key, value] of Object.entries(wanted)) {
+      if (receipt[key] !== value) throw new Error(`Context delivery receipt mismatch: ${key}.`);
+    }
+  }
+  if (briefCount !== 1) throw new Error('Context delivery requires exactly one initial context_brief call.');
   if (
-    call.server !== MATCHED_EVALUATION_CONTEXT_SERVER_NAME ||
-    call.tool !== 'context_brief' ||
-    call.status !== 'completed' ||
-    (call.error !== null && call.error !== undefined)
+    expected.detail === 'graph-only' &&
+    calls.some(call => call.tool === 'recall_context' || call.tool === 'read_context')
   ) {
-    throw new Error('Context delivery failed: context_brief did not complete successfully.');
+    throw new Error('Graph-only context delivery unexpectedly used memory tools.');
   }
-  const result = object(call.result, 'context delivery result');
-  if (result.isError === true) throw new Error('Context delivery failed: MCP returned an error result.');
-  if (result.structuredContent !== null && result.structuredContent !== undefined) {
-    throw new Error('Context delivery contains a duplicated structured body.');
-  }
-  if (!Array.isArray(result.content) || result.content.length !== 1) {
-    throw new Error('Context delivery requires exactly one text body.');
-  }
-  const body = object(result.content[0], 'context delivery body');
-  if (body.type !== 'text' || typeof body.text !== 'string' || body.text.trim().length === 0) {
-    throw new Error('Context delivery requires a nonempty text body.');
-  }
-  const receipt = object(
-    object(result._meta, 'context delivery metadata').matchedEvaluation,
-    'context delivery receipt',
-  );
-  const wanted = {
-    ...expected,
-    contentResponseSha256: hashMatchedEvaluationContextContent(body.text),
-    graphReady: true,
-    version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
-  };
-  exactKeys(receipt, Object.keys(wanted));
-  for (const [key, value] of Object.entries(wanted)) {
-    if (receipt[key] !== value) throw new Error(`Context delivery receipt mismatch: ${key}.`);
+}
+
+function parseMcpArguments(value: unknown): unknown {
+  if (typeof value !== 'string') return value ?? {};
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new Error('MCP call arguments are not valid JSON.');
   }
 }
 
@@ -1703,7 +1782,11 @@ function assertEffectiveThread(response: Record<string, unknown>, input: Paramet
   }
 }
 
-export function assertMatchedEvaluationMcpInventoryV1(value: unknown, serverName: string): void {
+export function assertMatchedEvaluationMcpInventoryV1(
+  value: unknown,
+  serverName: string,
+  detail: 'compact' | 'graph-only' | 'source' = 'compact',
+): void {
   const inventory = object(value, 'MCP inventory');
   if (!Array.isArray(inventory.data) || inventory.nextCursor != null || inventory.data.length !== 1) {
     throw new Error('Codex MCP inventory must contain one unpaginated context server.');
@@ -1712,11 +1795,14 @@ export function assertMatchedEvaluationMcpInventoryV1(value: unknown, serverName
   if (server.name !== serverName) throw new Error('Codex MCP inventory contains an unexpected server.');
   const tools = server.tools === undefined || server.tools === null ? undefined : object(server.tools, 'MCP tools');
   if (tools && Object.keys(tools).length > 0) {
-    if (Object.keys(tools).length !== 1 || !('context_brief' in tools)) {
-      throw new Error('Codex MCP inventory must expose only context_brief when tool metadata is available.');
+    const allowed = matchedEvaluationContextTools(detail);
+    if (Object.keys(tools).some(tool => !allowed.includes(tool))) {
+      throw new Error('Codex MCP inventory exposes an unexpected context tool.');
     }
-    const tool = object(tools.context_brief, 'context_brief tool');
-    if (tool.name !== 'context_brief') throw new Error('Codex MCP inventory returned a rerouted tool name.');
+    for (const name of Object.keys(tools)) {
+      const tool = object(tools[name], `${name} tool`);
+      if (tool.name !== name) throw new Error('Codex MCP inventory returned a rerouted tool name.');
+    }
   }
   if (Array.isArray(server.resources) && server.resources.length > 0) {
     throw new Error('Context proxy exposed unexpected resources.');
@@ -1726,7 +1812,11 @@ export function assertMatchedEvaluationMcpInventoryV1(value: unknown, serverName
   }
 }
 
-function assertMcpCalls(events: readonly Record<string, unknown>[], expectedServer: string | null): void {
+function assertMcpCalls(
+  events: readonly Record<string, unknown>[],
+  expectedServer: string | null,
+  detail: 'compact' | 'graph-only' | 'source' | null,
+): void {
   for (const event of events) {
     const method = boundedText(event.method, 1, 512, 'app-server event method');
     if (/(?:^|\/)(?:subagent|collab)(?:\/|$)/iu.test(method)) {
@@ -1736,7 +1826,13 @@ function assertMcpCalls(events: readonly Record<string, unknown>[], expectedServ
     if (event.method !== 'item/started' && event.method !== 'item/completed') continue;
     const item = object(object(event.params, 'item params').item, 'item');
     if (item.type !== 'mcpToolCall') continue;
-    if (expectedServer === null || item.server !== expectedServer || item.tool !== 'context_brief') {
+    if (
+      expectedServer === null ||
+      detail === null ||
+      item.server !== expectedServer ||
+      typeof item.tool !== 'string' ||
+      !matchedEvaluationContextTools(detail).includes(item.tool)
+    ) {
       throw new Error('Codex invoked an unexpected MCP server or tool.');
     }
   }
@@ -1744,6 +1840,7 @@ function assertMcpCalls(events: readonly Record<string, unknown>[], expectedServ
 
 function buildCodexConfig(input: {
   readonly contextPacket: boolean;
+  readonly contextDetail: 'compact' | 'graph-only' | 'source' | null;
   readonly model: MatchedEvaluationCodexModelV1;
   readonly repositoryRoot: string;
   readonly safeExecutablePath: string;
@@ -1808,7 +1905,7 @@ function buildCodexConfig(input: {
       'args = ["--context-proxy"]',
       'enabled = true',
       'required = true',
-      'enabled_tools = ["context_brief"]',
+      `enabled_tools = ${tomlArray(matchedEvaluationContextTools(input.contextDetail ?? 'compact'))}`,
       `env_vars = [${toml(MATCHED_EVALUATION_CONTEXT_PACKET_ENV)}]`,
       'startup_timeout_sec = 20',
       'tool_timeout_sec = 120',
@@ -2073,6 +2170,10 @@ function localEnvironment(cwd: string) {
 
 function toml(value: string): string {
   return JSON.stringify(value);
+}
+
+function tomlArray(values: readonly string[]): string {
+  return `[${values.map(toml).join(', ')}]`;
 }
 
 function containedPath(root: string, path: string): string {
