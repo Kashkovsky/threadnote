@@ -3,7 +3,6 @@
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed MCP proxy owns one bounded pinned Threadnote child process. */
 
 import {createHash} from 'node:crypto';
-import {spawn} from 'node:child_process';
 import {readFile, realpath, stat, unlink} from 'node:fs/promises';
 import {dirname, isAbsolute, relative, resolve, sep} from 'node:path';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -274,7 +273,7 @@ export async function handleMatchedEvaluationFollowupRequest(
     throw new Error('Prepared Threadnote home escaped its isolated private root.');
   }
   if (toolName !== 'read_context') {
-    if ((await realpath(request.callerCwd as string)) !== packet.repositoryRoot)
+    if ((await realpath(String(request.callerCwd))) !== packet.repositoryRoot)
       throw new Error('Context request escaped the isolated repository.');
     if (request.project !== undefined && request.project !== packet.project)
       throw new Error('Context request project differs from the prepared project.');
@@ -496,29 +495,23 @@ async function runThreadnoteContextBrief(
   packet: MatchedEvaluationContextProxyPacketV1,
   request: {readonly codeRefs: readonly string[]; readonly mode: (typeof MODES)[number]},
 ): Promise<Record<string, unknown>> {
-  const arguments_ = [
-    'context',
-    'brief',
-    '--json',
-    '--manifest',
-    packet.runtimeManifestPath,
-    '--cwd',
-    packet.repositoryRoot,
-    '--project',
-    packet.project,
-    '--task',
-    packet.prompt,
-    '--mode',
-    request.mode,
-    '--detail',
-    packet.detail === 'source' ? 'source' : 'compact',
-    '--budget-tokens',
-    String(packet.budgetTokens),
-    ...request.codeRefs.flatMap(reference => ['--code-ref', reference]),
-  ];
-  const result = await capture(packet.threadnoteExecutable, arguments_, threadnoteEnvironment(packet));
+  const result = await runThreadnoteTool(packet, 'context_brief', {
+    budgetTokens: packet.budgetTokens,
+    callerCwd: packet.repositoryRoot,
+    ...(request.codeRefs.length === 0 ? {} : {codeRefs: request.codeRefs}),
+    detail: packet.detail === 'source' ? 'source' : 'compact',
+    mode: request.mode,
+    project: packet.project,
+    responseFormat: 'agent',
+    task: packet.prompt,
+  });
+  if (result.isError === true) throw new Error('Threadnote Context Brief tool call returned an error.');
+  const text = (result.content as readonly {readonly text?: string; readonly type: string}[]).flatMap(content =>
+    content.type === 'text' && typeof content.text === 'string' ? [content.text] : [],
+  );
+  if (text.length !== 1) throw new Error('Threadnote Context Brief tool result must contain exactly one text payload.');
   try {
-    return object(JSON.parse(result) as unknown, 'Threadnote Context Brief');
+    return object(JSON.parse(text[0]) as unknown, 'Threadnote Context Brief');
   } catch (cause) {
     throw new Error('Threadnote returned invalid Context Brief JSON.', {cause});
   }
@@ -570,38 +563,6 @@ async function assertRuntimeManifest(
   if (!bytes.equals(Buffer.from(expected))) {
     throw new Error('Runtime manifest does not bind the isolated repository and run.');
   }
-}
-
-async function capture(
-  executable: string,
-  arguments_: readonly string[],
-  environment: Readonly<Record<string, string>>,
-): Promise<string> {
-  return await new Promise((resolvePromise, reject) => {
-    const child = spawn(executable, [...arguments_], {env: {...environment}, stdio: ['ignore', 'pipe', 'pipe']});
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    const timeout = setTimeout(() => child.kill('SIGKILL'), 120_000);
-    child.stdout.on('data', value => {
-      const chunk = Buffer.from(value);
-      stdoutBytes += chunk.length;
-      if (stdoutBytes > 2 * 1_024 * 1_024) child.kill('SIGKILL');
-      else stdout.push(chunk);
-    });
-    child.stderr.on('data', value => {
-      const chunk = Buffer.from(value);
-      stderrBytes += chunk.length;
-      if (stderrBytes <= 64 * 1_024) stderr.push(chunk);
-    });
-    child.once('error', reject);
-    child.once('exit', code => {
-      clearTimeout(timeout);
-      if (code !== 0) reject(new Error(`Threadnote Context Brief failed: ${Buffer.concat(stderr).toString('utf8')}`));
-      else resolvePromise(Buffer.concat(stdout).toString('utf8'));
-    });
-  });
 }
 
 async function assertPinnedExecutable(path: string, expectedHash: string): Promise<void> {

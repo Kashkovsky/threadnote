@@ -35,6 +35,7 @@ describe('matched evaluation context proxy', () => {
 
     expect(JSON.parse(result.content[0].text)).toEqual(preparedEvidence);
     expect(result.structuredContent).toBeUndefined();
+    expect(await fixture.seenResponseFormat()).toBe('agent');
     expect(result.meta).toMatchObject({
       matchedEvaluation: {
         graphReady: true,
@@ -367,6 +368,7 @@ async function contextFixture(
   readonly root: string;
   readonly seenTask: () => Promise<string>;
   readonly seenMode: () => Promise<string>;
+  readonly seenResponseFormat: () => Promise<string>;
 }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-matched-context-')));
   roots.push(root);
@@ -385,37 +387,18 @@ async function contextFixture(
   const manifestBytes = Buffer.from(manifestText);
   const executable = join(root, 'threadnote');
   const seenTaskPath = join(root, 'seen-task');
+  const seenModePath = join(root, 'seen-mode');
+  const seenResponseFormatPath = join(root, 'seen-response-format');
   await writeFile(
     executable,
-    `#!/bin/sh
-manifest=''
-task=''
-mode=''
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = '--manifest' ]; then
-    shift
-    manifest="$1"
-  fi
-  if [ "$1" = '--task' ]; then
-    shift
-    task="$1"
-  fi
-  if [ "$1" = '--mode' ]; then
-    shift
-    mode="$1"
-  fi
-  shift
-done
-[ -n "$manifest" ] && [ -f "$manifest" ] || exit 17
-grep -F ${shellQuote(JSON.stringify(project))} "$manifest" >/dev/null || exit 18
-grep -F ${shellQuote(JSON.stringify(repository))} "$manifest" >/dev/null || exit 19
-grep -F ${shellQuote(JSON.stringify(runNonce))} "$manifest" >/dev/null || exit 20
-[ "$THREADNOTE_ACCOUNT" = 'local' ] || exit 21
-[ "$THREADNOTE_USER" = 'evaluation-user' ] || exit 22
-printf '%s' "$task" > ${shellQuote(seenTaskPath)}
-printf '%s' "$mode" > ${shellQuote(seenTaskPath + '-mode')}
-printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
-`,
+    fakeThreadnoteMcpProgram({
+      project,
+      repository,
+      runNonce,
+      seenModePath,
+      seenResponseFormatPath,
+      seenTaskPath,
+    }),
     {mode: 0o700},
   );
   await chmod(executable, 0o700);
@@ -455,10 +438,88 @@ printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
     repository,
     root,
     seenTask: () => readFile(seenTaskPath, 'utf8'),
-    seenMode: () => readFile(seenTaskPath + '-mode', 'utf8'),
+    seenMode: () => readFile(seenModePath, 'utf8'),
+    seenResponseFormat: () => readFile(seenResponseFormatPath, 'utf8'),
   };
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
+function fakeThreadnoteMcpProgram(input: {
+  readonly project: string;
+  readonly repository: string;
+  readonly runNonce: string;
+  readonly seenModePath: string;
+  readonly seenResponseFormatPath: string;
+  readonly seenTaskPath: string;
+}): string {
+  return `#!${process.execPath}
+import {readFileSync, writeFileSync} from 'node:fs';
+
+const expected = ${JSON.stringify(input)};
+const preparedEvidence = ${JSON.stringify(preparedEvidence)};
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
+let buffer = '';
+
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => {
+  buffer += chunk;
+  while (true) {
+    const newline = buffer.indexOf('\\n');
+    if (newline === -1) break;
+    const line = buffer.slice(0, newline).trim();
+    buffer = buffer.slice(newline + 1);
+    if (line !== '') handle(JSON.parse(line));
+  }
+});
+
+function handle(message) {
+  if (message.method === 'initialize') {
+    send({
+      id: message.id,
+      jsonrpc: '2.0',
+      result: {
+        capabilities: {tools: {}},
+        protocolVersion: message.params.protocolVersion,
+        serverInfo: {name: 'fixture-threadnote', version: '1'},
+      },
+    });
+    return;
+  }
+  if (message.method === 'notifications/initialized') return;
+  if (message.method !== 'tools/call') {
+    if (message.id !== undefined) {
+      send({error: {code: -32601, message: 'Unsupported fixture method'}, id: message.id, jsonrpc: '2.0'});
+    }
+    return;
+  }
+  try {
+    const manifestPath = process.env.THREADNOTE_MANIFEST;
+    if (!manifestPath) throw new Error('missing manifest');
+    const manifest = readFileSync(manifestPath, 'utf8');
+    if (
+      !manifest.includes(JSON.stringify(expected.project)) ||
+      !manifest.includes(JSON.stringify(expected.repository)) ||
+      !manifest.includes(JSON.stringify(expected.runNonce))
+    ) throw new Error('manifest mismatch');
+    if (process.env.THREADNOTE_ACCOUNT !== 'local' || process.env.THREADNOTE_USER !== 'evaluation-user') {
+      throw new Error('identity mismatch');
+    }
+    if (message.params.name !== 'context_brief') throw new Error('tool mismatch');
+    const arguments_ = message.params.arguments;
+    writeFileSync(expected.seenTaskPath, arguments_.task);
+    writeFileSync(expected.seenModePath, arguments_.mode);
+    writeFileSync(expected.seenResponseFormatPath, arguments_.responseFormat);
+    send({
+      id: message.id,
+      jsonrpc: '2.0',
+      result: {content: [{text: JSON.stringify(preparedEvidence), type: 'text'}]},
+    });
+  } catch (cause) {
+    send({
+      error: {code: -32603, message: cause instanceof Error ? cause.message : 'fixture failure'},
+      id: message.id,
+      jsonrpc: '2.0',
+    });
+  }
+}
+`;
 }
