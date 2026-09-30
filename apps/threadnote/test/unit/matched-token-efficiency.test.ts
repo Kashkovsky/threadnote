@@ -442,7 +442,15 @@ function metricsFor(
     retrieval: {recalledEvidence: 2, requiredEvidence: 2},
     safety: {authorizationLeaks: 0, blockedActions: 0, harmfulActions: 0},
     sourceSupport: {requiredClaims: 2, supportedClaims: 2},
-    timing: {endToEndMilliseconds: 20, firstSufficientEvidenceMilliseconds: 10},
+    timing: {
+      agentTaskMilliseconds: 8,
+      deterministicVerifierMilliseconds: 2,
+      endToEndMilliseconds: 20,
+      firstSufficientEvidenceMilliseconds: 10,
+      judgeSetupMilliseconds: 2,
+      judgeTurnMilliseconds: 4,
+      preparationMilliseconds: 4,
+    },
     usage: {
       modelVisibleBytes: total * 4,
       modelVisibleTokens: total,
@@ -503,7 +511,7 @@ function observation(runOrder: number, metrics: MatchedEvaluationMetricsV1): Mat
     artifactHash: runOrder.toString(16).padStart(64, '0'),
     metrics,
     transcriptHash: (runOrder + 1).toString(16).padStart(64, '0'),
-    version: 4,
+    version: 5,
   };
 }
 
@@ -511,7 +519,7 @@ function armDefinitions(): readonly MatchedEvaluationArmDefinitionV1[] {
   return MATCHED_EVALUATION_ARMS.map((arm, index) => ({
     adapterArtifactHash: String(index + 1).repeat(64),
     adapterConfigurationHash: (index + 6).toString(16).repeat(64),
-    adapterProtocol: 'matched-evaluation-adapter-v4',
+    adapterProtocol: 'matched-evaluation-adapter-v5',
     arm,
     environmentPolicyHash:
       arm === 'reference-scope' ? matchedEvaluationReferenceEnvironmentPolicyHashV1() : 'e'.repeat(64),

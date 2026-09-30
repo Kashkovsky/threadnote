@@ -391,6 +391,28 @@ function assertLs(args: readonly string[], root: string, cwd: string): void {
 
 function assertGit(args: readonly string[], root: string, cwd: string): void {
   const [subcommand, ...subcommandArgs] = args;
+  if (subcommand === 'diff') {
+    const flags = new Set([
+      '--cached',
+      '--color=never',
+      '--name-only',
+      '--name-status',
+      '--no-ext-diff',
+      '--no-renames',
+      '--stat',
+    ]);
+    let optionsEnded = false;
+    for (const value of subcommandArgs) {
+      if (!optionsEnded && value === '--') {
+        optionsEnded = true;
+        continue;
+      }
+      if (!optionsEnded && flags.has(value)) continue;
+      if (!optionsEnded) throw new Error('git diff revisions and options are outside the reviewed grammar.');
+      containedPath(value, root, cwd);
+    }
+    return;
+  }
   if (subcommand === 'status') {
     const flags = new Set([
       '-b',

@@ -343,10 +343,18 @@ describe('matched Threadnote, reference, and files evaluation', () => {
         ...observation(0),
         metrics: {
           ...metrics(),
-          timing: {endToEndMilliseconds: 5, firstSufficientEvidenceMilliseconds: 6},
+          timing: {
+            agentTaskMilliseconds: 2,
+            deterministicVerifierMilliseconds: 1,
+            endToEndMilliseconds: 5,
+            firstSufficientEvidenceMilliseconds: 4,
+            judgeSetupMilliseconds: 0,
+            judgeTurnMilliseconds: 1,
+            preparationMilliseconds: 1,
+          },
         },
       }),
-    ).toThrow('exceeds end-to-end');
+    ).toThrow('exceeds the agent task window');
     expect(() =>
       parseMatchedEvaluationObservationV1({
         ...observation(0),
@@ -365,8 +373,41 @@ describe('matched Threadnote, reference, and files evaluation', () => {
         },
       }),
     ).toThrow('provider token components are inconsistent');
-    expect(() => parseMatchedEvaluationObservationV1({...observation(0), version: 3})).toThrow(
-      'observation version must be 4',
+    expect(() => parseMatchedEvaluationObservationV1({...observation(0), version: 4})).toThrow(
+      'observation version must be 5',
+    );
+  });
+
+  it('requires non-overlapping lifecycle phases to sum to end-to-end time', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({min: 0, max: 1_000_000}),
+        fc.integer({min: 0, max: 1_000_000}),
+        fc.integer({min: 0, max: 1_000_000}),
+        fc.integer({min: 0, max: 1_000_000}),
+        (preparationMilliseconds, agentTaskMilliseconds, judgeSetupMilliseconds, judgeTurnMilliseconds) => {
+          const endToEndMilliseconds =
+            preparationMilliseconds + agentTaskMilliseconds + judgeSetupMilliseconds + judgeTurnMilliseconds;
+          const timing = {
+            agentTaskMilliseconds,
+            deterministicVerifierMilliseconds: 0,
+            endToEndMilliseconds,
+            firstSufficientEvidenceMilliseconds: null,
+            judgeSetupMilliseconds,
+            judgeTurnMilliseconds,
+            preparationMilliseconds,
+          };
+          const candidate = {...observation(0), metrics: {...metrics(), timing}};
+          expect(parseMatchedEvaluationObservationV1(candidate).metrics.timing).toEqual(timing);
+          expect(() =>
+            parseMatchedEvaluationObservationV1({
+              ...candidate,
+              metrics: {...candidate.metrics, timing: {...timing, endToEndMilliseconds: endToEndMilliseconds + 1}},
+            }),
+          ).toThrow('must equal');
+        },
+      ),
+      {numRuns: 100},
     );
   });
 });
@@ -400,7 +441,7 @@ function armDefinitions(): readonly MatchedEvaluationArmDefinitionV1[] {
   return MATCHED_EVALUATION_ARMS.map((arm, index) => ({
     adapterArtifactHash: String(index + 1).repeat(64),
     adapterConfigurationHash: (index + 6).toString(16).repeat(64),
-    adapterProtocol: 'matched-evaluation-adapter-v4',
+    adapterProtocol: 'matched-evaluation-adapter-v5',
     arm,
     environmentPolicyHash:
       arm === 'reference-scope' ? matchedEvaluationReferenceEnvironmentPolicyHashV1() : 'e'.repeat(64),
@@ -428,7 +469,7 @@ function observation(runOrder: number): MatchedEvaluationObservationV1 {
     artifactHash: runOrder.toString(16).padStart(64, '0'),
     metrics: metrics(),
     transcriptHash: (runOrder + 1).toString(16).padStart(64, '0'),
-    version: 4,
+    version: 5,
   };
 }
 
@@ -443,7 +484,15 @@ function metrics(): MatchedEvaluationMetricsV1 {
     retrieval: {recalledEvidence: 2, requiredEvidence: 2},
     safety: {authorizationLeaks: 0, blockedActions: 0, harmfulActions: 0},
     sourceSupport: {requiredClaims: 2, supportedClaims: 2},
-    timing: {endToEndMilliseconds: 20, firstSufficientEvidenceMilliseconds: 10},
+    timing: {
+      agentTaskMilliseconds: 8,
+      deterministicVerifierMilliseconds: 0,
+      endToEndMilliseconds: 20,
+      firstSufficientEvidenceMilliseconds: 10,
+      judgeSetupMilliseconds: 3,
+      judgeTurnMilliseconds: 5,
+      preparationMilliseconds: 4,
+    },
     usage: {
       modelVisibleBytes: 1_000,
       modelVisibleTokens: 250,

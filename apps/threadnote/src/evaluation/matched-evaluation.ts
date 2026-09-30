@@ -1,7 +1,7 @@
 import {sha256HexSync} from '@threadnote/platform/sha256';
 
 export const MATCHED_EVALUATION_VERSION = 1 as const;
-export const MATCHED_EVALUATION_ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v4' as const;
+export const MATCHED_EVALUATION_ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v5' as const;
 export const MATCHED_EVALUATION_SCHEDULE_ALGORITHM = 'sha256-counterbalanced-v3' as const;
 export const MATCHED_EVALUATION_LEGACY_SCHEDULE_ALGORITHM = 'sha256-counterbalanced-v2' as const;
 export const MATCHED_EVALUATION_ARMS = [

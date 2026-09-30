@@ -18,7 +18,7 @@ import {
   type MatchedEvaluationVerificationReceiptV1,
 } from './matched-verification.js';
 
-export const MATCHED_EVALUATION_OUTCOME_VERSION = 4 as const;
+export const MATCHED_EVALUATION_OUTCOME_VERSION = 5 as const;
 export const MATCHED_EVALUATION_UNAVAILABLE_REASONS = [
   'runtime-not-configured',
   'adapter-missing',
@@ -78,8 +78,13 @@ export interface MatchedEvaluationMetricsV1 {
     readonly supportedClaims: number;
   };
   readonly timing: {
+    readonly agentTaskMilliseconds: number;
+    readonly deterministicVerifierMilliseconds: number;
     readonly endToEndMilliseconds: number;
     readonly firstSufficientEvidenceMilliseconds: number | null;
+    readonly judgeSetupMilliseconds: number;
+    readonly judgeTurnMilliseconds: number;
+    readonly preparationMilliseconds: number;
   };
   readonly usage: {
     readonly modelVisibleBytes: number;
@@ -147,10 +152,15 @@ export interface MatchedEvaluationSummaryV1 {
 export interface MatchedEvaluationArmSummaryV1 {
   readonly arm: MatchedEvaluationArm;
   readonly auditabilityRate: number | null;
+  readonly averageAgentTaskMilliseconds: number | null;
+  readonly averageDeterministicVerifierMilliseconds: number | null;
   readonly averageEndToEndMilliseconds: number | null;
+  readonly averageJudgeSetupMilliseconds: number | null;
+  readonly averageJudgeTurnMilliseconds: number | null;
   readonly averageModelVisibleBytes: number | null;
   readonly averageModelVisibleTokens: number | null;
   readonly averageProviderCostMicros: number | null;
+  readonly averagePreparationMilliseconds: number | null;
   readonly averageRedundantFileReads: number | null;
   readonly averageToolTurns: number | null;
   readonly completed: number;
@@ -178,7 +188,7 @@ const MAXIMUM_LEDGER_BYTES = 16 * 1_024 * 1_024;
 export function parseMatchedEvaluationObservationV1(value: unknown): MatchedEvaluationObservationV1 {
   const observation = object(value, 'observation');
   exactKeys(observation, ['artifactHash', 'metrics', 'transcriptHash', 'version'], 'observation');
-  if (observation.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('observation version must be 4');
+  if (observation.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('observation version must be 5');
   return {
     artifactHash: matchingString(observation.artifactHash, HASH, 'observation artifact hash'),
     metrics: parseMetrics(observation.metrics),
@@ -261,7 +271,7 @@ export function parseMatchedEvaluationOutcomeV1(value: unknown): MatchedEvaluati
     ],
     'outcome',
   );
-  if (outcome.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('outcome version must be 4');
+  if (outcome.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('outcome version must be 5');
   const status = literal(outcome.status, ['completed', 'unavailable'] as const, 'outcome status');
   let unavailable: MatchedEvaluationOutcomeV1['unavailable'] = null;
   if (outcome.unavailable !== null) {
@@ -538,10 +548,17 @@ function summarizeArm(
       metrics => metrics.auditability.resolvableCitations,
       metrics => metrics.auditability.citations,
     ),
+    averageAgentTaskMilliseconds: average(valid.map(outcome => outcome.metrics.timing.agentTaskMilliseconds)),
+    averageDeterministicVerifierMilliseconds: average(
+      valid.map(outcome => outcome.metrics.timing.deterministicVerifierMilliseconds),
+    ),
     averageEndToEndMilliseconds: average(valid.map(outcome => outcome.metrics.timing.endToEndMilliseconds)),
+    averageJudgeSetupMilliseconds: average(valid.map(outcome => outcome.metrics.timing.judgeSetupMilliseconds)),
+    averageJudgeTurnMilliseconds: average(valid.map(outcome => outcome.metrics.timing.judgeTurnMilliseconds)),
     averageModelVisibleBytes: average(valid.map(outcome => outcome.metrics.usage.modelVisibleBytes)),
     averageModelVisibleTokens: average(valid.map(outcome => outcome.metrics.usage.modelVisibleTokens)),
     averageProviderCostMicros: average(costs),
+    averagePreparationMilliseconds: average(valid.map(outcome => outcome.metrics.timing.preparationMilliseconds)),
     averageRedundantFileReads: average(valid.map(outcome => outcome.metrics.usage.redundantFileReads)),
     averageToolTurns: average(valid.map(outcome => outcome.metrics.usage.toolTurns)),
     completed: completed.length,
@@ -605,14 +622,47 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
   exactKeys(safety, ['authorizationLeaks', 'blockedActions', 'harmfulActions'], 'safety metrics');
   const sourceSupport = boundedPair(metrics.sourceSupport, 'requiredClaims', 'supportedClaims', 'source support');
   const timing = object(metrics.timing, 'timing metrics');
-  exactKeys(timing, ['endToEndMilliseconds', 'firstSufficientEvidenceMilliseconds'], 'timing metrics');
+  exactKeys(
+    timing,
+    [
+      'agentTaskMilliseconds',
+      'deterministicVerifierMilliseconds',
+      'endToEndMilliseconds',
+      'firstSufficientEvidenceMilliseconds',
+      'judgeSetupMilliseconds',
+      'judgeTurnMilliseconds',
+      'preparationMilliseconds',
+    ],
+    'timing metrics',
+  );
+  const agentTaskMilliseconds = nonNegativeInteger(timing.agentTaskMilliseconds, 'agent task time');
+  const deterministicVerifierMilliseconds = nonNegativeInteger(
+    timing.deterministicVerifierMilliseconds,
+    'deterministic verifier time',
+  );
   const endToEndMilliseconds = nonNegativeInteger(timing.endToEndMilliseconds, 'end-to-end time');
+  const judgeSetupMilliseconds = nonNegativeInteger(timing.judgeSetupMilliseconds, 'judge setup time');
+  const judgeTurnMilliseconds = nonNegativeInteger(timing.judgeTurnMilliseconds, 'judge turn time');
+  const preparationMilliseconds = nonNegativeInteger(timing.preparationMilliseconds, 'preparation time');
+  if (
+    endToEndMilliseconds !==
+    preparationMilliseconds +
+      agentTaskMilliseconds +
+      deterministicVerifierMilliseconds +
+      judgeSetupMilliseconds +
+      judgeTurnMilliseconds
+  ) {
+    invalid('end-to-end time must equal the non-overlapping lifecycle phase times');
+  }
   const firstSufficientEvidenceMilliseconds =
     timing.firstSufficientEvidenceMilliseconds === null
       ? null
       : nonNegativeInteger(timing.firstSufficientEvidenceMilliseconds, 'first sufficient evidence time');
-  if (firstSufficientEvidenceMilliseconds !== null && firstSufficientEvidenceMilliseconds > endToEndMilliseconds) {
-    invalid('first sufficient evidence time exceeds end-to-end time');
+  if (
+    firstSufficientEvidenceMilliseconds !== null &&
+    firstSufficientEvidenceMilliseconds > preparationMilliseconds + agentTaskMilliseconds
+  ) {
+    invalid('first sufficient evidence time exceeds the agent task window');
   }
   const usage = object(metrics.usage, 'usage metrics');
   exactKeys(
@@ -633,6 +683,9 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
   if (verification !== null && completion.completed !== (verification.status === 'passed')) {
     invalid('deterministic completion flag and verification receipt disagree');
   }
+  if (verification === null && deterministicVerifierMilliseconds !== 0) {
+    invalid('deterministic verifier time must be zero when verification is absent');
+  }
   return {
     auditability: {citations: auditability.total, resolvableCitations: auditability.subset},
     completion: {completed: completion.completed},
@@ -651,7 +704,15 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
       harmfulActions: nonNegativeInteger(safety.harmfulActions, 'harmful actions'),
     },
     sourceSupport: {requiredClaims: sourceSupport.total, supportedClaims: sourceSupport.subset},
-    timing: {endToEndMilliseconds, firstSufficientEvidenceMilliseconds},
+    timing: {
+      agentTaskMilliseconds,
+      deterministicVerifierMilliseconds,
+      endToEndMilliseconds,
+      firstSufficientEvidenceMilliseconds,
+      judgeSetupMilliseconds,
+      judgeTurnMilliseconds,
+      preparationMilliseconds,
+    },
     usage: {
       modelVisibleBytes: nonNegativeInteger(usage.modelVisibleBytes, 'model-visible bytes'),
       modelVisibleTokens: nonNegativeInteger(usage.modelVisibleTokens, 'model-visible tokens'),

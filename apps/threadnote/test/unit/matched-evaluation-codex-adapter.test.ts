@@ -515,7 +515,7 @@ describe('matched evaluation Codex adapter', () => {
     const request = {
       adapterArtifactHash: sha256HexSync(await readFile(selfExecutable)),
       adapterConfigurationHash: sha256HexSync(configBytes),
-      adapterProtocol: 'matched-evaluation-adapter-v4',
+      adapterProtocol: 'matched-evaluation-adapter-v5',
       agentTask: {
         category: 'architecture-discovery',
         memoryFixtures: [],
@@ -572,7 +572,7 @@ describe('matched evaluation Codex adapter', () => {
         usage: {providerTokens: {inputTokens: 100, outputTokens: 50, totalTokens: 150}},
         validity: {failureCount: 0, valid: true},
       },
-      version: 4,
+      version: 5,
     });
     expect(sha256HexSync(await readFile(artifactPath))).toBe(response.artifactHash);
     expect(sha256HexSync(await readFile(transcriptPath))).toBe(response.transcriptHash);
@@ -617,13 +617,13 @@ describe('matched evaluation Codex adapter', () => {
         usage: {providerTokens: {inputTokens: 100, outputTokens: 50, totalTokens: 150}},
         validity: {failureCount: 0, valid: true},
       },
-      version: 4,
+      version: 5,
     });
     const [budgetAgentTranscript] = (await readFile(budgetTranscriptPath, 'utf8')).trim().split('\n');
     expect(JSON.parse(budgetAgentTranscript ?? 'null') as unknown).toMatchObject({
       kind: 'agent',
       terminal: 'provider-token-budget',
-      version: 1,
+      version: 2,
     });
 
     const contextHome = join(root, 'prepared-home');
@@ -818,7 +818,7 @@ function adapterConfig() {
     taskBudget: {steps: 100, tokens: 100_000},
     temporaryRoot: '/tmp',
     verificationPlan: null,
-    version: 3 as const,
+    version: 4 as const,
   };
 }
 

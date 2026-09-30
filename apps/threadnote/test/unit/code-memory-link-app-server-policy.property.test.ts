@@ -48,6 +48,9 @@ describe('Code Memory Link pre-execution app-server policy', () => {
       'git status --short',
       'git rev-parse --show-toplevel',
       'git ls-files --cached -- src/service.ts',
+      'git diff',
+      'git diff -- src/service.ts',
+      'git diff --cached --no-ext-diff --no-renames --color=never -- src/service.ts',
     ]) {
       const git = commandApproval(command, 'src/service.ts');
       expect(
@@ -200,7 +203,9 @@ describe('Code Memory Link pre-execution app-server policy', () => {
       'git add src/service.ts',
       'git config core.pager cat',
       'git -c core.pager=cat status --short',
-      'git diff -- src/service.ts',
+      'git diff HEAD -- src/service.ts',
+      'git diff --ext-diff -- src/service.ts',
+      'git diff -- ../private',
       'git ls-files --exclude-from=/tmp/patterns',
       'git ls-files -- ../private',
     ]) {

@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import enum
+import html
 import os
 import sys
+import types
 from pathlib import Path
 from typing import Callable
 
@@ -47,11 +50,11 @@ def verify_attrs(repository: Path) -> None:
     import attr
 
     original = (attr.evolve.__doc__, attr.evolve.__name__, attr.evolve.__qualname__, str(attr.evolve))
-    cls = attr.make_class("CorpusRecord", {"value": attr.ib()})
-    instance = cls(1)
-    assert cls.__replace__ is not attr.evolve
-    assert (attr.evolve.__doc__, attr.evolve.__name__, attr.evolve.__qualname__, str(attr.evolve)) == original
-    assert instance.__replace__(value=2).value == 2
+    for name in ("CorpusRecord", "SecondCorpusRecord"):
+        cls = attr.make_class(name, {"value": attr.ib()})
+        instance = cls(1)
+        assert (attr.evolve.__doc__, attr.evolve.__name__, attr.evolve.__qualname__, str(attr.evolve)) == original
+        assert instance.__replace__(value=2).value == 2
 
 
 def verify_click(repository: Path) -> None:
@@ -66,6 +69,32 @@ def verify_click(repository: Path) -> None:
     empty = click.Option(["--empty"], default="", show_default=True)
     empty_help = empty.get_help_record(click.Context(click.Command("cli")))[1]
     assert '[default: ""]' in empty_help
+
+    class StrictEquality:
+        def __eq__(self, other):
+            if isinstance(other, str):
+                raise ValueError("must not compare a non-string default with an empty string")
+            return NotImplemented
+
+        def __str__(self):
+            return "strict"
+
+    strict = click.Option(["--strict"], default=StrictEquality(), show_default=True)
+    strict_help = strict.get_help_record(click.Context(click.Command("cli")))[1]
+    assert "[default: strict]" in strict_help
+
+    class Choice(enum.Enum):
+        FIRST = "first"
+
+    cases = [
+        (click.Option(["--items"], default=("one", "two"), show_default=True), "[default: one, two]"),
+        (click.Option(["--choice"], default=Choice.FIRST, show_default=True), "[default: FIRST]"),
+        (click.Option(["--dynamic"], default=lambda: "value", show_default=True), "[default: (dynamic)]"),
+        (click.Option(["--feature/--no-feature"], default=True, show_default=True), "[default: feature]"),
+    ]
+    for case, expected in cases:
+        case_help = case.get_help_record(click.Context(click.Command("cli")))[1]
+        assert expected in case_help
 
 
 def verify_werkzeug(repository: Path) -> None:
@@ -107,6 +136,51 @@ class Application:
         else:
             os.environ["MYPYPATH"] = previous
     assert status == 0, f"{stdout}\n{stderr}"
+
+    use_source(repository)
+    if "markupsafe" not in sys.modules:
+        markupsafe = types.ModuleType("markupsafe")
+
+        class Markup(str):
+            def __html__(self):
+                return self
+
+        markupsafe.Markup = Markup
+        markupsafe.escape = lambda value: Markup(html.escape(str(value)))
+        sys.modules["markupsafe"] = markupsafe
+    from werkzeug import Request, Response
+    from werkzeug.exceptions import BadRequest
+    from werkzeug.test import EnvironBuilder
+
+    def invoke(application):
+        environ = EnvironBuilder(path="/typed", method="POST").get_environ()
+        observed = {}
+
+        def start_response(status, headers, exc_info=None):
+            observed["status"] = status
+            observed["headers"] = headers
+            observed["exc_info"] = exc_info
+
+        body = b"".join(application(environ, start_response))
+        return observed["status"], body
+
+    @Request.application
+    def standalone_runtime(request):
+        return Response(f"standalone:{request.method}")
+
+    class RuntimeApplication:
+        @Request.application
+        def bound_runtime(self, request):
+            return Response(f"bound:{request.path}")
+
+    @Request.application
+    def failure_runtime(request):
+        raise BadRequest("expected")
+
+    assert invoke(standalone_runtime) == ("200 OK", b"standalone:POST")
+    assert invoke(RuntimeApplication().bound_runtime) == ("200 OK", b"bound:/typed")
+    failure_status, failure_body = invoke(failure_runtime)
+    assert failure_status.startswith("400 ") and b"expected" in failure_body
 
 
 def verify_packaging(repository: Path) -> None:

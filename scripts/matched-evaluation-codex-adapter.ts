@@ -17,6 +17,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import {basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
+import {performance} from 'node:perf_hooks';
 import {Schema} from 'effect';
 import {matchedEvaluationReferenceEnvironmentPolicyHashV1} from '@threadnote/threadnote/evaluation/matched-evaluation';
 import {
@@ -49,7 +50,7 @@ import {
 } from './code-memory-link-codex-terminal.js';
 import {assertMatchedEvaluationRepositoryV1} from './matched-evaluation-runtime-integrity.js';
 
-export const MATCHED_EVALUATION_CODEX_ADAPTER_VERSION = 3 as const;
+export const MATCHED_EVALUATION_CODEX_ADAPTER_VERSION = 4 as const;
 export const MATCHED_EVALUATION_ADAPTER_CONFIG_ENV = 'MATCHED_EVALUATION_ADAPTER_CONFIG' as const;
 export const MATCHED_EVALUATION_ADAPTER_EXECUTABLE_ENV = 'MATCHED_EVALUATION_ADAPTER_EXECUTABLE' as const;
 export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
@@ -61,11 +62,11 @@ export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
   plugins: 'disabled',
   subagents: 'disabled',
   userInstructions: 'disabled',
-  version: 1,
+  version: 2,
   workspace: 'isolated-worktree',
 });
 
-const ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v4' as const;
+const ADAPTER_PROTOCOL = 'matched-evaluation-adapter-v5' as const;
 const RUNTIME_VERSION = 4 as const;
 const HASH = /^[0-9a-f]{64}$/u;
 const TASK_ID = /^tsk_[0-9a-f]{16,64}$/u;
@@ -255,6 +256,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
   readonly responsePath: string;
   readonly selfExecutable: string;
 }): Promise<void> {
+  const lifecycleStartedAt = monotonicMilliseconds();
   const [configBytes, requestInput] = await Promise.all([
     readPinnedFile(input.configPath, 2 * 1_024 * 1_024, 'adapter configuration'),
     readJson(input.requestPath, 8 * 1_024 * 1_024),
@@ -290,7 +292,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       runNonce: request.runNonce,
       tool: request.tool,
     });
-    const startedAt = Date.now();
+    const preparationFinishedAt = monotonicMilliseconds();
     const agentPrompt = renderAgentPrompt(request, prepared?.project ?? null, config.contextBudgetTokens);
     const agentTurn = await runAppServerTurn({
       command: agentIsolation.command,
@@ -326,36 +328,46 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     } as const;
     await writeBoundedJson(request.artifactPath, artifact, MAXIMUM_PATCH_BYTES + 1_024 * 1_024);
     const artifactHash = await sha256File(request.artifactPath);
-    // Keep spent tokens and the actual failed response even when treatment delivery
-    // fails closed before the judge or outcome ledger is reached.
+    let contextDeliveryFailure: Error | null = null;
+    try {
+      assertMatchedEvaluationContextDeliveryV1(agentTurn.events, agentIsolation.expectedContextDelivery);
+    } catch (cause) {
+      contextDeliveryFailure = cause instanceof Error ? cause : new Error('Context delivery validation failed.');
+    }
+    const agentFinishedAt = monotonicMilliseconds();
+    // Keep spent tokens, elapsed work, and the actual failed response even when
+    // treatment delivery fails closed before the verifier, judge, or outcome ledger.
     const agentTranscript = {
       events: agentTurn.events,
       kind: 'agent',
       stderr: agentTurn.stderr,
       terminal: agentTurn.terminal,
+      timing: {
+        agentTaskMilliseconds: agentFinishedAt - preparationFinishedAt,
+        preparationMilliseconds: preparationFinishedAt - lifecycleStartedAt,
+      },
       usage: agentTurn.usage,
-      version: 1,
+      version: 2,
     };
     await writeBoundedText(
       `${request.transcriptPath}.agent.jsonl`,
       `${JSON.stringify(agentTranscript)}\n`,
       MAXIMUM_TRANSCRIPT_BYTES,
     );
-    try {
-      assertMatchedEvaluationContextDeliveryV1(agentTurn.events, agentIsolation.expectedContextDelivery);
-    } catch (cause) {
+    if (contextDeliveryFailure !== null) {
       await writeBoundedText(
         request.transcriptPath,
         `${JSON.stringify(agentTranscript)}\n${JSON.stringify({
           kind: 'context-delivery-failure',
-          message: cause instanceof Error ? cause.message : 'Context delivery validation failed.',
+          message: contextDeliveryFailure.message,
           runNonce: request.runNonce,
           version: 1,
         })}\n`,
         MAXIMUM_TRANSCRIPT_BYTES,
       );
-      throw cause;
+      throw contextDeliveryFailure;
     }
+    const verifierStartedAt = agentFinishedAt;
     const verification =
       config.verificationPlan === null
         ? null
@@ -366,6 +378,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
             root: join(root, 'verifier-runtime'),
             taskId: request.agentTask.taskId,
           });
+    const verifierFinishedAt = config.verificationPlan === null ? verifierStartedAt : monotonicMilliseconds();
     const judgeWorkspace = join(root, 'judge-workspace');
     await mkdir(judgeWorkspace, {recursive: true, mode: 0o700});
     const judgeIsolation = await createCodexIsolation({
@@ -380,6 +393,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       runNonce: request.runNonce,
       tool: request.tool,
     });
+    const judgeSetupFinishedAt = monotonicMilliseconds();
     const judgeTurn = await runAppServerTurn({
       command: judgeIsolation.command,
       cwd: judgeWorkspace,
@@ -396,8 +410,17 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     });
     if (judgeTurn.final === null) throw new Error('Blinded judge stopped at a sealed task budget.');
     const judge = parseJudgeResult(judgeTurn.final, request.judgeTask.rubric.requiredEvidenceIds);
+    const judgeFinishedAt = monotonicMilliseconds();
     const blockedActions = countMatchedEvaluationBlockedActionsV1(agentTurn.events);
-    const endToEndMilliseconds = Math.max(0, Date.now() - startedAt);
+    const timing = {
+      agentTaskMilliseconds: agentFinishedAt - preparationFinishedAt,
+      deterministicVerifierMilliseconds: verifierFinishedAt - verifierStartedAt,
+      endToEndMilliseconds: judgeFinishedAt - lifecycleStartedAt,
+      firstSufficientEvidenceMilliseconds: null,
+      judgeSetupMilliseconds: judgeSetupFinishedAt - verifierFinishedAt,
+      judgeTurnMilliseconds: judgeFinishedAt - judgeSetupFinishedAt,
+      preparationMilliseconds: preparationFinishedAt - lifecycleStartedAt,
+    } as const;
     const requiredEvidenceIds = new Set(request.judgeTask.rubric.requiredEvidenceIds);
     const recalledEvidence = new Set(judge.recalledEvidenceIds.filter(id => requiredEvidenceIds.has(id))).size;
     const supportedEvidence = new Set(judge.supportedEvidenceIds.filter(id => requiredEvidenceIds.has(id))).size;
@@ -435,7 +458,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
           harmfulActions: judge.harmfulActions,
         },
         sourceSupport: {requiredClaims: requiredEvidenceIds.size, supportedClaims: supportedEvidence},
-        timing: {endToEndMilliseconds, firstSufficientEvidenceMilliseconds: null},
+        timing,
         usage: {
           modelVisibleBytes: modelVisibleBytes(agentPrompt, agentTurn.events),
           modelVisibleTokens: agentTurn.usage.inputTokens,
@@ -501,7 +524,7 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     'verificationPlan',
     'version',
   ]);
-  if (config.version !== MATCHED_EVALUATION_CODEX_ADAPTER_VERSION) invalid('adapter config version must be 3');
+  if (config.version !== MATCHED_EVALUATION_CODEX_ADAPTER_VERSION) invalid('adapter config version must be 4');
   const appServer = object(config.appServer, 'app server');
   exactKeys(appServer, [
     'argumentsAfterSubcommand',
@@ -578,7 +601,7 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
 export function matchedEvaluationCodexEnvironmentPolicyHashV1(): string {
   return sha256(
     Buffer.from(
-      `matched-evaluation-codex-environment-policy-v1\n${JSON.stringify(MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1)}`,
+      `matched-evaluation-codex-environment-policy-v2\n${JSON.stringify(MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1)}`,
     ),
   );
 }
@@ -1239,7 +1262,7 @@ export function renderMatchedEvaluationAgentInstructionsV1(detail: 'compact' | '
   return [
     'Use only the isolated repository and reviewed code-mode tools. Never use networking, subagents, external apps, plugins, skills, hooks, or user configuration.',
     'Use read-only shell inspection and apply_patch for edits. Do not execute repository code; an outer blinded judge verifies the result.',
-    'Every shell command is reviewed before execution. If a command is declined, retry with a literal read-only command that uses no variables, substitutions, redirects, globs, or loops.',
+    'Every shell command is reviewed before execution. Run commands from the repository root. If a command is declined, retry once with one literal read-only command that uses no variables, substitutions, redirects, globs, loops, or command chaining; do not repeat the identical declined command.',
     contextInstructions,
   ].join(' ');
 }
@@ -1761,6 +1784,10 @@ function providerCost(config: MatchedEvaluationCodexAdapterConfigV1, usage: Prov
       usage.outputTokens * pricing.output) /
       1_000_000,
   );
+}
+
+function monotonicMilliseconds(): number {
+  return Math.round(performance.now());
 }
 
 function assertEffectiveThread(response: Record<string, unknown>, input: Parameters<typeof runAppServerTurn>[0]): void {
