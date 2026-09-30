@@ -233,17 +233,13 @@ export class CodeGraphQueryService extends Context.Service<
             options ?? {},
           );
           yield* options?.afterIdentityObserved?.(identity, projectScope?.project) ?? Effect.void;
-          const layout = codeGraphLayout(
-            path,
-            threadnoteHome,
-            identity.checkoutId,
-            identity.worktreeId,
-            projectScope?.scope?.scopeKey,
-          );
-          const readySnapshot = yield* readReadySnapshotWhileBuilderStarts(
+          const scopeKey = projectScope?.scope?.scopeKey;
+          const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId, scopeKey);
+          const candidate = yield* readReadySnapshotWhileBuilderStarts(
             layout,
-            store.readySnapshot(layout.databasePath, identity.worktreeId, projectScope?.scope?.scopeKey),
+            store.readySnapshot(layout.databasePath, identity.worktreeId, scopeKey),
           );
+          const readySnapshot = candidate?.repositoryId === identity.repositoryId ? candidate : undefined;
           if (projectScope?.scope !== undefined) {
             const compatible =
               readySnapshot &&
