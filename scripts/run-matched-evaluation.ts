@@ -6,7 +6,7 @@ import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {createHash} from 'node:crypto';
 import {lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {isAbsolute, join, resolve, sep} from 'node:path';
+import {dirname, isAbsolute, join, resolve, sep} from 'node:path';
 import {Effect} from 'effect';
 import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
@@ -261,6 +261,27 @@ export interface MatchedEvaluationContinuationPilotPlanV2 {
     readonly phaseOnePatchSha256: string;
     readonly phaseOnePrompt: string;
     readonly phaseOnePromptSha256: string;
+    readonly phaseOneExecution: {
+      readonly adapterArtifactHash: string;
+      readonly adapterConfigurationFileSha256: string;
+      readonly adapterConfigurationHash: string;
+      readonly adapterProtocol: string;
+      readonly appServerExecutableSha256: string;
+      readonly appServerVersion: string;
+      readonly artifactSha256: string;
+      readonly environmentPolicyHash: string;
+      readonly model: {
+        readonly id: string;
+        readonly parametersHash: string;
+        readonly provider: string;
+        readonly reasoningEffort: string;
+      };
+      readonly requestSha256: string;
+      readonly responseSha256: string;
+      readonly runNonce: string;
+      readonly transcriptHash: string;
+      readonly transcriptSha256: string;
+    };
     readonly preparedHome: {
       readonly fixtureHash: string;
       readonly identitySha256: string;
@@ -323,7 +344,14 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
       'handoffSha256',
       'phaseOneAccounting',
       ...(version === 2
-        ? ['phaseOnePatchSha256', 'phaseOnePrompt', 'phaseOnePromptSha256', 'preparedContext', 'preparedHome']
+        ? [
+            'phaseOneExecution',
+            'phaseOnePatchSha256',
+            'phaseOnePrompt',
+            'phaseOnePromptSha256',
+            'preparedContext',
+            'preparedHome',
+          ]
         : []),
       'repositoryFixtureHash',
       'repositoryRevision',
@@ -467,6 +495,9 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
       version,
     };
   }
+  if (!common.checkpoint.phaseOneAccounting.providerTokensMeasured) {
+    invalid('continuation pilot v2 requires measured phase-one provider tokens');
+  }
   const phaseOnePrompt = boundedString(checkpoint.phaseOnePrompt, 1, 12_000, 'continuation pilot phase-one prompt');
   const phaseOnePromptSha256 = matchingString(
     checkpoint.phaseOnePromptSha256,
@@ -534,6 +565,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
         HASH,
         'continuation pilot phase-one patch hash',
       ),
+      phaseOneExecution: parseContinuationPhaseOneExecutionV2(checkpoint.phaseOneExecution),
       phaseOnePrompt,
       phaseOnePromptSha256,
       preparedContext: parseContinuationPreparedContextV2(checkpoint.preparedContext),
@@ -543,6 +575,80 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
     phaseTwoPromptSha256,
     sourceTask: parsedSourceTask,
     version,
+  };
+}
+
+function parseContinuationPhaseOneExecutionV2(
+  value: unknown,
+): MatchedEvaluationContinuationPilotPlanV2['checkpoint']['phaseOneExecution'] {
+  const execution = object(value, 'continuation pilot phase-one execution');
+  exactKeys(
+    execution,
+    [
+      'adapterArtifactHash',
+      'adapterConfigurationFileSha256',
+      'adapterConfigurationHash',
+      'adapterProtocol',
+      'appServerExecutableSha256',
+      'appServerVersion',
+      'artifactSha256',
+      'environmentPolicyHash',
+      'model',
+      'requestSha256',
+      'responseSha256',
+      'runNonce',
+      'transcriptHash',
+      'transcriptSha256',
+    ],
+    'continuation pilot phase-one execution',
+  );
+  const model = object(execution.model, 'continuation pilot phase-one model');
+  exactKeys(model, ['id', 'parametersHash', 'provider', 'reasoningEffort'], 'continuation pilot phase-one model');
+  return {
+    adapterArtifactHash: matchingString(
+      execution.adapterArtifactHash,
+      HASH,
+      'continuation pilot phase-one adapter artifact hash',
+    ),
+    adapterConfigurationFileSha256: matchingString(
+      execution.adapterConfigurationFileSha256,
+      HASH,
+      'continuation pilot phase-one adapter configuration file hash',
+    ),
+    adapterConfigurationHash: matchingString(
+      execution.adapterConfigurationHash,
+      HASH,
+      'continuation pilot phase-one adapter configuration hash',
+    ),
+    adapterProtocol: boundedString(execution.adapterProtocol, 1, 128, 'continuation pilot phase-one adapter protocol'),
+    appServerExecutableSha256: matchingString(
+      execution.appServerExecutableSha256,
+      HASH,
+      'continuation pilot phase-one app-server executable hash',
+    ),
+    appServerVersion: boundedString(
+      execution.appServerVersion,
+      1,
+      128,
+      'continuation pilot phase-one app-server version',
+    ),
+    artifactSha256: matchingString(execution.artifactSha256, HASH, 'continuation pilot phase-one artifact hash'),
+    environmentPolicyHash: matchingString(
+      execution.environmentPolicyHash,
+      HASH,
+      'continuation pilot phase-one environment policy hash',
+    ),
+    model: {
+      id: boundedString(model.id, 1, 128, 'continuation pilot phase-one model id'),
+      parametersHash: matchingString(model.parametersHash, HASH, 'continuation pilot phase-one model parameters hash'),
+      provider: boundedString(model.provider, 1, 128, 'continuation pilot phase-one model provider'),
+      reasoningEffort: boundedString(model.reasoningEffort, 1, 64, 'continuation pilot phase-one reasoning effort'),
+    },
+    requestSha256: matchingString(execution.requestSha256, HASH, 'continuation pilot phase-one request hash'),
+    responseSha256: matchingString(execution.responseSha256, HASH, 'continuation pilot phase-one response hash'),
+    runNonce: matchingString(execution.runNonce, /^run_[0-9a-f]{32}$/u, 'continuation pilot phase-one run nonce'),
+    transcriptHash: matchingString(execution.transcriptHash, HASH, 'continuation pilot phase-one transcript hash'),
+    transcriptSha256: matchingString(execution.transcriptSha256, HASH, 'continuation pilot phase-one transcript hash'),
   };
 }
 
@@ -572,6 +678,122 @@ function parseContinuationPreparedHomeV2(
     fixtureHash: matchingString(home.fixtureHash, HASH, 'continuation pilot prepared home fixture hash'),
     identitySha256: matchingString(home.identitySha256, HASH, 'continuation pilot prepared home identity hash'),
   };
+}
+
+/** Bind the v2 phase-one claims to immutable sibling evidence before any phase-two attempt starts. */
+export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(input: {
+  readonly plan: MatchedEvaluationContinuationPilotPlanV2;
+  readonly planPath: string;
+}): Promise<{readonly agentPatch: string}> {
+  const evidenceDirectory = join(dirname(input.planPath), 'phase-one');
+  const paths = {
+    adapter: join(evidenceDirectory, 'adapter'),
+    adapterConfig: join(evidenceDirectory, 'adapter-config.json'),
+    artifact: join(evidenceDirectory, 'artifact.json'),
+    request: join(evidenceDirectory, 'request.json'),
+    response: join(evidenceDirectory, 'response.json'),
+    transcript: join(evidenceDirectory, 'transcript.jsonl'),
+  };
+  const execution = input.plan.checkpoint.phaseOneExecution;
+  const [
+    adapterArtifactHash,
+    adapterConfigurationFileSha256,
+    artifactSha256,
+    requestSha256,
+    responseSha256,
+    transcriptSha256,
+    configInput,
+    artifactInput,
+    requestInput,
+    responseInput,
+  ] = await Promise.all([
+    boundedRegularFileHash(paths.adapter, 128 * 1_024 * 1_024, 'continuation phase-one adapter'),
+    boundedRegularFileHash(paths.adapterConfig, MAXIMUM_JSON_BYTES, 'continuation phase-one adapter config'),
+    boundedRegularFileHash(paths.artifact, MAXIMUM_JSON_BYTES, 'continuation phase-one artifact'),
+    boundedRegularFileHash(paths.request, MAXIMUM_JSON_BYTES, 'continuation phase-one request'),
+    boundedRegularFileHash(paths.response, MAXIMUM_JSON_BYTES, 'continuation phase-one response'),
+    boundedRegularFileHash(paths.transcript, MAXIMUM_TRANSCRIPT_BYTES, 'continuation phase-one transcript'),
+    readJson(paths.adapterConfig),
+    readJson(paths.artifact),
+    readJson(paths.request),
+    readJson(paths.response),
+  ]);
+  const observedHashes = {
+    adapterArtifactHash,
+    adapterConfigurationFileSha256,
+    artifactSha256,
+    requestSha256,
+    responseSha256,
+    transcriptSha256,
+  };
+  for (const [field, value] of Object.entries(observedHashes)) {
+    if (execution[field as keyof typeof observedHashes] !== value) {
+      throw new Error(`Continuation phase-one evidence differs: ${field}.`);
+    }
+  }
+  const config = object(configInput, 'continuation phase-one adapter config');
+  const appServer = object(config.appServer, 'continuation phase-one app server');
+  const configModel = object(config.model, 'continuation phase-one config model');
+  if (
+    appServer.executableSha256 !== execution.appServerExecutableSha256 ||
+    appServer.version !== execution.appServerVersion ||
+    execution.adapterConfigurationFileSha256 !== execution.adapterConfigurationHash ||
+    config.environmentPolicyHash !== execution.environmentPolicyHash ||
+    configModel.id !== execution.model.id ||
+    configModel.parametersHash !== execution.model.parametersHash ||
+    configModel.provider !== execution.model.provider ||
+    configModel.reasoningEffort !== execution.model.reasoningEffort
+  ) {
+    throw new Error('Continuation phase-one adapter config differs from the sealed execution identity.');
+  }
+  const request = object(requestInput, 'continuation phase-one request');
+  const agentTask = object(request.agentTask, 'continuation phase-one agent task');
+  const requestModel = object(request.model, 'continuation phase-one request model');
+  if (
+    request.adapterArtifactHash !== execution.adapterArtifactHash ||
+    request.adapterConfigurationHash !== execution.adapterConfigurationHash ||
+    request.adapterProtocol !== execution.adapterProtocol ||
+    request.environmentPolicyHash !== execution.environmentPolicyHash ||
+    request.runNonce !== execution.runNonce ||
+    agentTask.prompt !== input.plan.checkpoint.phaseOnePrompt ||
+    agentTask.repositoryFixtureHash !== input.plan.sourceTask.repositoryFixtureHash ||
+    agentTask.taskId !== input.plan.taskId ||
+    requestModel.model !== execution.model.id ||
+    requestModel.parametersHash !== execution.model.parametersHash ||
+    requestModel.provider !== execution.model.provider
+  ) {
+    throw new Error('Continuation phase-one request differs from the sealed execution identity.');
+  }
+  const artifact = object(artifactInput, 'continuation phase-one artifact');
+  const artifactRepository = object(artifact.repository, 'continuation phase-one artifact repository');
+  if (
+    artifact.runNonce !== execution.runNonce ||
+    artifact.taskId !== input.plan.taskId ||
+    artifactRepository.fixtureHash !== input.plan.sourceTask.repositoryFixtureHash ||
+    artifactRepository.revision !== input.plan.sourceTask.repositoryRevision ||
+    typeof artifact.patch !== 'string' ||
+    artifact.patch.length === 0
+  ) {
+    throw new Error('Continuation phase-one artifact differs from the sealed source task or contains no patch.');
+  }
+  const response = object(responseInput, 'continuation phase-one response');
+  const metrics = object(response.metrics, 'continuation phase-one response metrics');
+  const timing = object(metrics.timing, 'continuation phase-one response timing');
+  const usage = object(metrics.usage, 'continuation phase-one response usage');
+  const providerTokens = object(usage.providerTokens, 'continuation phase-one provider tokens');
+  if (
+    response.transcriptHash !== execution.transcriptHash ||
+    timing.endToEndMilliseconds !== input.plan.checkpoint.phaseOneAccounting.elapsedMilliseconds ||
+    providerTokens.cachedInputTokens !== input.plan.checkpoint.phaseOneAccounting.providerTokens?.cachedInputTokens ||
+    providerTokens.inputTokens !== input.plan.checkpoint.phaseOneAccounting.providerTokens?.inputTokens ||
+    providerTokens.outputTokens !== input.plan.checkpoint.phaseOneAccounting.providerTokens?.outputTokens ||
+    providerTokens.reasoningOutputTokens !==
+      input.plan.checkpoint.phaseOneAccounting.providerTokens?.reasoningOutputTokens ||
+    providerTokens.totalTokens !== input.plan.checkpoint.phaseOneAccounting.providerTokens?.totalTokens
+  ) {
+    throw new Error('Continuation phase-one accounting differs from the sealed response.');
+  }
+  return {agentPatch: artifact.patch};
 }
 
 function continuationTreatment(
@@ -631,6 +853,29 @@ function continuationTreatment(
         },
       };
   }
+}
+
+export function projectMatchedEvaluationContinuationSelectionCheckpointV1(
+  plan: MatchedEvaluationContinuationPilotPlan,
+) {
+  return {
+    automaticHandoffUri: plan.checkpoint.automaticHandoffUri,
+    handoffSha256: plan.checkpoint.handoffSha256,
+    ...(plan.version === 2
+      ? {
+          phaseOneExecution: plan.checkpoint.phaseOneExecution,
+          phaseOnePatchSha256: plan.checkpoint.phaseOnePatchSha256,
+          phaseOnePromptSha256: plan.checkpoint.phaseOnePromptSha256,
+          preparedContext: plan.checkpoint.preparedContext,
+          preparedHome: plan.checkpoint.preparedHome,
+        }
+      : {}),
+    phaseOneAccounting: plan.checkpoint.phaseOneAccounting,
+    repositoryFixtureHash: plan.checkpoint.repositoryFixtureHash,
+    repositoryRevision: plan.checkpoint.repositoryRevision,
+    resumeEvidenceMarker: plan.checkpoint.resumeEvidenceMarker,
+    automaticHandoffReadSha256: plan.checkpoint.automaticHandoffReadSha256,
+  };
 }
 
 function continuationPosition(index: number): 1 | 2 | 3 | 4 {
@@ -968,6 +1213,10 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   }
   const plan = parseMatchedEvaluationContinuationPilotPlanV1(planInput);
   const planFileHash = sha256Bytes(Buffer.from(planText));
+  const phaseOneEvidence =
+    plan.version === 2
+      ? await assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: options.planPath})
+      : null;
   const [corpus, manifest, runtime, study] = await Promise.all([
     readJson(options.corpusPath).then(parseMatchedEvaluationCorpusV1),
     readJson(options.manifestPath).then(parseMatchedEvaluationManifestV1),
@@ -1033,23 +1282,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   });
   const selection = {
     candidate: plan.candidate,
-    checkpoint: {
-      automaticHandoffUri: plan.checkpoint.automaticHandoffUri,
-      handoffSha256: plan.checkpoint.handoffSha256,
-      ...(plan.version === 2
-        ? {
-            phaseOnePatchSha256: plan.checkpoint.phaseOnePatchSha256,
-            phaseOnePromptSha256: plan.checkpoint.phaseOnePromptSha256,
-            preparedContext: plan.checkpoint.preparedContext,
-            preparedHome: plan.checkpoint.preparedHome,
-          }
-        : {}),
-      phaseOneAccounting: plan.checkpoint.phaseOneAccounting,
-      repositoryFixtureHash: plan.checkpoint.repositoryFixtureHash,
-      repositoryRevision: plan.checkpoint.repositoryRevision,
-      resumeEvidenceMarker: plan.checkpoint.resumeEvidenceMarker,
-      automaticHandoffReadSha256: plan.checkpoint.automaticHandoffReadSha256,
-    },
+    checkpoint: projectMatchedEvaluationContinuationSelectionCheckpointV1(plan),
     completionMeaning:
       'completed is true only when all four fresh phase-two adapter attempts completed; verified completion is verifier-authoritative per attempt.',
     comparativeClaimsEligible: false,
@@ -1116,6 +1349,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
       baseFixtureHash: plan.sourceTask.repositoryFixtureHash,
       baseRevision: plan.sourceTask.repositoryRevision,
       checkpoint: checkpointRepository.expected,
+      agentPatch: phaseOneEvidence!.agentPatch,
       patchSha256: plan.checkpoint.phaseOnePatchSha256,
       repositoryDirectory: checkpointRepository.repositoryDirectory,
     });
@@ -1364,6 +1598,7 @@ async function assertResolvedRuntimeRepositories(
 }
 
 export async function assertMatchedEvaluationContinuationCheckpointV2(input: {
+  readonly agentPatch?: string;
   readonly baseFixtureHash: string;
   readonly baseRevision: string;
   readonly checkpoint: MatchedEvaluationRepositoryObservationV1;
@@ -1373,6 +1608,7 @@ export async function assertMatchedEvaluationContinuationCheckpointV2(input: {
   if (input.checkpoint.dirty) throw new Error('Continuation checkpoint must be clean.');
   await assertMatchedEvaluationRepositoryV1(input.repositoryDirectory, input.checkpoint);
   const baseDirectory = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-continuation-base-')));
+  const patchDirectory = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-continuation-patch-')));
   let baseWorktreeCreated = false;
   try {
     await captureContinuationGit(input.repositoryDirectory, [
@@ -1392,11 +1628,27 @@ export async function assertMatchedEvaluationContinuationCheckpointV2(input: {
     ) {
       throw new Error('Continuation source repository differs from the sealed base fixture.');
     }
+    if (input.agentPatch !== undefined) {
+      if (input.agentPatch.length === 0 || Buffer.byteLength(input.agentPatch) > 8 * 1_024 * 1_024) {
+        throw new Error('Continuation phase-one agent patch is empty or oversized.');
+      }
+      const patchPath = join(patchDirectory, 'agent.patch');
+      await writeFile(patchPath, input.agentPatch, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+      await captureContinuationGit(baseDirectory, ['apply', '--index', '--whitespace=nowarn', patchPath]);
+      const [agentTree, checkpointTree] = await Promise.all([
+        captureContinuationGit(baseDirectory, ['write-tree']),
+        captureContinuationGit(input.repositoryDirectory, ['rev-parse', `${input.checkpoint.revision}^{tree}`]),
+      ]);
+      if (agentTree.trim() !== checkpointTree.trim()) {
+        throw new Error('Continuation checkpoint differs from the preserved phase-one agent patch.');
+      }
+    }
   } finally {
     if (baseWorktreeCreated) {
       await captureContinuationGit(input.repositoryDirectory, ['worktree', 'remove', '--force', baseDirectory]);
     }
     await rm(baseDirectory, {force: true, recursive: true});
+    await rm(patchDirectory, {force: true, recursive: true});
   }
   const parent = await captureContinuationGit(input.repositoryDirectory, [
     'rev-list',

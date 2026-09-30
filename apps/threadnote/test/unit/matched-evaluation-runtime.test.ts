@@ -15,10 +15,12 @@ import {
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
 import {
   assertMatchedEvaluationContinuationCheckpointV2,
+  assertMatchedEvaluationContinuationPhaseOneEvidenceV2,
   continuationCheckpointStudyV2,
   matchedEvaluationContinuationPreparedHomeIdentityHashV2,
   parseMatchedEvaluationRuntimeV1,
   parseMatchedEvaluationContinuationPilotPlanV1,
+  projectMatchedEvaluationContinuationSelectionCheckpointV1,
   projectMatchedEvaluationContinuationAdapterTaskV2,
   resolveMatchedEvaluationRuntimeRepositoriesV1,
   hashMatchedEvaluationPayloadV1,
@@ -164,6 +166,27 @@ describe('matched evaluation runtime integrity', () => {
       candidate: base.candidate,
       checkpoint: {
         ...base.checkpoint,
+        phaseOneExecution: {
+          adapterArtifactHash: 'f'.repeat(64),
+          adapterConfigurationFileSha256: '0'.repeat(64),
+          adapterConfigurationHash: '1'.repeat(64),
+          adapterProtocol: 'matched-evaluation-adapter-v5',
+          appServerExecutableSha256: '2'.repeat(64),
+          appServerVersion: 'codex-cli 0.144.5',
+          artifactSha256: '3'.repeat(64),
+          environmentPolicyHash: '4'.repeat(64),
+          model: {
+            id: 'gpt-5.6-luna',
+            parametersHash: '5'.repeat(64),
+            provider: 'openai',
+            reasoningEffort: 'low',
+          },
+          requestSha256: '6'.repeat(64),
+          responseSha256: '7'.repeat(64),
+          runNonce: 'run_11111111111111111111111111111111',
+          transcriptHash: '8'.repeat(64),
+          transcriptSha256: '9'.repeat(64),
+        },
         phaseOnePatchSha256: '6'.repeat(64),
         phaseOnePrompt,
         phaseOnePromptSha256: sha256HexSync(Buffer.from(phaseOnePrompt)),
@@ -190,7 +213,28 @@ describe('matched evaluation runtime integrity', () => {
       version: 2,
     } as const;
     const parsedVersionTwo = parseMatchedEvaluationContinuationPilotPlanV1(versionTwo);
-    expect(parsedVersionTwo).toMatchObject({version: 2, phaseTwoPrompt});
+    expect(parsedVersionTwo).toMatchObject({
+      checkpoint: {phaseOneExecution: versionTwo.checkpoint.phaseOneExecution},
+      version: 2,
+      phaseTwoPrompt,
+    });
+    expect(projectMatchedEvaluationContinuationSelectionCheckpointV1(parsedVersionTwo)).toMatchObject({
+      phaseOneExecution: versionTwo.checkpoint.phaseOneExecution,
+      phaseOnePatchSha256: versionTwo.checkpoint.phaseOnePatchSha256,
+      phaseOnePromptSha256: versionTwo.checkpoint.phaseOnePromptSha256,
+    });
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...versionTwo,
+        checkpoint: {
+          ...versionTwo.checkpoint,
+          phaseOneExecution: {
+            ...versionTwo.checkpoint.phaseOneExecution,
+            model: {...versionTwo.checkpoint.phaseOneExecution.model, parametersHash: 'invalid'},
+          },
+        },
+      }),
+    ).toThrow('phase-one model parameters hash');
     expect(() =>
       parseMatchedEvaluationContinuationPilotPlanV1({
         ...versionTwo,
@@ -255,6 +299,105 @@ describe('matched evaluation runtime integrity', () => {
     );
   });
 
+  it('binds v2 phase-one provenance claims to the preserved adapter evidence files', async () => {
+    const root = await temporaryRoot(roots);
+    const phaseOne = join(root, 'phase-one');
+    await mkdir(phaseOne);
+    const taskId = 'tsk_1234567890abcdef';
+    const sourceFixtureHash = 'a'.repeat(64);
+    const sourceRevision = 'b'.repeat(40);
+    const prompt = 'Add the regression test and stop before the production fix.';
+    const runNonce = 'run_22222222222222222222222222222222';
+    const model = {
+      id: 'gpt-5.6-luna',
+      parametersHash: 'c'.repeat(64),
+      provider: 'openai',
+      reasoningEffort: 'low',
+    };
+    const adapter = Buffer.from('sealed adapter');
+    const config = Buffer.from(
+      `${JSON.stringify({
+        appServer: {executableSha256: 'd'.repeat(64), version: 'codex-cli 0.144.5'},
+        environmentPolicyHash: 'e'.repeat(64),
+        model,
+      })}\n`,
+    );
+    const request = Buffer.from(
+      `${JSON.stringify({
+        adapterArtifactHash: sha256HexSync(adapter),
+        adapterConfigurationHash: sha256HexSync(config),
+        adapterProtocol: 'matched-evaluation-adapter-v5',
+        agentTask: {prompt, repositoryFixtureHash: sourceFixtureHash, taskId},
+        environmentPolicyHash: 'e'.repeat(64),
+        model: {model: model.id, parametersHash: model.parametersHash, provider: model.provider},
+        runNonce,
+      })}\n`,
+    );
+    const artifact = Buffer.from(
+      `${JSON.stringify({
+        patch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n',
+        repository: {fixtureHash: sourceFixtureHash, revision: sourceRevision},
+        runNonce,
+        taskId,
+      })}\n`,
+    );
+    const providerTokens = {
+      cachedInputTokens: 4,
+      inputTokens: 10,
+      outputTokens: 5,
+      reasoningOutputTokens: 2,
+      totalTokens: 15,
+    };
+    const transcript = Buffer.from('{"kind":"agent"}\n');
+    const transcriptHash = 'f'.repeat(64);
+    const response = Buffer.from(
+      `${JSON.stringify({
+        metrics: {timing: {endToEndMilliseconds: 42}, usage: {providerTokens}},
+        transcriptHash,
+      })}\n`,
+    );
+    await Promise.all([
+      writeFile(join(phaseOne, 'adapter'), adapter),
+      writeFile(join(phaseOne, 'adapter-config.json'), config),
+      writeFile(join(phaseOne, 'artifact.json'), artifact),
+      writeFile(join(phaseOne, 'request.json'), request),
+      writeFile(join(phaseOne, 'response.json'), response),
+      writeFile(join(phaseOne, 'transcript.jsonl'), transcript),
+    ]);
+    const plan = {
+      checkpoint: {
+        phaseOneAccounting: {elapsedMilliseconds: 42, providerTokens, providerTokensMeasured: true},
+        phaseOneExecution: {
+          adapterArtifactHash: sha256HexSync(adapter),
+          adapterConfigurationFileSha256: sha256HexSync(config),
+          adapterConfigurationHash: sha256HexSync(config),
+          adapterProtocol: 'matched-evaluation-adapter-v5',
+          appServerExecutableSha256: 'd'.repeat(64),
+          appServerVersion: 'codex-cli 0.144.5',
+          artifactSha256: sha256HexSync(artifact),
+          environmentPolicyHash: 'e'.repeat(64),
+          model,
+          requestSha256: sha256HexSync(request),
+          responseSha256: sha256HexSync(response),
+          runNonce,
+          transcriptHash,
+          transcriptSha256: sha256HexSync(transcript),
+        },
+        phaseOnePrompt: prompt,
+      },
+      sourceTask: {repositoryFixtureHash: sourceFixtureHash, repositoryRevision: sourceRevision},
+      taskId,
+    } as Parameters<typeof assertMatchedEvaluationContinuationPhaseOneEvidenceV2>[0]['plan'];
+
+    await expect(
+      assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: join(root, 'continuation-plan.json')}),
+    ).resolves.toEqual({agentPatch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n'});
+    await writeFile(join(phaseOne, 'response.json'), `${response.toString('utf8')} `);
+    await expect(
+      assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: join(root, 'continuation-plan.json')}),
+    ).rejects.toThrow('responseSha256');
+  });
+
   it('attests a nonempty direct-child phase-one checkpoint and its exact binary patch', async () => {
     if (process.platform === 'win32') return;
     const root = await temporaryRoot(roots);
@@ -279,7 +422,17 @@ describe('matched evaluation runtime integrity', () => {
       ':(exclude).context/**',
       ':(exclude)**/.context/**',
     ]);
+    const agentPatch = await gitOutput(repository, [
+      'diff',
+      '--binary',
+      '--no-ext-diff',
+      base.revision,
+      checkpoint.revision,
+      '--',
+      '.',
+    ]);
     const input = {
+      agentPatch,
       baseFixtureHash: base.fixtureHash,
       baseRevision: base.revision,
       checkpoint,
@@ -288,6 +441,12 @@ describe('matched evaluation runtime integrity', () => {
     };
 
     await expect(assertMatchedEvaluationContinuationCheckpointV2(input)).resolves.toBeUndefined();
+    await expect(
+      assertMatchedEvaluationContinuationCheckpointV2({
+        ...input,
+        agentPatch: agentPatch.replace('phase-one', 'different'),
+      }),
+    ).rejects.toThrow('checkpoint differs from the preserved phase-one agent patch');
     await expect(
       assertMatchedEvaluationContinuationCheckpointV2({...input, patchSha256: 'f'.repeat(64)}),
     ).rejects.toThrow('phase-one patch differs');
