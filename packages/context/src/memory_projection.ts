@@ -1,5 +1,5 @@
 import {isMemoryId} from '@threadnote/memory/identity-alias';
-import type {ContextBriefLogicalResultV1, ContextBriefMemoryEvidenceV1} from './types.js';
+import type {ContextBriefLogicalResultV1, ContextBriefMemoryEvidenceV1, ContextBriefResponseFormat} from './types.js';
 
 const STABLE_MEMORY_IDENTITY_UNAVAILABLE_GAP = 'stable-memory-identity-unavailable';
 
@@ -8,6 +8,24 @@ export function contextBriefRelationshipMemoryByUri(
   uri: string,
 ): ContextBriefMemoryEvidenceV1 | undefined {
   return [...logical.activeHandoffs, ...logical.durableDecisions].find(memory => memory.uri === uri);
+}
+
+export function requiredContextBriefAgentMemoryItem<T extends {readonly id: string; readonly lane: string}>(
+  logical: ContextBriefLogicalResultV1,
+  items: readonly T[],
+  responseFormat: ContextBriefResponseFormat,
+): T | undefined {
+  if (logical.mode === 'resume') {
+    return items.find(
+      item =>
+        (item.lane === 'handoff' || item.lane === 'durable-decision') &&
+        contextBriefRelationshipMemoryByUri(logical, item.id)?.continuationCard !== undefined,
+    );
+  }
+  if (responseFormat !== 'agent' || logical.mode !== 'explain' || logical.coverage.memory.codeAnchors !== undefined) {
+    return undefined;
+  }
+  return items.find(item => item.lane === 'handoff' || item.lane === 'durable-decision');
 }
 
 export function withStableContextBriefMemoryIdentityGap(

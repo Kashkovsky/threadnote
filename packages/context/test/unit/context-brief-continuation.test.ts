@@ -180,10 +180,29 @@ describe('Context Brief continuation contracts', () => {
     }
   });
 
+  it('keeps the continuation card when noisy detached-worktree graph relationships fill the budget', () => {
+    for (const budgetTokens of [800, 1_500]) {
+      const projected = project(
+        'resume',
+        realisticHandoff(),
+        budgetTokens,
+        noisyDetachedWorktreeGraph(),
+      ).structuredContent;
+      expect(projected.activeHandoffs[0]?.continuationCard).toBeDefined();
+      expect(projected.graph.cards[0]?.id).toBe('card-1');
+      expect(projected.coverage.gaps).toContain('graph-evidence-partial');
+    }
+    expect(
+      project('brief', realisticHandoff(), 1_500, noisyDetachedWorktreeGraph()).structuredContent.activeHandoffs.some(
+        memory => memory.continuationCard !== undefined,
+      ),
+    ).toBe(false);
+  });
+
   it('retains the continuation core for arbitrary supported token budgets', () => {
     fc.assert(
       fc.property(fc.integer({min: 800, max: 1_500}), budgetTokens => {
-        const projected = project('resume', realisticHandoff(), budgetTokens, denseGraph());
+        const projected = project('resume', realisticHandoff(), budgetTokens, noisyDetachedWorktreeGraph());
         expect(projected.structuredContent.activeHandoffs[0]?.continuationCard).toBeDefined();
         expect(projected.structuredContent.graph.cards[0]?.id).toBe('card-1');
         expect(projected.measurement.totalBytes).toBeLessThanOrEqual(projected.maximumBytes);
@@ -322,6 +341,31 @@ function denseGraph(): ContextBriefGraphEvidenceV1 {
         qualifiedName: `compile${index + 1}`,
       },
     })),
+  };
+}
+
+function noisyDetachedWorktreeGraph(): ContextBriefGraphEvidenceV1 {
+  const base = denseGraph();
+  const refs = base.cards.map(card => card.ref);
+  return {
+    ...base,
+    continuation: {cursor: `cgwc_${'1'.repeat(40)}`, remainingEstimate: 13},
+    contracts: Array.from({length: 32}, (_, rank) => ({
+      authority: 'authoritative' as const,
+      evidence: {
+        line: rank + 1,
+        path: `notes/relationship-consumer-${rank}.org`,
+        repositoryKey: 'threadnote',
+      },
+      id: `contract-${rank + 1}`,
+      provenance: 'resolved' as const,
+      rank,
+      relation: rank % 2 === 0 ? 'contains' : 'references',
+      sourceRef: refs[(rank + 1) % refs.length] ?? REF,
+      targetRef: refs[0] ?? REF,
+    })),
+    gaps: ['graph-evidence-partial'],
+    warnings: ['Graph traversal reached a configured result limit.'],
   };
 }
 

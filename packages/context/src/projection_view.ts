@@ -174,8 +174,9 @@ export function preservesBaselineEvidence(candidate: ContextBriefV1, baseline: C
 /**
  * Resume cards may replace optional breadth, but never the evidence needed to
  * validate the continuation. Keep the primary handoff and graph hit plus all
- * exact source, relationship, gap, conflict, and procedure evidence that fit
- * without the card.
+ * exact source, gap, conflict, and procedure evidence that fit without the
+ * card. Relationship contracts remain optional breadth in resume mode; trace
+ * and impact continue to use the ordinary baseline-preservation contract.
  */
 export function preservesResumeBaselineEvidence(candidate: ContextBriefV1, baseline: ContextBriefV1): boolean {
   const contains = (left: readonly string[], right: readonly string[]) => right.every(value => left.includes(value));
@@ -190,10 +191,6 @@ export function preservesResumeBaselineEvidence(candidate: ContextBriefV1, basel
   return (
     retainedContinuation !== undefined &&
     (primaryBaselineCard === undefined || candidate.graph.cards.some(card => card.id === primaryBaselineCard.id)) &&
-    contains(
-      candidate.graph.contracts.map(contract => contract.id),
-      baseline.graph.contracts.map(contract => contract.id),
-    ) &&
     contains(
       (candidate.graph.sources ?? []).map(source => source.id),
       (baseline.graph.sources ?? []).map(source => source.id),

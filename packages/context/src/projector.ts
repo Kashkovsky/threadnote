@@ -34,7 +34,11 @@ import {
 } from './types.js';
 import {isMemoryId, memoryIdentityAlias} from '@threadnote/memory/identity-alias';
 import {parseVerifiedProcedureEvidenceList} from './procedure/selection.js';
-import {contextBriefRelationshipMemoryByUri, withStableContextBriefMemoryIdentityGap} from './memory_projection.js';
+import {
+  contextBriefRelationshipMemoryByUri,
+  requiredContextBriefAgentMemoryItem,
+  withStableContextBriefMemoryIdentityGap,
+} from './memory_projection.js';
 import {
   CONTEXT_BRIEF_PROJECTION_LANES as PROJECTION_LANES,
   contextBriefProjectionLanePriority as lanePriority,
@@ -148,7 +152,7 @@ function projectContextBriefCore(
     [
       requiredCoverageGapItem(logical, items),
       ...requiredAgentGraphEvidenceItems(logical, items, responseFormat, graphRecoveryItem),
-      requiredAgentExplanationMemoryItem(logical, items, responseFormat),
+      requiredContextBriefAgentMemoryItem(logical, items, responseFormat),
       ...requiredContextBriefSourceProjectionItems(logical, items),
       ...requiredAgentWorksetRecoveryItems(logical, items, responseFormat),
       graphRecoveryItem,
@@ -1393,18 +1397,6 @@ function requiredCoverageGapItem(
   if (gap === undefined) return undefined;
   const id = coverageGapProjectionId(gap);
   return items.find(item => item.lane === 'coverage-gap' && item.id === id);
-}
-
-/** Explain mode needs one rationale-bearing memory before optional source expansion. */
-function requiredAgentExplanationMemoryItem(
-  logical: ContextBriefLogicalResultV1,
-  items: readonly ProjectionItem[],
-  responseFormat: ContextBriefResponseFormat,
-): ProjectionItem | undefined {
-  if (responseFormat !== 'agent' || logical.mode !== 'explain' || logical.coverage.memory.codeAnchors !== undefined) {
-    return undefined;
-  }
-  return items.find(item => item.lane === 'handoff' || item.lane === 'durable-decision');
 }
 
 /** A bounded locate answer must not strand a partial or unprepared Workset. */
