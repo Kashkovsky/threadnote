@@ -1090,7 +1090,11 @@ export function assertMatchedTokenEfficiencyLinkedBriefV1(
   });
   const expected = [...expectedTopics].sort((left, right) => left.localeCompare(right));
   const surfaced = [...surfacedTopics].sort((left, right) => left.localeCompare(right));
-  if (JSON.stringify(surfaced) !== JSON.stringify(expected)) {
+  const durableRosterIsValid =
+    expectedHandoffTopics.length === 0
+      ? JSON.stringify(surfaced) === JSON.stringify(expected)
+      : surfaced.every(topic => expected.includes(topic));
+  if (!durableRosterIsValid) {
     throw new Error(`Task ${taskId} exact prompt does not surface its complete reviewed memory roster.`);
   }
 }

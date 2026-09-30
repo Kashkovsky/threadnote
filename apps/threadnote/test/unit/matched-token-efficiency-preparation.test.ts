@@ -113,6 +113,32 @@ describe('matched token-efficiency study preparation', () => {
         {
           ...brief,
           activeHandoffs: [{kind: 'handoff', project: 'threadnote', topic: 'continuation-checkpoint'}],
+          durableDecisions: [],
+        },
+        'threadnote',
+        'tsk_1234567890abcdef',
+        ['parser-contract', 'serializer-contract'],
+        ['continuation-checkpoint'],
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedTokenEfficiencyLinkedBriefV1(
+        {
+          ...brief,
+          activeHandoffs: [{kind: 'handoff', project: 'threadnote', topic: 'continuation-checkpoint'}],
+          durableDecisions: [{kind: 'durable', project: 'threadnote', topic: 'unexpected-contract'}],
+        },
+        'threadnote',
+        'tsk_1234567890abcdef',
+        ['parser-contract', 'serializer-contract'],
+        ['continuation-checkpoint'],
+      ),
+    ).toThrow('complete reviewed memory roster');
+    expect(() =>
+      assertMatchedTokenEfficiencyLinkedBriefV1(
+        {
+          ...brief,
+          activeHandoffs: [{kind: 'handoff', project: 'threadnote', topic: 'continuation-checkpoint'}],
         },
         'threadnote',
         'tsk_1234567890abcdef',
