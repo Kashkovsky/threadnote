@@ -2,6 +2,7 @@ import {chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile} from 
 import {tmpdir} from '@threadnote/testing/node-os';
 import {join} from '@threadnote/testing/node-path';
 import {sha256HexSync} from '@threadnote/platform/sha256';
+import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
   assertMatchedEvaluationPinnedFileV1,
@@ -14,6 +15,7 @@ import {
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
 import {
   parseMatchedEvaluationRuntimeV1,
+  parseMatchedEvaluationContinuationPilotPlanV1,
   resolveMatchedEvaluationRuntimeRepositoriesV1,
   hashMatchedEvaluationPayloadV1,
   selectMatchedEvaluationPilotRowsV1,
@@ -25,6 +27,130 @@ describe('matched evaluation runtime integrity', () => {
 
   afterEach(async () => {
     await Promise.all(roots.splice(0).map(root => rm(root, {force: true, recursive: true})));
+  });
+
+  it('seals one unique attempt per continuation treatment and the common checkpoint', () => {
+    const handoff = [
+      'Task: continue the frozen implementation.',
+      'Decisions: keep the parser branch local.',
+      'Constraints: preserve public behavior.',
+      'Rationale: marker checkpoint-evidence-7f4c selects the verified path.',
+      'Verification: focused regression still needs to run.',
+      'Blockers: none.',
+      'Risks: adjacent callers may encode the old shape.',
+      'Next step: finish the branch and run the verifier.',
+    ].join('\n');
+    const base = {
+      attempts: [
+        {
+          blindLabel: 'A',
+          runNonce: 'run_00000000000000000000000000000001',
+          runOrder: 4,
+          variant: 'threadnote-resume',
+        },
+        {
+          blindLabel: 'B',
+          runNonce: 'run_00000000000000000000000000000002',
+          runOrder: 2,
+          variant: 'manual-handoff',
+        },
+        {
+          blindLabel: 'C',
+          runNonce: 'run_00000000000000000000000000000003',
+          runOrder: 1,
+          variant: 'files-bare',
+        },
+        {
+          blindLabel: 'D',
+          runNonce: 'run_00000000000000000000000000000004',
+          runOrder: 3,
+          variant: 'threadnote-graph',
+        },
+      ],
+      baseTaskPromptSha256: '1'.repeat(64),
+      candidate: {toolArtifactHash: '2'.repeat(64), toolVersion: '5.1.0-beta.1.local.gabc'},
+      checkpoint: {
+        automaticHandoffReadSha256: '5'.repeat(64),
+        automaticHandoffUri: 'threadnote://user/evaluation/memories/handoffs/active/project/pilot.md',
+        handoff,
+        handoffSha256: sha256HexSync(Buffer.from(handoff)),
+        phaseOneAccounting: {
+          elapsedMilliseconds: 42,
+          providerTokensMeasured: true,
+          providerTokens: {
+            cachedInputTokens: 4,
+            inputTokens: 10,
+            outputTokens: 5,
+            reasoningOutputTokens: 2,
+            totalTokens: 15,
+          },
+        },
+        repositoryFixtureHash: '3'.repeat(64),
+        repositoryRevision: '4'.repeat(40),
+        resumeEvidenceMarker: 'checkpoint-evidence-7f4c',
+      },
+      retries: 0,
+      taskId: 'tsk_1234567890abcdef',
+      version: 1,
+    } as const;
+
+    expect(parseMatchedEvaluationContinuationPilotPlanV1(base).attempts.map(attempt => attempt.variant)).toEqual([
+      'files-bare',
+      'manual-handoff',
+      'threadnote-graph',
+      'threadnote-resume',
+    ]);
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...base,
+        attempts: base.attempts.map(attempt => ({...attempt, variant: 'files-bare'})),
+      }),
+    ).toThrow('one unique attempt per variant');
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...base,
+        checkpoint: {...base.checkpoint, handoff: `${handoff} changed`},
+      }),
+    ).toThrow('handoff hash differs');
+    expect(
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...base,
+        checkpoint: {
+          ...base.checkpoint,
+          phaseOneAccounting: {
+            elapsedMilliseconds: 42,
+            providerTokens: null,
+            providerTokensMeasured: false,
+          },
+        },
+      }).checkpoint.phaseOneAccounting.providerTokens,
+    ).toBeNull();
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...base,
+        checkpoint: {
+          ...base.checkpoint,
+          phaseOneAccounting: {...base.checkpoint.phaseOneAccounting, providerTokensMeasured: false},
+        },
+      }),
+    ).toThrow('unmeasured phase-one provider tokens must be null');
+    fc.assert(
+      fc.property(
+        fc.shuffledSubarray(['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume'] as const, {
+          minLength: 4,
+          maxLength: 4,
+        }),
+        variants => {
+          const parsed = parseMatchedEvaluationContinuationPilotPlanV1({
+            ...base,
+            attempts: base.attempts.map((attempt, index) => ({...attempt, variant: variants[index]})),
+          });
+          expect(new Set(parsed.attempts.map(attempt => attempt.variant))).toEqual(new Set(variants));
+          expect(parsed.attempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3, 4]);
+        },
+      ),
+      {numRuns: 24},
+    );
   });
 
   it('selects exactly one first-repetition row per pilot arm in frozen order', () => {

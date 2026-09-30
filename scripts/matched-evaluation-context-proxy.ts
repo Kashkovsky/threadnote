@@ -15,11 +15,15 @@ import {EffectSchemaSdkTools} from '@threadnote/threadnote/mcp/effect_schema_sdk
 
 export const MATCHED_EVALUATION_CONTEXT_PACKET_ENV = 'MATCHED_EVALUATION_CONTEXT_PACKET' as const;
 export const MATCHED_EVALUATION_CONTEXT_SERVER_NAME = 'matched_evaluation_context' as const;
-export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 3 as const;
+export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 4 as const;
+
+type MatchedEvaluationContextBriefMode = 'brief' | 'resume';
 
 export interface MatchedEvaluationContextProxyPacketV1 {
   readonly budgetTokens: number;
   readonly detail: 'compact' | 'graph-only' | 'source';
+  /** The Context Brief mode is sealed by the runner, not selected by the agent. */
+  readonly mode: MatchedEvaluationContextBriefMode;
   readonly expectedContext: {
     readonly graphContentHash: string;
     readonly graphSnapshotHash: string;
@@ -28,6 +32,10 @@ export interface MatchedEvaluationContextProxyPacketV1 {
     readonly studyHash: string;
     readonly taskContextHash: string | null;
   };
+  readonly expectedResume: {
+    readonly automaticHandoffUri: string;
+    readonly resumeEvidenceMarker: string;
+  } | null;
   readonly project: string;
   readonly prompt: string;
   readonly repositoryRoot: string;
@@ -46,7 +54,7 @@ export interface MatchedEvaluationContextProxyRequestV1 {
   readonly budgetTokens?: number;
   readonly callerCwd: string;
   readonly codeRefs?: string | readonly string[];
-  readonly mode?: 'brief' | 'explain' | 'impact' | 'locate' | 'trace';
+  readonly mode?: (typeof MODES)[number];
   readonly project?: string;
 }
 
@@ -54,7 +62,7 @@ const HASH = /^[0-9a-f]{64}$/u;
 const RUN_NONCE = /^run_[0-9a-f]{32}$/u;
 const CGS = /^cgs_[0-9a-f]{16,128}$/u;
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
-const MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
+const MODES = ['brief', 'resume', 'locate', 'explain', 'trace', 'impact'] as const;
 const NonEmptyText = Schema.String.check(Schema.isMinLength(1));
 const PathOrId = NonEmptyText.check(Schema.isMaxLength(4_096));
 
@@ -163,7 +171,9 @@ function receipt(
     meta: {
       matchedEvaluation: {
         ...packet.expectedContext,
+        expectedResumeHash: hashExpectedResume(packet.expectedResume),
         graphReady: true,
+        mode: packet.mode,
         runNonce: packet.runNonce,
         runtimeManifestSha256: packet.runtimeManifestSha256,
         contentResponseSha256: hashMatchedEvaluationContextContent(text),
@@ -175,6 +185,12 @@ function receipt(
       },
     },
   };
+}
+
+export function hashExpectedResume(
+  expectedResume: MatchedEvaluationContextProxyPacketV1['expectedResume'],
+): string | null {
+  return expectedResume === null ? null : hashMatchedEvaluationContextContent(JSON.stringify(expectedResume));
 }
 
 export const MATCHED_EVALUATION_CONTEXT_INPUT_SCHEMA = Schema.Struct({
@@ -205,6 +221,9 @@ export async function handleMatchedEvaluationContextRequest(
   if (request.budgetTokens !== undefined && request.budgetTokens !== packet.budgetTokens) {
     throw new Error('Context request budget differs from the preregistered dose.');
   }
+  if (request.mode !== undefined && request.mode !== packet.mode) {
+    throw new Error('Context request mode differs from the sealed treatment.');
+  }
   const requestedRefs =
     request.codeRefs === undefined ? [] : typeof request.codeRefs === 'string' ? [request.codeRefs] : request.codeRefs;
   const codeRefs = requestedRefs.map(reference => validatedCodeRef(reference, packet.repositoryRoot));
@@ -214,9 +233,17 @@ export async function handleMatchedEvaluationContextRequest(
   ]);
   const structuredContent = await runThreadnoteContextBrief(packet, {
     codeRefs,
-    mode: request.mode ?? 'brief',
+    mode: packet.mode,
   });
   const responseText = JSON.stringify(structuredContent);
+  if (packet.mode === 'resume' && packet.expectedResume !== null) {
+    if (
+      !responseText.includes(packet.expectedResume.automaticHandoffUri) ||
+      !responseText.includes(packet.expectedResume.resumeEvidenceMarker)
+    ) {
+      throw new Error('Resume Context Brief omitted the sealed automatic handoff evidence.');
+    }
+  }
   return receipt(packet, 'context_brief', requestInput, responseText, true);
 }
 
@@ -344,7 +371,9 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   exactKeys(packet, [
     'budgetTokens',
     'detail',
+    'mode',
     'expectedContext',
+    'expectedResume',
     'project',
     'prompt',
     'repositoryRoot',
@@ -358,7 +387,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'threadnoteUser',
     'version',
   ]);
-  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 3');
+  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 4');
   const expected = object(packet.expectedContext, 'expected context');
   exactKeys(expected, [
     'graphContentHash',
@@ -375,6 +404,20 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   }
   const linkReceiptsHash = nullableHash(expected.linkReceiptsHash, 'link receipts hash');
   const taskContextHash = nullableHash(expected.taskContextHash, 'task context hash');
+  const expectedResume =
+    packet.expectedResume === null
+      ? null
+      : (() => {
+          const resume = object(packet.expectedResume, 'expected resume');
+          exactKeys(resume, ['automaticHandoffUri', 'resumeEvidenceMarker']);
+          return {
+            automaticHandoffUri: boundedText(resume.automaticHandoffUri, 1, 4_096, 'automatic handoff URI'),
+            resumeEvidenceMarker: boundedText(resume.resumeEvidenceMarker, 1, 4_096, 'resume evidence marker'),
+          };
+        })();
+  if ((packet.mode === 'resume') !== (expectedResume !== null)) {
+    invalid('resume mode and expected resume evidence disagree');
+  }
   if (
     (memoryAccess === 'disabled' && (linkReceiptsHash !== null || taskContextHash !== null)) ||
     (memoryAccess === 'linked' && (linkReceiptsHash === null || taskContextHash === null))
@@ -384,6 +427,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   return {
     budgetTokens: integer(packet.budgetTokens, 800, 1_500, 'context budget'),
     detail,
+    mode: literal(packet.mode, ['brief', 'resume'] as const, 'Context Brief mode'),
     expectedContext: {
       graphContentHash: matching(expected.graphContentHash, HASH, 'graph content hash'),
       graphSnapshotHash: matching(expected.graphSnapshotHash, HASH, 'graph snapshot hash'),
@@ -392,6 +436,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
       studyHash: matching(expected.studyHash, HASH, 'study hash'),
       taskContextHash,
     },
+    expectedResume,
     project: matching(packet.project, PROJECT, 'project'),
     prompt: boundedText(packet.prompt, 1, 4_096, 'prompt'),
     repositoryRoot: absolutePath(packet.repositoryRoot, 'repository root'),

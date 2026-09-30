@@ -41,7 +41,7 @@ describe('matched evaluation context proxy', () => {
         runtimeManifestSha256: fixture.packet.runtimeManifestSha256,
         contentResponseSha256: sha256HexSync(Buffer.from(result.content[0].text)),
         frozenPromptSha256: sha256HexSync(Buffer.from(fixture.packet.prompt)),
-        version: 3,
+        version: 4,
       },
     });
   });
@@ -74,7 +74,7 @@ describe('matched evaluation context proxy', () => {
     ).rejects.toThrow('Expected no excess property');
   });
 
-  it('preserves the v3 contract across the real MCP stdio transport', async () => {
+  it('preserves the proxy contract across the real MCP stdio transport', async () => {
     if (process.platform === 'win32') return;
     const fixture = await contextFixture(roots, 'Markdown **prompt** with trailing spaces  \n');
     const packetPath = join(fixture.root, 'packet.json');
@@ -114,7 +114,7 @@ describe('matched evaluation context proxy', () => {
       expect('structuredContent' in result).toBe(false);
       expect(result._meta).toMatchObject({
         matchedEvaluation: {
-          version: 3,
+          version: 4,
           runNonce: fixture.packet.runNonce,
           runtimeManifestSha256: fixture.packet.runtimeManifestSha256,
           contentResponseSha256: sha256HexSync(Buffer.from(content[0].text)),
@@ -159,6 +159,42 @@ describe('matched evaluation context proxy', () => {
       'read_context',
     ]);
     expect(matchedEvaluationContextTools('source')).toEqual(['context_brief']);
+  });
+
+  it('uses the sealed resume mode and rejects an agent-selected mode', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = await contextFixture(roots, 'resume prompt', 'graph-only', 'disabled', 'resume');
+    const result = await handleMatchedEvaluationContextRequest(fixture.packet, {
+      callerCwd: fixture.repository,
+      mode: 'resume',
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(await fixture.seenMode()).toBe('resume');
+    await expect(
+      handleMatchedEvaluationContextRequest(fixture.packet, {
+        callerCwd: fixture.repository,
+        mode: 'brief',
+      }),
+    ).rejects.toThrow('mode differs from the sealed treatment');
+  });
+
+  it('fails closed when sealed resume evidence is missing or incomplete', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = await contextFixture(roots, 'resume prompt', 'graph-only', 'disabled', 'resume');
+    const packet = {
+      ...fixture.packet,
+      expectedResume: {automaticHandoffUri: 'prepared context', resumeEvidenceMarker: 'implementation contract'},
+    };
+    await expect(
+      handleMatchedEvaluationContextRequest(packet, {callerCwd: fixture.repository, mode: 'resume'}),
+    ).resolves.toMatchObject({meta: {matchedEvaluation: {expectedResumeHash: expect.any(String)}}});
+    await expect(
+      handleMatchedEvaluationContextRequest(
+        {...packet, expectedResume: {automaticHandoffUri: 'absent', resumeEvidenceMarker: 'implementation contract'}},
+        {callerCwd: fixture.repository, mode: 'resume'},
+      ),
+    ).rejects.toThrow('omitted the sealed automatic handoff evidence');
   });
 
   it('rejects tampered, rebound, and escaped runtime manifests', async () => {
@@ -313,12 +349,14 @@ async function contextFixture(
   prompt = 'Inspect the isolated repository.',
   detail: 'compact' | 'graph-only' | 'source' = 'graph-only',
   memoryAccess: 'disabled' | 'linked' = 'disabled',
+  mode: 'brief' | 'resume' = 'brief',
 ): Promise<{
   readonly manifest: string;
   readonly packet: MatchedEvaluationContextProxyPacketV1;
   readonly repository: string;
   readonly root: string;
   readonly seenTask: () => Promise<string>;
+  readonly seenMode: () => Promise<string>;
 }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-matched-context-')));
   roots.push(root);
@@ -342,6 +380,7 @@ async function contextFixture(
     `#!/bin/sh
 manifest=''
 task=''
+mode=''
 while [ "$#" -gt 0 ]; do
   if [ "$1" = '--manifest' ]; then
     shift
@@ -350,6 +389,10 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = '--task' ]; then
     shift
     task="$1"
+  fi
+  if [ "$1" = '--mode' ]; then
+    shift
+    mode="$1"
   fi
   shift
 done
@@ -360,6 +403,7 @@ grep -F ${shellQuote(JSON.stringify(runNonce))} "$manifest" >/dev/null || exit 2
 [ "$THREADNOTE_ACCOUNT" = 'local' ] || exit 21
 [ "$THREADNOTE_USER" = 'evaluation-user' ] || exit 22
 printf '%s' "$task" > ${shellQuote(seenTaskPath)}
+printf '%s' "$mode" > ${shellQuote(seenTaskPath + '-mode')}
 printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
 `,
     {mode: 0o700},
@@ -371,6 +415,7 @@ printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
     packet: {
       budgetTokens: 1_500,
       detail,
+      mode,
       expectedContext: {
         graphContentHash: '1'.repeat(64),
         graphSnapshotHash: '2'.repeat(64),
@@ -379,6 +424,10 @@ printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
         studyHash: '3'.repeat(64),
         taskContextHash: memoryAccess === 'linked' ? '5'.repeat(64) : null,
       },
+      expectedResume:
+        mode === 'resume'
+          ? {automaticHandoffUri: 'prepared context', resumeEvidenceMarker: 'implementation contract'}
+          : null,
       project,
       prompt,
       repositoryRoot: repository,
@@ -390,11 +439,12 @@ printf '%s\\n' ${shellQuote(JSON.stringify(preparedEvidence))}
       threadnoteExecutableSha256: sha256HexSync(await readFile(executable)),
       threadnoteHome,
       threadnoteUser: 'evaluation-user',
-      version: 3,
+      version: 4,
     },
     repository,
     root,
     seenTask: () => readFile(seenTaskPath, 'utf8'),
+    seenMode: () => readFile(seenTaskPath + '-mode', 'utf8'),
   };
 }
 

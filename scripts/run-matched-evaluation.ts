@@ -34,6 +34,10 @@ import {
   type MatchedTokenEfficiencyStudyV1,
 } from '@threadnote/threadnote/evaluation/matched-token-efficiency';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
+import {
+  matchedEvaluationPreparedHomeFixtureHashV1,
+  parseMatchedEvaluationCodexAdapterConfigV1,
+} from './matched-evaluation-codex-adapter.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
 import {
@@ -150,6 +154,288 @@ export function selectMatchedEvaluationPilotRowsV1(
   return [...selected].sort((left, right) => left.runOrder - right.runOrder);
 }
 
+const CONTINUATION_VARIANTS = ['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume'] as const;
+
+type MatchedEvaluationContinuationVariantV1 = (typeof CONTINUATION_VARIANTS)[number];
+
+export interface MatchedEvaluationContinuationTreatmentV1 {
+  readonly automaticHandoffUri: string | null;
+  readonly contextMode: 'brief' | 'resume' | null;
+  readonly manualHandoff: string | null;
+  readonly manualHandoffSha256: string | null;
+  readonly resumeEvidenceMarker: string | null;
+  readonly variant: MatchedEvaluationContinuationVariantV1;
+}
+
+export interface MatchedEvaluationContinuationPilotPlanV1 {
+  readonly attempts: readonly {
+    readonly blindLabel: 'A' | 'B' | 'C' | 'D' | 'E';
+    readonly runNonce: string;
+    readonly runOrder: number;
+    readonly variant: MatchedEvaluationContinuationVariantV1;
+  }[];
+  readonly baseTaskPromptSha256: string;
+  readonly candidate: {readonly toolArtifactHash: string; readonly toolVersion: string};
+  readonly checkpoint: {
+    readonly automaticHandoffUri: string;
+    readonly handoff: string;
+    readonly handoffSha256: string;
+    readonly phaseOneAccounting: {
+      readonly elapsedMilliseconds: number;
+      readonly providerTokens: {
+        readonly cachedInputTokens: number;
+        readonly inputTokens: number;
+        readonly outputTokens: number;
+        readonly reasoningOutputTokens: number;
+        readonly totalTokens: number;
+      } | null;
+      readonly providerTokensMeasured: boolean;
+    };
+    readonly repositoryFixtureHash: string;
+    readonly repositoryRevision: string;
+    readonly resumeEvidenceMarker: string;
+    readonly automaticHandoffReadSha256: string;
+  };
+  readonly retries: 0;
+  readonly taskId: string;
+  readonly version: 1;
+}
+
+export function parseMatchedEvaluationContinuationPilotPlanV1(
+  value: unknown,
+): MatchedEvaluationContinuationPilotPlanV1 {
+  const plan = object(value, 'continuation pilot plan');
+  exactKeys(
+    plan,
+    ['attempts', 'baseTaskPromptSha256', 'candidate', 'checkpoint', 'retries', 'taskId', 'version'],
+    'continuation pilot plan',
+  );
+  if (plan.version !== 1) invalid('continuation pilot plan version must be 1');
+  if (plan.retries !== 0) invalid('continuation pilot retries must be zero');
+  const candidate = object(plan.candidate, 'continuation pilot candidate');
+  exactKeys(candidate, ['toolArtifactHash', 'toolVersion'], 'continuation pilot candidate');
+  const checkpoint = object(plan.checkpoint, 'continuation pilot checkpoint');
+  exactKeys(
+    checkpoint,
+    [
+      'automaticHandoffReadSha256',
+      'automaticHandoffUri',
+      'handoff',
+      'handoffSha256',
+      'phaseOneAccounting',
+      'repositoryFixtureHash',
+      'repositoryRevision',
+      'resumeEvidenceMarker',
+    ],
+    'continuation pilot checkpoint',
+  );
+  const handoff = boundedString(checkpoint.handoff, 1, 16 * 1_024, 'continuation pilot handoff');
+  const handoffSha256 = matchingString(checkpoint.handoffSha256, HASH, 'continuation pilot handoff hash');
+  if (sha256Bytes(Buffer.from(handoff)) !== handoffSha256) invalid('continuation pilot handoff hash differs');
+  for (const heading of ['Task:', 'Decisions:', 'Constraints:', 'Rationale:', 'Verification:', 'Next step:']) {
+    if (!handoff.includes(heading)) invalid(`continuation pilot handoff lacks ${heading}`);
+  }
+  const resumeEvidenceMarker = boundedString(
+    checkpoint.resumeEvidenceMarker,
+    8,
+    256,
+    'continuation pilot resume evidence marker',
+  );
+  if (!handoff.includes(resumeEvidenceMarker)) invalid('continuation pilot handoff lacks its resume evidence marker');
+  const phaseOneAccounting = object(checkpoint.phaseOneAccounting, 'continuation pilot phase-one accounting');
+  exactKeys(
+    phaseOneAccounting,
+    ['elapsedMilliseconds', 'providerTokens', 'providerTokensMeasured'],
+    'continuation pilot phase-one accounting',
+  );
+  if (typeof phaseOneAccounting.providerTokensMeasured !== 'boolean') {
+    invalid('continuation pilot phase-one provider-token measurement flag is invalid');
+  }
+  const parsedProviderTokens = (() => {
+    if (phaseOneAccounting.providerTokens === null) {
+      if (phaseOneAccounting.providerTokensMeasured) {
+        invalid('continuation pilot measured phase-one provider tokens are missing');
+      }
+      return null;
+    }
+    if (!phaseOneAccounting.providerTokensMeasured) {
+      invalid('continuation pilot unmeasured phase-one provider tokens must be null');
+    }
+    const providerTokens = object(phaseOneAccounting.providerTokens, 'continuation pilot phase-one provider tokens');
+    exactKeys(
+      providerTokens,
+      ['cachedInputTokens', 'inputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens'],
+      'continuation pilot phase-one provider tokens',
+    );
+    const parsed = {
+      cachedInputTokens: boundedNonnegativeInteger(
+        providerTokens.cachedInputTokens,
+        10_000_000,
+        'phase-one cached input tokens',
+      ),
+      inputTokens: boundedNonnegativeInteger(providerTokens.inputTokens, 10_000_000, 'phase-one input tokens'),
+      outputTokens: boundedNonnegativeInteger(providerTokens.outputTokens, 10_000_000, 'phase-one output tokens'),
+      reasoningOutputTokens: boundedNonnegativeInteger(
+        providerTokens.reasoningOutputTokens,
+        10_000_000,
+        'phase-one reasoning output tokens',
+      ),
+      totalTokens: boundedNonnegativeInteger(providerTokens.totalTokens, 10_000_000, 'phase-one total tokens'),
+    };
+    if (
+      parsed.cachedInputTokens > parsed.inputTokens ||
+      parsed.reasoningOutputTokens > parsed.outputTokens ||
+      parsed.totalTokens !== parsed.inputTokens + parsed.outputTokens
+    ) {
+      invalid('continuation pilot phase-one token components are inconsistent');
+    }
+    return parsed;
+  })();
+  const attempts = array(plan.attempts, 'continuation pilot attempts').map((entry, index) => {
+    const attempt = object(entry, `continuation pilot attempt ${index}`);
+    exactKeys(attempt, ['blindLabel', 'runNonce', 'runOrder', 'variant'], `continuation pilot attempt ${index}`);
+    return {
+      blindLabel: literal(
+        attempt.blindLabel,
+        ['A', 'B', 'C', 'D', 'E'] as const,
+        `continuation pilot attempt ${index} blind label`,
+      ),
+      runNonce: matchingString(attempt.runNonce, /^run_[0-9a-f]{32}$/u, `continuation pilot attempt ${index} nonce`),
+      runOrder: boundedPositiveInteger(attempt.runOrder, 1, 4, `continuation pilot attempt ${index} order`),
+      variant: literal(attempt.variant, CONTINUATION_VARIANTS, `continuation pilot attempt ${index} variant`),
+    };
+  });
+  if (
+    attempts.length !== CONTINUATION_VARIANTS.length ||
+    new Set(attempts.map(attempt => attempt.variant)).size !== CONTINUATION_VARIANTS.length ||
+    new Set(attempts.map(attempt => attempt.runNonce)).size !== attempts.length ||
+    new Set(attempts.map(attempt => attempt.blindLabel)).size !== attempts.length ||
+    new Set(attempts.map(attempt => attempt.runOrder)).size !== attempts.length
+  ) {
+    invalid('continuation pilot must contain one unique attempt per variant');
+  }
+  return {
+    attempts: [...attempts].sort((left, right) => left.runOrder - right.runOrder),
+    baseTaskPromptSha256: matchingString(plan.baseTaskPromptSha256, HASH, 'continuation pilot task prompt hash'),
+    candidate: {
+      toolArtifactHash: matchingString(candidate.toolArtifactHash, HASH, 'continuation pilot tool artifact hash'),
+      toolVersion: boundedString(candidate.toolVersion, 1, 128, 'continuation pilot tool version'),
+    },
+    checkpoint: {
+      automaticHandoffUri: boundedString(
+        checkpoint.automaticHandoffUri,
+        1,
+        2_048,
+        'continuation pilot automatic handoff URI',
+      ),
+      handoff,
+      handoffSha256,
+      phaseOneAccounting: {
+        elapsedMilliseconds: boundedNonnegativeInteger(
+          phaseOneAccounting.elapsedMilliseconds,
+          86_400_000,
+          'phase-one elapsed milliseconds',
+        ),
+        providerTokens: parsedProviderTokens,
+        providerTokensMeasured: phaseOneAccounting.providerTokensMeasured,
+      },
+      repositoryFixtureHash: matchingString(
+        checkpoint.repositoryFixtureHash,
+        HASH,
+        'continuation pilot repository fixture hash',
+      ),
+      repositoryRevision: matchingString(
+        checkpoint.repositoryRevision,
+        /^[0-9a-f]{40}$/u,
+        'continuation pilot repository revision',
+      ),
+      resumeEvidenceMarker,
+      automaticHandoffReadSha256: matchingString(
+        checkpoint.automaticHandoffReadSha256,
+        HASH,
+        'continuation pilot automatic handoff read hash',
+      ),
+    },
+    retries: 0,
+    taskId: matchingString(plan.taskId, /^tsk_[0-9a-f]{16,64}$/u, 'continuation pilot task id'),
+    version: 1,
+  };
+}
+
+function continuationTreatment(
+  variant: MatchedEvaluationContinuationVariantV1,
+  checkpoint: Pick<
+    MatchedEvaluationContinuationPilotPlanV1['checkpoint'],
+    'automaticHandoffUri' | 'handoff' | 'handoffSha256' | 'resumeEvidenceMarker'
+  >,
+): {readonly arm: MatchedEvaluationArm; readonly treatment: MatchedEvaluationContinuationTreatmentV1} {
+  switch (variant) {
+    case 'files-bare':
+      return {
+        arm: 'files',
+        treatment: {
+          automaticHandoffUri: null,
+          contextMode: null,
+          manualHandoff: null,
+          manualHandoffSha256: null,
+          resumeEvidenceMarker: null,
+          variant,
+        },
+      };
+    case 'manual-handoff':
+      return {
+        arm: 'files',
+        treatment: {
+          automaticHandoffUri: null,
+          contextMode: null,
+          manualHandoff: checkpoint.handoff,
+          manualHandoffSha256: checkpoint.handoffSha256,
+          resumeEvidenceMarker: null,
+          variant,
+        },
+      };
+    case 'threadnote-graph':
+      return {
+        arm: 'threadnote-graph',
+        treatment: {
+          automaticHandoffUri: null,
+          contextMode: 'brief',
+          manualHandoff: null,
+          manualHandoffSha256: null,
+          resumeEvidenceMarker: null,
+          variant,
+        },
+      };
+    case 'threadnote-resume':
+      return {
+        arm: 'threadnote-compact',
+        treatment: {
+          automaticHandoffUri: checkpoint.automaticHandoffUri,
+          contextMode: 'resume',
+          manualHandoff: null,
+          manualHandoffSha256: null,
+          resumeEvidenceMarker: checkpoint.resumeEvidenceMarker,
+          variant,
+        },
+      };
+  }
+}
+
+function continuationPosition(index: number): 1 | 2 | 3 | 4 {
+  switch (index) {
+    case 0:
+      return 1;
+    case 1:
+      return 2;
+    case 2:
+      return 3;
+    case 3:
+      return 4;
+    default:
+      throw new Error('Continuation pilot has an impossible attempt position.');
+  }
+}
+
 const HASH = /^[0-9a-f]{64}$/u;
 const CLUSTER_ID = /^cluster_[0-9a-f]{16,64}$/u;
 const ENVIRONMENT_KEY = /^[A-Z][A-Z0-9_]{0,63}$/u;
@@ -173,8 +459,18 @@ const PRODUCTION_RELEASE_EXECUTABLE_HASH = 'e8cef51bc029705614928c7ea69a5cb39e1b
 const program = Effect.gen(function* () {
   const options = parseArguments(yield* scriptArguments());
   yield* Effect.tryPromise({
-    try: () =>
-      options.pilotTaskId === null
+    try: () => {
+      if (options.continuationPilotPlanPath !== null) {
+        return runMatchedEvaluationContinuationPilotFromFilesV1({
+          corpusPath: options.corpusPath,
+          manifestPath: options.manifestPath,
+          pilotDirectory: options.pilotDirectory!,
+          planPath: options.continuationPilotPlanPath,
+          runtimePath: options.runtimePath,
+          studyPath: options.studyPath!,
+        });
+      }
+      return options.pilotTaskId === null
         ? runMatchedEvaluationFromFilesV1(options)
         : runMatchedEvaluationPilotFromFilesV1({
             corpusPath: options.corpusPath,
@@ -183,7 +479,8 @@ const program = Effect.gen(function* () {
             studyPath: options.studyPath!,
             taskId: options.pilotTaskId,
             pilotDirectory: options.pilotDirectory!,
-          }),
+          });
+    },
     catch: cause => ScriptError.make({message: 'Matched evaluation stopped.', cause}),
   });
 });
@@ -441,6 +738,239 @@ export async function runMatchedEvaluationPilotFromFilesV1(options: {
   );
 }
 
+/** Execute one sealed fresh phase-two attempt for each continuation treatment. */
+export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: {
+  readonly corpusPath: string;
+  readonly manifestPath: string;
+  readonly pilotDirectory: string;
+  readonly planPath: string;
+  readonly runtimePath: string;
+  readonly studyPath: string;
+}): Promise<void> {
+  const planText = await readRequiredText(options.planPath, MAXIMUM_JSON_BYTES);
+  let planInput: unknown;
+  try {
+    planInput = JSON.parse(planText) as unknown;
+  } catch (cause) {
+    throw new Error(`${options.planPath} is not valid JSON.`, {cause});
+  }
+  const plan = parseMatchedEvaluationContinuationPilotPlanV1(planInput);
+  const planFileHash = sha256Bytes(Buffer.from(planText));
+  const [corpus, manifest, runtime, study] = await Promise.all([
+    readJson(options.corpusPath).then(parseMatchedEvaluationCorpusV1),
+    readJson(options.manifestPath).then(parseMatchedEvaluationManifestV1),
+    readJson(options.runtimePath).then(parseMatchedEvaluationRuntimeV1),
+    readJson(options.studyPath).then(parseMatchedTokenEfficiencyStudyV1),
+  ]);
+  assertMatchedTokenEfficiencyStudyMatchesV1(study, corpus, manifest);
+  if (runtime.verificationPlanHash !== study.verificationPlanHash) {
+    throw new Error('Runtime and study disagree on the sealed verification plan.');
+  }
+  const task = corpus.tasks.find(candidate => candidate.taskId === plan.taskId);
+  if (task === undefined) throw new Error(`Continuation pilot task ${plan.taskId} is not in the corpus.`);
+  if (sha256Bytes(Buffer.from(task.prompt)) !== plan.baseTaskPromptSha256) {
+    throw new Error('Continuation pilot task prompt differs from the sealed plan.');
+  }
+  if (task.repositoryFixtureHash !== plan.checkpoint.repositoryFixtureHash) {
+    throw new Error('Continuation pilot checkpoint differs from the frozen repository fixture.');
+  }
+  for (const arm of ['threadnote-graph', 'threadnote-compact'] as const) {
+    const definition = manifest.arms.find(candidate => candidate.arm === arm);
+    if (
+      definition === undefined ||
+      definition.tool.artifactHash !== plan.candidate.toolArtifactHash ||
+      definition.tool.version !== plan.candidate.toolVersion
+    ) {
+      throw new Error(`Continuation pilot ${arm} runtime differs from the sealed candidate.`);
+    }
+  }
+  const pilotDirectory = absolutePath(options.pilotDirectory, 'continuation pilot directory');
+  if (pilotDirectory === runtime.artifactDirectory) {
+    throw new Error('Continuation pilot directory must be separate from the full-study artifact directory.');
+  }
+  await mkdir(pilotDirectory, {recursive: true, mode: 0o700});
+  if ((await realpath(pilotDirectory)) !== pilotDirectory) {
+    throw new Error('Continuation pilot directory must use its canonical path.');
+  }
+  await assertContinuationAutomaticHandoffV1({manifest, plan, runtime});
+  const selected = plan.attempts.map((attempt, index) => {
+    const {arm, treatment} = continuationTreatment(attempt.variant, plan.checkpoint);
+    return {
+      arm,
+      row: {
+        blindLabel: attempt.blindLabel,
+        position: continuationPosition(index),
+        repetition: 1,
+        runNonce: attempt.runNonce,
+        runOrder: attempt.runOrder,
+        taskId: plan.taskId,
+      },
+      treatment,
+      variant: attempt.variant,
+    };
+  });
+  const selection = {
+    candidate: plan.candidate,
+    checkpoint: {
+      automaticHandoffUri: plan.checkpoint.automaticHandoffUri,
+      handoffSha256: plan.checkpoint.handoffSha256,
+      phaseOneAccounting: plan.checkpoint.phaseOneAccounting,
+      repositoryFixtureHash: plan.checkpoint.repositoryFixtureHash,
+      repositoryRevision: plan.checkpoint.repositoryRevision,
+      resumeEvidenceMarker: plan.checkpoint.resumeEvidenceMarker,
+      automaticHandoffReadSha256: plan.checkpoint.automaticHandoffReadSha256,
+    },
+    completionMeaning:
+      'completed is true only when all four fresh phase-two adapter attempts completed; verified completion is verifier-authoritative per attempt.',
+    comparativeClaimsEligible: false,
+    identities: {
+      manifestHash: manifest.manifestHash,
+      planFileHash,
+      runtimeVersion: runtime.version,
+      studyHash: study.studyHash,
+      verificationPlanHash: study.verificationPlanHash,
+    },
+    limitations: [
+      'One development-calibration task, one attempt per treatment, no confidence interval or general product claim.',
+      'The common phase-one checkpoint cost is reported separately and is not duplicated into each phase-two attempt.',
+      ...(plan.checkpoint.phaseOneAccounting.providerTokensMeasured
+        ? []
+        : ['The common phase-one provider-token cost is unavailable and excluded from whole-workflow totals.']),
+      'No retries are allowed; failed attempts remain in failure-inclusive completion accounting.',
+    ],
+    rows: selected.map(({arm, row, variant}) => ({...row, arm, variant})),
+    taskId: plan.taskId,
+    version: 1,
+  };
+  const markerPath = resolve(pilotDirectory, 'continuation-pilot-selection.json');
+  try {
+    await writeFile(markerPath, `${JSON.stringify(selection, undefined, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+  } catch (cause) {
+    if ((cause as {code?: string}).code === 'EEXIST') {
+      throw new Error('Continuation pilot selection already exists; resume/retry is not supported.', {cause});
+    }
+    throw cause;
+  }
+  const pilotRuntime = {...runtime, artifactDirectory: pilotDirectory};
+  const repositories = await resolveMatchedEvaluationRuntimeRepositoriesV1(pilotRuntime, study, manifest.repository);
+  await assertResolvedRuntimeRepositories(repositories);
+  const checkpointRepository = requiredRuntimeRepository(repositories, plan.taskId, study);
+  if (
+    checkpointRepository.expected.fixtureHash !== plan.checkpoint.repositoryFixtureHash ||
+    checkpointRepository.expected.revision !== plan.checkpoint.repositoryRevision
+  ) {
+    throw new Error('Continuation pilot runtime repository differs from the frozen checkpoint.');
+  }
+  const requiredArms = [...new Set(selected.map(attempt => attempt.arm))];
+  const preflight = await Promise.all(
+    requiredArms.map(async arm => {
+      const definition = manifest.arms.find(candidate => candidate.arm === arm);
+      if (definition === undefined) throw new Error(`Continuation pilot arm ${arm} is not defined.`);
+      const resolution = await resolveRuntimeArm(pilotRuntime, arm, definition);
+      if ('reason' in resolution)
+        throw new Error(`Continuation pilot runtime unavailable for ${arm}: ${resolution.detail}`);
+      return [arm, resolution] as const;
+    }),
+  );
+  const resolved = new Map(preflight);
+  const reportPath = resolve(pilotDirectory, 'continuation-pilot-report.json');
+  const attempts: Array<Record<string, unknown>> = [];
+  const writeReport = async (completed: boolean) =>
+    atomicWrite(reportPath, `${JSON.stringify({...selection, attempts, completed}, undefined, 2)}\n`);
+  await writeReport(false);
+  for (const selectedAttempt of selected) {
+    const {arm, row, treatment, variant} = selectedAttempt;
+    const definition = manifest.arms.find(candidate => candidate.arm === arm);
+    if (definition === undefined) throw new Error(`Continuation pilot arm ${arm} is not defined.`);
+    const rawArtifactPath = resolve(pilotDirectory, 'runs', row.runNonce, 'artifact.json');
+    const requestPath = resolve(pilotDirectory, 'runs', row.runNonce, 'request.json');
+    const responsePath = resolve(pilotDirectory, 'runs', row.runNonce, 'response.json');
+    const transcriptPath = resolve(pilotDirectory, 'transcripts', `${row.runNonce}.jsonl`);
+    const checkpointPath = `${transcriptPath}.agent.jsonl`;
+    const request: MatchedEvaluationRunRequestV1 = {arm, armDefinition: definition, manifest, schedule: row, task};
+    const repository = requiredRuntimeRepository(repositories, plan.taskId, study);
+    await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected);
+    try {
+      const observation = await executeArm(
+        pilotRuntime,
+        requiredResolvedArm(resolved, arm),
+        repository,
+        request,
+        study,
+        treatment,
+      );
+      const [requestSha256, responseSha256, artifactSha256] = await Promise.all([
+        boundedRegularFileHash(requestPath, MAXIMUM_JSON_BYTES, 'continuation pilot request'),
+        boundedRegularFileHash(responsePath, MAXIMUM_JSON_BYTES, 'continuation pilot response'),
+        boundedRegularFileHash(rawArtifactPath, MAXIMUM_JSON_BYTES, 'continuation pilot artifact'),
+      ]);
+      if (artifactSha256 !== observation.artifactHash) {
+        throw new Error('Continuation pilot report artifact hash differs from the adapter observation.');
+      }
+      attempts.push({
+        arm,
+        artifactSha256,
+        checkpointPath,
+        metrics: observation.metrics,
+        rawArtifactPath,
+        requestPath,
+        responsePath,
+        responseSha256,
+        runNonce: row.runNonce,
+        runOrder: row.runOrder,
+        requestSha256,
+        status: 'completed',
+        taskId: plan.taskId,
+        transcriptHash: observation.transcriptHash,
+        transcriptPath,
+        variant,
+      });
+    } catch (cause) {
+      if (!(cause instanceof Error) || !cause.message.includes('adapter failed with exit code')) throw cause;
+      const [failureAccounting, requestSha256, responseSha256, artifactSha256] = await Promise.all([
+        readContinuationFailureAccounting(checkpointPath),
+        optionalBoundedRegularFileHash(requestPath, MAXIMUM_JSON_BYTES, 'continuation pilot failed request'),
+        optionalBoundedRegularFileHash(responsePath, MAXIMUM_JSON_BYTES, 'continuation pilot failed response'),
+        optionalBoundedRegularFileHash(rawArtifactPath, MAXIMUM_JSON_BYTES, 'continuation pilot failed artifact'),
+      ]);
+      attempts.push({
+        accountingStatus: failureAccounting === null ? 'unavailable-before-checkpoint' : 'retained-agent-checkpoint',
+        arm,
+        artifactSha256,
+        checkpointPath,
+        diagnostics: cause.message.slice(-2_048),
+        metrics: null,
+        providerUsage: failureAccounting?.providerUsage ?? null,
+        rawArtifactPath,
+        requestPath,
+        responsePath,
+        responseSha256,
+        runNonce: row.runNonce,
+        runOrder: row.runOrder,
+        requestSha256,
+        status: 'failed',
+        taskId: plan.taskId,
+        timing: failureAccounting?.timing ?? null,
+        transcriptPath,
+        variant,
+      });
+    } finally {
+      await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected);
+    }
+    await writeReport(false);
+  }
+  await assertResolvedRuntimeRepositories(repositories);
+  const allCompleted = attempts.every(attempt => attempt.status === 'completed');
+  await writeReport(allCompleted);
+  process.stdout.write(
+    `${JSON.stringify({artifactDirectory: pilotDirectory, attemptCount: attempts.length, comparativeClaimsEligible: false, completed: allCompleted, finished: true, version: 1})}\n`,
+  );
+}
+
 export function parseMatchedEvaluationRuntimeV1(value: unknown): MatchedEvaluationRuntimeV1 {
   const runtime = object(value, 'runtime');
   exactKeys(
@@ -554,6 +1084,49 @@ function requiredRuntimeRepository(
   return repository;
 }
 
+async function assertContinuationAutomaticHandoffV1(input: {
+  readonly manifest: MatchedEvaluationManifestV1;
+  readonly plan: MatchedEvaluationContinuationPilotPlanV1;
+  readonly runtime: MatchedEvaluationRuntimeV1;
+}): Promise<void> {
+  const definition = input.manifest.arms.find(candidate => candidate.arm === 'threadnote-compact');
+  if (definition === undefined) throw new Error('Continuation pilot lacks a compact arm definition.');
+  const resolved = await resolveRuntimeArm(input.runtime, 'threadnote-compact', definition);
+  if ('reason' in resolved) {
+    throw new Error(`Continuation pilot runtime unavailable for threadnote-compact: ${resolved.detail}`);
+  }
+  if (resolved.toolExecutable === null) throw new Error('Continuation pilot compact arm lacks Threadnote.');
+  const config = parseMatchedEvaluationCodexAdapterConfigV1(await readJson(resolved.adapterConfigFile));
+  const prepared = config.contextHomes.find(home => home.taskId === input.plan.taskId);
+  if (prepared === undefined) throw new Error('Continuation pilot compact arm lacks the task prepared home.');
+  if ((await matchedEvaluationPreparedHomeFixtureHashV1(prepared.homeDirectory)) !== prepared.homeFixtureHash) {
+    throw new Error('Continuation pilot compact prepared home differs from its pinned fixture hash.');
+  }
+  const read = await captureCodeMemoryLinkProcessGroup({
+    arguments: ['read', '--home', prepared.homeDirectory, input.plan.checkpoint.automaticHandoffUri],
+    command: resolved.toolExecutable,
+    cwd: process.cwd(),
+    environment: {
+      HOME: '/nonexistent',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      PATH: '/usr/bin:/bin',
+      THREADNOTE_ACCOUNT: prepared.identity.account,
+      THREADNOTE_USER: prepared.identity.user,
+    },
+    label: 'Continuation pilot automatic handoff preflight',
+    maxOutputBytes: 1 * 1_024 * 1_024,
+    timeoutMilliseconds: 120_000,
+  });
+  if (
+    sha256Bytes(Buffer.from(read.stdout)) !== input.plan.checkpoint.automaticHandoffReadSha256 ||
+    !read.stdout.includes(input.plan.checkpoint.resumeEvidenceMarker) ||
+    !read.stdout.includes(input.plan.checkpoint.handoff)
+  ) {
+    throw new Error('Continuation pilot automatic handoff differs from the sealed checkpoint.');
+  }
+}
+
 async function resolveRuntimeArm(
   runtime: MatchedEvaluationRuntimeV1,
   arm: MatchedEvaluationArm,
@@ -614,6 +1187,7 @@ async function executeArm(
   repository: ResolvedRuntimeRepository,
   request: MatchedEvaluationRunRequestV1,
   study: MatchedTokenEfficiencyStudyV1 | null,
+  continuationTreatment: MatchedEvaluationContinuationTreatmentV1 | null = null,
 ) {
   const runDirectory = resolve(runtime.artifactDirectory, 'runs', request.schedule.runNonce);
   const transcriptDirectory = resolve(runtime.artifactDirectory, 'transcripts');
@@ -644,6 +1218,7 @@ async function executeArm(
         agentTask: projectedTask.agentTask,
         artifactPath,
         blindLabel: request.schedule.blindLabel,
+        continuationTreatment,
         judgeTask: {
           negativeControls: request.task.negativeControls,
           rubric: request.task.rubric,
@@ -1019,6 +1594,7 @@ function parseRuntimeRepository(value: unknown, index: number): MatchedEvaluatio
 }
 
 function parseArguments(args: readonly string[]): {
+  readonly continuationPilotPlanPath: string | null;
   readonly corpusPath: string;
   readonly manifestPath: string;
   readonly runtimePath: string;
@@ -1030,7 +1606,15 @@ function parseArguments(args: readonly string[]): {
   for (let index = 0; index < args.length; index += 1) {
     const option = args[index];
     if (
-      !['--corpus', '--manifest', '--runtime', '--study', '--pilot-task', '--pilot-directory'].includes(option) ||
+      ![
+        '--continuation-pilot-plan',
+        '--corpus',
+        '--manifest',
+        '--runtime',
+        '--study',
+        '--pilot-task',
+        '--pilot-directory',
+      ].includes(option) ||
       values.has(option)
     ) {
       throw ScriptError.make({message: `Unknown or repeated matched evaluation option: ${option}`});
@@ -1039,11 +1623,20 @@ function parseArguments(args: readonly string[]): {
   }
   const pilotTaskId = values.get('--pilot-task') ?? null;
   const pilotDirectory = values.get('--pilot-directory') ?? null;
-  if ((pilotTaskId === null) !== (pilotDirectory === null))
-    throw ScriptError.make({message: '--pilot-task and --pilot-directory must be provided together'});
-  if (pilotTaskId !== null && values.get('--study') === undefined)
+  const continuationPilotPlan = values.get('--continuation-pilot-plan') ?? null;
+  if (pilotTaskId !== null && continuationPilotPlan !== null) {
+    throw ScriptError.make({message: '--pilot-task and --continuation-pilot-plan are mutually exclusive'});
+  }
+  if ((pilotTaskId !== null || continuationPilotPlan !== null) !== (pilotDirectory !== null)) {
+    throw ScriptError.make({
+      message: 'Pilot mode requires exactly one pilot selector together with --pilot-directory',
+    });
+  }
+  if ((pilotTaskId !== null || continuationPilotPlan !== null) && values.get('--study') === undefined)
     throw ScriptError.make({message: 'Pilot mode requires --study'});
   return {
+    continuationPilotPlanPath:
+      continuationPilotPlan === null ? null : absolutePath(continuationPilotPlan, '--continuation-pilot-plan'),
     corpusPath: absolutePath(required(values.get('--corpus'), '--corpus'), '--corpus'),
     manifestPath: absolutePath(required(values.get('--manifest'), '--manifest'), '--manifest'),
     runtimePath: absolutePath(required(values.get('--runtime'), '--runtime'), '--runtime'),
@@ -1097,6 +1690,75 @@ async function boundedRegularFileHash(path: string, maximumBytes: number, label:
     throw new Error(`${label} is not one bounded regular file.`);
   }
   return sha256Bytes(await readFile(path));
+}
+
+async function optionalBoundedRegularFileHash(
+  path: string,
+  maximumBytes: number,
+  label: string,
+): Promise<string | null> {
+  try {
+    return await boundedRegularFileHash(path, maximumBytes, label);
+  } catch (cause) {
+    if (isMissing(cause)) return null;
+    throw cause;
+  }
+}
+
+async function readContinuationFailureAccounting(path: string): Promise<{
+  readonly providerUsage: {
+    readonly cachedInputTokens: number;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly reasoningOutputTokens: number;
+    readonly totalTokens: number;
+  };
+  readonly timing: {readonly agentTaskMilliseconds: number; readonly preparationMilliseconds: number};
+} | null> {
+  const text = await readOptionalTextOrNull(path, MAXIMUM_TRANSCRIPT_BYTES);
+  if (text === null) return null;
+  let input: unknown;
+  try {
+    input = JSON.parse(text.trim()) as unknown;
+  } catch (cause) {
+    throw new Error('Continuation pilot agent checkpoint is not valid JSON.', {cause});
+  }
+  const checkpoint = object(input, 'continuation pilot agent checkpoint');
+  const usage = object(checkpoint.usage, 'continuation pilot agent checkpoint usage');
+  const timing = object(checkpoint.timing, 'continuation pilot agent checkpoint timing');
+  const providerUsage = {
+    cachedInputTokens: boundedNonnegativeInteger(usage.cachedInputTokens, 10_000_000, 'checkpoint cached input tokens'),
+    inputTokens: boundedNonnegativeInteger(usage.inputTokens, 10_000_000, 'checkpoint input tokens'),
+    outputTokens: boundedNonnegativeInteger(usage.outputTokens, 10_000_000, 'checkpoint output tokens'),
+    reasoningOutputTokens: boundedNonnegativeInteger(
+      usage.reasoningOutputTokens,
+      10_000_000,
+      'checkpoint reasoning output tokens',
+    ),
+    totalTokens: boundedNonnegativeInteger(usage.totalTokens, 10_000_000, 'checkpoint total tokens'),
+  };
+  if (
+    providerUsage.cachedInputTokens > providerUsage.inputTokens ||
+    providerUsage.reasoningOutputTokens > providerUsage.outputTokens ||
+    providerUsage.totalTokens !== providerUsage.inputTokens + providerUsage.outputTokens
+  ) {
+    throw new Error('Continuation pilot agent checkpoint token components are inconsistent.');
+  }
+  return {
+    providerUsage,
+    timing: {
+      agentTaskMilliseconds: boundedNonnegativeInteger(
+        timing.agentTaskMilliseconds,
+        86_400_000,
+        'checkpoint agent task milliseconds',
+      ),
+      preparationMilliseconds: boundedNonnegativeInteger(
+        timing.preparationMilliseconds,
+        86_400_000,
+        'checkpoint preparation milliseconds',
+      ),
+    },
+  };
 }
 
 async function readJson(path: string): Promise<unknown> {
@@ -1180,6 +1842,20 @@ function absolutePath(value: unknown, label: string): string {
 function boundedPositiveInteger(value: unknown, minimum: number, maximum: number, label: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
     invalid(`${label} is outside its allowed range`);
+  }
+  return value;
+}
+
+function boundedNonnegativeInteger(value: unknown, maximum: number, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > maximum) {
+    invalid(`${label} is outside its allowed range`);
+  }
+  return value;
+}
+
+function boundedString(value: unknown, minimum: number, maximum: number, label: string): string {
+  if (typeof value !== 'string' || value.length < minimum || value.length > maximum || value.includes('\0')) {
+    invalid(`${label} is invalid`);
   }
   return value;
 }

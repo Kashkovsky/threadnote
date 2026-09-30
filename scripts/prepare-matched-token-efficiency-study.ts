@@ -63,6 +63,7 @@ import {
 export const MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION = 3 as const;
 export const MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION = '5.0.6' as const;
 export const MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION = '5.0.7' as const;
+export const MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION = '5.1.0-beta.1' as const;
 const PRODUCTION_SOURCE_COMMIT = '78eab789ba33e3b7e3abf44d73dd48f8bc58f8d7' as const;
 const PRODUCTION_RELEASE_URL = 'https://github.com/Kashkovsky/threadnote/releases/tag/v5.0.7' as const;
 const PRODUCTION_ARCHIVE_URL =
@@ -187,7 +188,8 @@ export interface MatchedTokenEfficiencyPreparationReceiptV1 {
   readonly referenceArm: 'unavailable';
   readonly requiredProductVersion:
     | typeof MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION
-    | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
+    | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION
+    | typeof MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION;
   readonly productionRelease: MatchedTokenEfficiencyProductionReleaseV1 | null;
   readonly studyHash: string;
   readonly threadnoteArtifactHash: string;
@@ -205,7 +207,6 @@ const MANAGED_MEMORY_ID = /^tn_[A-Za-z0-9_-]{1,128}$/u;
 const CLUSTER_ID = /^cluster_[0-9a-f]{16,64}$/u;
 const PROJECT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const VERIFIER_SELECTOR = /^[a-z][a-z0-9-]{0,63}$/u;
-const VERSION_OUTPUT = /^threadnote v5\.0\.6-local\.g([0-9a-f]{40})\s*$/u;
 const PRODUCTION_VERSION_OUTPUT = /^threadnote v5\.0\.7\s*$/u;
 const MAXIMUM_JSON_BYTES = 8 * 1_024 * 1_024;
 
@@ -838,7 +839,8 @@ function armDefinitions(input: {
   readonly adapterArtifactHash: string;
   readonly productVersion:
     | typeof MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION
-    | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
+    | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION
+    | typeof MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION;
   readonly configHashes: Readonly<Record<MatchedEvaluationArm, string>>;
   readonly referenceArtifactHash: string;
   readonly threadnoteArtifactHash: string;
@@ -1174,7 +1176,8 @@ async function assertThreadnoteSourceAndExecutable(input: PreparationPlanV1['thr
   readonly sourceCommit: string;
   readonly version:
     | typeof MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION
-    | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
+    | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION
+    | typeof MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION;
 }> {
   const [sourceDirectory, executable] = await Promise.all([
     canonicalDirectory(input.sourceDirectory, 'Threadnote source directory'),
@@ -1194,7 +1197,7 @@ async function assertThreadnoteSourceAndExecutable(input: PreparationPlanV1['thr
   const requiredReleaseCommit = matching(
     input.requiredReleaseCommit,
     COMMIT,
-    productionRelease === undefined ? 'required 5.0.6 release commit' : 'required 5.0.7 release commit',
+    productionRelease === undefined ? 'required local release commit' : 'required 5.0.7 release commit',
   );
   const ancestry = await captureGit(
     sourceDirectory,
@@ -1207,15 +1210,23 @@ async function assertThreadnoteSourceAndExecutable(input: PreparationPlanV1['thr
         'Production source HEAD and required release commit must equal the immutable release source commit.',
       );
   } else if (ancestry.exitCode !== 0) {
-    throw new Error('Threadnote source commit does not contain the required 5.0.6 release commit.');
+    throw new Error('Threadnote source commit does not contain the required local release commit.');
   }
   const packageVersion = JSON.parse(await readFile(join(sourceDirectory, 'package.json'), 'utf8')) as {
     version?: unknown;
   };
-  const expectedVersion =
-    productionRelease === undefined
-      ? MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION
-      : MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
+  const expectedVersion = (() => {
+    if (productionRelease !== undefined) return MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION;
+    if (
+      packageVersion.version === MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION ||
+      packageVersion.version === MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION
+    ) {
+      return packageVersion.version;
+    }
+    throw new Error(
+      `Threadnote source checkout is not version ${MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION} or ${MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION}.`,
+    );
+  })();
   if (packageVersion.version !== expectedVersion) {
     throw new Error(`Threadnote source checkout is not version ${expectedVersion}.`);
   }
@@ -1228,8 +1239,12 @@ async function assertThreadnoteSourceAndExecutable(input: PreparationPlanV1['thr
     maxOutputBytes: 16 * 1_024,
     timeoutMilliseconds: 30_000,
   });
-  if (productionRelease === undefined) assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(version.stdout, head);
-  else {
+  if (productionRelease === undefined) {
+    if (expectedVersion === MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION) {
+      throw new Error('Local Threadnote preparation resolved an invalid production-only version.');
+    }
+    assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(version.stdout, head, expectedVersion);
+  } else {
     assertMatchedTokenEfficiencyProductionReleaseV1(
       version.stdout,
       head,
@@ -1273,13 +1288,21 @@ function validateProductionRelease(value: MatchedTokenEfficiencyProductionReleas
     throw new Error('Production release provenance is not the pinned immutable v5.0.7 record.');
 }
 
-export function assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(output: string, sourceCommit: string): void {
+export function assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(
+  output: string,
+  sourceCommit: string,
+  productVersion:
+    | typeof MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION
+    | typeof MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION = MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION,
+): void {
   const expectedCommit = matching(sourceCommit, COMMIT, 'Threadnote source commit');
-  const match = VERSION_OUTPUT.exec(output);
-  if (match === null) {
-    throw new Error('Threadnote executable must be an exact commit-reporting 5.0.6 local build.');
+  const localSeparator = productVersion === MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION ? '.local.g' : '-local.g';
+  const prefix = `threadnote v${productVersion}${localSeparator}`;
+  const expectedOutput = `${prefix}${expectedCommit}`;
+  if (!output.trim().startsWith(prefix)) {
+    throw new Error(`Threadnote executable must be an exact commit-reporting ${productVersion} local build.`);
   }
-  if (match[1] !== expectedCommit) {
+  if (output.trim() !== expectedOutput) {
     throw new Error('Threadnote local executable source commit differs from the reviewed source checkout.');
   }
 }

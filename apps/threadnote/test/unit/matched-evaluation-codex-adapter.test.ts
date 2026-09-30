@@ -23,7 +23,10 @@ import {
   matchedEvaluationCodexEnvironmentPolicyHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
   matchedEvaluationVerifierEnvironmentHashV1,
+  parseMatchedEvaluationCodexAdapterRequestV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
+  renderMatchedEvaluationAgentPromptV1,
+  renderMatchedEvaluationJudgePromptV1,
   renderMatchedEvaluationCommandReviewRulesV1,
   renderMatchedEvaluationAgentInstructionsV1,
   runMatchedEvaluationCodexAdapter,
@@ -60,9 +63,116 @@ describe('matched evaluation Codex adapter', () => {
     expect(renderMatchedEvaluationAgentInstructionsV1(null)).toContain('No MCP tools are available');
   });
 
+  it('accepts only the four coherent sealed continuation treatments', () => {
+    const manualHandoff = 'Task: continue phase two\n\nNext step: update the focused test.';
+    const treatments = [
+      {
+        arm: 'files',
+        continuationTreatment: {
+          variant: 'files-bare',
+          contextMode: null,
+          manualHandoff: null,
+          manualHandoffSha256: null,
+          automaticHandoffUri: null,
+          resumeEvidenceMarker: null,
+        },
+      },
+      {
+        arm: 'files',
+        continuationTreatment: {
+          variant: 'manual-handoff',
+          contextMode: null,
+          manualHandoff,
+          manualHandoffSha256: sha256HexSync(manualHandoff),
+          automaticHandoffUri: null,
+          resumeEvidenceMarker: null,
+        },
+      },
+      {
+        arm: 'threadnote-graph',
+        continuationTreatment: {
+          variant: 'threadnote-graph',
+          contextMode: 'brief',
+          manualHandoff: null,
+          manualHandoffSha256: null,
+          automaticHandoffUri: null,
+          resumeEvidenceMarker: null,
+        },
+      },
+      {
+        arm: 'threadnote-compact',
+        continuationTreatment: {
+          variant: 'threadnote-resume',
+          contextMode: 'resume',
+          manualHandoff: null,
+          manualHandoffSha256: null,
+          automaticHandoffUri: 'threadnote://handoff/phase-one',
+          resumeEvidenceMarker: 'resume-marker-123',
+        },
+      },
+    ] as const;
+    for (const treatment of treatments) {
+      expect(
+        parseMatchedEvaluationCodexAdapterRequestV1(adapterRequest(treatment.arm, treatment.continuationTreatment)),
+      ).toMatchObject(treatment);
+    }
+    expect(() =>
+      parseMatchedEvaluationCodexAdapterRequestV1(
+        adapterRequest('files', {...treatments[1].continuationTreatment, manualHandoffSha256: '0'.repeat(64)}),
+      ),
+    ).toThrow('continuation treatment does not match');
+    expect(() =>
+      parseMatchedEvaluationCodexAdapterRequestV1(
+        adapterRequest('threadnote-graph', {...treatments[2].continuationTreatment, contextMode: 'resume'}),
+      ),
+    ).toThrow('continuation treatment does not match');
+  });
+
+  it('accepts legacy requests that omit continuationTreatment as null', () => {
+    const legacy = adapterRequest('files', null) as Record<string, unknown>;
+    delete legacy.continuationTreatment;
+    expect(parseMatchedEvaluationCodexAdapterRequestV1(legacy)).toMatchObject({continuationTreatment: null});
+  });
+
+  it('shows a manual handoff only to the agent and seals the requested context mode', () => {
+    const manualHandoff = 'The phase-one implementation changed service.ts; verify it before relying on this note.';
+    const manual = parseMatchedEvaluationCodexAdapterRequestV1(
+      adapterRequest('files', {
+        variant: 'manual-handoff',
+        contextMode: null,
+        manualHandoff,
+        manualHandoffSha256: sha256HexSync(manualHandoff),
+        automaticHandoffUri: null,
+        resumeEvidenceMarker: null,
+      }),
+    );
+    const resume = parseMatchedEvaluationCodexAdapterRequestV1(
+      adapterRequest('threadnote-compact', {
+        variant: 'threadnote-resume',
+        contextMode: 'resume',
+        manualHandoff: null,
+        manualHandoffSha256: null,
+        automaticHandoffUri: 'threadnote://handoff/phase-one',
+        resumeEvidenceMarker: 'resume-marker-123',
+      }),
+    );
+    const agentPrompt = renderMatchedEvaluationAgentPromptV1(manual, null, 1_200);
+    expect(agentPrompt).toContain('Untrusted phase-one handoff');
+    expect(agentPrompt).toContain(manualHandoff);
+    expect(renderMatchedEvaluationAgentPromptV1(resume, 'threadnote', 1_200)).toContain('mode "resume"');
+    const judgePrompt = renderMatchedEvaluationJudgePromptV1(manual, {
+      agentResult: {completed: true},
+      patch: '',
+      patchSha256: sha256HexSync(''),
+    });
+    expect(judgePrompt).not.toContain(manualHandoff);
+    expect(judgePrompt).toContain(manual.agentTask.prompt);
+  });
+
   it('requires successful context delivery bound to the sealed prompt, run, home and response', () => {
     const {event, expected, item, receipt, result} = contextDelivery();
     expect(() => assertMatchedEvaluationContextDeliveryV1([event], expected)).not.toThrow();
+    expect(receipt.mode).toBe(expected.mode);
     expect(() => assertMatchedEvaluationContextDeliveryV1([], null)).not.toThrow();
     expect(() => assertMatchedEvaluationContextDeliveryV1([event], null)).toThrow('Files-only arm');
     for (const events of [[], [event, event]]) {
@@ -755,6 +865,7 @@ describe('matched evaluation Codex adapter', () => {
       arm: 'files',
       artifactPath,
       blindLabel: 'A',
+      continuationTreatment: null,
       environmentPolicyHash: config.environmentPolicyHash,
       judgeTask: {
         negativeControls: [],
@@ -840,8 +951,8 @@ describe('matched evaluation Codex adapter', () => {
     expect(budgetResponse).toMatchObject({
       metrics: {
         completion: {completed: false},
-        correctness: {judgeCompleted: false, scoreMilli: 620},
-        drift: {falseCurrentOutcomes: 1},
+        correctness: {judgeCompleted: true, scoreMilli: 1_000},
+        drift: {falseCurrentOutcomes: 0},
         usage: {providerTokens: {inputTokens: 100, outputTokens: 50, totalTokens: 150}},
         validity: {failureCount: 0, valid: true},
       },
@@ -944,9 +1055,11 @@ function contextDelivery(text = '{"answer":"Relevant evidence","graph":{"cards":
     studyHash: '4'.repeat(64),
     taskContextHash: '5'.repeat(64),
     detail: 'compact',
+    mode: 'brief',
     frozenPromptSha256: sha256HexSync('Task with `formatting` and trailing space. '),
     runNonce: 'run_0123456789abcdef0123456789abcdef',
     runtimeManifestSha256: '6'.repeat(64),
+    expectedResumeHash: null,
   };
   const receipt = {
     graphContentHash: expected.graphContentHash,
@@ -955,8 +1068,10 @@ function contextDelivery(text = '{"answer":"Relevant evidence","graph":{"cards":
     memoryAccess: expected.memoryAccess,
     studyHash: expected.studyHash,
     taskContextHash: expected.taskContextHash,
+    expectedResumeHash: expected.expectedResumeHash,
     contentResponseSha256: sha256HexSync(text),
     graphReady: true,
+    mode: expected.mode,
     frozenPromptSha256: expected.frozenPromptSha256,
     runNonce: expected.runNonce,
     runtimeManifestSha256: expected.runtimeManifestSha256,
@@ -1004,6 +1119,8 @@ function contextFollowup(
           memoryAccess: base.expected.memoryAccess,
           studyHash: base.expected.studyHash,
           taskContextHash: base.expected.taskContextHash,
+          expectedResumeHash: base.expected.expectedResumeHash,
+          mode: base.expected.mode,
           frozenPromptSha256: base.expected.frozenPromptSha256,
           runNonce: base.expected.runNonce,
           runtimeManifestSha256: base.expected.runtimeManifestSha256,
@@ -1021,6 +1138,43 @@ function contextFollowup(
     tool,
   };
   return {event: {method: 'item/completed', params: {item}}, item};
+}
+
+function adapterRequest(arm: 'files' | 'threadnote-graph' | 'threadnote-compact', continuationTreatment: unknown) {
+  const detail = arm === 'files' ? null : arm === 'threadnote-graph' ? 'graph-only' : 'compact';
+  return {
+    adapterArtifactHash: '1'.repeat(64),
+    adapterConfigurationHash: '2'.repeat(64),
+    adapterProtocol: 'matched-evaluation-adapter-v5',
+    agentTask: {
+      category: 'architecture-discovery',
+      memoryFixtures: [],
+      prompt: 'Complete phase two in the isolated repository.',
+      repositoryFixtureHash: '3'.repeat(64),
+      taskId: 'tsk_0123456789abcdef',
+      variant: 'implementation',
+    },
+    arm,
+    artifactPath: '/tmp/artifact.json',
+    blindLabel: 'A',
+    continuationTreatment,
+    environmentPolicyHash: '4'.repeat(64),
+    judgeTask: {
+      negativeControls: [],
+      rubric: {completion: 'Complete.', criteria: ['Correct.'], requiredEvidenceIds: []},
+      sourceGold: [],
+    },
+    manifestHash: '5'.repeat(64),
+    model: {model: 'agent-model', parametersHash: '6'.repeat(64), provider: 'openai'},
+    preparedContext: null,
+    repository: {dirty: false, fixtureHash: '3'.repeat(64), identityHash: '7'.repeat(64), revision: '8'.repeat(40)},
+    runNonce: 'run_0123456789abcdef0123456789abcdef',
+    runOrder: 0,
+    tool: {artifactHash: null, detail, executable: null, lockIdentityHash: null, name: 'fixture', version: '1'},
+    transcriptPath: '/tmp/transcript.jsonl',
+    verificationPlanHash: null,
+    version: 4,
+  };
 }
 
 function adapterConfig() {

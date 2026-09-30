@@ -17,6 +17,7 @@ import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory
 import {parseMatchedEvaluationCodexAdapterConfigV1} from '../../../../scripts/matched-evaluation-codex-adapter.js';
 import {observeMatchedEvaluationRepositoryV1} from '../../../../scripts/matched-evaluation-runtime-integrity.js';
 import {
+  MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION,
   MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION,
   assertMatchedTokenEfficiencyLinkedBriefV1,
   assertMatchedTokenEfficiencyThreadnoteVersionOutputV1,
@@ -80,6 +81,13 @@ describe('matched token-efficiency study preparation', () => {
     ).toThrow('differs');
     expect(() =>
       assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(`threadnote v5.0.6-local.g${commit}\n`, commit),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(
+        `threadnote v5.1.0-beta.1.local.g${commit}\n`,
+        commit,
+        MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION,
+      ),
     ).not.toThrow();
   });
 
