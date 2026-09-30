@@ -63,6 +63,9 @@ describe('matched evaluation Codex adapter', () => {
     expect(renderMatchedEvaluationAgentInstructionsV1('compact', 1)).toContain('use at most 1');
     expect(renderMatchedEvaluationAgentInstructionsV1('source')).toContain('only MCP tool is context_brief');
     expect(renderMatchedEvaluationAgentInstructionsV1(null)).toContain('No MCP tools are available');
+    expect(renderMatchedEvaluationAgentInstructionsV1(null)).toContain(
+      'never place multiple commands on literal newline-separated shell lines',
+    );
   });
 
   it('accepts only the four coherent sealed continuation treatments', () => {
@@ -749,6 +752,114 @@ describe('matched evaluation Codex adapter', () => {
       },
     ]);
     expect(malformed.firstSufficientEvidenceMilliseconds).toBeNull();
+  });
+
+  it('counts only privacy-safe completed work after timestamped sufficient evidence', () => {
+    const usage = usageEvent({
+      cachedInputTokens: 2,
+      inputTokens: 4,
+      outputTokens: 1,
+      reasoningOutputTokens: 0,
+      totalTokens: 5,
+    });
+    const events = [
+      usage,
+      {method: 'item/started', params: {startedAtMs: 100}},
+      {
+        method: 'item/completed',
+        params: {
+          completedAtMs: 120,
+          item: {
+            id: 'context-brief',
+            result: {content: [{text: JSON.stringify({evidenceState: 'sufficient'}), type: 'text'}]},
+            status: 'completed',
+            tool: 'context_brief',
+            type: 'mcpToolCall',
+          },
+        },
+      },
+      {
+        method: 'item/completed',
+        params: {
+          completedAtMs: 130,
+          item: {
+            command: 'private source-bearing command',
+            id: 'declined-command',
+            status: 'declined',
+            type: 'commandExecution',
+          },
+        },
+      },
+      {
+        method: 'item/completed',
+        params: {
+          completedAtMs: 140,
+          item: {changes: ['private patch'], id: 'edit', status: 'completed', type: 'fileChange'},
+        },
+      },
+    ];
+    const attribution = analyzeMatchedEvaluationAttributionV1(events);
+    expect(attribution.postSufficientEvidence).toMatchObject({
+      commandExecutions: 1,
+      completedItems: 2,
+      declinedCommandExecutions: 1,
+      fileChanges: 1,
+      mcpToolCalls: 0,
+    });
+    expect(attribution.postSufficientEvidence?.completedItemBytes).toBeGreaterThan(0);
+    expect(JSON.stringify(attribution.postSufficientEvidence)).not.toContain('private');
+  });
+
+  it('partitions arbitrary command outcomes at the sufficient-evidence boundary', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            after: fc.boolean(),
+            status: fc.constantFrom('completed', 'declined', 'failed'),
+          }),
+          {maxLength: 20},
+        ),
+        commands => {
+          const usage = usageEvent({
+            cachedInputTokens: 2,
+            inputTokens: 4,
+            outputTokens: 1,
+            reasoningOutputTokens: 0,
+            totalTokens: 5,
+          });
+          const context = {
+            method: 'item/completed',
+            params: {
+              completedAtMs: 120,
+              item: {
+                evidenceState: 'sufficient',
+                id: 'sufficient',
+                status: 'completed',
+                type: 'mcpToolCall',
+              },
+            },
+          };
+          const commandEvents = commands.map((command, index) => ({
+            method: 'item/completed',
+            params: {
+              completedAtMs: command.after ? 130 + index : 110,
+              item: {id: `command-${index}`, status: command.status, type: 'commandExecution'},
+            },
+          }));
+          const observation = analyzeMatchedEvaluationAttributionV1([
+            usage,
+            context,
+            ...commandEvents,
+          ]).postSufficientEvidence;
+          expect(observation?.commandExecutions).toBe(commands.filter(command => command.after).length);
+          expect(observation?.declinedCommandExecutions).toBe(
+            commands.filter(command => command.after && command.status === 'declined').length,
+          );
+        },
+      ),
+      {numRuns: 50},
+    );
   });
 
   it('partitions one to many cumulative usage updates into exact model-call deltas', () => {

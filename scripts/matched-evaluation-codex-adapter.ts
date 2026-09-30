@@ -1171,7 +1171,9 @@ export function analyzeMatchedEvaluationAttributionV1(events: readonly Record<st
   }> = [];
   const sufficientEvidenceTimes: number[] = [];
   const taskStartMilliseconds = taskStartMillis(events);
-  for (const {item, params} of completedItems(events)) {
+  const completed = completedItems(events);
+  let firstSufficientCompletedAtMilliseconds: number | null = null;
+  for (const {item, params} of completed) {
     const type = completedItemType(item.type);
     bytes[type] += Buffer.byteLength(JSON.stringify(item));
     if (type === 'commandExecution' || type === 'fileChange') toolCounts[type] += 1;
@@ -1190,8 +1192,22 @@ export function analyzeMatchedEvaluationAttributionV1(events: readonly Record<st
     if (evidenceState === 'sufficient' && typeof elapsedMilliseconds === 'number') {
       sufficientEvidenceTimes.push(nonnegativeInteger(elapsedMilliseconds, 'sufficient evidence elapsed time'));
     }
+    const completedAtMilliseconds = safeNonnegativeInteger(params.completedAtMs);
+    const itemHasSufficientEvidence =
+      evidenceState === 'sufficient' ||
+      (type === 'mcpToolCall' &&
+        item.tool === 'context_brief' &&
+        item.status === 'completed' &&
+        contextBriefEvidenceState(item, params) === 'sufficient');
+    if (
+      itemHasSufficientEvidence &&
+      completedAtMilliseconds !== null &&
+      (firstSufficientCompletedAtMilliseconds === null ||
+        completedAtMilliseconds < firstSufficientCompletedAtMilliseconds)
+    ) {
+      firstSufficientCompletedAtMilliseconds = completedAtMilliseconds;
+    }
     if (type === 'mcpToolCall' && item.tool === 'context_brief' && item.status === 'completed') {
-      const completedAtMilliseconds = safeNonnegativeInteger(params.completedAtMs);
       if (
         contextBriefEvidenceState(item, params) === 'sufficient' &&
         completedAtMilliseconds !== null &&
@@ -1205,6 +1221,36 @@ export function analyzeMatchedEvaluationAttributionV1(events: readonly Record<st
   const tokens = sumTokenAccounting(modelCalls, cacheWritesKnown);
   const completedItemByteTotal = Object.values(bytes).reduce((total, count) => total + count, 0);
   const safePromptBytes = nonnegativeInteger(promptBytes, 'prompt bytes');
+  const postSufficientEvidence =
+    firstSufficientCompletedAtMilliseconds === null
+      ? null
+      : completed.reduce(
+          (observation, {item, params}) => {
+            const completedAtMilliseconds = safeNonnegativeInteger(params.completedAtMs);
+            if (completedAtMilliseconds === null || completedAtMilliseconds <= firstSufficientCompletedAtMilliseconds) {
+              return observation;
+            }
+            const type = completedItemType(item.type);
+            return {
+              completedItemBytes: observation.completedItemBytes + Buffer.byteLength(JSON.stringify(item)),
+              completedItems: observation.completedItems + 1,
+              commandExecutions: observation.commandExecutions + (type === 'commandExecution' ? 1 : 0),
+              declinedCommandExecutions:
+                observation.declinedCommandExecutions +
+                (type === 'commandExecution' && item.status === 'declined' ? 1 : 0),
+              fileChanges: observation.fileChanges + (type === 'fileChange' ? 1 : 0),
+              mcpToolCalls: observation.mcpToolCalls + (type === 'mcpToolCall' ? 1 : 0),
+            };
+          },
+          {
+            completedItemBytes: 0,
+            completedItems: 0,
+            commandExecutions: 0,
+            declinedCommandExecutions: 0,
+            fileChanges: 0,
+            mcpToolCalls: 0,
+          },
+        );
   return {
     completedItemBytes: bytes,
     firstSufficientEvidenceMilliseconds:
@@ -1218,6 +1264,7 @@ export function analyzeMatchedEvaluationAttributionV1(events: readonly Record<st
       promptBytes: safePromptBytes,
       totalBytes: safePromptBytes + completedItemByteTotal,
     },
+    postSufficientEvidence,
     repeatedToolCalls: {
       commandExecution: repeated(toolCounts.commandExecution),
       contextBrief: repeated(toolCounts.contextBrief),
@@ -1878,7 +1925,7 @@ export function renderMatchedEvaluationAgentInstructionsV1(
   return [
     'Use only the isolated repository and reviewed code-mode tools. Never use networking, subagents, external apps, plugins, skills, hooks, or user configuration.',
     'Use read-only shell inspection and apply_patch for edits. Do not execute repository code; an outer blinded judge verifies the result.',
-    'Every shell command and file change is checked by the sealed one-shot client policy before execution. Run commands from the repository root. If an action is declined, retry once with one literal repository-local action that uses no variables, substitutions, redirects, globs, loops, or command chaining; do not repeat the identical declined action.',
+    'Every shell command and file change is checked by the sealed one-shot client policy before execution. Run commands from the repository root. When combining read-only commands, separate them with `&&` or `;`; never place multiple commands on literal newline-separated shell lines. If an action is declined, retry once with one literal repository-local action that uses no variables, substitutions, redirects, globs, loops, or command chaining; do not repeat the identical declined action.',
     contextInstructions,
   ].join(' ');
 }

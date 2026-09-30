@@ -73,6 +73,15 @@ export interface MatchedEvaluationAttributionV1 {
     readonly promptBytes: number;
     readonly totalBytes: number;
   };
+  /** Privacy-safe completed work after the first timestamped sufficient-evidence item. */
+  readonly postSufficientEvidence?: {
+    readonly completedItemBytes: number;
+    readonly completedItems: number;
+    readonly commandExecutions: number;
+    readonly declinedCommandExecutions: number;
+    readonly fileChanges: number;
+    readonly mcpToolCalls: number;
+  } | null;
   readonly repeatedToolCalls: {
     readonly commandExecution: number;
     readonly contextBrief: number;
@@ -803,6 +812,7 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
 
 function parseAttribution(value: unknown): MatchedEvaluationAttributionV1 {
   const attribution = object(value, 'usage attribution');
+  const hasPostSufficientEvidence = Object.prototype.hasOwnProperty.call(attribution, 'postSufficientEvidence');
   exactKeys(
     attribution,
     [
@@ -813,6 +823,7 @@ function parseAttribution(value: unknown): MatchedEvaluationAttributionV1 {
       'modelCallCount',
       'modelCalls',
       'modelVisibleBytes',
+      ...(hasPostSufficientEvidence ? ['postSufficientEvidence'] : []),
       'repeatedToolCalls',
       'tokens',
     ],
@@ -861,6 +872,11 @@ function parseAttribution(value: unknown): MatchedEvaluationAttributionV1 {
   ) {
     invalid('attribution model-visible bytes do not reconcile');
   }
+  const postSufficientEvidence = !hasPostSufficientEvidence
+    ? undefined
+    : attribution.postSufficientEvidence === null
+      ? null
+      : parsePostSufficientEvidence(attribution.postSufficientEvidence);
   return {
     completedItemBytes: {
       agentMessage: nonNegativeInteger(completedItemBytes.agentMessage, 'agent message bytes'),
@@ -881,6 +897,7 @@ function parseAttribution(value: unknown): MatchedEvaluationAttributionV1 {
     modelCallCount,
     modelCalls,
     modelVisibleBytes: parsedModelVisibleBytes,
+    ...(postSufficientEvidence === undefined ? {} : {postSufficientEvidence}),
     repeatedToolCalls: {
       commandExecution: nonNegativeInteger(repeatedToolCalls.commandExecution, 'repeated command calls'),
       contextBrief: nonNegativeInteger(repeatedToolCalls.contextBrief, 'repeated context brief calls'),
@@ -890,6 +907,40 @@ function parseAttribution(value: unknown): MatchedEvaluationAttributionV1 {
       recallContext: nonNegativeInteger(repeatedToolCalls.recallContext, 'repeated context recalls'),
     },
     tokens,
+  };
+}
+
+function parsePostSufficientEvidence(
+  value: unknown,
+): NonNullable<MatchedEvaluationAttributionV1['postSufficientEvidence']> {
+  const observation = object(value, 'post-sufficient evidence attribution');
+  exactKeys(
+    observation,
+    [
+      'completedItemBytes',
+      'completedItems',
+      'commandExecutions',
+      'declinedCommandExecutions',
+      'fileChanges',
+      'mcpToolCalls',
+    ],
+    'post-sufficient evidence attribution',
+  );
+  const commandExecutions = nonNegativeInteger(observation.commandExecutions, 'post-sufficient command executions');
+  const declinedCommandExecutions = nonNegativeInteger(
+    observation.declinedCommandExecutions,
+    'post-sufficient declined command executions',
+  );
+  if (declinedCommandExecutions > commandExecutions) {
+    invalid('post-sufficient declined commands exceed command executions');
+  }
+  return {
+    completedItemBytes: nonNegativeInteger(observation.completedItemBytes, 'post-sufficient completed item bytes'),
+    completedItems: nonNegativeInteger(observation.completedItems, 'post-sufficient completed items'),
+    commandExecutions,
+    declinedCommandExecutions,
+    fileChanges: nonNegativeInteger(observation.fileChanges, 'post-sufficient file changes'),
+    mcpToolCalls: nonNegativeInteger(observation.mcpToolCalls, 'post-sufficient MCP tool calls'),
   };
 }
 
