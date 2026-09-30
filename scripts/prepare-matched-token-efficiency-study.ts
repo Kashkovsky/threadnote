@@ -155,6 +155,7 @@ interface ClusterPlanV1 {
 }
 
 interface TaskContextPlanV1 {
+  readonly activeHandoffTopics: readonly string[];
   readonly asIssuedContext: {
     readonly assessmentFile: string;
     readonly contentFile: string | null;
@@ -658,7 +659,22 @@ async function prepareTasks(input: {
     linkedHomes.add(linkedHome);
     const graphMemories = await collectMemoryDocuments(graphHome, input.plan.project);
     if (graphMemories.length !== 0) throw new Error(`Task ${task.taskId} graph-only home contains memories.`);
-    const linkedMemories = await collectMemoryDocuments(linkedHome, input.plan.project);
+    const linkedRecords = await collectMemoryDocuments(linkedHome, input.plan.project);
+    const linkedMemories = linkedRecords.filter(memory => memory.metadata.kind === 'durable');
+    const linkedHandoffs = linkedRecords.filter(memory => memory.metadata.kind === 'handoff');
+    if (linkedRecords.length !== linkedMemories.length + linkedHandoffs.length) {
+      throw new Error(`Task ${task.taskId} linked home contains an unsupported memory kind.`);
+    }
+    const preparedHandoffTopics = linkedHandoffs
+      .map(memory => memory.metadata.topic)
+      .sort((left, right) => String(left).localeCompare(String(right)));
+    const expectedHandoffTopics = [...planContext.activeHandoffTopics].sort((left, right) => left.localeCompare(right));
+    if (
+      preparedHandoffTopics.some(topic => topic === undefined) ||
+      JSON.stringify(preparedHandoffTopics) !== JSON.stringify(expectedHandoffTopics)
+    ) {
+      throw new Error(`Task ${task.taskId} linked home handoffs differ from the preparation plan.`);
+    }
     await assertContextCheckClean(input.plan, cluster, linkedHome);
     const [graphIdentity, linkedIdentity] = await Promise.all([
       graphIdentityForHome(input.plan, cluster, graphHome, observation),
@@ -675,6 +691,7 @@ async function prepareTasks(input: {
       task.prompt,
       task.taskId,
       linkedMemories,
+      planContext.activeHandoffTopics,
     );
     const linkReceipts = linkReceiptsForTask(
       task,
@@ -992,6 +1009,7 @@ async function assertLinkedContextSurfacesMemories(
   task: string,
   taskId: string,
   memories: readonly MemoryRecord[],
+  activeHandoffTopics: readonly string[],
 ): Promise<void> {
   const topics = memories.map(memory => memory.metadata.topic);
   if (
@@ -1033,6 +1051,7 @@ async function assertLinkedContextSurfacesMemories(
     plan.project,
     taskId,
     topics as readonly string[],
+    activeHandoffTopics,
   );
 }
 
@@ -1041,6 +1060,7 @@ export function assertMatchedTokenEfficiencyLinkedBriefV1(
   project: string,
   taskId: string,
   expectedTopics: readonly string[],
+  expectedHandoffTopics: readonly string[] = [],
 ): void {
   const brief = object(value, 'linked-memory Context Brief');
   if (brief.type !== 'context-brief' || (brief.version !== 2 && brief.version !== 3)) {
@@ -1049,7 +1069,16 @@ export function assertMatchedTokenEfficiencyLinkedBriefV1(
   if (!Array.isArray(brief.durableDecisions) || !Array.isArray(brief.activeHandoffs)) {
     throw new Error('Linked-memory Context Brief is missing its memory evidence arrays.');
   }
-  if (brief.activeHandoffs.length !== 0) {
+  const surfacedHandoffTopics = brief.activeHandoffs.map((entry, index) => {
+    const handoff = object(entry, `linked-memory Context Brief handoff ${index}`);
+    if (handoff.kind !== 'handoff' || handoff.project !== project) {
+      throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected handoff.`);
+    }
+    return boundedText(handoff.topic, 1, 512, `linked-memory Context Brief handoff ${index} topic`);
+  });
+  const expectedHandoffs = [...expectedHandoffTopics].sort((left, right) => left.localeCompare(right));
+  const surfacedHandoffs = [...surfacedHandoffTopics].sort((left, right) => left.localeCompare(right));
+  if (JSON.stringify(surfacedHandoffs) !== JSON.stringify(expectedHandoffs)) {
     throw new Error(`Task ${taskId} linked-memory Context Brief exposes an unexpected handoff.`);
   }
   const surfacedTopics = brief.durableDecisions.map((entry, index) => {
@@ -1530,6 +1559,7 @@ function parseProductionRelease(value: unknown): MatchedTokenEfficiencyProductio
 function parseTaskContextPlan(value: unknown, index: number): TaskContextPlanV1 {
   const task = object(value, `task context ${index}`);
   exactKeys(task, [
+    ...(task.activeHandoffTopics === undefined ? [] : ['activeHandoffTopics']),
     'asIssuedContext',
     'clusterId',
     'graphHomeDirectory',
@@ -1569,7 +1599,15 @@ function parseTaskContextPlan(value: unknown, index: number): TaskContextPlanV1 
     linkedMemoryIdentities.map(identity => identity.managedMemoryId),
     `task context ${index} managed memory ids`,
   );
+  const activeHandoffTopics =
+    task.activeHandoffTopics === undefined
+      ? []
+      : array(task.activeHandoffTopics, `task context ${index} active handoff topics`).map((topic, topicIndex) =>
+          boundedText(topic, 1, 512, `task context ${index} active handoff topic ${topicIndex}`),
+        );
+  unique(activeHandoffTopics, `task context ${index} active handoff topics`);
   return {
+    activeHandoffTopics,
     asIssuedContext: {
       assessmentFile: absolutePath(context.assessmentFile, `task context ${index} assessment`),
       contentFile:

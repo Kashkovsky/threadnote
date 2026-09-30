@@ -110,6 +110,30 @@ describe('matched token-efficiency study preparation', () => {
     ).not.toThrow();
     expect(() =>
       assertMatchedTokenEfficiencyLinkedBriefV1(
+        {
+          ...brief,
+          activeHandoffs: [{kind: 'handoff', project: 'threadnote', topic: 'continuation-checkpoint'}],
+        },
+        'threadnote',
+        'tsk_1234567890abcdef',
+        ['parser-contract', 'serializer-contract'],
+        ['continuation-checkpoint'],
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedTokenEfficiencyLinkedBriefV1(
+        {
+          ...brief,
+          activeHandoffs: [{kind: 'handoff', project: 'threadnote', topic: 'unexpected-checkpoint'}],
+        },
+        'threadnote',
+        'tsk_1234567890abcdef',
+        ['parser-contract', 'serializer-contract'],
+        ['continuation-checkpoint'],
+      ),
+    ).toThrow('unexpected handoff');
+    expect(() =>
+      assertMatchedTokenEfficiencyLinkedBriefV1(
         {...brief, durableDecisions: brief.durableDecisions.slice(0, 1)},
         'threadnote',
         'tsk_1234567890abcdef',
