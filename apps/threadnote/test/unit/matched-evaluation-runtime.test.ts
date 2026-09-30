@@ -14,8 +14,12 @@ import {
 } from '../../../../scripts/matched-evaluation-runtime-integrity.js';
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
 import {
+  assertMatchedEvaluationContinuationCheckpointV2,
+  continuationCheckpointStudyV2,
+  matchedEvaluationContinuationPreparedHomeIdentityHashV2,
   parseMatchedEvaluationRuntimeV1,
   parseMatchedEvaluationContinuationPilotPlanV1,
+  projectMatchedEvaluationContinuationAdapterTaskV2,
   resolveMatchedEvaluationRuntimeRepositoriesV1,
   hashMatchedEvaluationPayloadV1,
   selectMatchedEvaluationPilotRowsV1,
@@ -151,6 +155,278 @@ describe('matched evaluation runtime integrity', () => {
       ),
       {numRuns: 24},
     );
+
+    const phaseOnePrompt = 'Add a failing regression test and stop before implementing the production fix.';
+    const phaseTwoPrompt = 'Implement the production fix for the committed regression and verify the focused suite.';
+    const sourcePrompt = 'Original public issue prompt.';
+    const versionTwo = {
+      attempts: base.attempts,
+      candidate: base.candidate,
+      checkpoint: {
+        ...base.checkpoint,
+        phaseOnePatchSha256: '6'.repeat(64),
+        phaseOnePrompt,
+        phaseOnePromptSha256: sha256HexSync(Buffer.from(phaseOnePrompt)),
+        preparedContext: {
+          graphContentHash: '9'.repeat(64),
+          graphSnapshotHash: 'a'.repeat(64),
+          linkReceiptsHash: 'b'.repeat(64),
+          taskContextHash: 'c'.repeat(64),
+        },
+        preparedHome: {fixtureHash: 'd'.repeat(64), identitySha256: 'e'.repeat(64)},
+        repositoryRevision: '7'.repeat(40),
+      },
+      phaseTwoPrompt,
+      phaseTwoPromptSha256: sha256HexSync(Buffer.from(phaseTwoPrompt)),
+      retries: 0,
+      sourceTask: {
+        prompt: sourcePrompt,
+        promptSha256: sha256HexSync(Buffer.from(sourcePrompt)),
+        repositoryFixtureHash: '8'.repeat(64),
+        repositoryRevision: base.checkpoint.repositoryRevision,
+        taskId: base.taskId,
+      },
+      taskId: base.taskId,
+      version: 2,
+    } as const;
+    const parsedVersionTwo = parseMatchedEvaluationContinuationPilotPlanV1(versionTwo);
+    expect(parsedVersionTwo).toMatchObject({version: 2, phaseTwoPrompt});
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...versionTwo,
+        phaseTwoPrompt: `${phaseTwoPrompt} changed`,
+      }),
+    ).toThrow('phase-two prompt hash differs');
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...versionTwo,
+        checkpoint: {...versionTwo.checkpoint, phaseOnePrompt: `${phaseOnePrompt} changed`},
+      }),
+    ).toThrow('phase-one prompt hash differs');
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...versionTwo,
+        sourceTask: {...versionTwo.sourceTask, prompt: `${sourcePrompt} changed`},
+      }),
+    ).toThrow('source task prompt hash differs');
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...versionTwo,
+        checkpoint: {...versionTwo.checkpoint, repositoryRevision: versionTwo.sourceTask.repositoryRevision},
+      }),
+    ).toThrow('checkpoint must differ from the source revision');
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...versionTwo,
+        sourceTask: {...versionTwo.sourceTask, repositoryFixtureHash: versionTwo.checkpoint.repositoryFixtureHash},
+      }),
+    ).toThrow('checkpoint fixture must differ from the source fixture');
+    const prompt = fc.string({minLength: 1, maxLength: 48}).filter(value => !value.includes('\0'));
+    fc.assert(
+      fc.property(prompt, prompt, prompt, (phaseOne, phaseTwo, source) => {
+        fc.pre(phaseOne !== phaseTwo && source !== phaseTwo);
+        const generated = {
+          ...versionTwo,
+          checkpoint: {
+            ...versionTwo.checkpoint,
+            phaseOnePrompt: phaseOne,
+            phaseOnePromptSha256: sha256HexSync(Buffer.from(phaseOne)),
+          },
+          phaseTwoPrompt: phaseTwo,
+          phaseTwoPromptSha256: sha256HexSync(Buffer.from(phaseTwo)),
+          sourceTask: {
+            ...versionTwo.sourceTask,
+            prompt: source,
+            promptSha256: sha256HexSync(Buffer.from(source)),
+          },
+        };
+        expect(parseMatchedEvaluationContinuationPilotPlanV1(generated)).toMatchObject({
+          phaseTwoPrompt: phaseTwo,
+          version: 2,
+        });
+        expect(() =>
+          parseMatchedEvaluationContinuationPilotPlanV1({
+            ...generated,
+            phaseTwoPromptSha256: generated.checkpoint.phaseOnePromptSha256,
+          }),
+        ).toThrow('phase-two prompt hash differs');
+      }),
+      {numRuns: 32},
+    );
+  });
+
+  it('attests a nonempty direct-child phase-one checkpoint and its exact binary patch', async () => {
+    if (process.platform === 'win32') return;
+    const root = await temporaryRoot(roots);
+    const repository = join(root, 'repository');
+    const base = await repositoryFixture(repository, 'https://github.com/example/continuation-fixture.git', 'base');
+    await writeFile(join(repository, 'service.ts'), 'export const value = "phase-one";\n');
+    await git(repository, ['add', 'service.ts']);
+    await git(repository, ['commit', '-qm', 'phase one']);
+    const checkpoint = await observeMatchedEvaluationRepositoryV1(repository);
+    const patch = await gitOutput(repository, [
+      'diff',
+      '--binary',
+      '--full-index',
+      '--no-color',
+      '--no-ext-diff',
+      '--src-prefix=a/',
+      '--dst-prefix=b/',
+      base.revision,
+      checkpoint.revision,
+      '--',
+      '.',
+      ':(exclude).context/**',
+      ':(exclude)**/.context/**',
+    ]);
+    const input = {
+      baseFixtureHash: base.fixtureHash,
+      baseRevision: base.revision,
+      checkpoint,
+      patchSha256: sha256HexSync(Buffer.from(patch)),
+      repositoryDirectory: repository,
+    };
+
+    await expect(assertMatchedEvaluationContinuationCheckpointV2(input)).resolves.toBeUndefined();
+    await expect(
+      assertMatchedEvaluationContinuationCheckpointV2({...input, patchSha256: 'f'.repeat(64)}),
+    ).rejects.toThrow('phase-one patch differs');
+    await expect(
+      assertMatchedEvaluationContinuationCheckpointV2({...input, baseFixtureHash: 'e'.repeat(64)}),
+    ).rejects.toThrow('source repository differs');
+    await git(repository, ['commit', '--allow-empty', '-qm', 'second phase-one commit']);
+    const secondCheckpoint = await observeMatchedEvaluationRepositoryV1(repository);
+    await expect(
+      assertMatchedEvaluationContinuationCheckpointV2({...input, checkpoint: secondCheckpoint}),
+    ).rejects.toThrow('one direct non-merge commit');
+  });
+
+  it('projects only the phase-two prompt and checkpoint identity to fresh Agent B', () => {
+    const task = {
+      category: 'unfamiliar-call-path',
+      memoryFixtures: [],
+      negativeControls: [],
+      pairId: null,
+      prompt: 'Original public issue prompt.',
+      repositoryFixtureHash: '1'.repeat(64),
+      rubric: {completion: 'behavior passes', criteria: ['passes'], requiredEvidenceIds: []},
+      sourceGold: [],
+      taskId: 'tsk_1234567890abcdef',
+      variant: 'historical-as-issued',
+    } as const;
+    const study = {
+      studyHash: '2'.repeat(64),
+      taskContexts: [
+        {
+          clusterId: 'cluster_1234567890abcdef',
+          graphContentHash: '3'.repeat(64),
+          graphSnapshotHash: '4'.repeat(64),
+          linkReceiptsHash: '5'.repeat(64),
+          repositoryFixtureHash: task.repositoryFixtureHash,
+          taskContextHash: '6'.repeat(64),
+          taskId: task.taskId,
+        },
+      ],
+    } as unknown as MatchedTokenEfficiencyStudyV1;
+    const plan = {
+      checkpoint: {
+        preparedContext: {
+          graphContentHash: '7'.repeat(64),
+          graphSnapshotHash: '8'.repeat(64),
+          linkReceiptsHash: '9'.repeat(64),
+          taskContextHash: 'a'.repeat(64),
+        },
+        repositoryFixtureHash: 'b'.repeat(64),
+      },
+      phaseTwoPrompt: 'Implement the production fix from the committed regression test.',
+    } as Parameters<typeof projectMatchedEvaluationContinuationAdapterTaskV2>[2];
+
+    const compact = projectMatchedEvaluationContinuationAdapterTaskV2({arm: 'threadnote-compact', task}, study, plan);
+    expect(compact.agentTask).toMatchObject({
+      prompt: plan.phaseTwoPrompt,
+      repositoryFixtureHash: plan.checkpoint.repositoryFixtureHash,
+    });
+    expect(compact.agentTask.prompt).not.toBe(task.prompt);
+    expect(compact.preparedContext).toMatchObject({
+      memoryAccess: 'linked',
+      taskContext: plan.checkpoint.preparedContext,
+    });
+    expect(
+      projectMatchedEvaluationContinuationAdapterTaskV2({arm: 'threadnote-graph', task}, study, plan).preparedContext,
+    ).toMatchObject({
+      graphContext: {
+        graphContentHash: plan.checkpoint.preparedContext.graphContentHash,
+        graphSnapshotHash: plan.checkpoint.preparedContext.graphSnapshotHash,
+      },
+      memoryAccess: 'disabled',
+    });
+    expect(
+      projectMatchedEvaluationContinuationAdapterTaskV2({arm: 'files', task}, study, plan).preparedContext,
+    ).toBeNull();
+  });
+
+  it('keeps the source study frozen while resolving the continuation cluster at the checkpoint', () => {
+    const clusterId = 'cluster_1234567890abcdef';
+    const taskId = 'tsk_1234567890abcdef';
+    const sourceTask = {
+      prompt: 'Original issue.',
+      promptSha256: '1'.repeat(64),
+      repositoryFixtureHash: '2'.repeat(64),
+      repositoryRevision: '3'.repeat(40),
+      taskId,
+    };
+    const preparedContext = {
+      graphContentHash: '4'.repeat(64),
+      graphSnapshotHash: '5'.repeat(64),
+      linkReceiptsHash: '6'.repeat(64),
+      taskContextHash: '7'.repeat(64),
+    };
+    const checkpoint = {
+      preparedContext,
+      repositoryFixtureHash: '8'.repeat(64),
+      repositoryRevision: '9'.repeat(40),
+    } as unknown as Parameters<typeof continuationCheckpointStudyV2>[2];
+    const study = {
+      clusters: [
+        {
+          clusterId,
+          repositoryFixtureHash: sourceTask.repositoryFixtureHash,
+          repositoryIdentityHash: 'a'.repeat(64),
+          revision: sourceTask.repositoryRevision,
+        },
+      ],
+      taskContexts: [{clusterId, graphSnapshotHash: 'b'.repeat(64), taskId}],
+    } as unknown as MatchedTokenEfficiencyStudyV1;
+
+    expect(continuationCheckpointStudyV2(study, sourceTask, checkpoint).clusters[0]).toMatchObject({
+      repositoryFixtureHash: checkpoint.repositoryFixtureHash,
+      revision: checkpoint.repositoryRevision,
+    });
+    expect(() =>
+      continuationCheckpointStudyV2(study, {...sourceTask, repositoryFixtureHash: 'c'.repeat(64)}, checkpoint),
+    ).toThrow('source repository differs');
+    expect(() =>
+      continuationCheckpointStudyV2(study, sourceTask, {
+        ...checkpoint,
+        preparedContext: {...preparedContext, graphSnapshotHash: study.taskContexts[0].graphSnapshotHash},
+      }),
+    ).toThrow('checkpoint-specific prepared graph snapshot');
+  });
+
+  it('binds prepared-home identity without exposing its account or project in the plan', () => {
+    const prepared = {
+      identity: {account: 'evaluation', user: 'agent-b'},
+      project: 'continuation-project',
+      taskId: 'tsk_1234567890abcdef',
+    };
+    const identityHash = matchedEvaluationContinuationPreparedHomeIdentityHashV2(prepared);
+    expect(identityHash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(
+      matchedEvaluationContinuationPreparedHomeIdentityHashV2({
+        ...prepared,
+        identity: {...prepared.identity, user: 'different-agent'},
+      }),
+    ).not.toBe(identityHash);
   });
 
   it('selects exactly one first-repetition row per pilot arm in frozen order', () => {
@@ -399,7 +675,11 @@ async function temporaryRoot(roots: string[]): Promise<string> {
 }
 
 async function git(cwd: string, arguments_: readonly string[]): Promise<void> {
-  await captureCodeMemoryLinkProcessGroup({
+  await gitOutput(cwd, arguments_);
+}
+
+async function gitOutput(cwd: string, arguments_: readonly string[]): Promise<string> {
+  const result = await captureCodeMemoryLinkProcessGroup({
     arguments: ['-C', cwd, ...arguments_],
     command: 'git',
     cwd,
@@ -413,6 +693,7 @@ async function git(cwd: string, arguments_: readonly string[]): Promise<void> {
     maxOutputBytes: 64 * 1_024,
     timeoutMilliseconds: 10_000,
   });
+  return result.stdout;
 }
 
 async function repositoryFixture(directory: string, remote: string, value: string) {
