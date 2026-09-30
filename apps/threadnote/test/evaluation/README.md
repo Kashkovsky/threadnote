@@ -971,7 +971,7 @@ CPUs, and the workflow has a 30-minute job ceiling. The protected runner environ
 provisioning at least 32 GiB RAM, a 128 GiB local SSD, and 64 GiB free space; those capacity facts are not yet captured
 as qualifying artifact evidence.
 
-Qualifying evidence is restricted to the canonical `Kashkovsky/threadnote` workflow dispatched from protected `main`.
+Qualifying evidence is restricted to the canonical `threadnote/threadnote` workflow dispatched from protected `main`.
 Provision and protect the `large-repository-evidence` environment first, including its protected deployment policy,
 self-hosted runner, prebuilt home/repository paths, and environment-only variable
 `THREADNOTE_READY_QUERY_ENVIRONMENT_ATTESTATION=intellij-ready-query-v1:3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c:047481e05148b1c11a52fa813e13323c23abbc0d`.

@@ -26,11 +26,12 @@ export const READY_QUERY_MEMORY_PRESSURE_PERCENT_MAXIMUM = 10;
 export const READY_QUERY_REPOSITORY = 'JetBrains/intellij-community' as const;
 export const READY_QUERY_REPOSITORY_COMMIT = '3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c' as const;
 export const READY_QUERY_REPOSITORY_TREE = '047481e05148b1c11a52fa813e13323c23abbc0d' as const;
-export const READY_QUERY_GITHUB_REPOSITORY = 'Kashkovsky/threadnote' as const;
-export const READY_QUERY_TRANSFERRED_GITHUB_REPOSITORY = 'threadnote/threadnote' as const;
+export const READY_QUERY_GITHUB_REPOSITORY = 'threadnote/threadnote' as const;
+export const READY_QUERY_LEGACY_GITHUB_REPOSITORY = 'Kashkovsky/threadnote' as const;
+export const READY_QUERY_TRANSFERRED_GITHUB_REPOSITORY = READY_QUERY_GITHUB_REPOSITORY;
 export const READY_QUERY_GITHUB_REPOSITORIES = [
   READY_QUERY_GITHUB_REPOSITORY,
-  READY_QUERY_TRANSFERRED_GITHUB_REPOSITORY,
+  READY_QUERY_LEGACY_GITHUB_REPOSITORY,
 ] as const;
 export const READY_QUERY_GITHUB_REPOSITORY_ID = '1230070449' as const;
 export const READY_QUERY_GITHUB_EVENT = 'workflow_dispatch' as const;

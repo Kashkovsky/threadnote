@@ -8,7 +8,7 @@ export_package_files(["**"])
 go_library(
     name = "budget",
     srcs = ["budget.go"],
-    importpath = "github.com/Kashkovsky/threadnote/infra/telemetry-gateway/internal/budget",
+    importpath = "github.com/threadnote/threadnote/infra/telemetry-gateway/internal/budget",
 )
 
 go_test(

@@ -347,7 +347,7 @@ const reportIssue = Command.make(
     title: requiredString('title', 'Public issue title'),
   },
   options => withRuntimeEffect(config => runReportIssue(config, options)),
-).pipe(Command.withDescription('Preview or create a support issue in Kashkovsky/threadnote'));
+).pipe(Command.withDescription('Preview or create a support issue in threadnote/threadnote'));
 
 const update = Command.make(
   'update',

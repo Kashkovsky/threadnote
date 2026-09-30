@@ -16,7 +16,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Threadnote
-        run: curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+        run: curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh
 
       - name: Hydrate reviewed canonical context
         env:

@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Kashkovsky/threadnote/infra/telemetry-gateway/internal/budget"
+	"github.com/threadnote/threadnote/infra/telemetry-gateway/internal/budget"
 )
 
 type machine struct {

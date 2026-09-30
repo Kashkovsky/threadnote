@@ -7,8 +7,8 @@ export const LEGACY_GITHUB_RELEASES_URL =
 export const TRANSFERRED_GITHUB_RELEASES_URL =
   'https://api.github.com/repos/threadnote/threadnote/releases?per_page=100' as const;
 
-/** Keep the pre-transfer source as the default until the namespace cutover commit lands. */
-export const GITHUB_RELEASES_URL = LEGACY_GITHUB_RELEASES_URL;
+/** Keep the old owner allowlisted for redirected clients, but prefer the transferred namespace. */
+export const GITHUB_RELEASES_URL = TRANSFERRED_GITHUB_RELEASES_URL;
 
 const OFFICIAL_GITHUB_RELEASES_URLS = new Set<string>([LEGACY_GITHUB_RELEASES_URL, TRANSFERRED_GITHUB_RELEASES_URL]);
 

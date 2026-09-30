@@ -14,7 +14,7 @@ import (
 	"testing/quick"
 	"time"
 
-	"github.com/Kashkovsky/threadnote/infra/telemetry-gateway/internal/budget"
+	"github.com/threadnote/threadnote/infra/telemetry-gateway/internal/budget"
 	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"

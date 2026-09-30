@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPOSITORY="${THREADNOTE_REPOSITORY:-Kashkovsky/threadnote}"
+REPOSITORY="${THREADNOTE_REPOSITORY:-threadnote/threadnote}"
 CHANNEL="${THREADNOTE_CHANNEL:-latest}"
 RELEASES_API="${THREADNOTE_RELEASE_SOURCE:-https://api.github.com/repos/$REPOSITORY/releases?per_page=100}"
 INSTALL_LOCK_WAIT_SECONDS=600

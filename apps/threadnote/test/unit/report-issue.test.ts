@@ -37,7 +37,7 @@ describe('report issue', () => {
           execute: () =>
             Effect.sync(() => {
               commandInvoked = true;
-              return {exitCode: 0, stderr: '', stdout: 'https://github.com/Kashkovsky/threadnote/issues/1\n'};
+              return {exitCode: 0, stderr: '', stdout: 'https://github.com/threadnote/threadnote/issues/1\n'};
             }),
           executeStreaming: () => Effect.succeed({exitCode: 0, stderr: '', stdout: ''}),
         });
@@ -52,7 +52,7 @@ describe('report issue', () => {
         ).pipe(Effect.provideService(CommandExecutor, command));
 
         expect(commandInvoked).toBe(false);
-        expect(report.output).toContain('GitHub issue preview: Kashkovsky/threadnote');
+        expect(report.output).toContain('GitHub issue preview: threadnote/threadnote');
         expect(report.output).toMatch(/Approval digest: sha256:[a-f0-9]{64}/);
         expect(report.output).toContain('Production logs included: yes');
         expect(report.output).toContain('3 included, 0 older omitted, 2 invalid discarded');
@@ -102,7 +102,7 @@ describe('report issue', () => {
               return {
                 exitCode: 0,
                 stderr: '',
-                stdout: 'https://github.com/Kashkovsky/threadnote/issues/321\n',
+                stdout: 'https://github.com/threadnote/threadnote/issues/321\n',
               };
             }).pipe(Effect.orDie),
           executeStreaming: () => Effect.succeed({exitCode: 0, stderr: '', stdout: ''}),
@@ -128,7 +128,7 @@ describe('report issue', () => {
           }),
         ).pipe(Effect.provideService(CommandExecutor, command), Effect.provideService(SystemInfo, hostileSystem));
 
-        expect(report.output).toContain('Created GitHub issue: https://github.com/Kashkovsky/threadnote/issues/321');
+        expect(report.output).toContain('Created GitHub issue: https://github.com/threadnote/threadnote/issues/321');
         expect(invocation?.executable).toBe('gh');
         expect(invocation?.args).toEqual([
           'api',
@@ -136,7 +136,7 @@ describe('report issue', () => {
           'POST',
           '--hostname',
           'github.com',
-          'repos/Kashkovsky/threadnote/issues',
+          'repos/threadnote/threadnote/issues',
           '--input',
           invocation?.requestPath,
           '--jq',

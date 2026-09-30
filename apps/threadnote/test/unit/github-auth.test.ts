@@ -11,7 +11,7 @@ import {SystemInfo} from '@threadnote/platform/system';
 import {
   GITHUB_RELEASES_URL,
   githubReleaseHeaders,
-  TRANSFERRED_GITHUB_RELEASES_URL,
+  LEGACY_GITHUB_RELEASES_URL,
 } from '@threadnote/threadnote/release/github_auth';
 import {fetchThreadnoteReleaseNotes} from '@threadnote/threadnote/release/notes';
 import {fetchLatestVersion} from '@threadnote/threadnote/release/update';
@@ -128,10 +128,10 @@ effectIt.effect('authenticates updater and release notes requests but never a cu
       execute: () => Effect.die('gh should not run when an environment token is available'),
       executeStreaming: () => Effect.die('not used'),
     });
-    const [version, notes, transferredVersion, customVersion] = yield* Effect.all([
+    const [version, notes, legacyVersion, customVersion] = yield* Effect.all([
       fetchLatestVersion(),
       fetchThreadnoteReleaseNotes(),
-      fetchLatestVersion(TRANSFERRED_GITHUB_RELEASES_URL),
+      fetchLatestVersion(LEGACY_GITHUB_RELEASES_URL),
       fetchLatestVersion('https://mirror.example/releases'),
     ]).pipe(
       Effect.provideService(SystemInfo, system),
@@ -140,12 +140,12 @@ effectIt.effect('authenticates updater and release notes requests but never a cu
     );
     expect(version).toBe('4.7.3');
     expect(notes.map(note => note.version)).toEqual(['4.7.3']);
-    expect(transferredVersion).toBe('4.7.3');
+    expect(legacyVersion).toBe('4.7.3');
     expect(customVersion).toBe('4.7.3');
     expect(requests).toEqual([
       {authorization: 'Bearer fixture-token', url: GITHUB_RELEASES_URL},
       {authorization: 'Bearer fixture-token', url: GITHUB_RELEASES_URL},
-      {authorization: 'Bearer fixture-token', url: TRANSFERRED_GITHUB_RELEASES_URL},
+      {authorization: 'Bearer fixture-token', url: LEGACY_GITHUB_RELEASES_URL},
       {authorization: undefined, url: 'https://mirror.example/releases'},
     ]);
   }).pipe(provideTestLayer(TestSystemInfoLayer)),

@@ -162,7 +162,7 @@ a maintenance window before setting the enable variable:
    use the private `stacks-<numeric Stack ID>` form and must not be printed.
 7. Keep the repository ruleset, CODEOWNERS rules, signed/linear history, and
    code-owner review active. The deploy job also requires the exact repository
-   identity `Kashkovsky/threadnote`. This workflow uses only GitHub
+   identity `threadnote/threadnote`. This workflow uses only GitHub
    `contents: read`; it has no GitHub write credential.
 8. After this code has been on `main` long enough to provide a historical
    canonical baseline, set repository variable

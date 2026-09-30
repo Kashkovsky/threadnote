@@ -440,7 +440,7 @@ export const docsSections: DocsSection[] = [
           {
             type: 'code',
             language: 'sh',
-            code: `curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+            code: `curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh
 threadnote doctor`,
           },
           {
@@ -458,7 +458,7 @@ threadnote doctor`,
           {
             type: 'code',
             language: 'sh',
-            code: 'curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh -s -- --beta',
+            code: 'curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh -s -- --beta',
           },
           {
             type: 'warning',

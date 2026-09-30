@@ -1,4 +1,4 @@
-module github.com/Kashkovsky/threadnote/infra/telemetry-gateway
+module github.com/threadnote/threadnote/infra/telemetry-gateway
 
 go 1.25.0
 
