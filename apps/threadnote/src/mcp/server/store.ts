@@ -55,11 +55,15 @@ export function registerStoreTool(
   description: string,
   memoryScope?: CursorCloudMemoryScope,
 ): void {
+  const handoffDescription =
+    name === 'remember_context'
+      ? ' Handoff card: task; decisions/invariants; verification; blockers/risks; next_step. Skip Knowledge Delta review.'
+      : '';
   server.registerTool(
     name,
     {
       annotations: {readOnlyHint: false, destructiveHint: true},
-      description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
+      description: `${description}${handoffDescription} Never store secrets, credentials, customer data, or raw logs.`,
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd'),
         codeRefs: McpInput.stringOrStrings(

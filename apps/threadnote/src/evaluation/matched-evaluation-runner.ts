@@ -37,6 +37,53 @@ export interface MatchedEvaluationProviderTokensV1 {
   readonly totalTokens: number;
 }
 
+export interface MatchedEvaluationTokenAccountingV1 {
+  readonly cacheWriteTokens: number | null;
+  readonly cachedInputTokens: number;
+  readonly newTokens: number | null;
+  readonly outputTokens: number;
+  readonly processedTokens: number | null;
+  readonly rawInputTokens: number;
+  readonly reasoningOutputTokens: number;
+  readonly totalTokens: number;
+  readonly uncachedInputTokens: number;
+}
+
+export interface MatchedEvaluationAttributionV1 {
+  readonly completedItemBytes: {
+    readonly agentMessage: number;
+    readonly commandExecution: number;
+    readonly fileChange: number;
+    readonly mcpToolCall: number;
+    readonly other: number;
+    readonly reasoning: number;
+  };
+  readonly firstSufficientEvidenceMilliseconds: number | null;
+  readonly graphRequests: readonly {
+    readonly budgetTokens: number | null;
+    readonly edgeLimit: number | null;
+    readonly nodeLimit: number | null;
+    readonly operation: string | null;
+  }[];
+  readonly lastTwoModelCallTokens: MatchedEvaluationTokenAccountingV1;
+  readonly modelCallCount: number;
+  readonly modelCalls: readonly MatchedEvaluationTokenAccountingV1[];
+  readonly modelVisibleBytes: {
+    readonly completedItemBytes: number;
+    readonly promptBytes: number;
+    readonly totalBytes: number;
+  };
+  readonly repeatedToolCalls: {
+    readonly commandExecution: number;
+    readonly contextBrief: number;
+    readonly fileChange: number;
+    readonly inspectCodeGraph: number;
+    readonly readContext: number;
+    readonly recallContext: number;
+  };
+  readonly tokens: MatchedEvaluationTokenAccountingV1;
+}
+
 export interface MatchedEvaluationContextVerificationV1 {
   readonly graphReady: true;
   readonly graphSnapshotHash: string;
@@ -87,6 +134,8 @@ export interface MatchedEvaluationMetricsV1 {
     readonly preparationMilliseconds: number;
   };
   readonly usage: {
+    /** Derived, privacy-safe event accounting. Omitted by sealed v5 pilot outcomes. */
+    readonly attribution?: MatchedEvaluationAttributionV1;
     readonly modelVisibleBytes: number;
     readonly modelVisibleTokens: number;
     /** Provider-reported task-window usage. Required for token-efficiency claims. */
@@ -667,7 +716,14 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
   const usage = object(metrics.usage, 'usage metrics');
   exactKeys(
     usage,
-    ['modelVisibleBytes', 'modelVisibleTokens', 'providerTokens', 'redundantFileReads', 'toolTurns'],
+    [
+      ...(usage.attribution === undefined ? [] : ['attribution']),
+      'modelVisibleBytes',
+      'modelVisibleTokens',
+      'providerTokens',
+      'redundantFileReads',
+      'toolTurns',
+    ],
     'usage metrics',
   );
   const validity = object(metrics.validity, 'validity metrics');
@@ -685,6 +741,25 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
   }
   if (verification === null && deterministicVerifierMilliseconds !== 0) {
     invalid('deterministic verifier time must be zero when verification is absent');
+  }
+  const modelVisibleBytes = nonNegativeInteger(usage.modelVisibleBytes, 'model-visible bytes');
+  const providerTokens = usage.providerTokens === null ? null : parseProviderTokens(usage.providerTokens);
+  const attribution = usage.attribution === undefined ? undefined : parseAttribution(usage.attribution);
+  if (attribution !== undefined && attribution.modelVisibleBytes.totalBytes !== modelVisibleBytes) {
+    invalid('attribution model-visible bytes differ from usage model-visible bytes');
+  }
+  if (attribution !== undefined && providerTokens !== null) {
+    assertReconciledAttributionTokens(
+      attribution.tokens,
+      {
+        cachedInputTokens: providerTokens.cachedInputTokens,
+        outputTokens: providerTokens.outputTokens,
+        rawInputTokens: providerTokens.inputTokens,
+        reasoningOutputTokens: providerTokens.reasoningOutputTokens,
+        totalTokens: providerTokens.totalTokens,
+      },
+      'provider token usage',
+    );
   }
   return {
     auditability: {citations: auditability.total, resolvableCitations: auditability.subset},
@@ -714,14 +789,221 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
       preparationMilliseconds,
     },
     usage: {
-      modelVisibleBytes: nonNegativeInteger(usage.modelVisibleBytes, 'model-visible bytes'),
+      ...(attribution === undefined ? {} : {attribution}),
+      modelVisibleBytes,
       modelVisibleTokens: nonNegativeInteger(usage.modelVisibleTokens, 'model-visible tokens'),
-      providerTokens: usage.providerTokens === null ? null : parseProviderTokens(usage.providerTokens),
+      providerTokens,
       redundantFileReads: nonNegativeInteger(usage.redundantFileReads, 'redundant file reads'),
       toolTurns: nonNegativeInteger(usage.toolTurns, 'tool turns'),
     },
     validity: {failureCount, valid: validity.valid},
     verification,
+  };
+}
+
+function parseAttribution(value: unknown): MatchedEvaluationAttributionV1 {
+  const attribution = object(value, 'usage attribution');
+  exactKeys(
+    attribution,
+    [
+      'completedItemBytes',
+      'firstSufficientEvidenceMilliseconds',
+      'graphRequests',
+      'lastTwoModelCallTokens',
+      'modelCallCount',
+      'modelCalls',
+      'modelVisibleBytes',
+      'repeatedToolCalls',
+      'tokens',
+    ],
+    'usage attribution',
+  );
+  const completedItemBytes = object(attribution.completedItemBytes, 'completed item bytes');
+  exactKeys(
+    completedItemBytes,
+    ['agentMessage', 'commandExecution', 'fileChange', 'mcpToolCall', 'other', 'reasoning'],
+    'completed item bytes',
+  );
+  const repeatedToolCalls = object(attribution.repeatedToolCalls, 'repeated tool calls');
+  exactKeys(
+    repeatedToolCalls,
+    ['commandExecution', 'contextBrief', 'fileChange', 'inspectCodeGraph', 'readContext', 'recallContext'],
+    'repeated tool calls',
+  );
+  const modelCalls = array(attribution.modelCalls, 'attribution model calls').map((call, index) =>
+    parseAttributionTokens(call, `attribution model call ${index}`),
+  );
+  const modelCallCount = nonNegativeInteger(attribution.modelCallCount, 'model call count');
+  if (modelCalls.length !== modelCallCount) invalid('attribution model call count differs from deltas');
+  const lastTwoModelCallTokens = parseAttributionTokens(
+    attribution.lastTwoModelCallTokens,
+    'last two model call tokens',
+  );
+  if (!sameTokenAccounting(lastTwoModelCallTokens, sumTokenAccounting(modelCalls.slice(-2)))) {
+    invalid('last two model call tokens differ from model call deltas');
+  }
+  const tokens = parseAttributionTokens(attribution.tokens, 'attribution tokens');
+  assertReconciledAttributionTokens(tokens, sumTokenAccounting(modelCalls), 'model call deltas');
+  const modelVisibleBytes = object(attribution.modelVisibleBytes, 'attribution model-visible bytes');
+  exactKeys(modelVisibleBytes, ['completedItemBytes', 'promptBytes', 'totalBytes'], 'attribution model-visible bytes');
+  const completedItemByteTotal = Object.values(completedItemBytes).reduce<number>(
+    (total, bytes) => total + nonNegativeInteger(bytes, 'completed item byte count'),
+    0,
+  );
+  const parsedModelVisibleBytes = {
+    completedItemBytes: nonNegativeInteger(modelVisibleBytes.completedItemBytes, 'completed item byte total'),
+    promptBytes: nonNegativeInteger(modelVisibleBytes.promptBytes, 'prompt bytes'),
+    totalBytes: nonNegativeInteger(modelVisibleBytes.totalBytes, 'attribution model-visible byte total'),
+  };
+  if (
+    parsedModelVisibleBytes.completedItemBytes !== completedItemByteTotal ||
+    parsedModelVisibleBytes.totalBytes !== parsedModelVisibleBytes.promptBytes + completedItemByteTotal
+  ) {
+    invalid('attribution model-visible bytes do not reconcile');
+  }
+  return {
+    completedItemBytes: {
+      agentMessage: nonNegativeInteger(completedItemBytes.agentMessage, 'agent message bytes'),
+      commandExecution: nonNegativeInteger(completedItemBytes.commandExecution, 'command bytes'),
+      fileChange: nonNegativeInteger(completedItemBytes.fileChange, 'file change bytes'),
+      mcpToolCall: nonNegativeInteger(completedItemBytes.mcpToolCall, 'MCP bytes'),
+      other: nonNegativeInteger(completedItemBytes.other, 'other completed item bytes'),
+      reasoning: nonNegativeInteger(completedItemBytes.reasoning, 'reasoning bytes'),
+    },
+    firstSufficientEvidenceMilliseconds:
+      attribution.firstSufficientEvidenceMilliseconds === null
+        ? null
+        : nonNegativeInteger(attribution.firstSufficientEvidenceMilliseconds, 'attribution sufficient evidence time'),
+    graphRequests: array(attribution.graphRequests, 'graph request receipts').map((request, index) =>
+      parseGraphRequestReceipt(request, index),
+    ),
+    lastTwoModelCallTokens,
+    modelCallCount,
+    modelCalls,
+    modelVisibleBytes: parsedModelVisibleBytes,
+    repeatedToolCalls: {
+      commandExecution: nonNegativeInteger(repeatedToolCalls.commandExecution, 'repeated command calls'),
+      contextBrief: nonNegativeInteger(repeatedToolCalls.contextBrief, 'repeated context brief calls'),
+      fileChange: nonNegativeInteger(repeatedToolCalls.fileChange, 'repeated file changes'),
+      inspectCodeGraph: nonNegativeInteger(repeatedToolCalls.inspectCodeGraph, 'repeated graph calls'),
+      readContext: nonNegativeInteger(repeatedToolCalls.readContext, 'repeated context reads'),
+      recallContext: nonNegativeInteger(repeatedToolCalls.recallContext, 'repeated context recalls'),
+    },
+    tokens,
+  };
+}
+
+function parseGraphRequestReceipt(
+  value: unknown,
+  index: number,
+): MatchedEvaluationAttributionV1['graphRequests'][number] {
+  const receipt = object(value, `graph request receipt ${index}`);
+  exactKeys(receipt, ['budgetTokens', 'edgeLimit', 'nodeLimit', 'operation'], `graph request receipt ${index}`);
+  return {
+    budgetTokens: nullableNonNegativeInteger(receipt.budgetTokens, `graph request ${index} budget`),
+    edgeLimit: nullableNonNegativeInteger(receipt.edgeLimit, `graph request ${index} edge limit`),
+    nodeLimit: nullableNonNegativeInteger(receipt.nodeLimit, `graph request ${index} node limit`),
+    operation:
+      receipt.operation === null ? null : boundedString(receipt.operation, 1, 64, `graph request ${index} operation`),
+  };
+}
+
+function parseAttributionTokens(value: unknown, label: string): MatchedEvaluationTokenAccountingV1 {
+  const tokens = object(value, label);
+  exactKeys(
+    tokens,
+    [
+      'cacheWriteTokens',
+      'cachedInputTokens',
+      'newTokens',
+      'outputTokens',
+      'processedTokens',
+      'rawInputTokens',
+      'reasoningOutputTokens',
+      'totalTokens',
+      'uncachedInputTokens',
+    ],
+    label,
+  );
+  const parsed = {
+    cacheWriteTokens: nullableNonNegativeInteger(tokens.cacheWriteTokens, `${label} cache write tokens`),
+    cachedInputTokens: nonNegativeInteger(tokens.cachedInputTokens, `${label} cached input tokens`),
+    newTokens: nullableNonNegativeInteger(tokens.newTokens, `${label} new tokens`),
+    outputTokens: nonNegativeInteger(tokens.outputTokens, `${label} output tokens`),
+    processedTokens: nullableNonNegativeInteger(tokens.processedTokens, `${label} processed tokens`),
+    rawInputTokens: nonNegativeInteger(tokens.rawInputTokens, `${label} raw input tokens`),
+    reasoningOutputTokens: nonNegativeInteger(tokens.reasoningOutputTokens, `${label} reasoning output tokens`),
+    totalTokens: nonNegativeInteger(tokens.totalTokens, `${label} total tokens`),
+    uncachedInputTokens: nonNegativeInteger(tokens.uncachedInputTokens, `${label} uncached input tokens`),
+  };
+  if (
+    parsed.cachedInputTokens > parsed.rawInputTokens ||
+    parsed.reasoningOutputTokens > parsed.outputTokens ||
+    parsed.uncachedInputTokens !== parsed.rawInputTokens - parsed.cachedInputTokens ||
+    parsed.totalTokens !== parsed.rawInputTokens + parsed.outputTokens ||
+    (parsed.cacheWriteTokens === null && (parsed.newTokens !== null || parsed.processedTokens !== null)) ||
+    (parsed.cacheWriteTokens !== null &&
+      (parsed.newTokens !== parsed.uncachedInputTokens + parsed.cacheWriteTokens + parsed.outputTokens ||
+        parsed.processedTokens !== parsed.newTokens + parsed.cachedInputTokens))
+  ) {
+    invalid(`${label} components are inconsistent`);
+  }
+  return parsed;
+}
+
+function sameTokenAccounting(
+  left: MatchedEvaluationTokenAccountingV1,
+  right: MatchedEvaluationTokenAccountingV1,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+type ReconciledTokenAccounting = Pick<
+  MatchedEvaluationTokenAccountingV1,
+  'cachedInputTokens' | 'outputTokens' | 'rawInputTokens' | 'reasoningOutputTokens' | 'totalTokens'
+>;
+
+const RECONCILED_TOKEN_FIELDS = [
+  ['rawInputTokens', 'raw input tokens'],
+  ['cachedInputTokens', 'cached input tokens'],
+  ['outputTokens', 'output tokens'],
+  ['reasoningOutputTokens', 'reasoning output tokens'],
+  ['totalTokens', 'total tokens'],
+] as const satisfies readonly (readonly [keyof ReconciledTokenAccounting, string])[];
+
+function assertReconciledAttributionTokens(
+  actual: ReconciledTokenAccounting,
+  expected: ReconciledTokenAccounting,
+  source: string,
+): void {
+  const mismatches = RECONCILED_TOKEN_FIELDS.flatMap(([field, label]) =>
+    actual[field] === expected[field] ? [] : [label],
+  );
+  if (mismatches.length > 0) invalid(`attribution tokens differ from ${source}: ${mismatches.join(', ')}`);
+}
+
+function sumTokenAccounting(values: readonly MatchedEvaluationTokenAccountingV1[]): MatchedEvaluationTokenAccountingV1 {
+  const sum = (
+    key: keyof Omit<MatchedEvaluationTokenAccountingV1, 'cacheWriteTokens' | 'newTokens' | 'processedTokens'>,
+  ) => values.reduce((total, value) => total + value[key], 0);
+  const cacheWriteTokens = values.every(value => value.cacheWriteTokens !== null)
+    ? values.reduce((total, value) => total + (value.cacheWriteTokens ?? 0), 0)
+    : null;
+  const rawInputTokens = sum('rawInputTokens');
+  const cachedInputTokens = sum('cachedInputTokens');
+  const outputTokens = sum('outputTokens');
+  const uncachedInputTokens = rawInputTokens - cachedInputTokens;
+  const newTokens = cacheWriteTokens === null ? null : uncachedInputTokens + cacheWriteTokens + outputTokens;
+  return {
+    cacheWriteTokens,
+    cachedInputTokens,
+    newTokens,
+    outputTokens,
+    processedTokens: newTokens === null ? null : newTokens + cachedInputTokens,
+    rawInputTokens,
+    reasoningOutputTokens: sum('reasoningOutputTokens'),
+    totalTokens: sum('totalTokens'),
+    uncachedInputTokens,
   };
 }
 
@@ -813,6 +1095,11 @@ function object(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function array(value: unknown, label: string): readonly unknown[] {
+  if (!Array.isArray(value)) invalid(`${label} must be an array`);
+  return value;
+}
+
 function exactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
@@ -838,6 +1125,10 @@ function nonNegativeInteger(value: unknown, label: string): number {
     invalid(`${label} must be a non-negative integer`);
   }
   return value;
+}
+
+function nullableNonNegativeInteger(value: unknown, label: string): number | null {
+  return value === null ? null : nonNegativeInteger(value, label);
 }
 
 function literal<const Values extends readonly string[]>(

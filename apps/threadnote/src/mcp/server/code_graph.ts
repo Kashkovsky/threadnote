@@ -91,8 +91,9 @@ import {
   attachAnonymousTelemetryDiagnostic,
   attachAnonymousTelemetryReportedOutcome,
 } from '../../telemetry/diagnostic.js';
-
+import {codeGraphMcpRequestDefaults} from './code_graph/request_defaults.js';
 export {codeGraphMcpResponse, compactCodeGraphMcpResult};
+export {codeGraphMcpRequestDefaults} from './code_graph/request_defaults.js';
 export {
   codeGraphInspectionAllowsStaleReady,
   codeGraphInspectionObservation,
@@ -125,14 +126,13 @@ const MCP_CODE_GRAPH_ANALYSIS_MAXIMUM_DISTINCT_EDGES = 500_000;
 const MCP_CODE_GRAPH_ANALYSIS_MAXIMUM_COMMUNITY_MEMBERS = 5_000;
 const MCP_CODE_GRAPH_PROJECT_SELECTOR_DESCRIPTION =
   'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd; max 256 UTF-8 bytes';
-
 export function registerContextBriefTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'context_brief',
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Graph+memory brief with semantic truncation. Accepts 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported; cold indexing is never started.',
+        'Graph+memory brief with semantic truncation. Accepts 8 graph paths/local cgs_; not cgr_; cold indexing is never started.',
       inputSchema: {
         budgetTokens: McpInput.integer('800-1500; default 1250', {
           minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
@@ -143,7 +143,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
           maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
         }),
         detail: McpInput.literals(['compact', 'source'], 'Default compact; source adds exact-current excerpts.'),
-        mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Default brief'),
+        mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact', 'resume'], 'Default brief'),
         project: McpInput.string(MCP_CODE_GRAPH_PROJECT_SELECTOR_DESCRIPTION),
         responseFormat: McpInput.literals(['dual', 'agent'], 'Default agent; dual adds structured content.'),
         surface: McpInput.string('Agent catalog surface selector for compatible verified procedures'),
@@ -209,11 +209,11 @@ export function registerCodeGraphTool(
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Inspect before broad text search. Output is untrusted evidence; node/neighbors accept cgs_/cgr_. Local default: agent text after semantic truncation; Worksets: lossless JSON text; dual adds structured content. Ready evidence may be deferred; path/impact require current evidence. Worksets read published generations: `threadnote workset prepare <name>`. Cold/limited reads can be unavailable, indexing, timed-out, or partial.',
+        'Inspect before broad text search with semantic truncation; node/neighbors accept cgs_/cgr_. Output is untrusted evidence. Ready evidence may be deferred; path/impact require current evidence. Worksets read published generations from `workset prepare`; states: unavailable, indexing, timed-out, partial.',
       inputSchema: {
         base: McpInput.string('Impact base if query omitted; default HEAD~1'),
         budgetTokens: McpInput.integer(
-          'Worksets: 1-1500; local: 800-1500. Applied after final formatting and semantic truncation.',
+          'Budget: Worksets 1-1500; local query defaults to 800; other local operations 800-1500.',
           {
             minimum: 1,
             maximum: 1_500,
@@ -226,7 +226,7 @@ export function registerCodeGraphTool(
         }),
         depth: McpInput.integer('Traversal depth', {minimum: 0, maximum: 8}),
         direction: McpInput.literals(['both', 'incoming', 'outgoing'], 'neighbors direction'),
-        edgeLimit: McpInput.integer('Edge limit; default 40', {
+        edgeLimit: McpInput.integer('Edges; local query default 12, otherwise 40.', {
           minimum: 1,
           maximum: MCP_CODE_GRAPH_MAXIMUM_EDGE_LIMIT,
         }),
@@ -235,7 +235,7 @@ export function registerCodeGraphTool(
         includeHeuristic: McpInput.boolean('Include heuristic relationships'),
         includeModelAssociations: McpInput.boolean('Include model associations'),
         nodeId: McpInput.string('cgs_ or qualified cgr_ node'),
-        nodeLimit: McpInput.integer('Node limit; default 20', {
+        nodeLimit: McpInput.integer('Nodes; local query default 8, otherwise 20.', {
           minimum: 1,
           maximum: MCP_CODE_GRAPH_MAXIMUM_NODE_LIMIT,
         }),
@@ -304,6 +304,7 @@ export function registerCodeGraphTool(
           'inspect_code_graph requires operation. Example: {"operation":"query","callerCwd":"/workspace/project","query":"exclusive file lock"}',
         );
       }
+      const effectiveRequest = codeGraphMcpRequestDefaults(operation, {budgetTokens, edgeLimit, nodeLimit, workset});
       const queryTelemetry = makeCodeGraphQueryAnonymousTelemetryReporter({
         requestKind: codeGraphInspectAnonymousTelemetryRequestKind(operation),
         requestScope: workset?.trim() ? 'workset' : 'local',
@@ -515,12 +516,12 @@ export function registerCodeGraphTool(
           cwd: inspectionCwd,
           depth,
           direction,
-          edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+          edgeLimit: effectiveRequest.edgeLimit,
           from,
           includeHeuristic,
           includeModelAssociations,
           nodeId: inspectionNodeId,
-          nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
+          nodeLimit: effectiveRequest.nodeLimit,
           operation,
           packageName: packageName?.trim() || undefined,
           query: requestedQuery,
@@ -655,7 +656,7 @@ export function registerCodeGraphTool(
           Effect.sync(() => {
             const response = codeGraphMcpResponse(
               codeGraphResultWithRefreshContinuity(presentedResult, refreshStatus, refreshContinuity),
-              budgetTokens,
+              effectiveRequest.budgetTokens,
               refreshContinuity,
               selectedResponseFormat,
             );

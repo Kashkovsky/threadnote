@@ -37,6 +37,7 @@ import {
   CONTEXT_BRIEF_DETAILS,
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
+  CONTEXT_BRIEF_MODES,
 } from '@threadnote/context/types';
 
 export function makeCompactCommand<E, R>(
@@ -107,7 +108,7 @@ export function makeContextBriefCommand<E, R>(
         'compact',
       ),
       json: boolean('json', 'Print the structured Context Brief projection'),
-      mode: defaultChoice('mode', ['brief', 'locate', 'explain', 'trace', 'impact'], 'Evidence-planning mode', 'brief'),
+      mode: defaultChoice('mode', CONTEXT_BRIEF_MODES, 'Evidence-planning mode', 'brief'),
       project: optionalString('project', 'Optional memory project scope, at most 256 UTF-8 bytes'),
       surface: optionalString('surface', 'Agent catalog surface selector used for compatible procedure admission'),
       task: requiredString('task', 'Engineering task or question, 1-4096 UTF-8 bytes without control characters'),

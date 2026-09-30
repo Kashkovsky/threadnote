@@ -8,12 +8,27 @@ import type {
   ContextBriefFreshness,
   ContextBriefMemoryCandidateV1,
   ContextBriefMemoryActionCardV1,
+  ContextBriefContinuationCardV1,
   ContextBriefMemoryRetrievalV1,
   ContextBriefPreciseEvidenceStatus,
   ContextBriefSnapshotV1,
 } from './types.js';
 
 const MEMORY_EXCERPT_BYTES = 240;
+const CONTINUATION_FIELD_BYTES = {
+  blockers: 128,
+  decisions: 256,
+  invariants: 192,
+  nextStep: 160,
+  rationale: 192,
+  risks: 128,
+  task: 192,
+  verification: 160,
+} as const;
+
+const CONTINUATION_ELLIPSIS = '…';
+
+const CONTINUATION_ELLIPSIS_BYTES = 3;
 
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 
@@ -90,22 +105,15 @@ export function classifyMemoryFreshness(
 /** Only explicit single-line sections are promoted; arbitrary memory prose stays in the full read. */
 export function parseMemoryActionCard(body: string): ContextBriefMemoryActionCardV1 | undefined {
   const fields = new Map<string, string>();
-  let fence: {readonly marker: string; readonly length: number} | undefined;
+  let fence: MarkdownFence | undefined;
   for (const line of body.split(/\r?\n/gu).slice(0, 80)) {
-    const fenceLine = /^ {0,3}(?:(?:>|[-+*]|\d+[.)])[ \t]+)*(`{3,}|~{3,})(.*)$/u.exec(line);
+    const fenceLine = parseMarkdownFenceLine(line);
     if (fence !== undefined) {
-      if (
-        fenceLine !== null &&
-        fenceLine[1][0] === fence.marker &&
-        fenceLine[1].length >= fence.length &&
-        fenceLine[2].trim() === ''
-      ) {
-        fence = undefined;
-      }
+      if (fenceLine !== undefined && closesMarkdownFence(fence, fenceLine)) fence = undefined;
       continue;
     }
-    if (fenceLine !== null && (fenceLine[1][0] === '~' || !fenceLine[2].includes('`'))) {
-      fence = {marker: fenceLine[1][0], length: fenceLine[1].length};
+    if (fenceLine !== undefined && opensMarkdownFence(fenceLine)) {
+      fence = {marker: fenceLine.marker, length: fenceLine.length};
       continue;
     }
     const match = /^\s{0,3}(?:#{1,3}\s*)?(Applies to|Invariant|Avoid|Verify):\s*(.+?)\s*$/iu.exec(line);
@@ -337,8 +345,11 @@ export function contextBriefMemoryCandidate(
   const citationIds = new Set((record.metadata.codeCitations ?? []).map(citation => citation.id));
   const currentCodeLinkMatches = codeLinkMatches?.filter(match => citationIds.has(match.citationId));
   const actionCard = record.metadata.kind === 'durable' ? parseMemoryActionCard(record.body) : undefined;
+  const continuationCard =
+    record.metadata.kind === 'handoff' ? parseContextBriefContinuationCard(record.body) : undefined;
   return {
     ...(actionCard === undefined ? {} : {actionCard}),
+    ...(continuationCard === undefined ? {} : {continuationCard}),
     ...(record.metadata.authority === undefined ? {} : {authority: record.metadata.authority}),
     citationErrorCount: record.metadata.citationErrors?.length ?? 0,
     codeCitations: record.metadata.codeCitations ?? [],
@@ -346,7 +357,9 @@ export function contextBriefMemoryCandidate(
       ? {}
       : {codeLinkMatches: currentCodeLinkMatches}),
     excerpt:
-      record.metadata.kind === 'handoff' ? handoffEvidenceExcerpt(record.body) : memoryEvidenceExcerpt(record.body),
+      record.metadata.kind === 'handoff'
+        ? handoffEvidenceExcerpt(record.body, continuationCard)
+        : memoryEvidenceExcerpt(record.body),
     kind: record.metadata.kind,
     ...(memoryIdentityResolvable && record.metadata.memoryId !== undefined && isMemoryId(record.metadata.memoryId)
       ? {memoryId: record.metadata.memoryId}
@@ -372,32 +385,155 @@ export function memoryEvidenceExcerpt(body: string): string {
   return utf8Prefix(evidence, MEMORY_EXCERPT_BYTES);
 }
 
-/** Select only explicit handoff task/blocker/next-step fields; local paths and raw diffs stay out of the brief. */
-export function handoffEvidenceExcerpt(body: string): string {
-  const sections = [
-    labeledHandoffSection(body, 'task'),
-    labeledHandoffSection(body, 'blockers'),
-    labeledHandoffSection(body, 'next_step'),
-  ].filter((section): section is string => section !== undefined);
-  return sections.length > 0 ? utf8Prefix(sections.join(' '), MEMORY_EXCERPT_BYTES) : memoryEvidenceExcerpt(body);
+/** Select only explicit handoff workflow fields; local paths and raw diffs stay out of the brief. */
+export function handoffEvidenceExcerpt(
+  body: string,
+  parsedCard: ContextBriefContinuationCardV1 | undefined = parseContextBriefContinuationCard(body),
+): string {
+  const card = parsedCard;
+  if (card === undefined) return memoryEvidenceExcerpt(body);
+  return utf8Prefix(
+    [
+      card.task === undefined ? undefined : `task: ${card.task}`,
+      card.decisions === undefined ? undefined : `decisions: ${card.decisions}`,
+      card.invariants === undefined ? undefined : `invariants: ${card.invariants}`,
+      card.rationale === undefined ? undefined : `rationale: ${card.rationale}`,
+      card.verification === undefined ? undefined : `verification: ${card.verification}`,
+      card.blockers === undefined ? undefined : `blockers: ${card.blockers}`,
+      card.risks === undefined ? undefined : `risks: ${card.risks}`,
+      card.nextStep === undefined ? undefined : `next_step: ${card.nextStep}`,
+    ]
+      .filter((value): value is string => value !== undefined)
+      .join(' '),
+    MEMORY_EXCERPT_BYTES,
+  );
 }
 
-function labeledHandoffSection(body: string, label: 'blockers' | 'next_step' | 'task'): string | undefined {
-  const lines = body.split(/\r?\n/gu);
-  const index = lines.findIndex(line => line.trimStart().startsWith(`${label}:`));
-  if (index < 0) return undefined;
-  const first = lines[index]
-    .trim()
-    .slice(label.length + 1)
-    .trim();
-  const values = first ? [first] : [];
-  for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-    const line = lines[cursor].trim();
-    if (!line) break;
-    values.push(line.replace(/^[-*+]\s+/u, '').trim());
+/** Deterministic Markdown projection; fenced code is evidence-free and aliases collapse into stable fields. */
+export function parseContextBriefContinuationCard(body: string): ContextBriefContinuationCardV1 | undefined {
+  const values = new Map<keyof ContextBriefContinuationCardV1, CappedContinuationValue>();
+  let fence: MarkdownFence | undefined;
+  let current: keyof ContextBriefContinuationCardV1 | undefined;
+  for (const rawLine of body.split(/\r?\n/gu)) {
+    const fenceLine = parseMarkdownFenceLine(rawLine);
+    if (fence !== undefined) {
+      if (fenceLine !== undefined && closesMarkdownFence(fence, fenceLine)) fence = undefined;
+      continue;
+    }
+    if (fenceLine !== undefined && opensMarkdownFence(fenceLine)) {
+      fence = {marker: fenceLine.marker, length: fenceLine.length};
+      continue;
+    }
+    const match = rawLine.match(
+      /^\s{0,3}(?:#{1,6}\s*)?(task|decisions|constraints|invariants|rationale|verification|blockers|risks|next_step|next step)\s*:\s*(.*)$/iu,
+    );
+    if (match !== null) {
+      const key = continuationKey(match[1]);
+      current = key;
+      const value = compactContinuationText(match[2]);
+      if (value !== '') appendContinuationValue(values, key, value);
+      continue;
+    }
+    const value = compactContinuationText(rawLine.replace(/^\s*[-*+]\s+/u, ''));
+    if (current !== undefined && value !== '') appendContinuationValue(values, current, value);
   }
-  const value = values.filter(Boolean).join(' ');
-  return value ? `${label}: ${value}` : undefined;
+  const card = Object.fromEntries(
+    [...values.entries()]
+      .map(([key, value]) => [key, continuationValueText(value)])
+      .filter(([, value]) => value !== ''),
+  ) as ContextBriefContinuationCardV1;
+  return Object.keys(card).length === 0 ? undefined : card;
+}
+
+interface MarkdownFence {
+  readonly length: number;
+  readonly marker: string;
+}
+
+interface MarkdownFenceLine extends MarkdownFence {
+  readonly suffix: string;
+}
+
+interface CappedContinuationValue {
+  readonly byteLength: number;
+  readonly text: string;
+  readonly truncated: boolean;
+}
+
+/** Match CommonMark-style fences, including nested block quote and list prefixes. */
+function parseMarkdownFenceLine(line: string): MarkdownFenceLine | undefined {
+  const match = /^ {0,3}(?:(?:>|[-+*]|\d+[.)])[ \t]+)*(`{3,}|~{3,})(.*)$/u.exec(line);
+  return match === null ? undefined : {length: match[1].length, marker: match[1][0], suffix: match[2]};
+}
+
+function closesMarkdownFence(fence: MarkdownFence, line: MarkdownFenceLine): boolean {
+  return line.marker === fence.marker && line.length >= fence.length && line.suffix.trim() === '';
+}
+
+function opensMarkdownFence(line: MarkdownFenceLine): boolean {
+  return line.marker === '~' || !line.suffix.includes('`');
+}
+
+/** Keep continuation capture linear in input size while preserving the visible UTF-8 budget. */
+function appendContinuationValue(
+  values: Map<keyof ContextBriefContinuationCardV1, CappedContinuationValue>,
+  key: keyof ContextBriefContinuationCardV1,
+  value: string,
+): void {
+  const limit = CONTINUATION_FIELD_BYTES[key];
+  const current = values.get(key);
+  if (current?.truncated) return;
+  let text = current?.text ?? '';
+  let byteLength = current?.byteLength ?? 0;
+  for (const character of `${text === '' ? '' : ' '}${value}`) {
+    const characterBytes = utf8CharacterBytes(character);
+    if (byteLength + characterBytes > limit) {
+      const truncated = utf8PrefixWithoutEllipsis(text, limit - CONTINUATION_ELLIPSIS_BYTES);
+      values.set(key, {
+        byteLength: utf8ByteLength(truncated),
+        text: truncated,
+        truncated: true,
+      });
+      return;
+    }
+    text += character;
+    byteLength += characterBytes;
+  }
+  values.set(key, {byteLength, text, truncated: false});
+}
+
+function continuationValueText(value: CappedContinuationValue): string {
+  return value.truncated ? `${value.text}${CONTINUATION_ELLIPSIS}` : value.text;
+}
+
+function utf8CharacterBytes(character: string): number {
+  const code = character.codePointAt(0) ?? 0;
+  return code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
+}
+
+function utf8ByteLength(value: string): number {
+  let byteLength = 0;
+  for (const character of value) byteLength += utf8CharacterBytes(character);
+  return byteLength;
+}
+
+function continuationKey(value: string): keyof ContextBriefContinuationCardV1 {
+  switch (value.toLowerCase().replace(/\s+/gu, '_')) {
+    case 'constraints':
+    case 'invariants':
+      return 'invariants';
+    case 'next_step':
+      return 'nextStep';
+    default:
+      return value.toLowerCase() as Exclude<keyof ContextBriefContinuationCardV1, 'invariants' | 'nextStep'>;
+  }
+}
+
+function compactContinuationText(value: string): string {
+  return value
+    .replace(/(?:^|\s)(?:\/[\w.~-]+){2,}/gu, ' [path omitted]')
+    .replace(/\s+/gu, ' ')
+    .trim();
 }
 
 function parsePreciseEvidence(value: ContextBriefPreciseCodeEvidenceV1): ContextBriefPreciseCodeEvidenceV1 {
@@ -451,14 +587,19 @@ function boundedSourceCommit(value: string | undefined): string | undefined {
 
 function utf8Prefix(value: string, maximumBytes: number): string {
   if (new TextEncoder().encode(value).byteLength <= maximumBytes) return value;
-  const suffix = '…';
+  return `${utf8PrefixWithoutEllipsis(value, maximumBytes - CONTINUATION_ELLIPSIS_BYTES)}${CONTINUATION_ELLIPSIS}`;
+}
+
+function utf8PrefixWithoutEllipsis(value: string, maximumBytes: number): string {
   let output = '';
+  let byteLength = 0;
   for (const character of value) {
-    const candidate = `${output}${character}${suffix}`;
-    if (new TextEncoder().encode(candidate).byteLength > maximumBytes) break;
+    const characterBytes = utf8CharacterBytes(character);
+    if (byteLength + characterBytes > maximumBytes) break;
     output += character;
+    byteLength += characterBytes;
   }
-  return `${output}${suffix}`;
+  return output;
 }
 
 export function stableUnique(values: readonly string[]): readonly string[] {

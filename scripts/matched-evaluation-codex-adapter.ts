@@ -238,6 +238,10 @@ export interface ProviderTokens {
   readonly totalTokens: number;
 }
 
+interface CumulativeProviderTokens extends ProviderTokens {
+  readonly cacheWriteTokens: number | null;
+}
+
 interface JudgeResult {
   readonly authorizationLeaks: number;
   readonly citations: readonly {readonly endLine: number; readonly path: string; readonly startLine: number}[];
@@ -308,6 +312,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       taskBudget: config.taskBudget,
       timeoutMilliseconds: 60 * 60_000,
     });
+    const attribution = analyzeMatchedEvaluationAttributionV1(agentTurn.events, Buffer.byteLength(agentPrompt));
     const patch = await capturePatch(config, repositoryRoot);
     const agentResult = agentTurn.final ?? {
       citations: [],
@@ -416,7 +421,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       agentTaskMilliseconds: agentFinishedAt - preparationFinishedAt,
       deterministicVerifierMilliseconds: verifierFinishedAt - verifierStartedAt,
       endToEndMilliseconds: judgeFinishedAt - lifecycleStartedAt,
-      firstSufficientEvidenceMilliseconds: null,
+      firstSufficientEvidenceMilliseconds: attribution.firstSufficientEvidenceMilliseconds,
       judgeSetupMilliseconds: judgeSetupFinishedAt - verifierFinishedAt,
       judgeTurnMilliseconds: judgeFinishedAt - judgeSetupFinishedAt,
       preparationMilliseconds: preparationFinishedAt - lifecycleStartedAt,
@@ -460,6 +465,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
         sourceSupport: {requiredClaims: requiredEvidenceIds.size, supportedClaims: supportedEvidence},
         timing,
         usage: {
+          attribution,
           modelVisibleBytes: modelVisibleBytes(agentPrompt, agentTurn.events),
           modelVisibleTokens: agentTurn.usage.inputTokens,
           providerTokens: agentTurn.usage,
@@ -858,14 +864,265 @@ function contained(parent: string, child: string): boolean {
 }
 
 export function extractMatchedEvaluationProviderUsageV1(events: readonly Record<string, unknown>[]): ProviderTokens {
-  const usage = events.filter(event => event.method === 'thread/tokenUsage/updated');
-  if (usage.length === 0) throw new Error('Completed Codex turn did not report provider usage.');
-  let previous: ProviderTokens | null = null;
-  for (const event of usage) {
+  const total = cumulativeProviderUsage(events).at(-1);
+  if (total === undefined) throw new Error('Completed Codex turn did not report provider usage.');
+  const {cacheWriteTokens: _cacheWriteTokens, ...usage} = total;
+  return usage;
+}
+
+/** Counts only safe metadata from retained app-server events; event bodies never leave the local transcript. */
+export function analyzeMatchedEvaluationAttributionV1(events: readonly Record<string, unknown>[], promptBytes = 0) {
+  const updates = cumulativeProviderUsage(events);
+  if (updates.length === 0) throw new Error('Completed Codex turn did not report provider usage.');
+  const cacheWritesKnown = updates.every(update => update.cacheWriteTokens !== null);
+  const modelCalls = providerTokenDeltas(updates);
+  const bytes = {agentMessage: 0, commandExecution: 0, fileChange: 0, mcpToolCall: 0, other: 0, reasoning: 0};
+  const toolCounts = {
+    commandExecution: 0,
+    contextBrief: 0,
+    fileChange: 0,
+    inspectCodeGraph: 0,
+    readContext: 0,
+    recallContext: 0,
+  };
+  const graphRequests: Array<{
+    budgetTokens: number | null;
+    edgeLimit: number | null;
+    nodeLimit: number | null;
+    operation: string | null;
+  }> = [];
+  const sufficientEvidenceTimes: number[] = [];
+  const taskStartMilliseconds = taskStartMillis(events);
+  for (const {item, params} of completedItems(events)) {
+    const type = completedItemType(item.type);
+    bytes[type] += Buffer.byteLength(JSON.stringify(item));
+    if (type === 'commandExecution' || type === 'fileChange') toolCounts[type] += 1;
+    if (type === 'mcpToolCall') {
+      const tool = item.tool;
+      if (tool === 'context_brief') toolCounts.contextBrief += 1;
+      else if (tool === 'inspect_code_graph') toolCounts.inspectCodeGraph += 1;
+      else if (tool === 'read_context') toolCounts.readContext += 1;
+      else if (tool === 'recall_context') toolCounts.recallContext += 1;
+      if (tool === 'inspect_code_graph' && item.status === 'completed') {
+        graphRequests.push(graphRequestReceipt(item.arguments ?? item.input ?? item.request));
+      }
+    }
+    const evidenceState = item.evidenceState ?? params.evidenceState;
+    const elapsedMilliseconds = item.elapsedMilliseconds ?? params.elapsedMilliseconds;
+    if (evidenceState === 'sufficient' && typeof elapsedMilliseconds === 'number') {
+      sufficientEvidenceTimes.push(nonnegativeInteger(elapsedMilliseconds, 'sufficient evidence elapsed time'));
+    }
+    if (type === 'mcpToolCall' && item.tool === 'context_brief' && item.status === 'completed') {
+      const completedAtMilliseconds = safeNonnegativeInteger(params.completedAtMs);
+      if (
+        contextBriefEvidenceState(item, params) === 'sufficient' &&
+        completedAtMilliseconds !== null &&
+        taskStartMilliseconds !== null &&
+        completedAtMilliseconds >= taskStartMilliseconds
+      ) {
+        sufficientEvidenceTimes.push(completedAtMilliseconds - taskStartMilliseconds);
+      }
+    }
+  }
+  const tokens = sumTokenAccounting(modelCalls, cacheWritesKnown);
+  const completedItemByteTotal = Object.values(bytes).reduce((total, count) => total + count, 0);
+  const safePromptBytes = nonnegativeInteger(promptBytes, 'prompt bytes');
+  return {
+    completedItemBytes: bytes,
+    firstSufficientEvidenceMilliseconds:
+      sufficientEvidenceTimes.length === 0 ? null : Math.min(...sufficientEvidenceTimes),
+    graphRequests,
+    lastTwoModelCallTokens: sumTokenAccounting(modelCalls.slice(-2), cacheWritesKnown),
+    modelCallCount: modelCalls.length,
+    modelCalls,
+    modelVisibleBytes: {
+      completedItemBytes: completedItemByteTotal,
+      promptBytes: safePromptBytes,
+      totalBytes: safePromptBytes + completedItemByteTotal,
+    },
+    repeatedToolCalls: {
+      commandExecution: repeated(toolCounts.commandExecution),
+      contextBrief: repeated(toolCounts.contextBrief),
+      fileChange: repeated(toolCounts.fileChange),
+      inspectCodeGraph: repeated(toolCounts.inspectCodeGraph),
+      readContext: repeated(toolCounts.readContext),
+      recallContext: repeated(toolCounts.recallContext),
+    },
+    tokens,
+  };
+}
+
+function providerTokenDeltas(
+  updates: readonly CumulativeProviderTokens[],
+): readonly ReturnType<typeof tokenAccounting>[] {
+  const deltas: ReturnType<typeof tokenAccounting>[] = [];
+  let previous: CumulativeProviderTokens | null = null;
+  for (const current of updates) {
+    const base = previous ?? {
+      cacheWriteTokens: current.cacheWriteTokens === null ? null : 0,
+      cachedInputTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+    };
+    if (
+      current.cachedInputTokens !== base.cachedInputTokens ||
+      current.inputTokens !== base.inputTokens ||
+      current.outputTokens !== base.outputTokens ||
+      current.reasoningOutputTokens !== base.reasoningOutputTokens ||
+      current.totalTokens !== base.totalTokens ||
+      (current.cacheWriteTokens !== null &&
+        base.cacheWriteTokens !== null &&
+        current.cacheWriteTokens !== base.cacheWriteTokens)
+    ) {
+      deltas.push(
+        tokenAccounting({
+          cacheWriteTokens:
+            current.cacheWriteTokens === null || base.cacheWriteTokens === null
+              ? null
+              : current.cacheWriteTokens - base.cacheWriteTokens,
+          cachedInputTokens: current.cachedInputTokens - base.cachedInputTokens,
+          rawInputTokens: current.inputTokens - base.inputTokens,
+          outputTokens: current.outputTokens - base.outputTokens,
+          reasoningOutputTokens: current.reasoningOutputTokens - base.reasoningOutputTokens,
+          totalTokens: current.totalTokens - base.totalTokens,
+        }),
+      );
+    }
+    previous = current;
+  }
+  return deltas;
+}
+
+function tokenAccounting(input: {
+  readonly cacheWriteTokens: number | null;
+  readonly cachedInputTokens: number;
+  readonly outputTokens: number;
+  readonly rawInputTokens: number;
+  readonly reasoningOutputTokens: number;
+  readonly totalTokens: number;
+}) {
+  const uncachedInputTokens = input.rawInputTokens - input.cachedInputTokens;
+  const newTokens =
+    input.cacheWriteTokens === null ? null : uncachedInputTokens + input.cacheWriteTokens + input.outputTokens;
+  return {
+    ...input,
+    newTokens,
+    processedTokens: newTokens === null ? null : newTokens + input.cachedInputTokens,
+    uncachedInputTokens,
+  };
+}
+
+function sumTokenAccounting(
+  values: readonly ReturnType<typeof tokenAccounting>[],
+  cacheWritesKnown: boolean,
+): ReturnType<typeof tokenAccounting> {
+  const sum = (select: (value: ReturnType<typeof tokenAccounting>) => number) =>
+    values.reduce((total, value) => total + select(value), 0);
+  return tokenAccounting({
+    cacheWriteTokens: cacheWritesKnown ? sum(value => value.cacheWriteTokens ?? 0) : null,
+    cachedInputTokens: sum(value => value.cachedInputTokens),
+    outputTokens: sum(value => value.outputTokens),
+    rawInputTokens: sum(value => value.rawInputTokens),
+    reasoningOutputTokens: sum(value => value.reasoningOutputTokens),
+    totalTokens: sum(value => value.totalTokens),
+  });
+}
+
+function graphRequestReceipt(value: unknown) {
+  let arguments_: unknown = value;
+  try {
+    if (typeof arguments_ === 'string') arguments_ = JSON.parse(arguments_) as unknown;
+  } catch {
+    return {budgetTokens: null, edgeLimit: null, nodeLimit: null, operation: null};
+  }
+  if (typeof arguments_ !== 'object' || arguments_ === null || Array.isArray(arguments_)) {
+    return {budgetTokens: null, edgeLimit: null, nodeLimit: null, operation: null};
+  }
+  const request = arguments_ as Record<string, unknown>;
+  return {
+    budgetTokens: safeNonnegativeInteger(request.budgetTokens),
+    edgeLimit: safeNonnegativeInteger(request.edgeLimit),
+    nodeLimit: safeNonnegativeInteger(request.nodeLimit),
+    operation: typeof request.operation === 'string' && request.operation.length <= 64 ? request.operation : null,
+  };
+}
+
+function safeNonnegativeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function completedItems(
+  events: readonly Record<string, unknown>[],
+): readonly {readonly item: Record<string, unknown>; readonly params: Record<string, unknown>}[] {
+  const ids = new Set<string>();
+  const completed: Array<{item: Record<string, unknown>; params: Record<string, unknown>}> = [];
+  for (const event of events) {
+    if (event.method !== 'item/completed') continue;
+    const params = object(event.params, 'completed item params');
+    const item = object(params.item, 'completed item');
+    const id = typeof item.id === 'string' ? item.id : null;
+    if (id !== null && ids.has(id)) continue;
+    if (id !== null) ids.add(id);
+    completed.push({item, params});
+  }
+  return completed;
+}
+
+function taskStartMillis(events: readonly Record<string, unknown>[]): number | null {
+  const timestamps: number[] = [];
+  for (const event of events) {
+    if (event.method !== 'item/started' && event.method !== 'item/completed') continue;
+    const params = safeObject(event.params);
+    if (params === null) continue;
+    const startedAtMilliseconds = safeNonnegativeInteger(params.startedAtMs);
+    const completedAtMilliseconds = safeNonnegativeInteger(params.completedAtMs);
+    if (startedAtMilliseconds !== null) timestamps.push(startedAtMilliseconds);
+    if (completedAtMilliseconds !== null) timestamps.push(completedAtMilliseconds);
+  }
+  return timestamps.length === 0 ? null : Math.min(...timestamps);
+}
+
+function contextBriefEvidenceState(
+  item: Record<string, unknown>,
+  params: Record<string, unknown>,
+): 'sufficient' | null {
+  const result = safeObject(item.result);
+  const structuredContent = result === null ? null : safeObject(result.structuredContent);
+  const direct = [item.evidenceState, params.evidenceState, result?.evidenceState, structuredContent?.evidenceState];
+  if (direct.includes('sufficient')) return 'sufficient';
+  if (result === null || !Array.isArray(result.content)) return null;
+  for (const content of result.content.slice(0, 16)) {
+    const block = safeObject(content);
+    if (block?.type !== 'text' || typeof block.text !== 'string' || Buffer.byteLength(block.text) > 64 * 1_024)
+      continue;
+    try {
+      if (safeObject(JSON.parse(block.text) as unknown)?.evidenceState === 'sufficient') return 'sufficient';
+    } catch {
+      // Malformed content is unavailable evidence, not an evaluation failure.
+    }
+  }
+  return null;
+}
+
+function safeObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function cumulativeProviderUsage(events: readonly Record<string, unknown>[]): readonly CumulativeProviderTokens[] {
+  const updates: CumulativeProviderTokens[] = [];
+  let previous: CumulativeProviderTokens | null = null;
+  for (const event of events) {
+    if (event.method !== 'thread/tokenUsage/updated') continue;
     const params = object(event.params, 'token usage params');
     const tokenUsage = object(params.tokenUsage, 'token usage');
     const total = object(tokenUsage.total, 'total token usage');
-    const parsed = {
+    const parsed: CumulativeProviderTokens = {
+      cacheWriteTokens:
+        total.cacheWriteTokens === undefined ? null : nonnegativeInteger(total.cacheWriteTokens, 'cache write tokens'),
       cachedInputTokens: nonnegativeInteger(total.cachedInputTokens, 'cached input tokens'),
       inputTokens: nonnegativeInteger(total.inputTokens, 'input tokens'),
       outputTokens: nonnegativeInteger(total.outputTokens, 'output tokens'),
@@ -881,13 +1138,38 @@ export function extractMatchedEvaluationProviderUsageV1(events: readonly Record<
           parsed.inputTokens < previous.inputTokens ||
           parsed.outputTokens < previous.outputTokens ||
           parsed.reasoningOutputTokens < previous.reasoningOutputTokens ||
-          parsed.totalTokens < previous.totalTokens))
+          parsed.totalTokens < previous.totalTokens ||
+          (parsed.cacheWriteTokens !== null &&
+            previous.cacheWriteTokens !== null &&
+            parsed.cacheWriteTokens < previous.cacheWriteTokens)))
     ) {
       throw new Error('Codex provider token components are inconsistent.');
     }
+    updates.push(parsed);
     previous = parsed;
   }
-  return previous as ProviderTokens;
+  return updates;
+}
+
+function completedItemType(value: unknown): keyof ReturnType<typeof emptyCompletedItemBytes> {
+  if (
+    value === 'agentMessage' ||
+    value === 'commandExecution' ||
+    value === 'fileChange' ||
+    value === 'mcpToolCall' ||
+    value === 'reasoning'
+  ) {
+    return value;
+  }
+  return 'other';
+}
+
+function emptyCompletedItemBytes() {
+  return {agentMessage: 0, commandExecution: 0, fileChange: 0, mcpToolCall: 0, other: 0, reasoning: 0};
+}
+
+function repeated(count: number): number {
+  return count === 0 ? 0 : count - 1;
 }
 
 async function prepareContextHome(
@@ -1748,9 +2030,8 @@ function redundantFileReads(events: readonly Record<string, unknown>[]): number 
 
 function modelVisibleBytes(prompt: string, events: readonly Record<string, unknown>[]): number {
   let total = Buffer.byteLength(prompt);
-  for (const event of events) {
-    if (event.method !== 'item/completed') continue;
-    total += Buffer.byteLength(JSON.stringify(object(event.params, 'completed item params').item));
+  for (const {item} of completedItems(events)) {
+    total += Buffer.byteLength(JSON.stringify(item));
   }
   return total;
 }

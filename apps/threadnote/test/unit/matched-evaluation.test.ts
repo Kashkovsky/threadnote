@@ -329,6 +329,20 @@ describe('matched Threadnote, reference, and files evaluation', () => {
 
   it('accepts only bounded metrics and excludes raw transcript or response fields', () => {
     expect(parseMatchedEvaluationObservationV1(observation(0))).toEqual(observation(0));
+    const attributed = {
+      ...observation(0),
+      metrics: {
+        ...metrics(),
+        usage: {...metrics().usage, attribution: attribution(), modelVisibleBytes: 7, providerTokens: null},
+      },
+    };
+    expect(parseMatchedEvaluationObservationV1(attributed).metrics.usage.attribution).toEqual(attribution());
+    expect(() =>
+      parseMatchedEvaluationObservationV1({
+        ...attributed,
+        metrics: {...attributed.metrics, usage: {...attributed.metrics.usage, modelVisibleBytes: 8}},
+      }),
+    ).toThrow('attribution model-visible bytes differ');
     expect(() => parseMatchedEvaluationObservationV1({...observation(0), transcript: 'raw local transcript'})).toThrow(
       'unsupported or missing fields',
     );
@@ -376,6 +390,80 @@ describe('matched Threadnote, reference, and files evaluation', () => {
     expect(() => parseMatchedEvaluationObservationV1({...observation(0), version: 4})).toThrow(
       'observation version must be 5',
     );
+  });
+
+  it('reconciles aggregate attribution tokens with model calls and provider receipts', () => {
+    const attributed = mixedCachedAttribution();
+    const observationWithAttribution = {
+      ...observation(0),
+      metrics: {
+        ...metrics(),
+        usage: {
+          ...metrics().usage,
+          attribution: attributed,
+          modelVisibleBytes: 7,
+          providerTokens: providerTokensFor(attributed.tokens),
+        },
+      },
+    };
+
+    expect(parseMatchedEvaluationObservationV1(observationWithAttribution).metrics.usage.attribution).toMatchObject({
+      tokens: {cacheWriteTokens: null, cachedInputTokens: 8, outputTokens: 9, rawInputTokens: 21, totalTokens: 30},
+    });
+
+    for (const [label, tokens] of [
+      ['raw input tokens', {...attributed.tokens, rawInputTokens: 22, totalTokens: 31, uncachedInputTokens: 14}],
+      ['cached input tokens', {...attributed.tokens, cachedInputTokens: 9, uncachedInputTokens: 12}],
+      ['output tokens', {...attributed.tokens, outputTokens: 10, totalTokens: 31}],
+      ['reasoning output tokens', {...attributed.tokens, reasoningOutputTokens: 4}],
+      ['total tokens', {...attributed.tokens, rawInputTokens: 22, totalTokens: 31, uncachedInputTokens: 14}],
+    ] as const) {
+      expect(() =>
+        parseMatchedEvaluationObservationV1({
+          ...observationWithAttribution,
+          metrics: {
+            ...observationWithAttribution.metrics,
+            usage: {
+              ...observationWithAttribution.metrics.usage,
+              attribution: {...attributed, tokens},
+            },
+          },
+        }),
+      ).toThrow(label);
+    }
+
+    for (const [label, providerTokens] of [
+      [
+        'raw input tokens',
+        {cachedInputTokens: 8, inputTokens: 22, outputTokens: 9, reasoningOutputTokens: 3, totalTokens: 31},
+      ],
+      [
+        'cached input tokens',
+        {cachedInputTokens: 9, inputTokens: 21, outputTokens: 9, reasoningOutputTokens: 3, totalTokens: 30},
+      ],
+      [
+        'output tokens',
+        {cachedInputTokens: 8, inputTokens: 21, outputTokens: 10, reasoningOutputTokens: 3, totalTokens: 31},
+      ],
+      [
+        'reasoning output tokens',
+        {cachedInputTokens: 8, inputTokens: 21, outputTokens: 9, reasoningOutputTokens: 4, totalTokens: 30},
+      ],
+      [
+        'total tokens',
+        {cachedInputTokens: 8, inputTokens: 22, outputTokens: 9, reasoningOutputTokens: 3, totalTokens: 31},
+      ],
+    ] as const) {
+      expect(() =>
+        parseMatchedEvaluationObservationV1({
+          ...observationWithAttribution,
+          metrics: {
+            ...observationWithAttribution.metrics,
+            usage: {...observationWithAttribution.metrics.usage, providerTokens},
+          },
+        }),
+      ).toThrow(label);
+    }
   });
 
   it('requires non-overlapping lifecycle phases to sum to end-to-end time', () => {
@@ -508,5 +596,96 @@ function metrics(): MatchedEvaluationMetricsV1 {
     },
     validity: {failureCount: 0, valid: true},
     verification: null,
+  };
+}
+
+function attribution() {
+  const tokens = {
+    cacheWriteTokens: 0,
+    cachedInputTokens: 0,
+    newTokens: 2,
+    outputTokens: 1,
+    processedTokens: 2,
+    rawInputTokens: 1,
+    reasoningOutputTokens: 0,
+    totalTokens: 2,
+    uncachedInputTokens: 1,
+  } as const;
+  return {
+    completedItemBytes: {agentMessage: 0, commandExecution: 0, fileChange: 0, mcpToolCall: 0, other: 0, reasoning: 0},
+    firstSufficientEvidenceMilliseconds: null,
+    graphRequests: [],
+    lastTwoModelCallTokens: tokens,
+    modelCallCount: 1,
+    modelCalls: [tokens],
+    modelVisibleBytes: {completedItemBytes: 0, promptBytes: 7, totalBytes: 7},
+    repeatedToolCalls: {
+      commandExecution: 0,
+      contextBrief: 0,
+      fileChange: 0,
+      inspectCodeGraph: 0,
+      readContext: 0,
+      recallContext: 0,
+    },
+    tokens,
+  } as const;
+}
+
+function mixedCachedAttribution() {
+  const first = tokenAccounting({
+    cacheWriteTokens: 2,
+    cachedInputTokens: 0,
+    outputTokens: 4,
+    rawInputTokens: 10,
+    reasoningOutputTokens: 1,
+  });
+  const second = tokenAccounting({
+    cacheWriteTokens: null,
+    cachedInputTokens: 8,
+    outputTokens: 5,
+    rawInputTokens: 11,
+    reasoningOutputTokens: 2,
+  });
+  const tokens = tokenAccounting({
+    cacheWriteTokens: null,
+    cachedInputTokens: 8,
+    outputTokens: 9,
+    rawInputTokens: 21,
+    reasoningOutputTokens: 3,
+  });
+  return {...attribution(), lastTwoModelCallTokens: tokens, modelCallCount: 2, modelCalls: [first, second], tokens};
+}
+
+function tokenAccounting(input: {
+  readonly cacheWriteTokens: number | null;
+  readonly cachedInputTokens: number;
+  readonly outputTokens: number;
+  readonly rawInputTokens: number;
+  readonly reasoningOutputTokens: number;
+}) {
+  const uncachedInputTokens = input.rawInputTokens - input.cachedInputTokens;
+  const totalTokens = input.rawInputTokens + input.outputTokens;
+  const newTokens =
+    input.cacheWriteTokens === null ? null : uncachedInputTokens + input.cacheWriteTokens + input.outputTokens;
+  return {
+    cacheWriteTokens: input.cacheWriteTokens,
+    cachedInputTokens: input.cachedInputTokens,
+    newTokens,
+    outputTokens: input.outputTokens,
+    processedTokens: newTokens === null ? null : newTokens + input.cachedInputTokens,
+    rawInputTokens: input.rawInputTokens,
+    reasoningOutputTokens: input.reasoningOutputTokens,
+    totalTokens,
+    uncachedInputTokens,
+  };
+}
+
+function providerTokensFor(tokens: ReturnType<typeof tokenAccounting>) {
+  return {
+    cachedInputTokens: tokens.cachedInputTokens,
+    inputTokens: tokens.rawInputTokens,
+    outputTokens: tokens.outputTokens,
+    reasoningOutputTokens: tokens.reasoningOutputTokens,
+    totalTokens: tokens.totalTokens,
   };
 }

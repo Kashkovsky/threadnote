@@ -17,6 +17,7 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {
   assertMatchedEvaluationContextDeliveryV1,
   assertMatchedEvaluationMcpInventoryV1,
+  analyzeMatchedEvaluationAttributionV1,
   countMatchedEvaluationBlockedActionsV1,
   extractMatchedEvaluationProviderUsageV1,
   matchedEvaluationCodexEnvironmentPolicyHashV1,
@@ -344,6 +345,233 @@ describe('matched evaluation Codex adapter', () => {
         usageEvent({cachedInputTokens: 1, inputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1, totalTokens: 6}),
       ]),
     ).toThrow('provider token components are inconsistent');
+  });
+
+  it('attributes cumulative usage and safe completed-item metadata without retaining item bodies', () => {
+    const events = [
+      usageEvent({
+        cacheWriteTokens: 0,
+        cachedInputTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0,
+      }),
+      completedEvent('brief', 'mcpToolCall', {tool: 'context_brief'}),
+      usageEvent({
+        cacheWriteTokens: 4,
+        cachedInputTokens: 80,
+        inputTokens: 100,
+        outputTokens: 10,
+        reasoningOutputTokens: 3,
+        totalTokens: 110,
+      }),
+      usageEvent({
+        cacheWriteTokens: 4,
+        cachedInputTokens: 80,
+        inputTokens: 100,
+        outputTokens: 10,
+        reasoningOutputTokens: 3,
+        totalTokens: 110,
+      }),
+      completedEvent('graph', 'mcpToolCall', {
+        arguments: {
+          budgetTokens: 800,
+          edgeLimit: 12,
+          nodeId: 'sensitive-node-id',
+          nodeLimit: 8,
+          operation: 'node',
+          query: 'prompt or source body',
+        },
+        elapsedMilliseconds: 12,
+        evidenceState: 'sufficient',
+        status: 'completed',
+        tool: 'inspect_code_graph',
+      }),
+      completedEvent('failed-recall', 'mcpToolCall', {
+        result: {content: 'prompt or source body'},
+        status: 'failed',
+        tool: 'recall_context',
+      }),
+      completedEvent('read', 'commandExecution'),
+      completedEvent('edit', 'fileChange'),
+      completedEvent('second-read', 'commandExecution'),
+      usageEvent({
+        cacheWriteTokens: 6,
+        cachedInputTokens: 100,
+        inputTokens: 140,
+        outputTokens: 20,
+        reasoningOutputTokens: 6,
+        totalTokens: 160,
+      }),
+    ];
+    const attribution = analyzeMatchedEvaluationAttributionV1(events, 17);
+    expect(attribution).toMatchObject({
+      firstSufficientEvidenceMilliseconds: 12,
+      graphRequests: [{budgetTokens: 800, edgeLimit: 12, nodeLimit: 8, operation: 'node'}],
+      lastTwoModelCallTokens: {cacheWriteTokens: 6, rawInputTokens: 140, totalTokens: 160},
+      modelCallCount: 2,
+      modelCalls: [
+        {cacheWriteTokens: 4, rawInputTokens: 100, reasoningOutputTokens: 3, totalTokens: 110},
+        {cacheWriteTokens: 2, rawInputTokens: 40, reasoningOutputTokens: 3, totalTokens: 50},
+      ],
+      modelVisibleBytes: {promptBytes: 17},
+      repeatedToolCalls: {commandExecution: 1, contextBrief: 0, fileChange: 0, inspectCodeGraph: 0},
+      tokens: {
+        cacheWriteTokens: 6,
+        cachedInputTokens: 100,
+        newTokens: 66,
+        outputTokens: 20,
+        processedTokens: 166,
+        rawInputTokens: 140,
+        uncachedInputTokens: 40,
+      },
+    });
+    expect(attribution.completedItemBytes.commandExecution).toBeGreaterThan(0);
+    expect(attribution.modelVisibleBytes.totalBytes).toBe(
+      attribution.modelVisibleBytes.promptBytes + attribution.modelVisibleBytes.completedItemBytes,
+    );
+    expect(JSON.stringify(attribution)).not.toContain('prompt or source body');
+    expect(JSON.stringify(attribution)).not.toContain('sensitive-node-id');
+  });
+
+  it('keeps cache writes unknown and derives the same attribution across unrelated completed-item orderings', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom('commandExecution', 'fileChange', 'mcpToolCall'), {maxLength: 12}),
+        types => {
+          const usage = usageEvent({
+            cachedInputTokens: 20,
+            inputTokens: 30,
+            outputTokens: 10,
+            reasoningOutputTokens: 0,
+            totalTokens: 40,
+          });
+          const completed = types.map((type, index) =>
+            completedEvent(`item-${index}`, type, type === 'mcpToolCall' ? {tool: 'read_context'} : {}),
+          );
+          const first = analyzeMatchedEvaluationAttributionV1([usage, ...completed]);
+          const second = analyzeMatchedEvaluationAttributionV1([usage, ...[...completed].reverse()]);
+          expect(first).toEqual(second);
+          expect(first.tokens).toMatchObject({cacheWriteTokens: null, newTokens: null, processedTokens: null});
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('derives sufficient-evidence time from real app-server context completion metadata without retaining response text', () => {
+    const usage = usageEvent({
+      cachedInputTokens: 2,
+      inputTokens: 4,
+      outputTokens: 1,
+      reasoningOutputTokens: 0,
+      totalTokens: 5,
+    });
+    const context = {
+      method: 'item/completed',
+      params: {
+        completedAtMs: 150,
+        item: {
+          id: 'context-brief',
+          result: {
+            content: [
+              {
+                text: JSON.stringify({evidenceState: 'sufficient', source: 'private source and task text'}),
+                type: 'text',
+              },
+            ],
+          },
+          status: 'completed',
+          tool: 'context_brief',
+          type: 'mcpToolCall',
+        },
+      },
+    };
+    const attribution = analyzeMatchedEvaluationAttributionV1([
+      usage,
+      {method: 'item/started', params: {startedAtMs: 100}},
+      context,
+      context,
+    ]);
+    expect(attribution.firstSufficientEvidenceMilliseconds).toBe(50);
+    expect(attribution.repeatedToolCalls.contextBrief).toBe(0);
+    expect(attribution.completedItemBytes.mcpToolCall).toBeGreaterThan(0);
+    expect(JSON.stringify(attribution)).not.toContain('private source and task text');
+
+    const malformed = analyzeMatchedEvaluationAttributionV1([
+      usage,
+      {method: 'item/started', params: {startedAtMs: 100}},
+      {
+        method: 'item/completed',
+        params: {
+          completedAtMs: 150,
+          item: {
+            id: 'malformed-context-brief',
+            result: {content: [{text: '{not-json', type: 'text'}]},
+            status: 'completed',
+            tool: 'context_brief',
+            type: 'mcpToolCall',
+          },
+        },
+      },
+    ]);
+    expect(malformed.firstSufficientEvidenceMilliseconds).toBeNull();
+  });
+
+  it('partitions one to many cumulative usage updates into exact model-call deltas', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.tuple(
+            fc.integer({min: 0, max: 1_000}),
+            fc.integer({min: 0, max: 1_000}),
+            fc.integer({min: 0, max: 1_000}),
+          ),
+          {maxLength: 8, minLength: 1},
+        ),
+        increments => {
+          let cachedInputTokens = 0;
+          let inputTokens = 0;
+          let outputTokens = 0;
+          let cacheWriteTokens = 0;
+          const events = increments.map(([input, output, cacheWrite]) => {
+            inputTokens += input;
+            cachedInputTokens += Math.floor(input / 2);
+            outputTokens += output;
+            cacheWriteTokens += cacheWrite;
+            return usageEvent({
+              cacheWriteTokens,
+              cachedInputTokens,
+              inputTokens,
+              outputTokens,
+              reasoningOutputTokens: Math.floor(outputTokens / 2),
+              totalTokens: inputTokens + outputTokens,
+            });
+          });
+          const attribution = analyzeMatchedEvaluationAttributionV1(events);
+          expect(attribution.tokens).toMatchObject({
+            cacheWriteTokens,
+            cachedInputTokens,
+            outputTokens,
+            rawInputTokens: inputTokens,
+            totalTokens: inputTokens + outputTokens,
+          });
+          expect(attribution.lastTwoModelCallTokens.totalTokens).toBe(
+            attribution.modelCalls.slice(-2).reduce((total, call) => total + call.totalTokens, 0),
+          );
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('fails closed when a cumulative provider update is incomplete', () => {
+    expect(() =>
+      analyzeMatchedEvaluationAttributionV1([
+        {method: 'thread/tokenUsage/updated', params: {tokenUsage: {total: {inputTokens: 10}}}},
+      ]),
+    ).toThrow('cached input tokens');
   });
 
   it('hashes prepared homes deterministically and binds file bytes and modes', async () => {
@@ -823,6 +1051,7 @@ function adapterConfig() {
 }
 
 function usageEvent(total: {
+  readonly cacheWriteTokens?: number;
   readonly cachedInputTokens: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -830,6 +1059,10 @@ function usageEvent(total: {
   readonly totalTokens: number;
 }): Record<string, unknown> {
   return {method: 'thread/tokenUsage/updated', params: {tokenUsage: {total}}};
+}
+
+function completedEvent(id: string, type: string, values: Record<string, unknown> = {}): Record<string, unknown> {
+  return {method: 'item/completed', params: {item: {id, type, ...values}}};
 }
 
 async function temporaryRoot(roots: string[]): Promise<string> {

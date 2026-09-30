@@ -126,7 +126,7 @@ export const mcpServerEffect = withAnonymousTelemetry(
           ? `Personal Cursor Cloud uses one MCP bounded to these Git memory shares: ${memoryScope.shares.map(share => `${share.team} (${share.root})`).join(', ')}. Call recall_context with an absolute callerCwd; optionally pass team to narrow recall. Results are unread pointers, not evidence, so read relevant threadnote:// URIs with read_context. With multiple shares, durable remember_context writes require team; writes are committed and pushed only to that share. Memory tools reject URIs outside the configured share set.`
           : toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET
             ? 'Cursor Cloud remote-hybrid mode uses this local server only for checkout-specific code graph evidence, diagnostics, and workload attestation. All historical memory reads and writes belong to the managed threadnote-memory HTTP server. Never fall back to local personal memory or a Git memory share.'
-            : 'Threadnote: cross-session memory, context briefs, code graphs, handoffs. For non-trivial work call `context_brief` with task + absolute `callerCwd`. Read recalled `threadnote://` pointers; verify source. Finish with private `remember_context(kind=handoff)`. Never auto-apply/share or store secrets, credentials, customer data, raw logs. Confirm publishing.';
+            : 'Threadnote offers bounded context, graph, and memory tools. Choose the tool whose description matches the evidence gap; verify returned evidence in source. Writes stay private unless sharing is confirmed. Never auto-apply/share or store secrets, credentials, customer data, or raw logs.';
         const server = new EffectMcpServerAdapter(
           'threadnote-local-adapter',
           '0.2.0',

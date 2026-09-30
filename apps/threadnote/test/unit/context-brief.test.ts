@@ -604,7 +604,6 @@ describe('Context Brief compiler', () => {
           const brief = result.structuredContent;
           const memory = includeActiveHandoff ? brief.activeHandoffs[0] : brief.durableDecisions[0];
           const contract = brief.graph.contracts[0];
-          const recovery = brief.recommendedFollowUps[0];
           const agentMemory = includeActiveHandoff
             ? parseContextBriefAgentViewText(result.text).activeHandoffs?.[0]
             : parseContextBriefAgentViewText(result.text).durableDecisions?.[0];
@@ -613,14 +612,14 @@ describe('Context Brief compiler', () => {
           expect(new TextEncoder().encode(memory.uri).byteLength).toBeLessThan(160);
           expect(JSON.stringify(brief)).not.toContain(encodeURIComponent('界'));
           expect(memory).toMatchObject({
-            citationDetailsOmitted: true,
             selectionBasis: 'code-citation',
           });
           expect(memory).not.toHaveProperty('citationReceipts');
-          expect(memory).not.toHaveProperty('citationSummary');
-          expect(memory).not.toHaveProperty('codeRelations');
+          expect(memory.citationSummary).toMatchObject({coverage: 'current-complete', exact: 1});
+          expect(memory.codeRelations).toEqual([
+            expect.objectContaining({anchorOrdinal: 0, kind: 'file', status: 'exact'}),
+          ]);
           expect(agentMemory).toMatchObject({
-            citationDetailsOmitted: true,
             selectionBasis: 'code-citation',
             uri: memory.uri,
           });
@@ -628,9 +627,7 @@ describe('Context Brief compiler', () => {
             evidence: {pathTruncated: true, repositoryKeyTruncated: true},
             id: 'recovery-contract-0',
           });
-          expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0});
-          if (recovery.operation !== 'inspect-node') throw new Error('Expected an exact graph inspection action.');
-          expect([contract.sourceRef, contract.targetRef]).toContain(recovery.ref);
+          expect(brief.recommendedFollowUps).toEqual([]);
           expect(brief.coverage.gaps[0]).toBe('graph-evidence-partial');
           expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
         }
@@ -665,7 +662,7 @@ describe('Context Brief compiler', () => {
         const agentView = parseContextBriefAgentViewText(result.text);
 
         expect(result.structuredContent).toEqual(parseContextBriefV1(result.structuredContent));
-        expect(agentView).toEqual(projectContextBriefAgentView(result.structuredContent));
+        expect(agentView).toEqual(projectDualTextView(result.structuredContent));
         expect(agentView).toMatchObject({
           briefVersion: 3,
           coverage: {gaps: ['graph-evidence-partial']},
@@ -683,8 +680,8 @@ describe('Context Brief compiler', () => {
         expect(result.structuredContent.scope).toMatchObject({name: 'threadnote'});
         expect(result.structuredContent.scope.projectCoverage).toBeUndefined();
         expect(agentView.coverage).toBeDefined();
-        expect(agentView.output?.truncated).toBe(true);
-        expect(agentView.recommendedFollowUps?.[0]).toMatchObject({operation: 'inspect-node', rank: 0});
+        expect(agentView.output).toBeUndefined();
+        expect(agentView.recommendedFollowUps).toBeUndefined();
         expect(agentView.graph?.continuation?.state).toBe('rerun-required');
         expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
       }),
@@ -705,7 +702,7 @@ describe('Context Brief compiler', () => {
       const brief = result.structuredContent;
 
       expect(brief.coverage.gaps[0]).toBe('stable-memory-identity-unavailable');
-      expect(brief.recommendedFollowUps[0]).toMatchObject({operation: 'inspect-node', rank: 0});
+      expect(brief.recommendedFollowUps).toEqual([]);
       expect(brief.durableDecisions).toHaveLength(0);
       expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
       expect(parseContextBriefAgentViewText(result.text).coverage?.gaps?.[0]).toBe(
@@ -739,7 +736,7 @@ describe('Context Brief compiler', () => {
         const agentView = parseContextBriefAgentViewText(result.text);
 
         expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
-        expect(agentView).toEqual(projectContextBriefAgentView(result.structuredContent));
+        expect(agentView).toEqual(projectDualTextView(result.structuredContent));
         expect(agentView.coverage?.gaps).toEqual(['graph-evidence-partial']);
         expect(agentView.scope).toMatchObject({
           freshness: 'fresh',
@@ -748,7 +745,7 @@ describe('Context Brief compiler', () => {
           requestedRepositories: 1,
         });
         expect(result.structuredContent.coverage.omissions.coverageGaps).toBe(1);
-        expect(agentView.output?.truncated).toBe(true);
+        expect(agentView.output).toBeUndefined();
         expect(agentView.recommendedFollowUps?.[0]).toMatchObject({operation: 'inspect-node'});
       }),
     {fastCheck: {numRuns: 20}},
@@ -794,10 +791,8 @@ describe('Context Brief compiler', () => {
 
       expect(brief.scope.nameTruncated).toBe(true);
       expect(brief.task.truncated).toBe(true);
-      expect(brief.recommendedFollowUps[0]).toMatchObject({operation: 'inspect-node', rank: 0});
-      expect(parseContextBriefAgentViewText(result.text).recommendedFollowUps?.[0]).toEqual(
-        brief.recommendedFollowUps[0],
-      );
+      expect(brief.recommendedFollowUps).toEqual([]);
+      expect(parseContextBriefAgentViewText(result.text).recommendedFollowUps).toBeUndefined();
       expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
     }),
   );
@@ -930,7 +925,7 @@ describe('Context Brief compiler', () => {
         const dual = yield* compileCodeLinkedRecoveryFixture(1, 4, 800, options);
         const agent = yield* compileCodeLinkedRecoveryFixture(1, 4, 800, {...options, responseFormat: 'agent'});
         expect(agent.measurement.structuredBytes).toBe(0);
-        expect(agent.structuredContent.durableDecisions.length).toBeGreaterThan(
+        expect(agent.structuredContent.durableDecisions.length).toBeGreaterThanOrEqual(
           dual.structuredContent.durableDecisions.length,
         );
       }),
@@ -2065,7 +2060,7 @@ describe('Context Brief compiler', () => {
           1_500,
         );
         const parsed = parseContextBriefAgentViewText(result.text);
-        expect(parsed).toEqual(projectContextBriefAgentView(result.structuredContent));
+        expect(parsed).toEqual(projectDualTextView(result.structuredContent));
         expect(renderContextBriefText(result.structuredContent)).toBe(result.text);
         expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
       }),
@@ -2164,7 +2159,7 @@ describe('Context Brief compiler', () => {
     }),
   );
 
-  effectIt.effect('keeps Workset continuation and preparation in the fixed locate recovery core', () =>
+  effectIt.effect('keeps only executable Workset continuation in the fixed locate recovery core', () =>
     Effect.gen(function* () {
       const graph = graphEvidence();
       const cases = [
@@ -2173,7 +2168,7 @@ describe('Context Brief compiler', () => {
           graph: {...graph, cards: graph.cards.slice(0, 2)},
         },
         {
-          expected: ['prepare-workset'],
+          expected: [],
           graph: {
             ...graph,
             continuation: undefined,
@@ -2198,7 +2193,7 @@ describe('Context Brief compiler', () => {
         const view = parseContextBriefAgentViewText(result.text);
         const scopeRecovery = (view.recommendedFollowUps ?? [])
           .map(followUp => followUp.operation)
-          .filter(operation => operation === 'continue-workset' || operation === 'prepare-workset');
+          .filter(operation => operation === 'continue-workset');
 
         expect(view.graph?.cards).toHaveLength(2);
         expect(scopeRecovery).toEqual(testCase.expected);
@@ -2221,10 +2216,76 @@ describe('Context Brief compiler', () => {
 
       expect(partialPageView.graph?.cards).toHaveLength(2);
       expect(partialPageView.graph?.continuation).toMatchObject({omittedCards: 1, state: 'rerun-required'});
-      expect(partialPageView.recommendedFollowUps?.map(followUp => followUp.operation)).toContain('inspect-node');
-      expect(partialPageView.recommendedFollowUps?.map(followUp => followUp.operation)).not.toContain(
-        'continue-workset',
+      expect(partialPageView.recommendedFollowUps).toBeUndefined();
+    }),
+  );
+
+  effectIt.effect('emits recovery actions in the public MCP operation vocabulary', () =>
+    Effect.gen(function* () {
+      const repository = yield* compile(graphEvidence(), memoryEvidence(), 1_250);
+      const unavailable = yield* compileContextBriefWith(
+        {
+          graphEvidence: () =>
+            Effect.succeed(unavailableContextBriefGraphEvidence('graph-ready-snapshot-missing', 1, {missing: 1})),
+          memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+        },
+        request(1_250),
       );
+      const workset = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graphEvidence()),
+          memoryEvidence: () => Effect.succeed({...memoryEvidence(), candidates: []}),
+        },
+        {...request(1_250), scope: {kind: 'workset', name: 'threadnote-suite', project: 'threadnote'}},
+      );
+      const variants = [
+        ...repository.structuredContent.recommendedFollowUps,
+        ...unavailable.structuredContent.recommendedFollowUps,
+        ...workset.structuredContent.recommendedFollowUps,
+      ];
+
+      for (const followUp of variants) {
+        switch (followUp.operation) {
+          case 'inspect-node':
+            expect(followUp).toMatchObject({tool: 'inspect_code_graph'});
+            expect(followUp.arguments).toMatchObject({
+              budgetTokens: 800,
+              callerCwd: '/workspace/threadnote',
+              edgeLimit: 12,
+              nodeId: followUp.ref,
+              nodeLimit: 8,
+              operation: 'node',
+            });
+            break;
+          case 'continue-workset':
+            expect(followUp).toMatchObject({tool: 'inspect_code_graph', workset: 'threadnote-suite'});
+            expect(followUp.arguments).toEqual({
+              budgetTokens: 800,
+              cursor: followUp.cursor,
+              edgeLimit: 12,
+              nodeLimit: 8,
+              operation: 'query',
+              workset: 'threadnote-suite',
+            });
+            break;
+          case 'graph-status':
+            expect(followUp).toMatchObject({tool: 'inspect_code_graph', scope: 'repository'});
+            expect(followUp.arguments).toMatchObject({
+              budgetTokens: 800,
+              edgeLimit: 12,
+              nodeLimit: 8,
+              operation: 'query',
+              query: 'code graph readiness',
+            });
+            break;
+          case 'read-memory':
+            expect(followUp).toEqual(expect.objectContaining({arguments: {uri: followUp.uri}, tool: 'read_context'}));
+            break;
+          default:
+            expect.fail(`unexpected non-executable recovery: ${String((followUp as {operation: string}).operation)}`);
+        }
+      }
+      expect(variants.map(followUp => followUp.operation)).not.toContain('prepare-workset');
     }),
   );
 
@@ -2666,8 +2727,8 @@ describe('Context Brief compiler', () => {
           new TextEncoder().encode(JSON.stringify(scopeName)).byteLength > 66 ? true : undefined,
         );
         expect(brief.graph.continuation?.state).toBe('rerun-required');
-        expect(brief.recommendedFollowUps[0]).toMatchObject({operation: 'inspect-node', rank: 0});
-        expect(agentView.recommendedFollowUps?.[0]).toEqual(brief.recommendedFollowUps[0]);
+        expect(brief.recommendedFollowUps).toEqual([]);
+        expect(agentView.recommendedFollowUps).toBeUndefined();
         expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
       }),
     {fastCheck: {numRuns: 30}},
@@ -3409,14 +3470,9 @@ function expectTextCarriesSelectedEvidence(text: string, brief: ContextBriefV1):
   });
   expect(view.coverage?.codeAnchors).toEqual(brief.coverage.memory.codeAnchors);
   expect(view.coverage?.gaps ?? []).toEqual(brief.coverage.gaps);
-  if (brief.output.truncated) {
-    expect(view.output).toEqual({
-      omissions: Object.fromEntries(Object.entries(brief.coverage.omissions).filter(([, count]) => count > 0)),
-      truncated: true,
-    });
-  } else {
-    expect(view.output).toBeUndefined();
-  }
+  // Dual responses keep the exact omission receipt in structuredContent and
+  // avoid paying for the same audit-only counters again in the text channel.
+  expect(view.output).toBeUndefined();
   for (const card of brief.graph.cards) {
     const projected = view.graph?.cards?.find(candidate => candidate.ref === card.ref);
     expect(projected).toBeDefined();
@@ -3493,4 +3549,9 @@ function expectTextCarriesSelectedEvidence(text: string, brief: ContextBriefV1):
   expect(view.stalenessAndConflicts ?? []).toEqual(brief.stalenessAndConflicts);
   expect(view.recommendedFollowUps ?? []).toEqual(brief.recommendedFollowUps);
   expect(view.graph?.continuation).toEqual(brief.graph.continuation);
+}
+
+function projectDualTextView(brief: ContextBriefV1) {
+  const {output: _output, ...view} = projectContextBriefAgentView(brief);
+  return view;
 }
