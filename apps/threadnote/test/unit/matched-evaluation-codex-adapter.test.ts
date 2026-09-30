@@ -15,7 +15,9 @@ import {sha256HexSync} from '@threadnote/platform/sha256';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
+  assertMatchedEvaluationContextDeliveryV1,
   assertMatchedEvaluationMcpInventoryV1,
+  countMatchedEvaluationBlockedActionsV1,
   extractMatchedEvaluationProviderUsageV1,
   matchedEvaluationCodexEnvironmentPolicyHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
@@ -24,7 +26,9 @@ import {
   renderMatchedEvaluationCommandReviewRulesV1,
   runMatchedEvaluationCodexAdapter,
   runMatchedEvaluationDeterministicVerifierV1,
+  type MatchedEvaluationExpectedContextDeliveryV1,
 } from '../../../../scripts/matched-evaluation-codex-adapter.js';
+import {MATCHED_EVALUATION_CONTEXT_PROXY_VERSION} from '../../../../scripts/matched-evaluation-context-proxy.js';
 import {
   createMatchedEvaluationVerificationCalibrationV1,
   createMatchedEvaluationVerificationPlanV1,
@@ -38,6 +42,88 @@ describe('matched evaluation Codex adapter', () => {
 
   afterEach(async () => {
     await Promise.all(roots.splice(0).map(root => rm(root, {force: true, recursive: true})));
+  });
+
+  it('requires successful context delivery bound to the sealed prompt, run, home and response', () => {
+    const {event, expected, item, receipt, result} = contextDelivery();
+    expect(() => assertMatchedEvaluationContextDeliveryV1([event], expected)).not.toThrow();
+    expect(() => assertMatchedEvaluationContextDeliveryV1([], null)).not.toThrow();
+    expect(() => assertMatchedEvaluationContextDeliveryV1([event], null)).toThrow('Files-only arm');
+    for (const events of [[], [event, event]]) {
+      expect(() => assertMatchedEvaluationContextDeliveryV1(events, expected)).toThrow('exactly one');
+    }
+    const withItem = (patch: Record<string, unknown>) => [{...event, params: {item: {...item, ...patch}}}];
+    const withResult = (patch: Record<string, unknown>) => withItem({result: {...result, ...patch}});
+    // The pilot counted this failed request as valid solely because item/completed existed.
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1(
+        withItem({
+          status: 'failed',
+          result: {content: [{type: 'text', text: 'Context request task differs from the sealed task prompt.'}]},
+        }),
+        expected,
+      ),
+    ).toThrow('did not complete successfully');
+    for (const patch of [
+      {status: 'inProgress'},
+      {error: {message: 'failed'}},
+      {server: 'other'},
+      {tool: 'read_context'},
+    ]) {
+      expect(() => assertMatchedEvaluationContextDeliveryV1(withItem(patch), expected)).toThrow();
+    }
+    for (const patch of [
+      {isError: true},
+      {_meta: null},
+      {structuredContent: {}},
+      {content: []},
+      {content: [{type: 'text', text: ''}]},
+      {content: [{type: 'image', data: 'unexpected'}]},
+      {content: [...result.content, ...result.content]},
+      {content: [{type: 'text', text: 'changed after receipt'}]},
+    ]) {
+      expect(() => assertMatchedEvaluationContextDeliveryV1(withResult(patch), expected)).toThrow();
+    }
+    for (const key of Object.keys(receipt)) {
+      expect(() =>
+        assertMatchedEvaluationContextDeliveryV1(
+          withResult({_meta: {matchedEvaluation: {...receipt, [key]: 'mismatch'}}}),
+          expected,
+        ),
+      ).toThrow('receipt mismatch');
+    }
+  });
+
+  it('detects any changed delivered content while accepting deterministic receipt bindings', () => {
+    fc.assert(
+      fc.property(fc.string({minLength: 1, maxLength: 128}), text => {
+        const {event, expected, item, result} = contextDelivery(JSON.stringify({answer: text}));
+        expect(() => assertMatchedEvaluationContextDeliveryV1([event], expected)).not.toThrow();
+        const changed = {
+          ...event,
+          params: {
+            item: {
+              ...item,
+              result: {
+                ...result,
+                content: [{type: 'text', text: `${result.content[0].text} `}],
+              },
+            },
+          },
+        };
+        expect(() => assertMatchedEvaluationContextDeliveryV1([changed], expected)).toThrow('contentResponseSha256');
+      }),
+      {numRuns: 40},
+    );
+  });
+
+  it('counts declined command and edit attempts separately from executed actions', () => {
+    const events = ['commandExecution', 'fileChange', 'mcpToolCall'].flatMap(type =>
+      ['item/started', 'item/completed'].flatMap(method =>
+        ['declined', 'completed', 'failed'].map(status => ({method, params: {item: {type, status}}})),
+      ),
+    );
+    expect(countMatchedEvaluationBlockedActionsV1(events)).toBe(2);
   });
 
   it('parses a pinned files-only adapter configuration and rejects treatment context in that arm', () => {
@@ -331,7 +417,7 @@ describe('matched evaluation Codex adapter', () => {
     ).rejects.toThrow('invalid diagnostic protocol');
   });
 
-  it('runs a files-only agent and isolated judge through the pinned app-server protocol', async () => {
+  it('runs files-only and budget outcomes but retains failed-delivery evidence without an observation', async () => {
     if (process.platform === 'win32') return;
     const root = await temporaryRoot(roots);
     const repository = join(root, 'repository');
@@ -434,7 +520,7 @@ describe('matched evaluation Codex adapter', () => {
         usage: {providerTokens: {inputTokens: 100, outputTokens: 50, totalTokens: 150}},
         validity: {failureCount: 0, valid: true},
       },
-      version: 3,
+      version: 4,
     });
     expect(sha256HexSync(await readFile(artifactPath))).toBe(response.artifactHash);
     expect(sha256HexSync(await readFile(transcriptPath))).toBe(response.transcriptHash);
@@ -479,7 +565,7 @@ describe('matched evaluation Codex adapter', () => {
         usage: {providerTokens: {inputTokens: 100, outputTokens: 50, totalTokens: 150}},
         validity: {failureCount: 0, valid: true},
       },
-      version: 3,
+      version: 4,
     });
     const [budgetAgentTranscript] = (await readFile(budgetTranscriptPath, 'utf8')).trim().split('\n');
     expect(JSON.parse(budgetAgentTranscript ?? 'null') as unknown).toMatchObject({
@@ -487,9 +573,119 @@ describe('matched evaluation Codex adapter', () => {
       terminal: 'provider-token-budget',
       version: 1,
     });
+
+    const contextHome = join(root, 'prepared-home');
+    await mkdir(contextHome);
+    const expectedContext = {
+      graphContentHash: '8'.repeat(64),
+      graphSnapshotHash: '9'.repeat(64),
+      linkReceiptsHash: null,
+      memoryAccess: 'disabled' as const,
+      taskContextHash: null,
+    };
+    const failedConfig = {
+      ...config,
+      arm: 'threadnote-graph',
+      appServer: {...config.appServer, argumentsAfterSubcommand: ['--failed-context']},
+      contextHomes: [
+        {
+          expectedContext,
+          homeDirectory: contextHome,
+          homeFixtureHash: await matchedEvaluationPreparedHomeFixtureHashV1(contextHome),
+          identity: {account: 'local', user: 'evaluation-user'},
+          project: 'threadnote',
+          taskId: request.agentTask.taskId,
+        },
+      ],
+    };
+    const failedConfigPath = join(root, 'failed-config.json');
+    const failedConfigBytes = Buffer.from(`${JSON.stringify(failedConfig)}\n`);
+    const failedRequestPath = join(root, 'failed-request.json');
+    const failedResponsePath = join(root, 'failed-response.json');
+    const failedArtifactPath = join(root, 'failed-artifact.json');
+    const failedTranscriptPath = join(root, 'failed-transcript.jsonl');
+    await writeFile(failedConfigPath, failedConfigBytes);
+    await writeFile(
+      failedRequestPath,
+      `${JSON.stringify({
+        ...request,
+        arm: failedConfig.arm,
+        adapterConfigurationHash: sha256HexSync(failedConfigBytes),
+        artifactPath: failedArtifactPath,
+        transcriptPath: failedTranscriptPath,
+        runNonce: 'run_123456789abcdef0123456789abcdef0',
+        preparedContext: {memoryAccess: 'disabled', graphContext: expectedContext, studyHash: '7'.repeat(64)},
+        tool: {
+          ...request.tool,
+          artifactHash: request.adapterArtifactHash,
+          executable: selfExecutable,
+          detail: 'graph-only',
+          name: 'threadnote',
+          version: '5.0.6',
+          lockIdentityHash: 'a'.repeat(64),
+        },
+      })}\n`,
+    );
+    try {
+      process.chdir(repository);
+      await expect(
+        runMatchedEvaluationCodexAdapter({
+          configPath: failedConfigPath,
+          requestPath: failedRequestPath,
+          responsePath: failedResponsePath,
+          selfExecutable,
+        }),
+      ).rejects.toThrow('context_brief did not complete successfully');
+    } finally {
+      process.chdir(originalCwd);
+    }
+    await expect(readFile(failedResponsePath)).rejects.toMatchObject({code: 'ENOENT'});
+    const failedTranscript = (await readFile(failedTranscriptPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(failedTranscript.map(row => row.kind)).toEqual(['agent', 'context-delivery-failure']);
+    expect(failedTranscript[0]).toMatchObject({usage: {inputTokens: 100, outputTokens: 50, totalTokens: 150}});
+    expect(JSON.parse(await readFile(failedArtifactPath, 'utf8')) as unknown).toMatchObject({
+      arm: 'threadnote-graph',
+      patchSha256: sha256HexSync(''),
+    });
+    expect(await readFile(`${failedTranscriptPath}.agent.jsonl`, 'utf8')).toContain('"totalTokens":150');
     expect((await readdir(root)).filter(name => name.startsWith('matched-evaluation-codex-'))).toEqual([]);
   }, 30_000);
 });
+
+function contextDelivery(text = '{"answer":"Relevant evidence","graph":{"cards":[{"path":"service.ts"}]}}') {
+  const expected: MatchedEvaluationExpectedContextDeliveryV1 = {
+    graphContentHash: '1'.repeat(64),
+    graphSnapshotHash: '2'.repeat(64),
+    linkReceiptsHash: '3'.repeat(64),
+    memoryAccess: 'linked',
+    studyHash: '4'.repeat(64),
+    taskContextHash: '5'.repeat(64),
+    frozenPromptSha256: sha256HexSync('Task with `formatting` and trailing space. '),
+    runNonce: 'run_0123456789abcdef0123456789abcdef',
+    runtimeManifestSha256: '6'.repeat(64),
+  };
+  const receipt = {
+    ...expected,
+    contentResponseSha256: sha256HexSync(text),
+    graphReady: true,
+    version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
+  };
+  const result = {content: [{type: 'text', text}], _meta: {matchedEvaluation: receipt}};
+  const item = {
+    type: 'mcpToolCall',
+    id: 'context-call',
+    server: 'matched_evaluation_context',
+    tool: 'context_brief',
+    status: 'completed',
+    error: null,
+    result,
+  };
+  const event = {method: 'item/completed', params: {item}};
+  return {event, expected, item, receipt, result};
+}
 
 function adapterConfig() {
   return {

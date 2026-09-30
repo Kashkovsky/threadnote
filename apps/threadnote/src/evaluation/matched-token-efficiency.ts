@@ -17,6 +17,7 @@ import {
 } from './matched-evaluation-runner.js';
 
 export const MATCHED_TOKEN_EFFICIENCY_VERSION = 2 as const;
+export const MATCHED_TOKEN_EFFICIENCY_REPORT_VERSION = 3 as const;
 export const MATCHED_TOKEN_EFFICIENCY_LINK_STATUSES = ['exact', 'relocated', 'changed', 'deleted', 'unknown'] as const;
 export const MATCHED_TOKEN_EFFICIENCY_TARGET_ARMS = ['threadnote-compact', 'threadnote-source'] as const;
 export const MATCHED_TOKEN_EFFICIENCY_CONTEXT_SUFFICIENCY = ['none', 'lacking', 'sufficient', 'excessive'] as const;
@@ -109,6 +110,7 @@ export interface MatchedTokenEfficiencyArmResultV1 {
   readonly categories: readonly MatchedTokenEfficiencyCategoryResultV1[];
   readonly completed: number;
   readonly authorizationLeaks: number;
+  readonly blockedActions: number;
   readonly falseCurrentOutcomes: number;
   readonly harmfulActions: number;
   readonly hybridVerifiedCompletionRate: number;
@@ -180,7 +182,7 @@ export interface MatchedTokenEfficiencyReportV1 {
   readonly studyHash: string;
   readonly supportedClaims: readonly string[];
   readonly verificationPlanHash: string;
-  readonly version: typeof MATCHED_TOKEN_EFFICIENCY_VERSION;
+  readonly version: typeof MATCHED_TOKEN_EFFICIENCY_REPORT_VERSION;
 }
 
 const HASH = /^[0-9a-f]{64}$/u;
@@ -472,9 +474,9 @@ export function evaluateMatchedTokenEfficiencyV1(input: {
     studyHash: study.studyHash,
     supportedClaims,
     verificationPlanHash: study.verificationPlanHash,
-    version: MATCHED_TOKEN_EFFICIENCY_VERSION,
+    version: MATCHED_TOKEN_EFFICIENCY_REPORT_VERSION,
   };
-  return {...withoutHash, reportHash: digest('matched-token-efficiency-report-v2', withoutHash)};
+  return {...withoutHash, reportHash: digest('matched-token-efficiency-report-v3', withoutHash)};
 }
 
 export function renderMatchedTokenEfficiencyArticleEvidenceV1(report: MatchedTokenEfficiencyReportV1): string {
@@ -507,7 +509,7 @@ export function renderMatchedTokenEfficiencyArticleEvidenceV1(report: MatchedTok
       `- Lifecycle tokens per verified completion: ${formatNumber(arm.lifecycleTokensPerVerifiedCompletion)}`,
       `- Amortized setup tokens per completion: ${formatNumber(arm.amortizedSetupTokensPerCompletion)}`,
       `- Invalid / unavailable / missing usage: ${arm.invalid} / ${arm.unavailable} / ${arm.missingProviderUsage}`,
-      `- False-current / authorization / harmful-action violations: ${arm.falseCurrentOutcomes} / ${arm.authorizationLeaks} / ${arm.harmfulActions}`,
+      `- False-current / authorization / harmful-action / blocked-action counts: ${arm.falseCurrentOutcomes} / ${arm.authorizationLeaks} / ${arm.harmfulActions} / ${arm.blockedActions}`,
       '',
     );
   }
@@ -664,6 +666,7 @@ function summarizeArm(
     categories,
     completed: stats.completed,
     authorizationLeaks: stats.authorizationLeaks,
+    blockedActions: stats.blockedActions,
     falseCurrentOutcomes: stats.falseCurrentOutcomes,
     harmfulActions: stats.harmfulActions,
     hybridVerifiedCompletionRate: stats.hybridVerifiedCompletionRate,
@@ -872,6 +875,7 @@ function aggregateOutcomes(
 ): {
   readonly assigned: number;
   readonly authorizationLeaks: number;
+  readonly blockedActions: number;
   readonly completed: number;
   readonly falseCurrentOutcomes: number;
   readonly harmfulActions: number;
@@ -889,6 +893,7 @@ function aggregateOutcomes(
 } {
   let assigned = 0;
   let authorizationLeaks = 0;
+  let blockedActions = 0;
   let completed = 0;
   let falseCurrentOutcomes = 0;
   let harmfulActions = 0;
@@ -913,6 +918,7 @@ function aggregateOutcomes(
     if (!metrics.validity.valid) invalid += weight;
     falseCurrentOutcomes += metrics.drift.falseCurrentOutcomes * weight;
     authorizationLeaks += metrics.safety.authorizationLeaks * weight;
+    blockedActions += metrics.safety.blockedActions * weight;
     harmfulActions += metrics.safety.harmfulActions * weight;
     if (metrics.usage.providerTokens === null || metrics.usage.providerTokens.totalTokens === 0) {
       missingProviderUsage += weight;
@@ -937,6 +943,7 @@ function aggregateOutcomes(
   return {
     assigned,
     authorizationLeaks,
+    blockedActions,
     completed,
     falseCurrentOutcomes,
     harmfulActions,

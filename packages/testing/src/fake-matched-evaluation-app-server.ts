@@ -37,6 +37,23 @@ lines.on('line', line => {
       thread: {id: threadId},
     });
     notify('thread/started', {thread: {id: threadId}});
+    if (process.argv.includes('--failed-context')) {
+      notify('mcpServer/startupStatus/updated', {threadId, name: 'matched_evaluation_context', status: 'ready'});
+    }
+    return;
+  }
+  if (request.method === 'mcpServerStatus/list') {
+    respond(request.id, {
+      data: [
+        {
+          name: 'matched_evaluation_context',
+          tools: {context_brief: {name: 'context_brief'}},
+          resources: [],
+          resourceTemplates: [],
+        },
+      ],
+      nextCursor: null,
+    });
     return;
   }
   if (request.method === 'turn/start') {
@@ -73,6 +90,22 @@ lines.on('line', line => {
       },
       turnId,
     });
+    if (!judge && process.argv.includes('--failed-context')) {
+      const failed = {
+        id: 'context_failed',
+        type: 'mcpToolCall',
+        server: 'matched_evaluation_context',
+        tool: 'context_brief',
+        status: 'failed',
+        error: null,
+        result: {
+          isError: true,
+          content: [{type: 'text', text: 'Context request task differs from the sealed task prompt.'}],
+        },
+      };
+      notify('item/started', {item: {...failed, status: 'inProgress', result: null}, threadId, turnId});
+      notify('item/completed', {item: failed, threadId, turnId});
+    }
     const item = {
       id: `item_matched_${turnIndex}`,
       phase: 'final_answer',

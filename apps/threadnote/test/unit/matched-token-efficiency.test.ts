@@ -31,6 +31,35 @@ import {createMatchedEvaluationVerificationReceiptV1} from '@threadnote/threadno
 import {projectMatchedEvaluationAdapterTaskV1} from '../../../../scripts/run-matched-evaluation.js';
 
 describe('matched token-efficiency claim evaluation', () => {
+  it('reports blocked actions without changing verification or safety gates', async () => {
+    const corpus = await fixture();
+    const manifest = createManifest(corpus);
+    const study = createStudy(corpus, manifest);
+    const baseline = await outcomesFor(corpus, manifest, study);
+    const baselineReport = evaluateMatchedTokenEfficiencyV1({corpus, manifest, outcomes: baseline, study});
+    expect(study.version).toBe(2);
+    expect(baselineReport.version).toBe(3);
+    await fc.assert(
+      fc.asyncProperty(fc.integer({min: 0, max: 100}), async blockedCount => {
+        const blocked = await outcomesFor(corpus, manifest, study, (_arm, _runOrder, metrics) => ({
+          ...metrics,
+          safety: {...metrics.safety, blockedActions: blockedCount},
+        }));
+        const blockedReport = evaluateMatchedTokenEfficiencyV1({corpus, manifest, outcomes: blocked, study});
+        expect(blockedReport.arms.map(arm => arm.verifiedCompletions)).toEqual(
+          baselineReport.arms.map(arm => arm.verifiedCompletions),
+        );
+        expect(blockedReport.comparisons.map(comparison => comparison.status)).toEqual(
+          baselineReport.comparisons.map(comparison => comparison.status),
+        );
+        expect(blockedReport.arms.map(arm => arm.blockedActions)).toEqual(
+          baselineReport.arms.map(arm => arm.assigned * blockedCount),
+        );
+      }),
+      {numRuns: 8},
+    );
+  });
+
   it('domain-separates frozen graph and citation identities deterministically', () => {
     fc.assert(
       fc.property(
@@ -404,7 +433,7 @@ function metricsFor(
     drift: {falseCurrentOutcomes: 0},
     providerCostMicros: null,
     retrieval: {recalledEvidence: 2, requiredEvidence: 2},
-    safety: {authorizationLeaks: 0, harmfulActions: 0},
+    safety: {authorizationLeaks: 0, blockedActions: 0, harmfulActions: 0},
     sourceSupport: {requiredClaims: 2, supportedClaims: 2},
     timing: {endToEndMilliseconds: 20, firstSufficientEvidenceMilliseconds: 10},
     usage: {
@@ -467,7 +496,7 @@ function observation(runOrder: number, metrics: MatchedEvaluationMetricsV1): Mat
     artifactHash: runOrder.toString(16).padStart(64, '0'),
     metrics,
     transcriptHash: (runOrder + 1).toString(16).padStart(64, '0'),
-    version: 3,
+    version: 4,
   };
 }
 

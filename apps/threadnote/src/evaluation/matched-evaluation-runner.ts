@@ -18,7 +18,7 @@ import {
   type MatchedEvaluationVerificationReceiptV1,
 } from './matched-verification.js';
 
-export const MATCHED_EVALUATION_OUTCOME_VERSION = 3 as const;
+export const MATCHED_EVALUATION_OUTCOME_VERSION = 4 as const;
 export const MATCHED_EVALUATION_UNAVAILABLE_REASONS = [
   'runtime-not-configured',
   'adapter-missing',
@@ -69,6 +69,8 @@ export interface MatchedEvaluationMetricsV1 {
   };
   readonly safety: {
     readonly authorizationLeaks: number;
+    /** Policy-denied action attempts; distinct from judge-observed harmful actions. */
+    readonly blockedActions: number;
     readonly harmfulActions: number;
   };
   readonly sourceSupport: {
@@ -159,6 +161,9 @@ export interface MatchedEvaluationArmSummaryV1 {
     readonly wilson95: {readonly high: number; readonly low: number} | null;
   };
   readonly falseCurrentOutcomes: number;
+  readonly blockedActions: number;
+  readonly harmfulActions: number;
+  readonly authorizationLeaks: number;
   readonly invalid: number;
   readonly retrievalRecall: number | null;
   readonly sourceSupportRate: number | null;
@@ -173,7 +178,7 @@ const MAXIMUM_LEDGER_BYTES = 16 * 1_024 * 1_024;
 export function parseMatchedEvaluationObservationV1(value: unknown): MatchedEvaluationObservationV1 {
   const observation = object(value, 'observation');
   exactKeys(observation, ['artifactHash', 'metrics', 'transcriptHash', 'version'], 'observation');
-  if (observation.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('observation version must be 3');
+  if (observation.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('observation version must be 4');
   return {
     artifactHash: matchingString(observation.artifactHash, HASH, 'observation artifact hash'),
     metrics: parseMetrics(observation.metrics),
@@ -256,7 +261,7 @@ export function parseMatchedEvaluationOutcomeV1(value: unknown): MatchedEvaluati
     ],
     'outcome',
   );
-  if (outcome.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('outcome version must be 2');
+  if (outcome.version !== MATCHED_EVALUATION_OUTCOME_VERSION) invalid('outcome version must be 4');
   const status = literal(outcome.status, ['completed', 'unavailable'] as const, 'outcome status');
   let unavailable: MatchedEvaluationOutcomeV1['unavailable'] = null;
   if (outcome.unavailable !== null) {
@@ -477,7 +482,7 @@ function createOutcome(input: {
 }
 
 function matchedEvaluationOutcomeHashV1(input: Omit<MatchedEvaluationOutcomeV1, 'outcomeHash'>): string {
-  return sha256HexSync(`matched-evaluation-outcome-v3\0${JSON.stringify(input)}\n`);
+  return sha256HexSync(`matched-evaluation-outcome-v4\0${JSON.stringify(input)}\n`);
 }
 
 function assertCorpusMatchesManifest(corpus: MatchedEvaluationCorpusV1, manifest: MatchedEvaluationManifestV1): void {
@@ -546,6 +551,9 @@ function summarizeArm(
       wilson95: count === 0 ? null : wilson95(correctnessPasses, count),
     },
     falseCurrentOutcomes: sum(metrics => metrics.drift.falseCurrentOutcomes),
+    blockedActions: sum(metrics => metrics.safety.blockedActions),
+    harmfulActions: sum(metrics => metrics.safety.harmfulActions),
+    authorizationLeaks: sum(metrics => metrics.safety.authorizationLeaks),
     invalid: completed.length - valid.length,
     retrievalRecall: ratio(
       metrics => metrics.retrieval.recalledEvidence,
@@ -593,7 +601,7 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
   exactKeys(drift, ['falseCurrentOutcomes'], 'drift metrics');
   const retrieval = boundedPair(metrics.retrieval, 'requiredEvidence', 'recalledEvidence', 'retrieval');
   const safety = object(metrics.safety, 'safety metrics');
-  exactKeys(safety, ['authorizationLeaks', 'harmfulActions'], 'safety metrics');
+  exactKeys(safety, ['authorizationLeaks', 'blockedActions', 'harmfulActions'], 'safety metrics');
   const sourceSupport = boundedPair(metrics.sourceSupport, 'requiredClaims', 'supportedClaims', 'source support');
   const timing = object(metrics.timing, 'timing metrics');
   exactKeys(timing, ['endToEndMilliseconds', 'firstSufficientEvidenceMilliseconds'], 'timing metrics');
@@ -638,6 +646,7 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
     retrieval: {recalledEvidence: retrieval.subset, requiredEvidence: retrieval.total},
     safety: {
       authorizationLeaks: nonNegativeInteger(safety.authorizationLeaks, 'authorization leaks'),
+      blockedActions: nonNegativeInteger(safety.blockedActions, 'blocked actions'),
       harmfulActions: nonNegativeInteger(safety.harmfulActions, 'harmful actions'),
     },
     sourceSupport: {requiredClaims: sourceSupport.total, supportedClaims: sourceSupport.subset},

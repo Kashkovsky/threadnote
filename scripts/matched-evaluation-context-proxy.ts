@@ -13,7 +13,7 @@ import {EffectSchemaSdkTools} from '@threadnote/threadnote/mcp/effect_schema_sdk
 
 export const MATCHED_EVALUATION_CONTEXT_PACKET_ENV = 'MATCHED_EVALUATION_CONTEXT_PACKET' as const;
 export const MATCHED_EVALUATION_CONTEXT_SERVER_NAME = 'matched_evaluation_context' as const;
-export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 1 as const;
+export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 2 as const;
 
 export interface MatchedEvaluationContextProxyPacketV1 {
   readonly budgetTokens: number;
@@ -46,7 +46,6 @@ export interface MatchedEvaluationContextProxyRequestV1 {
   readonly codeRefs?: string | readonly string[];
   readonly mode?: 'brief' | 'explain' | 'impact' | 'locate' | 'trace';
   readonly project?: string;
-  readonly task: string;
 }
 
 const HASH = /^[0-9a-f]{64}$/u;
@@ -57,13 +56,16 @@ const MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
 const NonEmptyText = Schema.String.check(Schema.isMinLength(1));
 const PathOrId = NonEmptyText.check(Schema.isMaxLength(4_096));
 
+export function hashMatchedEvaluationContextContent(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 export const MATCHED_EVALUATION_CONTEXT_INPUT_SCHEMA = Schema.Struct({
   budgetTokens: Schema.optionalKey(Schema.Int.check(Schema.isBetween({minimum: 800, maximum: 1_500}))),
   callerCwd: PathOrId,
   codeRefs: Schema.optionalKey(Schema.Union([PathOrId, Schema.Array(PathOrId).check(Schema.isMaxLength(8))])),
   mode: Schema.optionalKey(Schema.Literals(MODES)),
   project: Schema.optionalKey(NonEmptyText.check(Schema.isMaxLength(128))),
-  task: NonEmptyText.check(Schema.isMaxLength(4_096)),
 });
 
 export async function handleMatchedEvaluationContextRequest(
@@ -72,7 +74,7 @@ export async function handleMatchedEvaluationContextRequest(
 ): Promise<{
   readonly content: readonly [{readonly text: string; readonly type: 'text'}];
   readonly meta: Readonly<Record<string, unknown>>;
-  readonly structuredContent: Record<string, unknown>;
+  readonly structuredContent?: never;
 }> {
   const packet = parseMatchedEvaluationContextProxyPacketV1(packetInput);
   const request = Schema.decodeUnknownSync(MATCHED_EVALUATION_CONTEXT_INPUT_SCHEMA, {
@@ -84,7 +86,6 @@ export async function handleMatchedEvaluationContextRequest(
   if (!isContained(dirname(packet.repositoryRoot), preparedHome) || isContained(packet.repositoryRoot, preparedHome)) {
     throw new Error('Prepared Threadnote home escaped its isolated private root.');
   }
-  if (request.task !== packet.prompt) throw new Error('Context request task differs from the sealed task prompt.');
   if (request.project !== undefined && request.project !== packet.project) {
     throw new Error('Context request project differs from the prepared project.');
   }
@@ -102,22 +103,20 @@ export async function handleMatchedEvaluationContextRequest(
     codeRefs,
     mode: request.mode ?? 'brief',
   });
-  const answer =
-    typeof structuredContent.answer === 'string' && structuredContent.answer.length > 0
-      ? structuredContent.answer
-      : JSON.stringify(structuredContent);
+  const responseText = JSON.stringify(structuredContent);
   return {
-    content: [{text: answer, type: 'text'}],
+    content: [{text: responseText, type: 'text'}],
     meta: {
       matchedEvaluation: {
         ...packet.expectedContext,
         graphReady: true,
         runNonce: packet.runNonce,
         runtimeManifestSha256: packet.runtimeManifestSha256,
+        contentResponseSha256: hashMatchedEvaluationContextContent(responseText),
+        frozenPromptSha256: hashMatchedEvaluationContextContent(packet.prompt),
         version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
       },
     },
-    structuredContent,
   };
 }
 
@@ -142,7 +141,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'threadnoteUser',
     'version',
   ]);
-  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 1');
+  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 2');
   const expected = object(packet.expectedContext, 'expected context');
   exactKeys(expected, [
     'graphContentHash',
@@ -363,7 +362,7 @@ export async function runMatchedEvaluationContextProxy(): Promise<void> {
     },
     async request => {
       const result = await handleMatchedEvaluationContextRequest(packet, request);
-      return {content: [...result.content], _meta: result.meta, structuredContent: result.structuredContent};
+      return {content: [...result.content], _meta: result.meta};
     },
   );
   tools.install(server);

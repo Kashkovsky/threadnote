@@ -308,6 +308,9 @@ describe('matched Threadnote, reference, and files evaluation', () => {
         },
       }),
     ).toThrow('provider token components are inconsistent');
+    expect(() => parseMatchedEvaluationObservationV1({...observation(0), version: 3})).toThrow(
+      'observation version must be 4',
+    );
   });
 });
 
@@ -368,7 +371,7 @@ function observation(runOrder: number): MatchedEvaluationObservationV1 {
     artifactHash: runOrder.toString(16).padStart(64, '0'),
     metrics: metrics(),
     transcriptHash: (runOrder + 1).toString(16).padStart(64, '0'),
-    version: 3,
+    version: 4,
   };
 }
 
@@ -381,7 +384,7 @@ function metrics(): MatchedEvaluationMetricsV1 {
     drift: {falseCurrentOutcomes: 0},
     providerCostMicros: null,
     retrieval: {recalledEvidence: 2, requiredEvidence: 2},
-    safety: {authorizationLeaks: 0, harmfulActions: 0},
+    safety: {authorizationLeaks: 0, blockedActions: 0, harmfulActions: 0},
     sourceSupport: {requiredClaims: 2, supportedClaims: 2},
     timing: {endToEndMilliseconds: 20, firstSufficientEvidenceMilliseconds: 10},
     usage: {
