@@ -236,15 +236,30 @@ export async function handleMatchedEvaluationContextRequest(
     mode: packet.mode,
   });
   const responseText = JSON.stringify(structuredContent);
-  if (packet.mode === 'resume' && packet.expectedResume !== null) {
-    if (
-      !responseText.includes(packet.expectedResume.automaticHandoffUri) ||
-      !responseText.includes(packet.expectedResume.resumeEvidenceMarker)
-    ) {
-      throw new Error('Resume Context Brief omitted the sealed automatic handoff evidence.');
-    }
+  if (
+    packet.mode === 'resume' &&
+    packet.expectedResume !== null &&
+    !hasExpectedResumeDelivery(structuredContent, packet.expectedResume.automaticHandoffUri)
+  ) {
+    throw new Error('Resume Context Brief omitted the sealed automatic handoff URI or continuation card.');
   }
   return receipt(packet, 'context_brief', requestInput, responseText, true);
+}
+
+function hasExpectedResumeDelivery(structuredContent: Record<string, unknown>, automaticHandoffUri: string): boolean {
+  if (!Array.isArray(structuredContent.activeHandoffs)) return false;
+  return structuredContent.activeHandoffs.some(candidate => {
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return false;
+    const handoff = candidate as Record<string, unknown>;
+    const card = handoff.continuationCard;
+    return (
+      handoff.uri === automaticHandoffUri &&
+      typeof card === 'object' &&
+      card !== null &&
+      !Array.isArray(card) &&
+      Object.values(card).some(value => typeof value === 'string' && value.trim().length > 0)
+    );
+  });
 }
 
 export async function handleMatchedEvaluationFollowupRequest(

@@ -10,6 +10,7 @@ import {
   assertMatchedEvaluationFollowupBudgetV1,
   handleMatchedEvaluationContextRequest,
   handleMatchedEvaluationFollowupRequest,
+  hashExpectedResume,
   hashMatchedEvaluationContextContent,
   hashMatchedEvaluationContextRequest,
   matchedEvaluationContextTools,
@@ -197,15 +198,50 @@ describe('matched evaluation context proxy', () => {
       ...fixture.packet,
       expectedResume: {automaticHandoffUri: 'prepared context', resumeEvidenceMarker: 'implementation contract'},
     };
-    await expect(
-      handleMatchedEvaluationContextRequest(packet, {callerCwd: fixture.repository, mode: 'resume'}),
-    ).resolves.toMatchObject({meta: {matchedEvaluation: {expectedResumeHash: expect.any(String)}}});
+    const delivered = await handleMatchedEvaluationContextRequest(packet, {
+      callerCwd: fixture.repository,
+      mode: 'resume',
+    });
+    const differentlySealed = await handleMatchedEvaluationContextRequest(
+      {...packet, expectedResume: {...packet.expectedResume, resumeEvidenceMarker: 'different sealed marker'}},
+      {callerCwd: fixture.repository, mode: 'resume'},
+    );
+    const differentlySealedResume = {...packet.expectedResume, resumeEvidenceMarker: 'different sealed marker'};
+    expect(delivered.meta).toMatchObject({
+      matchedEvaluation: {expectedResumeHash: hashExpectedResume(packet.expectedResume)},
+    });
+    expect(differentlySealed.meta).toMatchObject({
+      matchedEvaluation: {expectedResumeHash: hashExpectedResume(differentlySealedResume)},
+    });
+    expect(hashExpectedResume(packet.expectedResume)).not.toBe(hashExpectedResume(differentlySealedResume));
     await expect(
       handleMatchedEvaluationContextRequest(
         {...packet, expectedResume: {automaticHandoffUri: 'absent', resumeEvidenceMarker: 'implementation contract'}},
         {callerCwd: fixture.repository, mode: 'resume'},
       ),
-    ).rejects.toThrow('omitted the sealed automatic handoff evidence');
+    ).rejects.toThrow('omitted the sealed automatic handoff URI or continuation card');
+
+    const incomplete = await contextFixture(roots, 'resume prompt', 'graph-only', 'disabled', 'resume', {
+      ...preparedEvidence,
+      activeHandoffs: [{uri: 'prepared context'}],
+    });
+    await expect(
+      handleMatchedEvaluationContextRequest(incomplete.packet, {
+        callerCwd: incomplete.repository,
+        mode: 'resume',
+      }),
+    ).rejects.toThrow('omitted the sealed automatic handoff URI or continuation card');
+
+    const empty = await contextFixture(roots, 'resume prompt', 'graph-only', 'disabled', 'resume', {
+      ...preparedEvidence,
+      activeHandoffs: [{continuationCard: {nextStep: '   '}, uri: 'prepared context'}],
+    });
+    await expect(
+      handleMatchedEvaluationContextRequest(empty.packet, {
+        callerCwd: empty.repository,
+        mode: 'resume',
+      }),
+    ).rejects.toThrow('omitted the sealed automatic handoff URI or continuation card');
   });
 
   it('rejects tampered, rebound, and escaped runtime manifests', async () => {
@@ -350,7 +386,8 @@ describe('matched evaluation context proxy', () => {
 
 const preparedEvidence = {
   answer: 'prepared context',
-  graph: {cards: [{path: 'service.ts', summary: 'implementation contract'}]},
+  activeHandoffs: [{continuationCard: {nextStep: 'continue the prepared implementation'}, uri: 'prepared context'}],
+  graph: {cards: [{path: 'service.ts', summary: 'current implementation evidence'}]},
   durableDecisions: [{summary: 'linked memory contract'}],
   coverage: {gaps: []},
 };
@@ -361,6 +398,7 @@ async function contextFixture(
   detail: 'compact' | 'graph-only' | 'source' = 'graph-only',
   memoryAccess: 'disabled' | 'linked' = 'disabled',
   mode: 'brief' | 'resume' = 'brief',
+  evidence: unknown = preparedEvidence,
 ): Promise<{
   readonly manifest: string;
   readonly packet: MatchedEvaluationContextProxyPacketV1;
@@ -391,14 +429,17 @@ async function contextFixture(
   const seenResponseFormatPath = join(root, 'seen-response-format');
   await writeFile(
     executable,
-    fakeThreadnoteMcpProgram({
-      project,
-      repository,
-      runNonce,
-      seenModePath,
-      seenResponseFormatPath,
-      seenTaskPath,
-    }),
+    fakeThreadnoteMcpProgram(
+      {
+        project,
+        repository,
+        runNonce,
+        seenModePath,
+        seenResponseFormatPath,
+        seenTaskPath,
+      },
+      evidence,
+    ),
     {mode: 0o700},
   );
   await chmod(executable, 0o700);
@@ -443,19 +484,22 @@ async function contextFixture(
   };
 }
 
-function fakeThreadnoteMcpProgram(input: {
-  readonly project: string;
-  readonly repository: string;
-  readonly runNonce: string;
-  readonly seenModePath: string;
-  readonly seenResponseFormatPath: string;
-  readonly seenTaskPath: string;
-}): string {
+function fakeThreadnoteMcpProgram(
+  input: {
+    readonly project: string;
+    readonly repository: string;
+    readonly runNonce: string;
+    readonly seenModePath: string;
+    readonly seenResponseFormatPath: string;
+    readonly seenTaskPath: string;
+  },
+  evidence: unknown,
+): string {
   return `#!${process.execPath}
 import {readFileSync, writeFileSync} from 'node:fs';
 
 const expected = ${JSON.stringify(input)};
-const preparedEvidence = ${JSON.stringify(preparedEvidence)};
+const preparedEvidence = ${JSON.stringify(evidence)};
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
 let buffer = '';
 
