@@ -784,6 +784,34 @@ The body remains ordinary **Markdown**.
     }
   });
 
+  it('takes new installations directly through agent setup and the first task', () => {
+    const articles = docsSections.find(section => section.id === 'getting-started')?.articles ?? [];
+    const installationIndex = articles.findIndex(article => article.id === 'installation');
+    expect(installationIndex).toBeGreaterThanOrEqual(0);
+    expect(articles.slice(installationIndex, installationIndex + 3).map(article => article.id)).toEqual([
+      'installation',
+      'connect-an-agent',
+      'first-workflow',
+    ]);
+    const installation = articles[installationIndex];
+    const content = JSON.stringify(installation);
+    expect(content).toContain('[Connect a coding agent](connect-an-agent/)');
+    expect(content).toContain('[work one task with evidence](first-workflow/)');
+    expect(content).toContain('[upgrade guide](upgrade-from-4/)');
+    expect(content).toContain('Installing Threadnote does not connect or change any coding agent');
+    expect(content).toContain('preview setup, and apply it');
+    expect(content).toContain('Restart the agent afterward');
+    expect(content).toContain('A second agent and team sharing are optional');
+    expect(installation.body).toContainEqual({
+      type: 'code',
+      language: 'powershell',
+      code: 'irm https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.ps1 | iex\nthreadnote doctor',
+    });
+    for (const id of ['connect-an-agent', 'first-workflow', 'upgrade-from-4']) {
+      expect(articles.some(article => article.id === id)).toBe(true);
+    }
+  });
+
   it('orders release and article updates deterministically without mutating the input', () => {
     fc.assert(
       fc.property(
