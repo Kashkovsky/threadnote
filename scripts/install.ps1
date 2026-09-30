@@ -10,7 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repository = if ($env:THREADNOTE_REPOSITORY) { $env:THREADNOTE_REPOSITORY } else { 'Kashkovsky/threadnote' }
+$repository = if ($env:THREADNOTE_REPOSITORY) { $env:THREADNOTE_REPOSITORY } else { 'threadnote/threadnote' }
 $officialRepositories = @('Kashkovsky/threadnote', 'threadnote/threadnote')
 $channel = if ($Beta) { 'beta' } elseif ($env:THREADNOTE_CHANNEL) { $env:THREADNOTE_CHANNEL } else { 'latest' }
 $releaseSource = if ($env:THREADNOTE_RELEASE_SOURCE) {

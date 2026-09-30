@@ -142,8 +142,8 @@ const benchmarkWorktreeReadiness = Effect.scoped(
         warmups: options.warmups,
       },
       source: {
-        repository: 'Kashkovsky/threadnote',
-        repositoryUrl: 'https://github.com/Kashkovsky/threadnote',
+        repository: 'threadnote/threadnote',
+        repositoryUrl: 'https://github.com/threadnote/threadnote',
         fixtureCommit: candidateCommit,
         candidate: {commit: candidateCommit, ref: options.candidateRef},
         baseline: {commit: baselineCommit, ref: baselineRef},

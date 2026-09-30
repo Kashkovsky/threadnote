@@ -148,7 +148,7 @@ esac
           PATH: `${officialToolsRoot}:/usr/bin:/bin:/usr/sbin:/sbin`,
           THREADNOTE_BIN_DIR: officialBinRoot,
           THREADNOTE_INSTALL_ROOT: officialInstallRoot,
-          THREADNOTE_REPOSITORY: 'threadnote/threadnote',
+          THREADNOTE_REPOSITORY: 'Kashkovsky/threadnote',
           THREADNOTE_TEST_ARTIFACT: artifact,
           THREADNOTE_TEST_CHECKSUM: officialChecksum,
           THREADNOTE_TEST_CODESIGN_FAIL: '1',

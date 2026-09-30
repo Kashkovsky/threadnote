@@ -57,6 +57,7 @@ describe('Windows platform contracts', () => {
   it('accepts only an explicitly declared unsigned Windows payload and warns the user', async () => {
     const installer = await Bun.file(new URL('../../../../scripts/install.ps1', import.meta.url)).text();
 
+    expect(installer).toContain("else { 'threadnote/threadnote' }");
     expect(installer).toContain('$metadataVersion = $metadata.version');
     expect(installer).toContain('$metadataVersion -isnot [string]');
     expect(installer).toContain('$metadataVersion -cne $version');

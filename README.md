@@ -7,7 +7,7 @@
 
 # Threadnote
 
-[![release](https://img.shields.io/github/v/release/Kashkovsky/threadnote?include_prereleases&label=release)](https://github.com/Kashkovsky/threadnote/releases) [![CI](https://img.shields.io/github/actions/workflow/status/Kashkovsky/threadnote/ci.yml?branch=main&label=CI)](https://github.com/Kashkovsky/threadnote/actions/workflows/ci.yml) [![downloads](https://img.shields.io/github/downloads/Kashkovsky/threadnote/total?label=downloads)](https://github.com/Kashkovsky/threadnote/releases) [![license](https://img.shields.io/github/license/Kashkovsky/threadnote)](./LICENSE)
+[![release](https://img.shields.io/github/v/release/threadnote/threadnote?include_prereleases&label=release)](https://github.com/threadnote/threadnote/releases) [![CI](https://img.shields.io/github/actions/workflow/status/threadnote/threadnote/ci.yml?branch=main&label=CI)](https://github.com/threadnote/threadnote/actions/workflows/ci.yml) [![downloads](https://img.shields.io/github/downloads/threadnote/threadnote/total?label=downloads)](https://github.com/threadnote/threadnote/releases) [![license](https://img.shields.io/github/license/threadnote/threadnote)](./LICENSE)
 
 > Stop explaining the same codebase to every coding agent.
 
@@ -50,13 +50,13 @@ Python service, database server, hosted organization account, or background daem
 Install on macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh
 ```
 
 On Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.ps1 | iex
 ```
 
 Then open the repository you want Threadnote to understand, choose a managed surface from the catalog, preview setup,

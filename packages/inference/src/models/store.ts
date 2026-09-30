@@ -367,7 +367,7 @@ function makeLocalModelStore(
 export function modelDownloadUrl(manifest: LocalModelManifest): string {
   const threadnoteRelease = THREADNOTE_MODEL_RELEASES_BY_SHA256[manifest.sha256];
   if (threadnoteRelease) {
-    return `https://github.com/Kashkovsky/threadnote/releases/download/${threadnoteRelease}/${manifest.sha256}.gguf`;
+    return `https://github.com/threadnote/threadnote/releases/download/${threadnoteRelease}/${manifest.sha256}.gguf`;
   }
   const repository = manifest.repository.split('/').filter(Boolean).map(encodeURIComponent).join('/');
   const file = manifest.file.split('/').filter(Boolean).map(encodeURIComponent).join('/');

@@ -8,9 +8,9 @@ import {
   CODE_MEMORY_LINK_SCALE_APPROVED_BUDGET,
   CODE_MEMORY_LINK_SCALE_APPROVED_FIXTURE_HASH,
   CODE_MEMORY_LINK_SCALE_GITHUB_JOB,
+  CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY,
   CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
   CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID,
-  CODE_MEMORY_LINK_SCALE_TRANSFERRED_GITHUB_REPOSITORY,
   CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS,
   CODE_MEMORY_LINK_SCALE_SCENARIOS,
   codeMemoryLinkScaleCandidateBindingV1,
@@ -207,14 +207,14 @@ describe('code-memory-link inverse-selector scale contract', () => {
     ).toEqual(artifact);
   });
 
-  it('accepts transferred-repository evidence only when the workflow ref moves with it', () => {
+  it('accepts legacy-repository evidence only when the workflow ref moves with it', () => {
     const baselineIdentity = releaseIdentity();
-    const workflowRef = `${CODE_MEMORY_LINK_SCALE_TRANSFERRED_GITHUB_REPOSITORY}/.github/workflows/benchmarks.yml@refs/heads/release/5.0.0`;
+    const workflowRef = `${CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY}/.github/workflows/benchmarks.yml@refs/heads/release/5.0.0`;
     const identity = {
       ...baselineIdentity,
       github: {
         ...baselineIdentity.github,
-        repository: CODE_MEMORY_LINK_SCALE_TRANSFERRED_GITHUB_REPOSITORY,
+        repository: CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY,
         workflowRef,
       },
     };
@@ -223,7 +223,7 @@ describe('code-memory-link inverse-selector scale contract', () => {
       ...baselineRunnerBinding,
       github: {
         ...baselineRunnerBinding.github,
-        repository: CODE_MEMORY_LINK_SCALE_TRANSFERRED_GITHUB_REPOSITORY,
+        repository: CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY,
         workflowRef,
       },
     };

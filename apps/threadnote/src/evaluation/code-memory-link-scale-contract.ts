@@ -7,11 +7,12 @@ export const CODE_MEMORY_LINK_SCALE_ID = 'code-memory-link-inverse-scale-v1' as 
 export const CODE_MEMORY_LINK_SCALE_ARTIFACT_ROOT =
   'apps/threadnote/test/evaluation/retained/code-memory-link-scale' as const;
 export const CODE_MEMORY_LINK_SCALE_RELEASE_RUNNER_CLASS = 'github-hosted-macos-15-ARM64' as const;
-export const CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY = 'Kashkovsky/threadnote' as const;
-export const CODE_MEMORY_LINK_SCALE_TRANSFERRED_GITHUB_REPOSITORY = 'threadnote/threadnote' as const;
+export const CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY = 'threadnote/threadnote' as const;
+export const CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY = 'Kashkovsky/threadnote' as const;
+export const CODE_MEMORY_LINK_SCALE_TRANSFERRED_GITHUB_REPOSITORY = CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY;
 export const CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORIES = [
   CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY,
-  CODE_MEMORY_LINK_SCALE_TRANSFERRED_GITHUB_REPOSITORY,
+  CODE_MEMORY_LINK_SCALE_LEGACY_GITHUB_REPOSITORY,
 ] as const;
 export const CODE_MEMORY_LINK_SCALE_GITHUB_REPOSITORY_ID = '1230070449' as const;
 export const CODE_MEMORY_LINK_SCALE_GITHUB_JOB = 'code-memory-link-inverse-scale' as const;

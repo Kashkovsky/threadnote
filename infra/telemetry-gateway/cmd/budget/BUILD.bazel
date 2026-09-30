@@ -6,7 +6,7 @@ export_package_files(["**"])
 go_library(
     name = "budget_lib",
     srcs = ["main.go"],
-    importpath = "github.com/Kashkovsky/threadnote/infra/telemetry-gateway/cmd/budget",
+    importpath = "github.com/threadnote/threadnote/infra/telemetry-gateway/cmd/budget",
     visibility = ["//visibility:private"],
     deps = ["//infra/telemetry-gateway/internal/budget"],
 )

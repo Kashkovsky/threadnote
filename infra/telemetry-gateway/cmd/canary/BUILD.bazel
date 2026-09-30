@@ -6,7 +6,7 @@ export_package_files(["**"])
 go_library(
     name = "canary_lib",
     srcs = ["main.go"],
-    importpath = "github.com/Kashkovsky/threadnote/infra/telemetry-gateway/cmd/canary",
+    importpath = "github.com/threadnote/threadnote/infra/telemetry-gateway/cmd/canary",
     visibility = ["//visibility:private"],
     deps = [
         "@io_opentelemetry_go_proto_otlp//collector/trace/v1:trace",

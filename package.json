@@ -6,11 +6,11 @@
   "license": "AGPL-3.0-or-later",
   "homepage": "https://threadnote.io/",
   "bugs": {
-    "url": "https://github.com/Kashkovsky/threadnote/issues"
+    "url": "https://github.com/threadnote/threadnote/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Kashkovsky/threadnote.git"
+    "url": "git+https://github.com/threadnote/threadnote.git"
   },
   "packageManager": "bun@1.4.2",
   "keywords": [
