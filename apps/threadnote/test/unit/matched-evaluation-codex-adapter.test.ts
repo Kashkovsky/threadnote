@@ -302,6 +302,18 @@ describe('matched evaluation Codex adapter', () => {
     expect(() =>
       assertMatchedEvaluationContextDeliveryV1(
         [
+          base.event,
+          {
+            ...missingFailurePayload,
+            params: {item: {...missingFailurePayload.params.item, error: {message: 'ambiguous failure'}}},
+          },
+        ],
+        base.expected,
+      ),
+    ).toThrow('reported an error');
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1(
+        [
           {
             ...base.event,
             params: {item: {...base.item, error: null, result: null, status: 'failed'}},
@@ -310,6 +322,55 @@ describe('matched evaluation Codex adapter', () => {
         base.expected,
       ),
     ).toThrow('context_brief did not complete successfully');
+  });
+
+  it('retains a normalized optional budget rejection after the allowed context was delivered', () => {
+    const base = contextDelivery();
+    const graph = contextFollowup(base, 'inspect_code_graph', {query: 'service'}, 'completed', false);
+    const rejected = contextFollowup(
+      {...base, event: graph.event},
+      'inspect_code_graph',
+      {query: 'second query'},
+      'failed',
+      false,
+      'rejected-call',
+    );
+    const normalized = {
+      ...rejected.event,
+      params: {
+        item: {
+          ...rejected.item,
+          error: null,
+          result: {
+            content: [{type: 'text', text: 'Context follow-up call exceeds the sealed treatment budget.'}],
+            structuredContent: null,
+            _meta: null,
+          },
+        },
+      },
+    };
+
+    expect(
+      assertMatchedEvaluationContextDeliveryV1([base.event, graph.event, normalized], {
+        ...base.expected,
+        maximumFollowupCalls: 1,
+      }),
+    ).toEqual({
+      incompleteOptionalFailures: 1,
+      optionalFailures: 1,
+      version: 1,
+    });
+    for (const itemPatch of [
+      {error: {message: 'ambiguous failure'}},
+      {result: {...rejected.item.result, isError: 'yes'}},
+    ]) {
+      expect(() =>
+        assertMatchedEvaluationContextDeliveryV1(
+          [base.event, graph.event, {...normalized, params: {item: {...normalized.params.item, ...itemPatch}}}],
+          {...base.expected, maximumFollowupCalls: 1},
+        ),
+      ).toThrow();
+    }
   });
 
   it('counts declined command and edit attempts separately from executed actions', () => {

@@ -2374,6 +2374,9 @@ export function assertMatchedEvaluationContextDeliveryV1(
     if (tool === 'context_brief' && briefCount === 1 && status !== 'completed') {
       throw new Error('Context delivery failed: context_brief did not complete successfully.');
     }
+    if (call.error !== null && call.error !== undefined) {
+      throw new Error('Context delivery MCP item reported an error.');
+    }
     if (status === 'failed' && tool !== 'context_brief') {
       diagnostics.optionalFailures += 1;
       if (call.result === null || call.result === undefined) {
@@ -2382,14 +2385,30 @@ export function assertMatchedEvaluationContextDeliveryV1(
       }
     }
     const result = object(call.result, 'context delivery result');
-    const isError = result.isError === true;
-    if (status === 'completed' && call.error !== null && call.error !== undefined) {
-      throw new Error('Context delivery MCP item reported an error.');
+    if (result.isError !== null && result.isError !== undefined && typeof result.isError !== 'boolean') {
+      throw new Error('Context delivery MCP error flag is invalid.');
     }
+    const isError = result.isError === true;
     if (tool === 'context_brief' && briefCount === 1 && isError) {
       throw new Error('Context delivery failed: context_brief did not complete successfully.');
     }
-    if (status === 'failed' && !isError) throw new Error('Failed MCP context call lacks an error result.');
+    if (status === 'failed' && !isError) {
+      if (result.structuredContent !== null && result.structuredContent !== undefined) {
+        throw new Error('Failed MCP context call contains unexpected structured content.');
+      }
+      if (result._meta !== null && result._meta !== undefined) {
+        throw new Error('Failed MCP context call contains incomplete receipt metadata.');
+      }
+      if (!Array.isArray(result.content) || result.content.length !== 1) {
+        throw new Error('Failed MCP context call requires exactly one diagnostic text body.');
+      }
+      const body = object(result.content[0], 'failed context delivery body');
+      if (body.type !== 'text' || typeof body.text !== 'string' || body.text.trim().length === 0) {
+        throw new Error('Failed MCP context call requires a nonempty diagnostic text body.');
+      }
+      diagnostics.incompleteOptionalFailures += 1;
+      continue;
+    }
     if (result.structuredContent !== null && result.structuredContent !== undefined) {
       throw new Error('Context delivery contains a duplicated structured body.');
     }
@@ -2431,7 +2450,8 @@ export function assertMatchedEvaluationContextDeliveryV1(
     }
   }
   if (briefCount !== 1) throw new Error('Context delivery requires exactly one initial context_brief call.');
-  if (calls.length - 1 > expected.maximumFollowupCalls) {
+  const completedFollowupCalls = calls.slice(1).filter(call => call.status === 'completed').length;
+  if (completedFollowupCalls > expected.maximumFollowupCalls) {
     throw new Error('Context delivery exceeded the sealed follow-up call budget.');
   }
   if (
