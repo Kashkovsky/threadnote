@@ -99,7 +99,7 @@ def export_gguf(
         "license": "LicenseRef-Threadnote-Candidate-Review-Required",
         "minimumRamBytes": 512 * 1024 * 1024,
         "quantization": quantization,
-        "repository": "Kashkovsky/threadnote",
+        "repository": "threadnote/threadnote",
         "revision": provenance.manifest_revision,
         "role": "reranker",
         "runtime": {"nodeLlamaCpp": config.runtime_target.node_llama_cpp},

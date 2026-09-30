@@ -77,7 +77,7 @@ https://github.com/you/threadnote-docs-memory.git`,
           language: 'sh',
           code: `set -eu
 
-curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | \\
+curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | \\
   sh -s -- --no-start
 
 "$HOME/.local/bin/threadnote" cloud cursor bootstrap \\

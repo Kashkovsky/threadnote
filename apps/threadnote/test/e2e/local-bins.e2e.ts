@@ -417,7 +417,7 @@ describe('built self-contained distribution', () => {
       {PATH: ''},
     );
 
-    expect(output).toContain('GitHub issue preview: Kashkovsky/threadnote');
+    expect(output).toContain('GitHub issue preview: threadnote/threadnote');
     expect(output).toContain('Production logs included: yes');
     expect(output).toContain('Privacy-safe Threadnote production logs');
     expect(output).toContain('No issue created.');
@@ -444,7 +444,7 @@ describe('built self-contained distribution', () => {
         '  fi',
         'done',
         'cp "$request_path" "$THREADNOTE_TEST_ISSUE_CAPTURE"',
-        'printf "%s\\n" "https://github.com/Kashkovsky/threadnote/issues/987"',
+        'printf "%s\\n" "https://github.com/threadnote/threadnote/issues/987"',
         '',
       ].join('\n'),
       'utf8',
@@ -471,7 +471,7 @@ describe('built self-contained distribution', () => {
       readonly title?: string;
     };
 
-    expect(output).toContain('Created GitHub issue: https://github.com/Kashkovsky/threadnote/issues/987');
+    expect(output).toContain('Created GitHub issue: https://github.com/threadnote/threadnote/issues/987');
     expect(request.title).toBe('Approved packaged report');
     expect(request.body).toContain('The approved packaged report uses an authenticated GitHub CLI transport.');
     expect(request.body).toContain('Production logs included: yes');

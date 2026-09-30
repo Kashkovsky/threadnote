@@ -20,7 +20,7 @@ export function whatsNewReleaseHref(version: string): string {
   return siteHref(whatsNewReleasePath(version));
 }
 
-export const githubUrl = 'https://github.com/Kashkovsky/threadnote';
+export const githubUrl = 'https://github.com/threadnote/threadnote';
 export const xUrl = 'https://x.com/threadnoteio';
 
 export function setDocumentMeta(

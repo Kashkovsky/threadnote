@@ -222,7 +222,7 @@ export function loadLatestMajorWebsiteReleases(
       body: markdown,
       headline,
       highlights,
-      releaseUrl: `https://github.com/Kashkovsky/threadnote/releases/tag/${release.version}`,
+      releaseUrl: `https://github.com/threadnote/threadnote/releases/tag/${release.version}`,
       socialImage,
       socialImageAlt: `Threadnote ${release.version.replace(/^v/, '')} — ${headline}`,
       summary,

@@ -421,7 +421,7 @@ export default function PerformancePage() {
                 <p>
                   Same pinned IntelliJ commit and runner. The historical v4.3.1 values are the rounded retained
                   production observation recorded in{' '}
-                  <a href="https://github.com/Kashkovsky/threadnote/issues/203" target="_blank" rel="noreferrer">
+                  <a href="https://github.com/threadnote/threadnote/issues/203" target="_blank" rel="noreferrer">
                     issue #203
                   </a>
                   ; v4.3.8 values come from the exact bound artifact above.

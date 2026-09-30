@@ -12,7 +12,7 @@ go_library(
         "schema.go",
     ],
     embedsrcs = glob(["telemetry-schema-v*.json"]),
-    importpath = "github.com/Kashkovsky/threadnote/infra/telemetry-gateway",
+    importpath = "github.com/threadnote/threadnote/infra/telemetry-gateway",
     visibility = ["//visibility:private"],
     deps = [
         "//infra/telemetry-gateway/internal/budget",

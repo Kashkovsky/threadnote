@@ -7,7 +7,7 @@ import {productionLogSupportExcerpt, type ProductionLogSupportExcerpt} from './e
 import {SystemInfo} from '@threadnote/platform/system';
 import {getThreadnoteVersion} from '@threadnote/workspace/runtime-version';
 
-const THREADNOTE_GITHUB_REPOSITORY = 'Kashkovsky/threadnote';
+const THREADNOTE_GITHUB_REPOSITORY = 'threadnote/threadnote';
 const THREADNOTE_GITHUB_ISSUES_ENDPOINT = `repos/${THREADNOTE_GITHUB_REPOSITORY}/issues`;
 const THREADNOTE_GITHUB_ISSUE_URL_PREFIX = `https://github.com/${THREADNOTE_GITHUB_REPOSITORY}/issues/`;
 const REPORT_ISSUE_TITLE_MAX_CHARACTERS = 200;
