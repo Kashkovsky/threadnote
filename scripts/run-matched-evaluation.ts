@@ -312,6 +312,7 @@ export type MatchedEvaluationContinuationPilotPlan =
   MatchedEvaluationContinuationPilotPlanV1 | MatchedEvaluationContinuationPilotPlanV2;
 
 export interface MatchedEvaluationContinuationSupplementV1 {
+  readonly adapterArtifactSha256: string;
   readonly parentReportSha256: string;
   readonly parentSelectionSha256: string;
   readonly parentVariants: readonly (typeof BASE_CONTINUATION_VARIANTS)[number][];
@@ -599,6 +600,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
 
 /** Verify that a fifth treatment extends, rather than reruns, one completed four-arm pilot. */
 export function assertMatchedEvaluationContinuationSupplementV1(input: {
+  readonly adapterArtifactSha256: string;
   readonly parentReport: unknown;
   readonly parentReportSha256: string;
   readonly parentSelection: unknown;
@@ -677,6 +679,11 @@ export function assertMatchedEvaluationContinuationSupplementV1(input: {
     throw new Error('Continuation supplement parent does not contain the four baseline variants.');
   }
   return {
+    adapterArtifactSha256: matchingString(
+      input.adapterArtifactSha256,
+      HASH,
+      'continuation supplement adapter artifact hash',
+    ),
     parentReportSha256: matchingString(input.parentReportSha256, HASH, 'continuation supplement parent report hash'),
     parentSelectionSha256: matchingString(
       input.parentSelectionSha256,
@@ -1344,10 +1351,6 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   }
   const plan = parseMatchedEvaluationContinuationPilotPlanV1(planInput);
   const planFileHash = sha256Bytes(Buffer.from(planText));
-  const supplement =
-    options.parentPilotDirectory === null || options.parentPilotDirectory === undefined
-      ? null
-      : await readContinuationSupplementV1(options.parentPilotDirectory, plan);
   const phaseOneEvidence =
     plan.version === 2
       ? await assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: options.planPath})
@@ -1358,6 +1361,14 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     readJson(options.runtimePath).then(parseMatchedEvaluationRuntimeV1),
     readJson(options.studyPath).then(parseMatchedTokenEfficiencyStudyV1),
   ]);
+  const supplement =
+    options.parentPilotDirectory === null || options.parentPilotDirectory === undefined
+      ? null
+      : await readContinuationSupplementV1(
+          options.parentPilotDirectory,
+          plan,
+          await runtimeAdapterArtifactHashV1(runtime, 'threadnote-compact'),
+        );
   assertMatchedTokenEfficiencyStudyMatchesV1(study, corpus, manifest);
   if (runtime.verificationPlanHash !== study.verificationPlanHash) {
     throw new Error('Runtime and study disagree on the sealed verification plan.');
@@ -1398,7 +1409,12 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   if ((await realpath(pilotDirectory)) !== pilotDirectory) {
     throw new Error('Continuation pilot directory must use its canonical path.');
   }
-  await assertContinuationAutomaticHandoffV1({manifest, plan, runtime});
+  await assertContinuationAutomaticHandoffV1({
+    adapterArtifactHashOverride: supplement?.adapterArtifactSha256 ?? null,
+    manifest,
+    plan,
+    runtime,
+  });
   const plannedAttempts =
     supplement === null
       ? plan.attempts
@@ -1503,7 +1519,12 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     requiredArms.map(async arm => {
       const definition = manifest.arms.find(candidate => candidate.arm === arm);
       if (definition === undefined) throw new Error(`Continuation pilot arm ${arm} is not defined.`);
-      const resolution = await resolveRuntimeArm(pilotRuntime, arm, definition);
+      const resolution = await resolveRuntimeArm(
+        pilotRuntime,
+        arm,
+        definition,
+        supplement?.adapterArtifactSha256 ?? null,
+      );
       if ('reason' in resolution)
         throw new Error(`Continuation pilot runtime unavailable for ${arm}: ${resolution.detail}`);
       return [arm, resolution] as const;
@@ -1866,13 +1887,19 @@ function requiredRuntimeRepository(
 }
 
 async function assertContinuationAutomaticHandoffV1(input: {
+  readonly adapterArtifactHashOverride?: string | null;
   readonly manifest: MatchedEvaluationManifestV1;
   readonly plan: MatchedEvaluationContinuationPilotPlan;
   readonly runtime: MatchedEvaluationRuntimeV1;
 }): Promise<void> {
   const definition = input.manifest.arms.find(candidate => candidate.arm === 'threadnote-compact');
   if (definition === undefined) throw new Error('Continuation pilot lacks a compact arm definition.');
-  const resolved = await resolveRuntimeArm(input.runtime, 'threadnote-compact', definition);
+  const resolved = await resolveRuntimeArm(
+    input.runtime,
+    'threadnote-compact',
+    definition,
+    input.adapterArtifactHashOverride ?? null,
+  );
   if ('reason' in resolved) {
     throw new Error(`Continuation pilot runtime unavailable for threadnote-compact: ${resolved.detail}`);
   }
@@ -1938,6 +1965,7 @@ async function resolveRuntimeArm(
   runtime: MatchedEvaluationRuntimeV1,
   arm: MatchedEvaluationArm,
   definition: MatchedEvaluationArmDefinitionV1,
+  adapterArtifactHashOverride: string | null = null,
 ): Promise<ResolvedRuntimeArm | {readonly detail: string; readonly reason: MatchedEvaluationUnavailableReason}> {
   const config = runtime.arms.find(candidate => candidate.arm === arm);
   if (config === undefined) return {detail: `${arm} has no local runtime mapping`, reason: 'runtime-not-configured'};
@@ -1949,9 +1977,11 @@ async function resolveRuntimeArm(
   if (adapterConfigFile === null) {
     return {detail: `${arm} adapter configuration is missing`, reason: 'adapter-config-missing'};
   }
-  if ((await sha256File(adapter)) !== definition.adapterArtifactHash) {
+  const adapterArtifactHash = adapterArtifactHashOverride ?? definition.adapterArtifactHash;
+  if ((await sha256File(adapter)) !== adapterArtifactHash) {
     throw new Error(`${arm} adapter executable differs from its pinned manifest identity.`);
   }
+  const resolvedDefinition = adapterArtifactHashOverride === null ? definition : {...definition, adapterArtifactHash};
   if ((await sha256File(adapterConfigFile)) !== definition.adapterConfigurationHash) {
     throw new Error(`${arm} adapter configuration differs from its pinned manifest identity.`);
   }
@@ -1962,7 +1992,7 @@ async function resolveRuntimeArm(
     return {
       adapterConfigFile,
       config: {...config, adapterConfigFile, adapterExecutable: adapter},
-      definition,
+      definition: resolvedDefinition,
       toolExecutable: null,
     };
   }
@@ -1983,7 +2013,7 @@ async function resolveRuntimeArm(
   return {
     adapterConfigFile,
     config: {...config, adapterExecutable: adapter, toolExecutable: tool, toolLockFile: lock},
-    definition,
+    definition: resolvedDefinition,
     toolExecutable: tool,
   };
 }
@@ -2562,6 +2592,7 @@ async function optionalBoundedRegularFileHash(
 async function readContinuationSupplementV1(
   parentPilotDirectory: string,
   plan: MatchedEvaluationContinuationPilotPlan,
+  adapterArtifactSha256: string,
 ): Promise<MatchedEvaluationContinuationSupplementV1> {
   const canonicalParent = await canonicalDirectory(parentPilotDirectory, 'continuation supplement parent directory');
   const selectionPath = resolve(canonicalParent, 'continuation-pilot-selection.json');
@@ -2579,12 +2610,24 @@ async function readContinuationSupplementV1(
     throw new Error('Continuation supplement parent evidence is not valid JSON.', {cause});
   }
   return assertMatchedEvaluationContinuationSupplementV1({
+    adapterArtifactSha256,
     parentReport,
     parentReportSha256: sha256Bytes(Buffer.from(reportText)),
     parentSelection,
     parentSelectionSha256: sha256Bytes(Buffer.from(selectionText)),
     plan,
   });
+}
+
+async function runtimeAdapterArtifactHashV1(
+  runtime: MatchedEvaluationRuntimeV1,
+  arm: MatchedEvaluationArm,
+): Promise<string> {
+  const config = runtime.arms.find(candidate => candidate.arm === arm);
+  if (config === undefined) throw new Error(`Continuation supplement has no runtime mapping for ${arm}.`);
+  const adapter = await optionalCanonicalRegularFile(config.adapterExecutable, true);
+  if (adapter === null) throw new Error(`Continuation supplement ${arm} adapter executable is missing.`);
+  return sha256File(adapter);
 }
 
 function sameJson(left: unknown, right: unknown): boolean {

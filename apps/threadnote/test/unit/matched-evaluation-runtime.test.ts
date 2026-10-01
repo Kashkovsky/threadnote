@@ -373,6 +373,7 @@ describe('matched evaluation runtime integrity', () => {
     };
     expect(
       assertMatchedEvaluationContinuationSupplementV1({
+        adapterArtifactSha256: 'd'.repeat(64),
         parentReport,
         parentReportSha256: 'b'.repeat(64),
         parentSelection,
@@ -380,6 +381,7 @@ describe('matched evaluation runtime integrity', () => {
         plan: supplementPlan,
       }),
     ).toEqual({
+      adapterArtifactSha256: 'd'.repeat(64),
       parentReportSha256: 'b'.repeat(64),
       parentSelectionSha256: 'c'.repeat(64),
       parentVariants: rows.map(row => row.variant),
@@ -388,6 +390,7 @@ describe('matched evaluation runtime integrity', () => {
     });
     expect(() =>
       assertMatchedEvaluationContinuationSupplementV1({
+        adapterArtifactSha256: 'd'.repeat(64),
         parentReport: {
           ...parentReport,
           attempts: parentReport.attempts.map((attempt, index) =>
