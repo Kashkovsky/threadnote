@@ -142,9 +142,10 @@ describe('Codex resume preload', () => {
           task: value,
           verification: value,
         };
-        const projection = projectCodexResumePreload(logicalResume({card}), 800, 'agent');
+        const projection = projectCodexResumePreload(logicalResume({card}), 1_500, 'agent');
         expect(projection.measurement.estimatedTokens).toBeLessThanOrEqual(800);
-        expect(projection.measurement.totalBytes).toBeLessThanOrEqual(projection.maximumBytes);
+        expect(projection.maximumBytes).toBe(2_400);
+        expect(projection.measurement.totalBytes).toBeLessThanOrEqual(2_400);
       }),
       {numRuns: 100},
     );

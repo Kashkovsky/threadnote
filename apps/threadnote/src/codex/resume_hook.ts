@@ -136,6 +136,7 @@ export function projectCodexResumePreload(
   maximumEstimatedTokens: number,
   _responseFormat: ContextBriefResponseFormat,
 ): ProjectedContextBriefV1 {
+  const deliveryTokenLimit = Math.min(maximumEstimatedTokens, CODEX_RESUME_ADDITIONAL_CONTEXT_LIMIT);
   const ordinary = projectContextBrief(logical, CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS, 'agent');
   const handoff = selectCodexResumeHandoff(logical);
   const projectedHandoff = ordinary.structuredContent.activeHandoffs.find(candidate => candidate.uri === handoff?.uri);
@@ -155,7 +156,7 @@ export function projectCodexResumePreload(
           },
         };
   return {
-    maximumBytes: maximumEstimatedTokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN,
+    maximumBytes: deliveryTokenLimit * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN,
     measurement: measureAgentToolResponse({text}),
     structuredContent,
     text,
@@ -295,7 +296,7 @@ const runEligibleCodexResumeHook = Effect.fn('hooks.runCodexResumeEligible')(fun
           compileContextBriefRuntimeProjection(
             config,
             {
-              budgetTokens: CODEX_RESUME_ADDITIONAL_CONTEXT_LIMIT,
+              budgetTokens: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
               mode: 'resume',
               responseFormat: 'agent',
               scope: {callerCwd: cwd, kind: 'repository'},
