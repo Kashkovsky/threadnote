@@ -9,6 +9,7 @@ import {dirname, isAbsolute, join, resolve, sep} from 'node:path';
 import {Effect} from 'effect';
 import {
   createMatchedContinuationStudyV1,
+  MATCHED_CONTINUATION_VARIANTS,
   parseMatchedContinuationStudyRuntimeV1,
   type MatchedContinuationStudyRuntimeV1,
 } from '@threadnote/threadnote/evaluation/matched-continuation-study';
@@ -211,6 +212,9 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
     }),
   );
   assertExposureAuditV1(parseJson(exposureAuditBytes, 'continuation exposure audit'), preparation, taskInputs);
+  const variants = MATCHED_CONTINUATION_VARIANTS.filter(variant =>
+    taskInputs[0]?.plan.attempts.some(attempt => attempt.variant === variant),
+  );
 
   let globalRunOrder = 0;
   const study = createMatchedContinuationStudyV1({
@@ -252,7 +256,7 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
       sourceRevision: plan.sourceTask.repositoryRevision,
       taskId: plan.taskId,
     })),
-    variants: ['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume', 'threadnote-preloaded-resume'],
+    variants,
     workflowAccounting: 'phase-one-plus-phase-two-per-attempt',
   });
   const runtime = parseMatchedContinuationStudyRuntimeV1({

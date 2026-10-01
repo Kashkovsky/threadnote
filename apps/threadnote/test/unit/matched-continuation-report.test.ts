@@ -9,6 +9,7 @@ import {
 } from '@threadnote/threadnote/evaluation/matched-continuation-report';
 import {
   createMatchedContinuationStudyV1,
+  MATCHED_CONTEXT_CONTINUATION_VARIANTS,
   MATCHED_CONTINUATION_VARIANTS,
   type MatchedContinuationStudyTaskV1,
   type MatchedContinuationVariant,
@@ -150,6 +151,36 @@ describe('matched continuation claim report', () => {
       {numRuns: 20},
     );
   });
+
+  it('reports a three-arm one-task pilot without promoting it to a claim', () => {
+    const study = createStudy({taskCount: 1, variants: MATCHED_CONTEXT_CONTINUATION_VARIANTS});
+    const report = evaluateMatchedContinuationStudyV1({outcomes: createOutcomes(study), study});
+    const primary = report.comparisons.find(result => result.target === 'threadnote-preloaded-resume')!;
+
+    expect(report.variants.map(result => result.variant)).toEqual(MATCHED_CONTEXT_CONTINUATION_VARIANTS);
+    expect(report.comparisons.map(result => result.target)).toEqual(['manual-handoff', 'threadnote-preloaded-resume']);
+    expect(primary.tokenReductionPercent).toBe(40);
+    expect(primary.status).toBe('inconclusive');
+    expect(primary.insufficiencies).toContain('study has 1 repository cluster; 5 required for claim eligibility');
+    expect(report.supportedClaims).toEqual([]);
+    expect(report.limitations).toContain(
+      'Claims apply only to the frozen repositories, tasks, candidate, model configuration, and 3 continuation treatments.',
+    );
+  });
+
+  it('does not promote a one-cluster completion lift to a claim', () => {
+    const study = createStudy({taskCount: 1, variants: MATCHED_CONTEXT_CONTINUATION_VARIANTS});
+    const outcomes = createOutcomes(study, {
+      statusFor: new Map([['files-bare:0', 'failed']]),
+    });
+    const report = evaluateMatchedContinuationStudyV1({outcomes, study});
+    const primary = report.comparisons.find(result => result.target === 'threadnote-preloaded-resume')!;
+
+    expect(primary.completionDeltaPercentagePoints).toBe(100);
+    expect(primary.completionDeltaPercentagePoints95).toEqual({high: 100, low: 100});
+    expect(primary.status).toBe('inconclusive');
+    expect(report.supportedClaims).toEqual([]);
+  });
 });
 
 function createOutcomes(
@@ -230,8 +261,14 @@ function createOutcomes(
   });
 }
 
-function createStudy() {
-  const tasks = Array.from({length: 5}, (_, index): MatchedContinuationStudyTaskV1 => ({
+function createStudy(
+  options: {
+    readonly taskCount?: number;
+    readonly variants?: readonly MatchedContinuationVariant[];
+  } = {},
+) {
+  const variants = options.variants ?? MATCHED_CONTINUATION_VARIANTS;
+  const tasks = Array.from({length: options.taskCount ?? 5}, (_, index): MatchedContinuationStudyTaskV1 => ({
     checkpointRepositoryFixtureHash: hex(index + 40),
     checkpointRevision: commit(index + 40),
     clusterId: `cluster_${hex(index + 10).slice(-16)}`,
@@ -260,8 +297,8 @@ function createStudy() {
       minimumTokenReductionBasisPoints: 500,
     },
     schedule: tasks.flatMap((task, taskIndex) =>
-      Array.from({length: 5}, (_, position) => {
-        const variant = MATCHED_CONTINUATION_VARIANTS[(position + taskIndex) % 5];
+      Array.from({length: variants.length}, (_, position) => {
+        const variant = variants[(position + taskIndex) % variants.length];
         globalRunOrder += 1;
         return {
           globalRunOrder,
@@ -282,7 +319,7 @@ function createStudy() {
     },
     studyId: 'held-out-continuation-v1',
     tasks,
-    variants: MATCHED_CONTINUATION_VARIANTS,
+    variants,
     workflowAccounting: 'phase-one-plus-phase-two-per-attempt',
   });
 }

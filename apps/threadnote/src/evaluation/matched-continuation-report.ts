@@ -216,21 +216,21 @@ export function evaluateMatchedContinuationStudyV1(input: {
   const outcomes = assertMatchedContinuationOutcomeLedgerV1(study, input.outcomes);
   if (outcomes.length !== study.schedule.length) invalid('a complete outcome ledger is required for a final report');
   assertSharedPhaseOneAccounting(outcomes);
-  const variants = MATCHED_CONTINUATION_VARIANTS.map(variant =>
+  const variants = study.variants.map(variant =>
     summarizeVariant(outcomes, variant, study.gates.minimumCorrectnessScoreMilli),
   );
   const baseline = required(variants.find(result => result.variant === 'files-bare'));
-  const comparisons = MATCHED_CONTINUATION_VARIANTS.filter(
-    (variant): variant is Exclude<MatchedContinuationVariant, 'files-bare'> => variant !== 'files-bare',
-  ).map(target =>
-    compareVariants({
-      baseline,
-      outcomes,
-      study,
-      target: required(variants.find(result => result.variant === target)),
-      targetVariant: target,
-    }),
-  );
+  const comparisons = study.variants
+    .filter((variant): variant is Exclude<MatchedContinuationVariant, 'files-bare'> => variant !== 'files-bare')
+    .map(target =>
+      compareVariants({
+        baseline,
+        outcomes,
+        study,
+        target: required(variants.find(result => result.variant === target)),
+        targetVariant: target,
+      }),
+    );
   const primary = required(comparisons.find(comparison => comparison.target === 'threadnote-preloaded-resume'));
   const primaryTarget = required(variants.find(result => result.variant === 'threadnote-preloaded-resume'));
   const supportedClaims: string[] = [];
@@ -240,6 +240,7 @@ export function evaluateMatchedContinuationStudyV1(input: {
     );
   }
   if (
+    study.tasks.length >= study.gates.minimumClusters &&
     primary.completionDeltaPercentagePoints95 !== null &&
     primary.completionDeltaPercentagePoints !== null &&
     primary.completionDeltaPercentagePoints95.low > 0 &&
@@ -257,12 +258,14 @@ export function evaluateMatchedContinuationStudyV1(input: {
   const withoutHash = {
     comparisons,
     limitations: [
-      'Claims apply only to the frozen repositories, tasks, candidate, model configuration, and five continuation treatments.',
+      `Claims apply only to the frozen repositories, tasks, candidate, model configuration, and ${study.variants.length} continuation treatments.`,
       'Each workflow observation includes the matched Phase 1 checkpoint cost plus its Phase 2 continuation cost; under the intent-to-treat estimand, a known failed provider attempt remains assigned as a non-completion and its retained provider usage stays in the numerator.',
       'A runtime-unavailable row is not treated as a failed task; it makes the corresponding completion intervals unavailable.',
       'Missing provider or elapsed accounting makes the corresponding efficiency estimate unavailable rather than treating the failure as cheap.',
       'Repository-cluster bootstrap intervals describe this held-out corpus and do not establish population validity beyond it.',
-      'Manual handoff is an oracle-like control; graph-only and model-invoked resume are mechanism diagnostics rather than the primary comparison.',
+      study.variants.includes('threadnote-graph')
+        ? 'Manual handoff is an oracle-like control; graph-only and model-invoked resume are mechanism diagnostics rather than the primary comparison.'
+        : 'Manual handoff is an oracle-like control; preloaded Threadnote continuation is the primary comparison.',
       'Raw prompts, transcripts, local paths, and handoff contents remain outside this publishable report.',
     ],
     primaryComparison: {baseline: 'files-bare' as const, target: 'threadnote-preloaded-resume' as const},
@@ -349,6 +352,11 @@ function compareVariants(input: {
 }): MatchedContinuationComparisonV1 {
   const insufficiencies: string[] = [];
   const failures: string[] = [];
+  if (input.study.tasks.length < input.study.gates.minimumClusters) {
+    insufficiencies.push(
+      `study has ${input.study.tasks.length} repository cluster${input.study.tasks.length === 1 ? '' : 's'}; ${input.study.gates.minimumClusters} required for claim eligibility`,
+    );
+  }
   for (const result of [input.baseline, input.target]) {
     if (result.missingProviderUsage > 0) {
       insufficiencies.push(`${result.variant} has ${result.missingProviderUsage} attempts with missing provider usage`);

@@ -8,6 +8,11 @@ export const MATCHED_CONTINUATION_VARIANTS = [
   'threadnote-resume',
   'threadnote-preloaded-resume',
 ] as const;
+export const MATCHED_CONTEXT_CONTINUATION_VARIANTS = [
+  'files-bare',
+  'manual-handoff',
+  'threadnote-preloaded-resume',
+] as const;
 
 export type MatchedContinuationVariant = (typeof MATCHED_CONTINUATION_VARIANTS)[number];
 
@@ -259,12 +264,7 @@ function parseStudyWithoutHash(
     ],
     'continuation study source evidence',
   );
-  const variants = array(study.variants, 'continuation study variants').map((variant, index) =>
-    literal(variant, MATCHED_CONTINUATION_VARIANTS, `continuation study variant ${index}`),
-  );
-  if (!sameStrings(variants, MATCHED_CONTINUATION_VARIANTS)) {
-    invalid('continuation study variants must be the complete canonical treatment set');
-  }
+  const variants = canonicalVariantSet(array(study.variants, 'continuation study variants'));
   const tasks = array(study.tasks, 'continuation study tasks')
     .map(parseTask)
     .sort((left, right) => left.taskId.localeCompare(right.taskId));
@@ -318,11 +318,11 @@ function parseStudyWithoutHash(
       'continuation minimum token reduction',
     ),
   };
-  if (tasks.length < parsedGates.minimumClusters) invalid('continuation study has fewer tasks than required clusters');
+  if (tasks.length === 0) invalid('continuation study must contain at least one task');
   const schedule = array(study.schedule, 'continuation study schedule')
     .map(parseScheduleEntry)
     .sort((left, right) => left.globalRunOrder - right.globalRunOrder);
-  validateSchedule(tasks, schedule);
+  validateSchedule(tasks, schedule, variants);
   if (study.workflowAccounting !== 'phase-one-plus-phase-two-per-attempt') {
     invalid('continuation study workflow accounting is invalid');
   }
@@ -362,7 +362,7 @@ function parseStudyWithoutHash(
     },
     studyId: matchingString(study.studyId, STUDY_ID, 'continuation study id'),
     tasks,
-    variants: MATCHED_CONTINUATION_VARIANTS,
+    variants,
     workflowAccounting: 'phase-one-plus-phase-two-per-attempt',
   };
 }
@@ -448,8 +448,9 @@ function parseScheduleEntry(value: unknown, index: number): MatchedContinuationS
 function validateSchedule(
   tasks: readonly MatchedContinuationStudyTaskV1[],
   schedule: readonly MatchedContinuationStudyScheduleEntryV1[],
+  variants: readonly MatchedContinuationVariant[],
 ): void {
-  if (schedule.length !== tasks.length * MATCHED_CONTINUATION_VARIANTS.length) {
+  if (schedule.length !== tasks.length * variants.length) {
     invalid('continuation schedule does not contain one attempt per task and variant');
   }
   unique(
@@ -466,11 +467,11 @@ function validateSchedule(
   for (const task of tasks) {
     const entries = schedule.filter(entry => entry.taskId === task.taskId);
     if (
-      entries.length !== MATCHED_CONTINUATION_VARIANTS.length ||
-      !sameStrings(entries.map(entry => entry.variant).sort(), [...MATCHED_CONTINUATION_VARIANTS].sort()) ||
+      entries.length !== variants.length ||
+      !sameStrings(entries.map(entry => entry.variant).sort(), [...variants].sort()) ||
       !sameNumbers(
         entries.map(entry => entry.withinTaskRunOrder).sort((left, right) => left - right),
-        [1, 2, 3, 4, 5],
+        variants.map((_, index) => index + 1),
       )
     ) {
       invalid(`continuation schedule is incomplete for task ${task.taskId}`);
@@ -479,10 +480,12 @@ function validateSchedule(
   if (schedule.some(entry => !tasks.some(task => task.taskId === entry.taskId))) {
     invalid('continuation schedule refers to an unknown task');
   }
-  for (const variant of MATCHED_CONTINUATION_VARIANTS) {
-    const positionCounts = [1, 2, 3, 4, 5].map(
-      position => schedule.filter(entry => entry.variant === variant && entry.withinTaskRunOrder === position).length,
-    );
+  for (const variant of variants) {
+    const positionCounts = variants
+      .map((_, index) => index + 1)
+      .map(
+        position => schedule.filter(entry => entry.variant === variant && entry.withinTaskRunOrder === position).length,
+      );
     if (Math.max(...positionCounts) - Math.min(...positionCounts) > 1) {
       invalid(`continuation schedule is not position-balanced for ${variant}`);
     }
@@ -496,8 +499,19 @@ function canonicalStudy(
     ...input,
     schedule: [...input.schedule].sort((left, right) => left.globalRunOrder - right.globalRunOrder),
     tasks: [...input.tasks].sort((left, right) => left.taskId.localeCompare(right.taskId)),
-    variants: MATCHED_CONTINUATION_VARIANTS,
+    variants: canonicalVariantSet(input.variants),
   };
+}
+
+function canonicalVariantSet(values: readonly unknown[]): readonly MatchedContinuationVariant[] {
+  const variants = values.map((variant, index) =>
+    literal(variant, MATCHED_CONTINUATION_VARIANTS, `continuation study variant ${index}`),
+  );
+  unique(variants, 'continuation study variants');
+  for (const supported of [MATCHED_CONTEXT_CONTINUATION_VARIANTS, MATCHED_CONTINUATION_VARIANTS] as const) {
+    if (sameStrings([...variants].sort(), [...supported].sort())) return supported;
+  }
+  invalid('continuation study variants must be a complete supported treatment set');
 }
 
 function absolutePath(value: unknown, label: string): string {

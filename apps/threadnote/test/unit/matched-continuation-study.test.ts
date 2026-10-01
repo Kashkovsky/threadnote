@@ -8,9 +8,11 @@ import {
   assertMatchedContinuationRuntimeMatchesStudyV1,
   createMatchedContinuationStudyV1,
   matchedContinuationStudyHashV1,
+  MATCHED_CONTEXT_CONTINUATION_VARIANTS,
   parseMatchedContinuationStudyV1,
   MATCHED_CONTINUATION_VARIANTS,
   type MatchedContinuationStudyTaskV1,
+  type MatchedContinuationVariant,
 } from '@threadnote/threadnote/evaluation/matched-continuation-study';
 import {assertMatchedContinuationRuntimeFilesV1} from '../../../../scripts/matched-continuation-runtime-integrity.js';
 
@@ -176,14 +178,41 @@ describe('matched continuation claim-study sealing', () => {
       {numRuns: 20},
     );
   });
+
+  it('seals one-cluster matched-context pilots while retaining the formal claim threshold', () => {
+    fc.assert(
+      fc.property(
+        fc.shuffledSubarray([...MATCHED_CONTEXT_CONTINUATION_VARIANTS], {minLength: 3, maxLength: 3}),
+        variantOrder => {
+          const study = createMatchedContinuationStudyV1({
+            ...studyInput({taskCount: 1, variants: MATCHED_CONTEXT_CONTINUATION_VARIANTS}),
+            variants: variantOrder,
+          });
+
+          expect(study.tasks).toHaveLength(1);
+          expect(study.schedule).toHaveLength(3);
+          expect(study.variants).toEqual(MATCHED_CONTEXT_CONTINUATION_VARIANTS);
+          expect(study.gates.minimumClusters).toBe(5);
+          expect(parseMatchedContinuationStudyV1(JSON.parse(JSON.stringify(study)))).toEqual(study);
+        },
+      ),
+      {numRuns: 20},
+    );
+  });
 });
 
 function createStudy() {
   return createMatchedContinuationStudyV1(studyInput());
 }
 
-function studyInput() {
-  const tasks = Array.from({length: 5}, (_, index): MatchedContinuationStudyTaskV1 => ({
+function studyInput(
+  options: {
+    readonly taskCount?: number;
+    readonly variants?: readonly MatchedContinuationVariant[];
+  } = {},
+) {
+  const variants = options.variants ?? MATCHED_CONTINUATION_VARIANTS;
+  const tasks = Array.from({length: options.taskCount ?? 5}, (_, index): MatchedContinuationStudyTaskV1 => ({
     checkpointRepositoryFixtureHash: hex(index + 40),
     checkpointRevision: commit(index + 40),
     clusterId: `cluster_${hex(index + 10).slice(-16)}`,
@@ -212,8 +241,8 @@ function studyInput() {
       minimumTokenReductionBasisPoints: 500,
     },
     schedule: tasks.flatMap((task, taskIndex) =>
-      Array.from({length: 5}, (_, position) => {
-        const variant = MATCHED_CONTINUATION_VARIANTS[(position + taskIndex) % 5];
+      Array.from({length: variants.length}, (_, position) => {
+        const variant = variants[(position + taskIndex) % variants.length];
         globalRunOrder += 1;
         return {
           globalRunOrder,
@@ -234,7 +263,7 @@ function studyInput() {
     },
     studyId: 'held-out-continuation-v1',
     tasks,
-    variants: MATCHED_CONTINUATION_VARIANTS,
+    variants,
     workflowAccounting: 'phase-one-plus-phase-two-per-attempt' as const,
   };
 }
