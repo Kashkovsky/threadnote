@@ -52,6 +52,7 @@ import {
   type MatchedTokenEfficiencyStudyV1,
 } from '@threadnote/threadnote/evaluation/matched-token-efficiency';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
+import {tokenizeCodeMemoryLinkCommandV1} from './code-memory-link-app-server-policy.js';
 import {
   matchedEvaluationPreparedHomeFixtureHashV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
@@ -3375,7 +3376,7 @@ async function runMatchedEvaluationContinuationFocusedCheckV1(input: {
   });
 }
 
-function matchContinuationPhaseTwoCommandsV1(input: {
+export function matchContinuationPhaseTwoCommandsV1(input: {
   readonly approvedCommands: ReturnType<typeof parseMatchedEvaluationCodexAdapterConfigV1>['approvedCommands'];
   readonly commandTexts: readonly string[];
   readonly taskId: string;
@@ -3384,9 +3385,12 @@ function matchContinuationPhaseTwoCommandsV1(input: {
     throw new Error('Continuation phase-two verification must contain 1-8 commands.');
   }
   const matched = input.commandTexts.map((commandText, index) => {
-    const canonicalText = commandText.replaceAll('{python}', 'python').trim();
+    const canonicalTokens = tokenizeCodeMemoryLinkCommandV1(commandText.replaceAll('{python}', 'python').trim());
     const candidates = input.approvedCommands.filter(
-      command => command.taskId === input.taskId && command.tokens.join(' ') === canonicalText,
+      command =>
+        command.taskId === input.taskId &&
+        command.tokens.length === canonicalTokens.length &&
+        command.tokens.every((token, tokenIndex) => token === canonicalTokens[tokenIndex]),
     );
     if (candidates.length !== 1) {
       throw new Error(`Continuation phase-two command ${index} is not one unique sealed approved command.`);

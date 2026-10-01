@@ -22,6 +22,7 @@ import {
   assertMatchedEvaluationContinuationPhaseOneResultV1,
   continuationCheckpointStudyV2,
   createMatchedEvaluationContinuationPhaseOneSelectionV1,
+  matchContinuationPhaseTwoCommandsV1,
   matchedEvaluationContinuationPreparedHomeIdentityHashV2,
   parseMatchedEvaluationRuntimeV1,
   parseMatchedEvaluationContinuationPhaseOneTaskPacketV1,
@@ -623,6 +624,22 @@ describe('matched evaluation runtime integrity', () => {
         first.sourceTask.taskId,
       ),
     ).toThrow('nonempty test patch');
+  });
+
+  it('matches quoted empty command arguments against sealed token arrays', () => {
+    const approvedCommands = [
+      {
+        taskId: 'tsk_1234567890abcdef',
+        tokens: ['PYTHONPATH=src', 'python', '-m', 'pytest', '-q', '-o', 'addopts=', 'tests/test_union.py'],
+      },
+    ];
+    expect(
+      matchContinuationPhaseTwoCommandsV1({
+        approvedCommands,
+        commandTexts: ["PYTHONPATH=src {python} -m pytest -q -o addopts='' tests/test_union.py"],
+        taskId: 'tsk_1234567890abcdef',
+      }),
+    ).toEqual(approvedCommands);
   });
 
   it('binds v2 phase-one provenance claims to the preserved adapter evidence files', async () => {

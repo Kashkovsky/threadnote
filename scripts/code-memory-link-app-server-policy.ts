@@ -212,13 +212,15 @@ function assertReadCommand(
   if (
     commands.length !== 1 &&
     commands.some(candidate =>
-      commandPolicy.approvedCommandTokens.some(approved => equalTokens(tokenize(candidate), approved)),
+      commandPolicy.approvedCommandTokens.some(approved =>
+        equalTokens(tokenizeCodeMemoryLinkCommandV1(candidate), approved),
+      ),
     )
   ) {
     throw new Error('Code Memory Link task-scoped commands must run as one exact standalone command.');
   }
   for (const command of commands) assertSingleReadCommand(command, repositoryRoot, cwd, commandPolicy);
-  if (tokenize(command)[0] !== '/bin/zsh') {
+  if (tokenizeCodeMemoryLinkCommandV1(command)[0] !== '/bin/zsh') {
     if (!Array.isArray(item.commandActions) || item.commandActions.length === 0) {
       throw new Error('Code Memory Link command lacks a reviewable read-only action projection.');
     }
@@ -232,7 +234,7 @@ function assertSingleReadCommand(
   cwd: string,
   commandPolicy: CodeMemoryLinkCommandPolicyV1,
 ): void {
-  const tokens = tokenize(command);
+  const tokens = tokenizeCodeMemoryLinkCommandV1(command);
   if (commandPolicy.approvedCommandTokens.some(approved => equalTokens(tokens, approved))) return;
   const executable = tokens[0];
   if (!executable || executable.includes('/') || executable.includes('\\')) {
@@ -267,7 +269,7 @@ function safeExecutableLabel(executable: string): string {
 
 function reviewableCommands(item: Record<string, unknown>, repositoryRoot: string, cwd: string): readonly string[] {
   const command = text(item.command, 'command');
-  const shellTokens = tokenize(command);
+  const shellTokens = tokenizeCodeMemoryLinkCommandV1(command);
   if (shellTokens[0] === '/bin/zsh') {
     if (shellTokens.length !== 3 || (shellTokens[1] !== '-c' && shellTokens[1] !== '-lc')) {
       throw new Error('Code Memory Link shell command uses an unsupported invocation shape.');
@@ -633,7 +635,7 @@ function assertFileChanges(item: Record<string, unknown>, repositoryRoot: string
   }
 }
 
-function tokenize(command: string): readonly string[] {
+export function tokenizeCodeMemoryLinkCommandV1(command: string): readonly string[] {
   if (command.length > 16_384 || /[\0\r\n]/u.test(command)) throw new Error('Command is not bounded single-line text.');
   const tokens: string[] = [];
   let token = '';
