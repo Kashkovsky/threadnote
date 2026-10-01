@@ -4051,8 +4051,9 @@ export function assertMatchedContinuationPhaseTwoBaselineResultV1(input: {
 export function matchedContinuationDiagnosticParserForCommandV1(
   commandTokens: readonly string[],
 ): MatchedContinuationPhaseTwoDiagnosticParser {
-  const usesPytest = commandTokens.includes('pytest');
-  const usesVitest = commandTokens.includes('vitest');
+  const executableName = commandTokens[0]?.split('/').at(-1) ?? '';
+  const usesPytest = commandTokens.includes('pytest') || /^pytest(?:$|-)/u.test(executableName);
+  const usesVitest = commandTokens.includes('vitest') || /^vitest(?:$|-)/u.test(executableName);
   if (usesPytest === usesVitest) {
     throw new Error('Continuation phase-two command must select exactly one supported diagnostic parser.');
   }

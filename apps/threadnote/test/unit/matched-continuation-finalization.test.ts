@@ -49,11 +49,34 @@ describe('matched continuation finalization', () => {
     expect(
       matchedContinuationDiagnosticParserForCommandV1(['nub', 'exec', '--node', 'vitest', 'run', 'target.test.ts']),
     ).toBe('vitest-summary-v1');
+    expect(
+      matchedContinuationDiagnosticParserForCommandV1(['pytest-source-runner', '-q', 'tests/test_target.py']),
+    ).toBe('pytest-summary-v1');
     expect(() => matchedContinuationDiagnosticParserForCommandV1(['node', 'custom-test.js'])).toThrow(
       'exactly one supported diagnostic parser',
     );
     expect(() => matchedContinuationDiagnosticParserForCommandV1(['pytest', 'vitest'])).toThrow(
       'exactly one supported diagnostic parser',
+    );
+  });
+
+  it('recognizes path-qualified pytest wrapper commands without inspecting corpus-specific arguments', () => {
+    fc.assert(
+      fc.property(
+        fc
+          .array(fc.constantFrom('a', 'b', 'c', '0', '1', '-'), {minLength: 1, maxLength: 16})
+          .map(characters => characters.join('')),
+        suffix => {
+          expect(
+            matchedContinuationDiagnosticParserForCommandV1([
+              `/sealed/tooling/pytest-${suffix}`,
+              '-q',
+              'tests/test_target.py',
+            ]),
+          ).toBe('pytest-summary-v1');
+        },
+      ),
+      {numRuns: 64},
     );
   });
 
