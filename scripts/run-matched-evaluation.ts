@@ -556,6 +556,9 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
   if (phaseOnePrompt === phaseTwoPrompt || parsedSourceTask.prompt === phaseTwoPrompt) {
     invalid('continuation pilot phase prompts must be distinct');
   }
+  if (!phaseOnePrompt.includes(parsedSourceTask.prompt)) {
+    invalid('continuation pilot phase-one prompt must include the exact source task prompt');
+  }
   return {
     ...common,
     checkpoint: {
@@ -765,8 +768,10 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
     throw new Error('Continuation phase-one request differs from the sealed execution identity.');
   }
   const artifact = object(artifactInput, 'continuation phase-one artifact');
+  const agentResult = object(artifact.agentResult, 'continuation phase-one agent result');
   const artifactRepository = object(artifact.repository, 'continuation phase-one artifact repository');
   if (
+    agentResult.completed !== true ||
     artifact.runNonce !== execution.runNonce ||
     artifact.taskId !== input.plan.taskId ||
     artifactRepository.fixtureHash !== input.plan.sourceTask.repositoryFixtureHash ||
@@ -778,10 +783,12 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
   }
   const response = object(responseInput, 'continuation phase-one response');
   const metrics = object(response.metrics, 'continuation phase-one response metrics');
+  const safety = object(metrics.safety, 'continuation phase-one response safety');
   const timing = object(metrics.timing, 'continuation phase-one response timing');
   const usage = object(metrics.usage, 'continuation phase-one response usage');
   const providerTokens = object(usage.providerTokens, 'continuation phase-one provider tokens');
   if (
+    safety.blockedActions !== 0 ||
     response.transcriptHash !== execution.transcriptHash ||
     timing.endToEndMilliseconds !== input.plan.checkpoint.phaseOneAccounting.elapsedMilliseconds ||
     providerTokens.cachedInputTokens !== input.plan.checkpoint.phaseOneAccounting.providerTokens?.cachedInputTokens ||

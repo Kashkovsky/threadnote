@@ -158,9 +158,9 @@ describe('matched evaluation runtime integrity', () => {
       {numRuns: 24},
     );
 
-    const phaseOnePrompt = 'Add a failing regression test and stop before implementing the production fix.';
-    const phaseTwoPrompt = 'Implement the production fix for the committed regression and verify the focused suite.';
     const sourcePrompt = 'Original public issue prompt.';
+    const phaseOnePrompt = `${sourcePrompt}\n\nAdd a failing regression test and stop before implementing the production fix.`;
+    const phaseTwoPrompt = 'Implement the production fix for the committed regression and verify the focused suite.';
     const versionTwo = {
       attempts: base.attempts,
       candidate: base.candidate,
@@ -253,6 +253,17 @@ describe('matched evaluation runtime integrity', () => {
         sourceTask: {...versionTwo.sourceTask, prompt: `${sourcePrompt} changed`},
       }),
     ).toThrow('source task prompt hash differs');
+    const incompletePhaseOnePrompt = 'Add a failing regression test without the exact public issue.';
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...versionTwo,
+        checkpoint: {
+          ...versionTwo.checkpoint,
+          phaseOnePrompt: incompletePhaseOnePrompt,
+          phaseOnePromptSha256: sha256HexSync(Buffer.from(incompletePhaseOnePrompt)),
+        },
+      }),
+    ).toThrow('must include the exact source task prompt');
     expect(() =>
       parseMatchedEvaluationContinuationPilotPlanV1({
         ...versionTwo,
@@ -267,7 +278,8 @@ describe('matched evaluation runtime integrity', () => {
     ).toThrow('checkpoint fixture must differ from the source fixture');
     const prompt = fc.string({minLength: 1, maxLength: 48}).filter(value => !value.includes('\0'));
     fc.assert(
-      fc.property(prompt, prompt, prompt, (phaseOne, phaseTwo, source) => {
+      fc.property(prompt, prompt, prompt, (phaseOneSuffix, phaseTwo, source) => {
+        const phaseOne = `${source}\n\n${phaseOneSuffix}`;
         fc.pre(phaseOne !== phaseTwo && source !== phaseTwo);
         const generated = {
           ...versionTwo,
@@ -335,6 +347,7 @@ describe('matched evaluation runtime integrity', () => {
     );
     const artifact = Buffer.from(
       `${JSON.stringify({
+        agentResult: {completed: true},
         patch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n',
         repository: {fixtureHash: sourceFixtureHash, revision: sourceRevision},
         runNonce,
@@ -352,7 +365,7 @@ describe('matched evaluation runtime integrity', () => {
     const transcriptHash = 'f'.repeat(64);
     const response = Buffer.from(
       `${JSON.stringify({
-        metrics: {timing: {endToEndMilliseconds: 42}, usage: {providerTokens}},
+        metrics: {safety: {blockedActions: 0}, timing: {endToEndMilliseconds: 42}, usage: {providerTokens}},
         transcriptHash,
       })}\n`,
     );
@@ -392,6 +405,29 @@ describe('matched evaluation runtime integrity', () => {
     await expect(
       assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: join(root, 'continuation-plan.json')}),
     ).resolves.toEqual({agentPatch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n'});
+    const blockedResponse = Buffer.from(
+      `${JSON.stringify({
+        metrics: {safety: {blockedActions: 1}, timing: {endToEndMilliseconds: 42}, usage: {providerTokens}},
+        transcriptHash,
+      })}\n`,
+    );
+    await writeFile(join(phaseOne, 'response.json'), blockedResponse);
+    await expect(
+      assertMatchedEvaluationContinuationPhaseOneEvidenceV2({
+        plan: {
+          ...plan,
+          checkpoint: {
+            ...plan.checkpoint,
+            phaseOneExecution: {
+              ...plan.checkpoint.phaseOneExecution,
+              responseSha256: sha256HexSync(blockedResponse),
+            },
+          },
+        },
+        planPath: join(root, 'continuation-plan.json'),
+      }),
+    ).rejects.toThrow('accounting differs');
+    await writeFile(join(phaseOne, 'response.json'), response);
     await writeFile(join(phaseOne, 'response.json'), `${response.toString('utf8')} `);
     await expect(
       assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: join(root, 'continuation-plan.json')}),

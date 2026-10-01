@@ -1852,6 +1852,8 @@ export function renderMatchedEvaluationAgentPromptV1(
   return [
     contextInstruction,
     'Complete the task in the repository. Keep changes scoped. Do not access evaluation files, hidden rubrics, network resources, or user configuration.',
+    'Start with task-named files and symbols. Keep discovery output bounded; do not dump repository-wide file lists or broad search results into the conversation.',
+    'Run required checks as separate commands rather than compound shell commands so policy decisions and failures remain attributable.',
     'Return the required JSON only after finishing the repository work.',
     ...(request.continuationTreatment?.manualHandoff === null || request.continuationTreatment === null
       ? []

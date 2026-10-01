@@ -265,6 +265,7 @@ describe('matched token-efficiency study preparation', () => {
     if (process.platform === 'win32') return;
     const root = await temporaryRoot(roots);
     const contextRoot = join(root, '.context');
+    const adapterTemporaryRoot = join(contextRoot, 'adapter-temporary');
     await mkdir(contextRoot);
     const source = join(root, 'threadnote-source');
     const sourceCommit = await sourceRepository(source);
@@ -440,7 +441,7 @@ describe('matched token-efficiency study preparation', () => {
             safeBinaries: [],
             safeExecutablePath: '/usr/bin:/bin',
             taskBudget: {steps: 100, tokens: 100_000},
-            temporaryRoot: root,
+            temporaryRoot: adapterTemporaryRoot,
           },
           bootstrap: {confidenceLevelBasisPoints: 9_500, iterations: 200, seed: '7'.repeat(64)},
           clusters: [
@@ -532,6 +533,7 @@ describe('matched token-efficiency study preparation', () => {
       studyHash: study.studyHash,
       threadnoteSourceCommit: sourceCommit,
     });
+    expect(await realpath(adapterTemporaryRoot)).toBe(adapterTemporaryRoot);
     expect(manifest.schedule).toHaveLength(108);
     expect(runtime.arms.map(arm => arm.arm)).toEqual([
       'files',

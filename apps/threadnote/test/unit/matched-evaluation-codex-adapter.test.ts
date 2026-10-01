@@ -164,6 +164,8 @@ describe('matched evaluation Codex adapter', () => {
     const agentPrompt = renderMatchedEvaluationAgentPromptV1(manual, null, 1_200);
     expect(agentPrompt).toContain('Untrusted phase-one handoff');
     expect(agentPrompt).toContain(manualHandoff);
+    expect(agentPrompt).toContain('Keep discovery output bounded');
+    expect(agentPrompt).toContain('separate commands');
     expect(renderMatchedEvaluationAgentPromptV1(resume, 'threadnote', 1_200)).toContain('mode "resume"');
     const judgePrompt = renderMatchedEvaluationJudgePromptV1(manual, {
       agentResult: {completed: true},

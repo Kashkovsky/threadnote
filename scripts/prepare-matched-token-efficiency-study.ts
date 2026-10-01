@@ -274,6 +274,8 @@ export async function prepareMatchedTokenEfficiencyStudyV1(
     }),
   );
   await assertPrivateAuthFile(plan.adapter.authSourcePath);
+  await mkdir(plan.adapter.temporaryRoot, {mode: 0o700, recursive: true});
+  await canonicalDirectory(plan.adapter.temporaryRoot, 'adapter temporary root');
   const clusterObservations = await prepareClusters(plan, corpus);
   const verificationPlan = await prepareVerificationPlan(plan, corpus, clusterObservations);
   const provisionalManifest = createMatchedEvaluationManifestV1({
