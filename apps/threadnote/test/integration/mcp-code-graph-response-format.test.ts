@@ -97,7 +97,9 @@ describe('MCP code graph response format', () => {
       await client.connect(transport);
       const tool = (await client.listTools()).tools.find(candidate => candidate.name === 'inspect_code_graph');
       expect(JSON.stringify(tool?.inputSchema)).toContain('responseFormat');
-      expect(JSON.stringify(tool?.inputSchema)).toContain('local agent-format impact defaults to 1250');
+      expect(JSON.stringify(tool?.inputSchema)).toContain('impact agent defaults to 1250');
+      expect(JSON.stringify(tool?.inputSchema)).toContain('Ceiling:');
+      expect(JSON.stringify(tool?.inputSchema)).toContain('agent shows 3 unless set');
 
       let agentBytes = 0;
       let dualBytes = 0;
@@ -160,9 +162,12 @@ describe('MCP code graph response format', () => {
         expect(agentOnly).not.toContain('\nsnapshot\t');
         expect(agentOnly).not.toContain('\ntrust\t');
         expect(agentOnly).not.toContain('\nsourceVersion\t');
-        if (query.operation === 'impact') {
+        if (query.operation === 'impact' || query.operation === 'query') {
           for (const symbol of query.relevantSymbols ?? []) {
             expect(agentOnly).toContain(`"name":"${symbol}"`);
+          }
+          if (query.operation === 'query' && query.answerable && (query.relevantPaths?.length ?? 0) > 0) {
+            expect(query.relevantPaths?.some(path => agentOnly.includes(`"path":"${path}"`))).toBe(true);
           }
           expect(agentGraphHasOnlyVisibleEdgeAliases(agentOnly)).toBe(true);
           const largerCeiling = await client.callTool({
@@ -171,6 +176,16 @@ describe('MCP code graph response format', () => {
           });
           expect(largerCeiling.isError).not.toBe(true);
           expect(firstText(largerCeiling.content)).toBe(agentOnly);
+          if (query.operation === 'query' && query.answerable) {
+            const expanded = await client.callTool({
+              name: 'inspect_code_graph',
+              arguments: {...args, budgetTokens: 1_500, nodeLimit: 8},
+            });
+            expect(expanded.isError).not.toBe(true);
+            const expandedText = firstText(expanded.content);
+            expect(agentGraphHasOnlyVisibleEdgeAliases(expandedText)).toBe(true);
+            expect(agentGraphNodeCount(expandedText)).toBeGreaterThan(agentGraphNodeCount(agentOnly));
+          }
         }
         const measuredDualBytes = measureAgentToolResponse({
           text: dualText,
@@ -324,6 +339,13 @@ function agentGraphHasOnlyVisibleEdgeAliases(text: string): boolean {
   return rows
     .filter(([kind]) => kind === 'edge')
     .every(([, source, target]) => aliases.has(String(JSON.parse(source))) && aliases.has(String(JSON.parse(target))));
+}
+
+function agentGraphNodeCount(text: string): number {
+  return text
+    .trimEnd()
+    .split('\n')
+    .filter(line => line.startsWith('node\t')).length;
 }
 
 function withoutWorksetCursor(value: unknown): unknown {

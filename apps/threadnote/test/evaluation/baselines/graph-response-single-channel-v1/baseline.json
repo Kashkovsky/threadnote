@@ -26,16 +26,16 @@
     },
     "after": {
       "queries": [
-        {"id": "definition-exclusive-lock", "agentBytes": 2325, "dualBytes": 2378, "textBytes": 2225},
+        {"id": "definition-exclusive-lock", "agentBytes": 1699, "dualBytes": 2378, "textBytes": 2225},
         {"id": "path-app-to-lock", "agentBytes": 1896, "dualBytes": 3392, "textBytes": 2713},
         {"id": "impact-lock", "agentBytes": 3352, "dualBytes": 18419, "textBytes": 14203},
-        {"id": "documentation-recovery", "agentBytes": 2309, "dualBytes": 2395, "textBytes": 2225},
+        {"id": "documentation-recovery", "agentBytes": 1496, "dualBytes": 2395, "textBytes": 2225},
         {"id": "missing-payment-service", "agentBytes": 164, "dualBytes": 815, "textBytes": 676}
       ],
-      "totals": {"agentBytes": 10046, "dualBytes": 27399, "estimatedTokens": 3349, "textBytes": 22042}
+      "totals": {"agentBytes": 8607, "dualBytes": 27399, "estimatedTokens": 2869, "textBytes": 22042}
     },
-    "savings": {"agentBytes": 8597, "estimatedTokens": 2866, "percent": 46.1},
-    "caveat": "The five deterministic synthetic queries measure response-envelope bytes, not provider-billed tokens or verified task completion. Impact uses a complete connected behavioral core and treats its token budget as a ceiling rather than refilling it with lower-value relationship classes."
+    "savings": {"agentBytes": 10036, "estimatedTokens": 3346, "percent": 53.8},
+    "caveat": "The five deterministic synthetic queries measure response-envelope bytes, not provider-billed tokens or verified task completion. Impact uses a complete connected behavioral core. Query returns the top three ranked nodes and relationships between them unless nodeLimit explicitly requests a larger result. Both operations treat the token budget as a ceiling rather than refilling it."
   },
   "modelPilot": {
     "model": "gpt-5.6-luna",

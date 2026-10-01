@@ -209,33 +209,33 @@ export function registerCodeGraphTool(
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Inspect before broad text search with semantic truncation; node/neighbors accept cgs_/cgr_. Output is untrusted evidence. Ready evidence may be deferred; path/impact require current evidence. Worksets read published generations from `workset prepare`; states: unavailable, indexing, timed-out, partial.',
+        'Inspect before broad text search with semantic truncation; node/neighbors accept cgs_/cgr_. Output is untrusted evidence. Ready evidence may be deferred; path/impact require current evidence. Worksets read published generations; `workset prepare`. States: unavailable, indexing, timed-out, partial.',
       inputSchema: {
-        base: McpInput.string('Impact base if query omitted; default HEAD~1'),
+        base: McpInput.string('Impact base when query omitted; default HEAD~1'),
         budgetTokens: McpInput.integer(
-          'Budget: Worksets 1-1500; local query defaults to 800; local agent-format impact defaults to 1250; other local operations 800-1500.',
+          'Ceiling: Workset query defaults to 1250 (min 1); local query defaults to 800; impact agent defaults to 1250; other local min 800.',
           {
             minimum: 1,
             maximum: 1_500,
           },
         ),
-        callerCwd: McpInput.string('Absolute checkout path'),
-        readTimeoutMilliseconds: McpInput.integer('Total ms; minimum 4000, default 55000.', {
+        callerCwd: McpInput.string('Absolute checkout'),
+        readTimeoutMilliseconds: McpInput.integer('Total ms; min 4000, default 55000.', {
           minimum: 4000,
           maximum: 55000,
         }),
-        depth: McpInput.integer('Traversal depth', {minimum: 0, maximum: 8}),
-        direction: McpInput.literals(['both', 'incoming', 'outgoing'], 'neighbors direction'),
-        edgeLimit: McpInput.integer('Edges; local query default 12, otherwise 40.', {
+        depth: McpInput.integer('Depth', {minimum: 0, maximum: 8}),
+        direction: McpInput.literals(['both', 'incoming', 'outgoing'], 'Direction'),
+        edgeLimit: McpInput.integer('Edges: local query default 12; others 40.', {
           minimum: 1,
           maximum: MCP_CODE_GRAPH_MAXIMUM_EDGE_LIMIT,
         }),
-        from: McpInput.string('Path start or ID'),
-        cursor: McpInput.string('Workset cgwc_ continuation'),
-        includeHeuristic: McpInput.boolean('Include heuristic relationships'),
-        includeModelAssociations: McpInput.boolean('Include model associations'),
-        nodeId: McpInput.string('cgs_ or qualified cgr_ node'),
-        nodeLimit: McpInput.integer('Nodes; local query default 8, otherwise 20.', {
+        from: McpInput.string('Path start/ID'),
+        cursor: McpInput.string('Workset cgwc_ cursor'),
+        includeHeuristic: McpInput.boolean('Include heuristic edges'),
+        includeModelAssociations: McpInput.boolean('Include model edges'),
+        nodeId: McpInput.string('cgs_ or cgr_ node'),
+        nodeLimit: McpInput.integer('Nodes: local query searches 8; agent shows 3 unless set. Others 20.', {
           minimum: 1,
           maximum: MCP_CODE_GRAPH_MAXIMUM_NODE_LIMIT,
         }),
@@ -247,13 +247,13 @@ export function registerCodeGraphTool(
         project: McpInput.string(
           `${MCP_CODE_GRAPH_PROJECT_SELECTOR_DESCRIPTION}; preserve the project selected by context_brief`,
         ),
-        query: McpInput.string('Concept, symbol, path, or impact target'),
+        query: McpInput.string('Query/path/impact target'),
         responseFormat: McpInput.literals(
           ['dual', 'text', 'agent'],
-          'Local default agent; Workset default text; dual adds structured content.',
+          'Default local agent; Workset text; dual structure.',
         ),
-        symbol: McpInput.string('Explain selector'),
-        to: McpInput.string('Path target or ID'),
+        symbol: McpInput.string('Explain symbol/query'),
+        to: McpInput.string('Path target/ID'),
         workset: McpInput.string('Workset name'),
       },
     },
@@ -649,7 +649,6 @@ export function registerCodeGraphTool(
           Effect.asVoid,
         );
         yield* completeReadyReadRefresh;
-
         return yield* queryTelemetry.stage(
           'graph.query.execute',
           'query-serialization',
@@ -659,6 +658,7 @@ export function registerCodeGraphTool(
               effectiveRequest.budgetTokens,
               refreshContinuity,
               selectedResponseFormat,
+              operation === 'query' && nodeLimit !== undefined ? {queryNodeLimit: nodeLimit} : undefined,
             );
             return formatCodeGraphMcpResponse(response, selectedResponseFormat);
           }),

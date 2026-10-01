@@ -353,7 +353,7 @@ function impactAgentProjectionOrder(result: CodeGraphQueryResult): CodeGraphQuer
     .map((edge, index) => ({edge, index}))
     .sort(
       (left, right) =>
-        Number(impactEdgeIsConnected(right.edge, nodeIds)) - Number(impactEdgeIsConnected(left.edge, nodeIds)) ||
+        Number(edgeIsConnected(right.edge, nodeIds)) - Number(edgeIsConnected(left.edge, nodeIds)) ||
         impactRelationPriority(left.edge.relation) - impactRelationPriority(right.edge.relation) ||
         left.index - right.index,
     )
@@ -385,7 +385,7 @@ function impactRelationPriority(relation: string): number {
   return 5;
 }
 
-function impactEdgeIsConnected(edge: CodeGraphQueryResult['edges'][number], nodeIds: ReadonlySet<string>): boolean {
+function edgeIsConnected(edge: CodeGraphQueryResult['edges'][number], nodeIds: ReadonlySet<string>): boolean {
   return (
     edge.sourceId !== undefined &&
     edge.targetId !== undefined &&
@@ -406,7 +406,7 @@ function impactAgentCoreResponse(
     firstPriority === undefined
       ? 0
       : ordered.edges.findIndex(
-          edge => !impactEdgeIsConnected(edge, nodeIds) || impactRelationPriority(edge.relation) !== firstPriority,
+          edge => !edgeIsConnected(edge, nodeIds) || impactRelationPriority(edge.relation) !== firstPriority,
         );
   const maximumPrimaryEdges = primaryEdgeCount === -1 ? ordered.edges.length : primaryEdgeCount;
   for (let edgeCount = maximumPrimaryEdges; edgeCount >= 0; edgeCount -= 1) {
@@ -427,6 +427,34 @@ function impactAgentCoreResponse(
     if (measureFormattedCodeGraphMcpResponse(candidate, 'agent').totalBytes <= maximumBytes) return candidate;
   }
   return fixedCodeGraphMcpReceipt(ordered, refresh);
+}
+
+function queryAgentCoreResponse(
+  result: CodeGraphQueryResult,
+  maximumBytes: number,
+  refresh?: CodeGraphRefreshContinuity,
+  requestedNodeLimit?: number,
+) {
+  const maximumCoreNodes = Math.min(requestedNodeLimit ?? 3, result.nodes.length);
+  for (let nodeCount = maximumCoreNodes; nodeCount >= 0; nodeCount -= 1) {
+    const selectedNodeIds = new Set(result.nodes.slice(0, nodeCount).map(node => node.id));
+    const connectedEdges = result.edges.filter(edge => edgeIsConnected(edge, selectedNodeIds));
+    const connectedEdgeSet = new Set(connectedEdges);
+    const ordered = {
+      ...result,
+      edges: [...connectedEdges, ...result.edges.filter(edge => !connectedEdgeSet.has(edge))],
+    };
+    const candidate = responseForPrefix(
+      ordered,
+      nodeCount,
+      connectedEdges.length,
+      Math.min(5, result.warnings.length),
+      false,
+      refresh,
+    );
+    if (measureFormattedCodeGraphMcpResponse(candidate, 'agent').totalBytes <= maximumBytes) return candidate;
+  }
+  return fixedCodeGraphMcpReceipt(result, refresh);
 }
 
 /**
@@ -513,6 +541,7 @@ export function codeGraphMcpResponse(
   maximumEstimatedTokens?: number,
   refresh?: CodeGraphRefreshContinuity,
   responseFormat: CodeGraphMcpResponseFormat = 'dual',
+  options?: {readonly queryNodeLimit?: number},
 ) {
   const effectiveMaximumEstimatedTokens =
     maximumEstimatedTokens ??
@@ -532,6 +561,9 @@ export function codeGraphMcpResponse(
   const maximumBytes = effectiveMaximumEstimatedTokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;
   if (responseFormat === 'agent' && result.operation === 'impact') {
     return impactAgentCoreResponse(result, maximumBytes, refresh);
+  }
+  if (responseFormat === 'agent' && result.operation === 'query') {
+    return queryAgentCoreResponse(result, maximumBytes, refresh, options?.queryNodeLimit);
   }
   const minimum = responseForPrefix(result, 0, 0, 0, true, refresh);
   const minimumBytes = measureFormattedCodeGraphMcpResponse(minimum, responseFormat).totalBytes;

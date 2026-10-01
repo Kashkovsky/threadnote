@@ -784,7 +784,12 @@ describe('MCP code graph indexing progress', () => {
   });
 
   it('renders a deterministic schema-aware agent receipt without structured duplication', () => {
-    const response = codeGraphMcpResponse(verboseCodeGraphResult(), 1_500, undefined, 'agent');
+    const response = codeGraphMcpResponse(
+      {...verboseCodeGraphResult(), operation: 'neighbors'},
+      1_500,
+      undefined,
+      'agent',
+    );
     const first = formatCodeGraphMcpResponse(response, 'agent');
     const second = formatCodeGraphMcpResponse(response, 'agent');
     const text = first.content[0].text;
@@ -881,6 +886,62 @@ describe('MCP code graph indexing progress', () => {
     );
     expect(connectedFallback.structuredContent.edges.map(item => item.id)).toEqual([connectedImport.id]);
     expect(connectedFallback.structuredContent.nodes.map(node => node.id)).toEqual([nodes[3].id, nodes[0].id]);
+  });
+
+  it('stops default query projection after three ranked nodes while preserving explicit expansion', () => {
+    const verbose = verboseCodeGraphResult();
+    const nodes = verbose.nodes.slice(0, 6).map((node, index) => ({
+      ...node,
+      name: `node-${index}`,
+      path: `src/node-${index}.ts`,
+      qualifiedName: `Fixture.node${index}`,
+      signature: `function node${index}(): void`,
+    }));
+    const edge = (index: number, sourceIndex: number, targetIndex: number) => ({
+      ...verbose.edges[index],
+      evidencePath: `src/node-${sourceIndex}.ts`,
+      id: `cge_query_core_${index}`,
+      sourceId: nodes[sourceIndex].id,
+      sourceName: nodes[sourceIndex].name,
+      targetId: nodes[targetIndex].id,
+      targetName: nodes[targetIndex].name,
+    });
+    const dangling = {...edge(1, 1, 2), sourceId: 'cgs_missing'};
+    const result: CodeGraphQueryResult = {
+      ...verbose,
+      edges: [edge(0, 0, 1), dangling, edge(2, 3, 4)],
+      nodes,
+      operation: 'query',
+      warnings: [],
+    };
+    const before = JSON.stringify(result);
+    const defaultResponse = codeGraphMcpResponse(result, 800, undefined, 'agent');
+    const largerCeiling = codeGraphMcpResponse(result, 1_500, undefined, 'agent');
+
+    expect(largerCeiling).toEqual(defaultResponse);
+    expect(defaultResponse.structuredContent.nodes.map(node => node.id)).toEqual(
+      nodes.slice(0, 3).map(node => node.id),
+    );
+    expect(defaultResponse.structuredContent.edges.map(item => item.id)).toEqual(['cge_query_core_0']);
+    expect(defaultResponse.structuredContent.output).toMatchObject({
+      returnedEdges: 1,
+      returnedNodes: 3,
+      totalEdges: 3,
+      totalNodes: 6,
+      truncated: true,
+    });
+    expect(defaultResponse.structuredContent.warnings.at(-1)).toContain('bounded to 3/6 nodes');
+
+    const expanded = codeGraphMcpResponse(result, 1_500, undefined, 'agent', {queryNodeLimit: 5});
+    expect(expanded.structuredContent.nodes.map(node => node.id)).toEqual(nodes.slice(0, 5).map(node => node.id));
+    expect(expanded.structuredContent.edges.map(item => item.id)).toEqual(['cge_query_core_0', 'cge_query_core_2']);
+    const expandedAgent = formatCodeGraphMcpResponse(expanded, 'agent');
+    expect(measureAgentToolResponse({text: expandedAgent.content[0].text}).totalBytes).toBeLessThanOrEqual(1_500 * 3);
+
+    const dual = codeGraphMcpResponse(result, undefined, undefined, 'dual', {queryNodeLimit: 3});
+    expect(dual.structuredContent.nodes.map(node => node.id)).toEqual(nodes.map(node => node.id));
+    expect(dual.structuredContent.edges.map(item => item.id)).toEqual(result.edges.map(item => item.id));
+    expect(JSON.stringify(result)).toBe(before);
   });
 
   it('keeps only actionable stale, dirty, project, and refresh provenance in the agent receipt', () => {
@@ -1116,6 +1177,7 @@ describe('MCP code graph indexing progress', () => {
     const response = codeGraphMcpResponse(
       {
         ...result,
+        operation: 'neighbors',
         edges: [
           {
             ...result.edges[0],
@@ -1200,13 +1262,14 @@ describe('MCP code graph indexing progress', () => {
       expect(first).toEqual(second);
       expect(measureAgentToolResponse({text: first.content[0].text}).totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
       expect(JSON.stringify(result)).toBe(before);
-      if (operation === 'impact') {
+      if (operation === 'impact' || operation === 'query') {
         const projected = codeGraphMcpResponse(result, budgetTokens, undefined, 'agent').structuredContent;
         const visibleNodeIds = new Set(projected.nodes.map(node => node.id));
         for (const edge of projected.edges) {
           expect(edge.sourceId === undefined || visibleNodeIds.has(edge.sourceId)).toBe(true);
           expect(edge.targetId === undefined || visibleNodeIds.has(edge.targetId)).toBe(true);
         }
+        if (operation === 'query') expect(projected.nodes.length).toBeLessThanOrEqual(Math.min(3, nodeCount));
       }
     },
     {fastCheck: {numRuns: 50}},

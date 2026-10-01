@@ -2648,7 +2648,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(graphTool?.description).toContain('workset prepare');
         expect(graphTool?.description).toContain('Worksets read published generations');
         expect(JSON.stringify(graphTool?.inputSchema)).toContain('local query defaults to 800');
-        expect(JSON.stringify(graphTool?.inputSchema)).toContain('local query default 8');
+        expect(JSON.stringify(graphTool?.inputSchema)).toContain('local query searches 8; agent shows 3 unless set');
         expect(JSON.stringify(graphTool?.inputSchema)).toContain('local query default 12');
         expect(JSON.stringify(graphTool?.inputSchema)).toContain(
           'Configured graph project name/root (not a memory project tag); omit to infer from callerCwd',
