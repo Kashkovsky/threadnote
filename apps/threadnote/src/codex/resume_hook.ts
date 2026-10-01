@@ -14,7 +14,6 @@ import {recordCodexResumePreloadValueEvent, type CodexResumePreloadOutcome} from
 import {
   compactContinuationCard,
   isContextBriefExactCurrentContinuation,
-  isContextBriefGraphOnlyGap,
   projectContextBrief,
 } from '@threadnote/context/projector';
 import {
@@ -60,7 +59,6 @@ export type CodexResumeIneligibilityReason =
   | 'multiple-selected-handoffs'
   | 'no-ranked-handoff'
   | 'no-selected-handoff'
-  | 'non-graph-coverage-gap'
   | 'not-resume-mode'
   | 'rank-zero-missing'
   | 'scope-not-fresh'
@@ -353,9 +351,6 @@ function selectCodexResumeHandoff(
   if (logical.mode !== 'resume') return {reason: 'not-resume-mode'};
   if (logical.scope.freshness !== 'fresh') return {reason: 'scope-not-fresh'};
   if (!logical.coverage.graph.complete) return {reason: 'graph-incomplete'};
-  if (logical.coverage.gaps.some(gap => !isContextBriefGraphOnlyGap(gap))) {
-    return {reason: 'non-graph-coverage-gap'};
-  }
   const handoff = [...logical.activeHandoffs].sort(
     (left, right) => left.rank - right.rank || left.uri.localeCompare(right.uri),
   )[0];

@@ -125,11 +125,12 @@ describe('Codex resume preload', () => {
     expect(contextBriefIsEligibleForCodexResume(projection)).toBe(true);
 
     const conflicting = projectCodexResumePreload(logicalResume({selectedConflict: true}), 800, 'agent');
-    const unavailable = projectCodexResumePreload(logicalResume({gaps: ['memory-recall-unavailable']}), 800, 'agent');
+    const unrelatedGap = projectCodexResumePreload(logicalResume({gaps: ['memory-freshness-unknown']}), 800, 'agent');
     expect(conflicting.text).toBe('');
     expect(codexResumeProjectionIneligibilityReason(conflicting)).toBe('selected-conflict');
-    expect(unavailable.text).toBe('');
-    expect(codexResumeProjectionIneligibilityReason(unavailable)).toBe('non-graph-coverage-gap');
+    expect(unrelatedGap.text).not.toBe('');
+    expect(codexResumeProjectionIneligibilityReason(unrelatedGap)).toBeUndefined();
+    expect(contextBriefIsEligibleForCodexResume(unrelatedGap)).toBe(true);
   });
 
   it('keeps arbitrary continuation-card content inside the delivery budget', () => {
