@@ -148,6 +148,8 @@ bun_test(
         "//apps/threadnote:src/code_graph/sharing/publisher.ts",
         "//apps/threadnote:src/code_graph/view_removal_output.ts",
         "//apps/threadnote:src/code_graph/workset/telemetry.ts",
+        "//apps/threadnote:src/codex/hooks.ts",
+        "//apps/threadnote:src/codex/resume_hook.ts",
         "//apps/threadnote:src/command-shim.ts",
         "//apps/threadnote:src/constants.ts",
         "//apps/threadnote:src/context_brief/commands.ts",

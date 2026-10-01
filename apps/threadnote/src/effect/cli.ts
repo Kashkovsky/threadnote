@@ -7,7 +7,7 @@ import {
   makeRecallFeedbackCommand,
   makeValueCommand,
 } from './workflow_cli.js';
-import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
+import * as hooksCli from './hooks_cli.js';
 import {agentsCommandMetadata, makeAgentsCommand} from './agents_cli.js';
 import {makeSetupCommand, setupCommandMetadata} from './setup_cli.js';
 import {guidanceCommandMetadata, makeGuidanceCommand} from './guidance_cli.js';
@@ -162,6 +162,7 @@ import {
 import {runProcessDiagnostics} from '../process/diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
 import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
+import {runCodexResumeHook} from '../codex/resume_hook.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import * as valueReportCommands from '../value_report/commands.js';
@@ -1241,14 +1242,14 @@ const mcpInstall = Command.make(
   ({agent, ...options}) => withRuntimeEffect(config => runMcpInstall(config, agent, options)),
 ).pipe(Command.withDescription('Install the Threadnote MCP config, instructions, and skills for one supported agent'));
 
-const installHooks = makeInstallHooksCommand((agent, options) =>
+const installHooks = hooksCli.makeInstallHooksCommand((agent, options) =>
   withRuntimeEffect(config => runHooksInstall(config, agent, options)),
 );
-const cursorHook = makeCursorHookCommand((event, options) =>
+const cursorHook = hooksCli.makeCursorHookCommand((event, options) =>
   withRuntimeEffect(config => runCursorHook(config, event, options)),
 );
 
-const preCompactHook = makePreCompactHookCommand(options =>
+const preCompactHook = hooksCli.makePreCompactHookCommand(options =>
   withRuntimeEffect(config => runPreCompactHook(config, options)),
 );
 
@@ -1258,11 +1259,12 @@ const sessionStartHook = Command.make(
   options => withRuntimeEffect(config => runSessionStartHook(config, options)),
 ).pipe(Command.withDescription('Print current repo handoff context at session start'), Command.unlisted);
 
-const codeBriefHook = Command.make(
-  'code-brief-hook',
-  {diagnostic: boolean('diagnostic', 'Print a privacy-safe delivery status to stderr')},
-  options => withRuntimeEffect(config => runCodeBriefEditHook(config, options)),
-).pipe(Command.withDescription('Inject current cited memory before a Claude file edit'), Command.unlisted);
+const codeBriefHook = hooksCli.makeCodeBriefHookCommand(options =>
+  withRuntimeEffect(config => runCodeBriefEditHook(config, options)),
+);
+const codexResumeHook = hooksCli.makeCodexResumeHookCommand(options =>
+  withRuntimeEffect(config => runCodexResumeHook(config, options)),
+);
 const remember = Command.make(
   'remember',
   {
@@ -1941,6 +1943,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('cursor-hook', cursorHook),
   registerTopLevelCommand('session-start-hook', sessionStartHook),
   registerTopLevelCommand('code-brief-hook', codeBriefHook),
+  registerTopLevelCommand('codex-resume-hook', codexResumeHook),
   registerTopLevelCommand('remember', remember),
   registerTopLevelCommand('finalize-code-refs', finalizeCodeRefs),
   registerTopLevelCommand('migrate', migrateHome, {productionLog: {mode: 'requires-apply'}}),

@@ -2472,7 +2472,9 @@ Measure the system before changing its implementation language.
       .find(article => article.id === 'cursor-marketplace-plugin');
 
     expect(content).toContain('threadnote install-hooks claude --dry-run');
-    expect(content).not.toContain('threadnote install-hooks codex --dry-run');
+    expect(content).toContain('threadnote install-hooks codex --dry-run');
+    expect(content).toContain('UserPromptSubmit');
+    expect(content).toContain('THREADNOTE_CODEX_RESUME_PRELOAD=off');
     expect(content).toContain('threadnote share publish');
     expect(content).toContain('--preview');
     expect(content).toContain('selected vector generation');

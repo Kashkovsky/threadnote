@@ -66,6 +66,8 @@
     "./code_graph/workset/telemetry": "./src/code_graph/workset/telemetry.ts",
     "./command-shim": "./src/command-shim.ts",
     "./constants": "./src/constants.ts",
+    "./codex/hooks": "./src/codex/hooks.ts",
+    "./codex/resume_hook": "./src/codex/resume_hook.ts",
     "./context_brief/commands": "./src/context_brief/commands.ts",
     "./context_brief/edit_hook": "./src/context_brief/edit_hook.ts",
     "./context_brief/index": "./src/context_brief/index.ts",
