@@ -1326,6 +1326,7 @@ bun_test(
         "//apps/threadnote:src/effect/composer/cli.ts",
         "//apps/threadnote:src/effect/console.ts",
         "//apps/threadnote:src/effect/cursor_cloud_cli.ts",
+        "//apps/threadnote:src/effect/development_install_cli.ts",
         "//apps/threadnote:src/effect/git_worktree_lock.ts",
         "//apps/threadnote:src/effect/graph_scope_cli.ts",
         "//apps/threadnote:src/effect/guidance_cli.ts",

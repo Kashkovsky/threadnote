@@ -11,6 +11,7 @@ import * as hooksCli from './hooks_cli.js';
 import {agentsCommandMetadata, makeAgentsCommand} from './agents_cli.js';
 import {makeSetupCommand, setupCommandMetadata} from './setup_cli.js';
 import {guidanceCommandMetadata, makeGuidanceCommand} from './guidance_cli.js';
+import {makeDevelopmentInstallRepairCommand} from './development_install_cli.js';
 import {runCursorHook} from '../cursor/hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
@@ -18,7 +19,7 @@ import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {makeComposerAttachFlags} from './composer/attach_flags.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
 import {
-  runDevelopmentInstallRepair,
+  runDevelopmentInstallMaintenance,
   runDoctor,
   runInstall,
   runRepair,
@@ -385,13 +386,11 @@ const postUpdate = Command.make(
   options => withRuntimeEffect(config => runPostUpdate(config, options)),
 ).pipe(Command.withDescription('Run packaged post-update action prompts'), Command.unlisted);
 
-const developmentInstallRepair = Command.make(
-  'development-install-repair',
-  {
-    expectedVersion: requiredString('expected-version', 'Exact active development release version'),
-  },
-  options => withRuntimeEffect(config => runDevelopmentInstallRepair(config, options.expectedVersion)),
-).pipe(Command.withDescription('Repair state inside an exact-HEAD development activation'), Command.unlisted);
+const developmentInstallRepair = makeDevelopmentInstallRepairCommand(options =>
+  withRuntimeEffect(config =>
+    runDevelopmentInstallMaintenance(config, options.expectedVersion, options.activateIntegrations),
+  ),
+);
 
 const repair = Command.make(
   'repair',
