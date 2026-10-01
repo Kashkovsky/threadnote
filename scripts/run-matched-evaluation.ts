@@ -169,12 +169,113 @@ export function projectMatchedEvaluationContinuationAdapterTaskV2(
 
 type MatchedEvaluationProjectedAdapterTask = ReturnType<typeof projectMatchedEvaluationAdapterTaskV1>;
 
-interface ResolvedRuntimeArm {
+export interface ResolvedRuntimeArm {
   readonly config: MatchedEvaluationRuntimeArmV1;
   readonly adapterConfigFile: string;
   readonly definition: MatchedEvaluationArmDefinitionV1;
   readonly toolExecutable: string | null;
   readonly toolPayload?: {readonly root: string; readonly hash: string};
+}
+
+export interface MatchedEvaluationContinuationAdapterConfigOverrideV2 {
+  readonly adapterConfigFile: string;
+  readonly adapterConfigurationHash: string;
+}
+
+export function matchedEvaluationContinuationAdapterConfigurationPathsV2(planPath: string) {
+  const root = join(dirname(planPath), 'checkpoint-adapter-config');
+  return {
+    'threadnote-compact': join(root, 'threadnote-compact.json'),
+    'threadnote-graph': join(root, 'threadnote-graph.json'),
+  } as const;
+}
+
+export async function assertMatchedEvaluationContinuationAdapterConfigurationsV2(input: {
+  readonly manifest: MatchedEvaluationManifestV1;
+  readonly plan: MatchedEvaluationContinuationPilotPlanV2;
+  readonly planPath: string;
+  readonly runtime: MatchedEvaluationRuntimeV1;
+}): Promise<
+  ReadonlyMap<'threadnote-compact' | 'threadnote-graph', MatchedEvaluationContinuationAdapterConfigOverrideV2>
+> {
+  const paths = matchedEvaluationContinuationAdapterConfigurationPathsV2(input.planPath);
+  const specifications = [
+    {
+      arm: 'threadnote-graph' as const,
+      expectedContext: {
+        graphContentHash: input.plan.checkpoint.preparedContext.graphContentHash,
+        graphSnapshotHash: input.plan.checkpoint.preparedContext.graphSnapshotHash,
+        linkReceiptsHash: null,
+        memoryAccess: 'disabled' as const,
+        taskContextHash: null,
+      },
+      expectedHash: input.plan.checkpoint.adapterConfigurations.threadnoteGraphSha256,
+      preparedHome: input.plan.checkpoint.preparedGraphHome,
+    },
+    {
+      arm: 'threadnote-compact' as const,
+      expectedContext: {
+        graphContentHash: input.plan.checkpoint.preparedContext.graphContentHash,
+        graphSnapshotHash: input.plan.checkpoint.preparedContext.graphSnapshotHash,
+        linkReceiptsHash: input.plan.checkpoint.preparedContext.linkReceiptsHash,
+        memoryAccess: 'linked' as const,
+        taskContextHash: input.plan.checkpoint.preparedContext.taskContextHash,
+      },
+      expectedHash: input.plan.checkpoint.adapterConfigurations.threadnoteCompactSha256,
+      preparedHome: input.plan.checkpoint.preparedHome,
+    },
+  ];
+  const overrides = await Promise.all(
+    specifications.map(async specification => {
+      const definition = input.manifest.arms.find(candidate => candidate.arm === specification.arm);
+      if (definition === undefined) throw new Error(`Continuation manifest lacks ${specification.arm}.`);
+      const runtimeArm = input.runtime.arms.find(candidate => candidate.arm === specification.arm);
+      if (runtimeArm === undefined) throw new Error(`Continuation runtime lacks ${specification.arm}.`);
+      const [sourceConfigFile, checkpointConfigFile] = await Promise.all([
+        canonicalRegularFile(runtimeArm.adapterConfigFile, `${specification.arm} source adapter configuration`),
+        canonicalRegularFile(paths[specification.arm], `${specification.arm} checkpoint adapter configuration`),
+      ]);
+      const [sourceHash, checkpointHash, sourceInput, checkpointInput] = await Promise.all([
+        sha256File(sourceConfigFile),
+        sha256File(checkpointConfigFile),
+        readJson(sourceConfigFile),
+        readJson(checkpointConfigFile),
+      ]);
+      if (sourceHash !== definition.adapterConfigurationHash) {
+        throw new Error(`${specification.arm} source adapter configuration differs from its manifest identity.`);
+      }
+      if (checkpointHash !== specification.expectedHash) {
+        throw new Error(`${specification.arm} checkpoint adapter configuration differs from the sealed plan.`);
+      }
+      const source = parseMatchedEvaluationCodexAdapterConfigV1(sourceInput);
+      const checkpoint = parseMatchedEvaluationCodexAdapterConfigV1(checkpointInput);
+      const {contextHomes: _sourceHomes, ...sourcePolicy} = source;
+      const {contextHomes, ...checkpointPolicy} = checkpoint;
+      if (JSON.stringify(sourcePolicy) !== JSON.stringify(checkpointPolicy)) {
+        throw new Error(`${specification.arm} checkpoint adapter configuration changes the frozen execution policy.`);
+      }
+      if (contextHomes.length !== 1 || contextHomes[0]?.taskId !== input.plan.taskId) {
+        throw new Error(`${specification.arm} checkpoint adapter configuration must contain only its task home.`);
+      }
+      const home = contextHomes[0];
+      if (
+        JSON.stringify(home.expectedContext) !== JSON.stringify(specification.expectedContext) ||
+        home.homeFixtureHash !== specification.preparedHome.fixtureHash ||
+        matchedEvaluationContinuationPreparedHomeIdentityHashV2(home) !== specification.preparedHome.identitySha256
+      ) {
+        throw new Error(`${specification.arm} checkpoint prepared home differs from the sealed plan.`);
+      }
+      await canonicalDirectory(home.homeDirectory, `${specification.arm} checkpoint prepared home`);
+      if ((await matchedEvaluationPreparedHomeFixtureHashV1(home.homeDirectory)) !== home.homeFixtureHash) {
+        throw new Error(`${specification.arm} checkpoint prepared home differs from its fixture hash.`);
+      }
+      return [
+        specification.arm,
+        {adapterConfigFile: checkpointConfigFile, adapterConfigurationHash: checkpointHash},
+      ] as const;
+    }),
+  );
+  return new Map(overrides);
 }
 
 export interface ResolvedRuntimeRepository {
@@ -259,6 +360,10 @@ export interface MatchedEvaluationContinuationPilotPlanV2 {
   readonly attempts: MatchedEvaluationContinuationPilotPlanV1['attempts'];
   readonly candidate: MatchedEvaluationContinuationPilotPlanV1['candidate'];
   readonly checkpoint: MatchedEvaluationContinuationPilotPlanV1['checkpoint'] & {
+    readonly adapterConfigurations: {
+      readonly threadnoteCompactSha256: string;
+      readonly threadnoteGraphSha256: string;
+    };
     readonly phaseOnePatchSha256: string;
     readonly phaseOnePrompt: string;
     readonly phaseOnePromptSha256: string;
@@ -284,6 +389,10 @@ export interface MatchedEvaluationContinuationPilotPlanV2 {
       readonly transcriptSha256: string;
     };
     readonly preparedHome: {
+      readonly fixtureHash: string;
+      readonly identitySha256: string;
+    };
+    readonly preparedGraphHome: {
       readonly fixtureHash: string;
       readonly identitySha256: string;
     };
@@ -355,11 +464,13 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
       'phaseOneAccounting',
       ...(version === 2
         ? [
+            'adapterConfigurations',
             'phaseOneExecution',
             'phaseOnePatchSha256',
             'phaseOnePrompt',
             'phaseOnePromptSha256',
             'preparedContext',
+            'preparedGraphHome',
             'preparedHome',
           ]
         : []),
@@ -580,6 +691,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
     ...common,
     checkpoint: {
       ...common.checkpoint,
+      adapterConfigurations: parseContinuationAdapterConfigurationsV2(checkpoint.adapterConfigurations),
       phaseOnePatchSha256: matchingString(
         checkpoint.phaseOnePatchSha256,
         HASH,
@@ -589,7 +701,11 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
       phaseOnePrompt,
       phaseOnePromptSha256,
       preparedContext: parseContinuationPreparedContextV2(checkpoint.preparedContext),
-      preparedHome: parseContinuationPreparedHomeV2(checkpoint.preparedHome),
+      preparedGraphHome: parseContinuationPreparedHomeV2(
+        checkpoint.preparedGraphHome,
+        'continuation pilot prepared graph home',
+      ),
+      preparedHome: parseContinuationPreparedHomeV2(checkpoint.preparedHome, 'continuation pilot prepared home'),
     },
     phaseTwoPrompt,
     phaseTwoPromptSha256,
@@ -787,14 +903,38 @@ function parseContinuationPreparedContextV2(
   };
 }
 
+function parseContinuationAdapterConfigurationsV2(
+  value: unknown,
+): MatchedEvaluationContinuationPilotPlanV2['checkpoint']['adapterConfigurations'] {
+  const configurations = object(value, 'continuation pilot checkpoint adapter configurations');
+  exactKeys(
+    configurations,
+    ['threadnoteCompactSha256', 'threadnoteGraphSha256'],
+    'continuation pilot checkpoint adapter configurations',
+  );
+  return {
+    threadnoteCompactSha256: matchingString(
+      configurations.threadnoteCompactSha256,
+      HASH,
+      'continuation pilot compact adapter configuration hash',
+    ),
+    threadnoteGraphSha256: matchingString(
+      configurations.threadnoteGraphSha256,
+      HASH,
+      'continuation pilot graph adapter configuration hash',
+    ),
+  };
+}
+
 function parseContinuationPreparedHomeV2(
   value: unknown,
+  label: string,
 ): MatchedEvaluationContinuationPilotPlanV2['checkpoint']['preparedHome'] {
-  const home = object(value, 'continuation pilot prepared home');
-  exactKeys(home, ['fixtureHash', 'identitySha256'], 'continuation pilot prepared home');
+  const home = object(value, label);
+  exactKeys(home, ['fixtureHash', 'identitySha256'], label);
   return {
-    fixtureHash: matchingString(home.fixtureHash, HASH, 'continuation pilot prepared home fixture hash'),
-    identitySha256: matchingString(home.identitySha256, HASH, 'continuation pilot prepared home identity hash'),
+    fixtureHash: matchingString(home.fixtureHash, HASH, `${label} fixture hash`),
+    identitySha256: matchingString(home.identitySha256, HASH, `${label} identity hash`),
   };
 }
 
@@ -997,10 +1137,12 @@ export function projectMatchedEvaluationContinuationSelectionCheckpointV1(
     handoffSha256: plan.checkpoint.handoffSha256,
     ...(plan.version === 2
       ? {
+          adapterConfigurations: plan.checkpoint.adapterConfigurations,
           phaseOneExecution: plan.checkpoint.phaseOneExecution,
           phaseOnePatchSha256: plan.checkpoint.phaseOnePatchSha256,
           phaseOnePromptSha256: plan.checkpoint.phaseOnePromptSha256,
           preparedContext: plan.checkpoint.preparedContext,
+          preparedGraphHome: plan.checkpoint.preparedGraphHome,
           preparedHome: plan.checkpoint.preparedHome,
         }
       : {}),
@@ -1373,6 +1515,15 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   if (runtime.verificationPlanHash !== study.verificationPlanHash) {
     throw new Error('Runtime and study disagree on the sealed verification plan.');
   }
+  const adapterConfigOverrides =
+    plan.version === 2
+      ? await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+          manifest,
+          plan,
+          planPath: options.planPath,
+          runtime,
+        })
+      : new Map<'threadnote-compact' | 'threadnote-graph', MatchedEvaluationContinuationAdapterConfigOverrideV2>();
   const task = corpus.tasks.find(candidate => candidate.taskId === plan.taskId);
   if (task === undefined) throw new Error(`Continuation pilot task ${plan.taskId} is not in the corpus.`);
   if (plan.version === 1 && sha256Bytes(Buffer.from(task.prompt)) !== plan.baseTaskPromptSha256) {
@@ -1409,12 +1560,6 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   if ((await realpath(pilotDirectory)) !== pilotDirectory) {
     throw new Error('Continuation pilot directory must use its canonical path.');
   }
-  await assertContinuationAutomaticHandoffV1({
-    adapterArtifactHashOverride: supplement?.adapterArtifactSha256 ?? null,
-    manifest,
-    plan,
-    runtime,
-  });
   const plannedAttempts =
     supplement === null
       ? plan.attempts
@@ -1524,6 +1669,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
         arm,
         definition,
         supplement?.adapterArtifactSha256 ?? null,
+        adapterConfigOverrides.get(arm as 'threadnote-compact' | 'threadnote-graph') ?? null,
       );
       if ('reason' in resolution)
         throw new Error(`Continuation pilot runtime unavailable for ${arm}: ${resolution.detail}`);
@@ -1531,6 +1677,10 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     }),
   );
   const resolved = new Map(preflight);
+  await assertContinuationAutomaticHandoffV1({
+    plan,
+    resolvedCompactArm: requiredResolvedArm(resolved, 'threadnote-compact'),
+  });
   const reportPath = resolve(pilotDirectory, 'continuation-pilot-report.json');
   const attempts: Array<Record<string, unknown>> = [];
   const writeReport = async (completed: boolean) =>
@@ -1887,24 +2037,13 @@ function requiredRuntimeRepository(
 }
 
 async function assertContinuationAutomaticHandoffV1(input: {
-  readonly adapterArtifactHashOverride?: string | null;
-  readonly manifest: MatchedEvaluationManifestV1;
   readonly plan: MatchedEvaluationContinuationPilotPlan;
-  readonly runtime: MatchedEvaluationRuntimeV1;
+  readonly resolvedCompactArm: ResolvedRuntimeArm;
 }): Promise<void> {
-  const definition = input.manifest.arms.find(candidate => candidate.arm === 'threadnote-compact');
-  if (definition === undefined) throw new Error('Continuation pilot lacks a compact arm definition.');
-  const resolved = await resolveRuntimeArm(
-    input.runtime,
-    'threadnote-compact',
-    definition,
-    input.adapterArtifactHashOverride ?? null,
-  );
-  if ('reason' in resolved) {
-    throw new Error(`Continuation pilot runtime unavailable for threadnote-compact: ${resolved.detail}`);
+  if (input.resolvedCompactArm.toolExecutable === null) {
+    throw new Error('Continuation pilot compact arm lacks Threadnote.');
   }
-  if (resolved.toolExecutable === null) throw new Error('Continuation pilot compact arm lacks Threadnote.');
-  const config = parseMatchedEvaluationCodexAdapterConfigV1(await readJson(resolved.adapterConfigFile));
+  const config = parseMatchedEvaluationCodexAdapterConfigV1(await readJson(input.resolvedCompactArm.adapterConfigFile));
   const prepared = config.contextHomes.find(home => home.taskId === input.plan.taskId);
   if (prepared === undefined) throw new Error('Continuation pilot compact arm lacks the task prepared home.');
   if (
@@ -1920,7 +2059,7 @@ async function assertContinuationAutomaticHandoffV1(input: {
   }
   const read = await captureCodeMemoryLinkProcessGroup({
     arguments: ['read', '--home', prepared.homeDirectory, input.plan.checkpoint.automaticHandoffUri],
-    command: resolved.toolExecutable,
+    command: input.resolvedCompactArm.toolExecutable,
     cwd: process.cwd(),
     environment: {
       HOME: '/nonexistent',
@@ -1961,17 +2100,18 @@ export function matchedEvaluationContinuationPreparedHomeIdentityHashV2(
   );
 }
 
-async function resolveRuntimeArm(
+export async function resolveRuntimeArm(
   runtime: MatchedEvaluationRuntimeV1,
   arm: MatchedEvaluationArm,
   definition: MatchedEvaluationArmDefinitionV1,
   adapterArtifactHashOverride: string | null = null,
+  adapterConfigOverride: MatchedEvaluationContinuationAdapterConfigOverrideV2 | null = null,
 ): Promise<ResolvedRuntimeArm | {readonly detail: string; readonly reason: MatchedEvaluationUnavailableReason}> {
   const config = runtime.arms.find(candidate => candidate.arm === arm);
   if (config === undefined) return {detail: `${arm} has no local runtime mapping`, reason: 'runtime-not-configured'};
   const [adapter, adapterConfigFile] = await Promise.all([
     optionalCanonicalRegularFile(config.adapterExecutable, true),
-    optionalCanonicalRegularFile(config.adapterConfigFile, false),
+    optionalCanonicalRegularFile(adapterConfigOverride?.adapterConfigFile ?? config.adapterConfigFile, false),
   ]);
   if (adapter === null) return {detail: `${arm} adapter executable is missing`, reason: 'adapter-missing'};
   if (adapterConfigFile === null) {
@@ -1981,8 +2121,15 @@ async function resolveRuntimeArm(
   if ((await sha256File(adapter)) !== adapterArtifactHash) {
     throw new Error(`${arm} adapter executable differs from its pinned manifest identity.`);
   }
-  const resolvedDefinition = adapterArtifactHashOverride === null ? definition : {...definition, adapterArtifactHash};
-  if ((await sha256File(adapterConfigFile)) !== definition.adapterConfigurationHash) {
+  const resolvedDefinition = {
+    ...definition,
+    adapterArtifactHash,
+    adapterConfigurationHash: adapterConfigOverride?.adapterConfigurationHash ?? definition.adapterConfigurationHash,
+  };
+  if (
+    (await sha256File(adapterConfigFile)) !==
+    (adapterConfigOverride?.adapterConfigurationHash ?? definition.adapterConfigurationHash)
+  ) {
     throw new Error(`${arm} adapter configuration differs from its pinned manifest identity.`);
   }
   if (definition.tool.artifactHash === null) {
@@ -2165,7 +2312,7 @@ function assertProjectedObservationContext(
   }
 }
 
-async function stageResolvedRuntimeArmV1(
+export async function stageResolvedRuntimeArmV1(
   resolvedArm: ResolvedRuntimeArm,
   stagedDirectory: string,
 ): Promise<ResolvedRuntimeArm> {
@@ -2545,6 +2692,12 @@ async function canonicalDirectory(path: string, label: string): Promise<string> 
   if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error(`${label} must be a real directory.`);
   const canonical = await realpath(path);
   if (canonical !== path) throw new Error(`${label} must use its canonical path.`);
+  return canonical;
+}
+
+async function canonicalRegularFile(path: string, label: string): Promise<string> {
+  const canonical = await optionalCanonicalRegularFile(path, false);
+  if (canonical === null) throw new Error(`${label} is missing.`);
   return canonical;
 }
 

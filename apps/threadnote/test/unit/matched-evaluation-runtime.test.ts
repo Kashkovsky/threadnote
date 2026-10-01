@@ -14,6 +14,7 @@ import {
 } from '../../../../scripts/matched-evaluation-runtime-integrity.js';
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
 import {
+  assertMatchedEvaluationContinuationAdapterConfigurationsV2,
   assertMatchedEvaluationContinuationSupplementV1,
   assertMatchedEvaluationContinuationCheckpointV2,
   assertMatchedEvaluationContinuationPhaseOneEvidenceV2,
@@ -23,11 +24,20 @@ import {
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
   projectMatchedEvaluationContinuationAdapterTaskV2,
+  resolveRuntimeArm,
   resolveMatchedEvaluationRuntimeRepositoriesV1,
+  stageResolvedRuntimeArmV1,
   hashMatchedEvaluationPayloadV1,
   selectMatchedEvaluationPilotRowsV1,
+  type MatchedEvaluationContinuationPilotPlanV2,
+  type MatchedEvaluationRuntimeV1,
 } from '../../../../scripts/run-matched-evaluation.js';
+import {
+  matchedEvaluationCodexEnvironmentPolicyHashV1,
+  matchedEvaluationPreparedHomeFixtureHashV1,
+} from '../../../../scripts/matched-evaluation-codex-adapter.js';
 import type {MatchedTokenEfficiencyStudyV1} from '@threadnote/threadnote/evaluation/matched-token-efficiency';
+import type {MatchedEvaluationManifestV1} from '@threadnote/threadnote/evaluation/matched-evaluation';
 
 describe('matched evaluation runtime integrity', () => {
   const roots: string[] = [];
@@ -180,6 +190,10 @@ describe('matched evaluation runtime integrity', () => {
       candidate: base.candidate,
       checkpoint: {
         ...base.checkpoint,
+        adapterConfigurations: {
+          threadnoteCompactSha256: 'a'.repeat(64),
+          threadnoteGraphSha256: 'b'.repeat(64),
+        },
         phaseOneExecution: {
           adapterArtifactHash: 'f'.repeat(64),
           adapterConfigurationFileSha256: '0'.repeat(64),
@@ -210,6 +224,7 @@ describe('matched evaluation runtime integrity', () => {
           linkReceiptsHash: 'b'.repeat(64),
           taskContextHash: 'c'.repeat(64),
         },
+        preparedGraphHome: {fixtureHash: 'f'.repeat(64), identitySha256: '0'.repeat(64)},
         preparedHome: {fixtureHash: 'd'.repeat(64), identitySha256: 'e'.repeat(64)},
         repositoryRevision: '7'.repeat(40),
       },
@@ -233,6 +248,7 @@ describe('matched evaluation runtime integrity', () => {
       phaseTwoPrompt,
     });
     expect(projectMatchedEvaluationContinuationSelectionCheckpointV1(parsedVersionTwo)).toMatchObject({
+      adapterConfigurations: versionTwo.checkpoint.adapterConfigurations,
       phaseOneExecution: versionTwo.checkpoint.phaseOneExecution,
       phaseOnePatchSha256: versionTwo.checkpoint.phaseOnePatchSha256,
       phaseOnePromptSha256: versionTwo.checkpoint.phaseOnePromptSha256,
@@ -718,6 +734,224 @@ describe('matched evaluation runtime integrity', () => {
     ).not.toBe(identityHash);
   });
 
+  it('admits only checkpoint adapter configs that replace context homes without changing execution policy', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-continuation-config-')));
+    roots.push(root);
+    const graphHome = join(root, 'graph-home');
+    const compactHome = join(root, 'compact-home');
+    const checkpointConfigDirectory = join(root, 'checkpoint-adapter-config');
+    await Promise.all([mkdir(graphHome), mkdir(compactHome), mkdir(checkpointConfigDirectory)]);
+    const [graphFixtureHash, compactFixtureHash] = await Promise.all([
+      matchedEvaluationPreparedHomeFixtureHashV1(graphHome),
+      matchedEvaluationPreparedHomeFixtureHashV1(compactHome),
+    ]);
+    const taskId = 'tsk_1234567890abcdef';
+    const graphContext = {
+      graphContentHash: '1'.repeat(64),
+      graphSnapshotHash: '2'.repeat(64),
+      linkReceiptsHash: null,
+      memoryAccess: 'disabled' as const,
+      taskContextHash: null,
+    };
+    const compactContext = {
+      ...graphContext,
+      linkReceiptsHash: '3'.repeat(64),
+      memoryAccess: 'linked' as const,
+      taskContextHash: '4'.repeat(64),
+    };
+    const graphPreparedHome = continuationPreparedHome(taskId, graphHome, graphFixtureHash, graphContext, 'graph');
+    const compactPreparedHome = continuationPreparedHome(
+      taskId,
+      compactHome,
+      compactFixtureHash,
+      compactContext,
+      'compact',
+    );
+    const sourceGraph = continuationAdapterConfig('threadnote-graph', []);
+    const sourceCompact = continuationAdapterConfig('threadnote-compact', []);
+    const checkpointGraph = continuationAdapterConfig('threadnote-graph', [graphPreparedHome]);
+    const checkpointCompact = continuationAdapterConfig('threadnote-compact', [compactPreparedHome]);
+    const sourceGraphPath = join(root, 'source-graph.json');
+    const sourceCompactPath = join(root, 'source-compact.json');
+    const checkpointGraphPath = join(checkpointConfigDirectory, 'threadnote-graph.json');
+    const checkpointCompactPath = join(checkpointConfigDirectory, 'threadnote-compact.json');
+    const files = [
+      [sourceGraphPath, sourceGraph],
+      [sourceCompactPath, sourceCompact],
+      [checkpointGraphPath, checkpointGraph],
+      [checkpointCompactPath, checkpointCompact],
+    ] as const;
+    await Promise.all(files.map(([path, value]) => writeFile(path, `${JSON.stringify(value)}\n`)));
+    const sourceGraphHash = sha256HexSync(Buffer.from(`${JSON.stringify(sourceGraph)}\n`));
+    const sourceCompactHash = sha256HexSync(Buffer.from(`${JSON.stringify(sourceCompact)}\n`));
+    const checkpointGraphHash = sha256HexSync(Buffer.from(`${JSON.stringify(checkpointGraph)}\n`));
+    const checkpointCompactHash = sha256HexSync(Buffer.from(`${JSON.stringify(checkpointCompact)}\n`));
+    const plan = {
+      checkpoint: {
+        adapterConfigurations: {
+          threadnoteCompactSha256: checkpointCompactHash,
+          threadnoteGraphSha256: checkpointGraphHash,
+        },
+        preparedContext: {
+          graphContentHash: graphContext.graphContentHash,
+          graphSnapshotHash: graphContext.graphSnapshotHash,
+          linkReceiptsHash: compactContext.linkReceiptsHash,
+          taskContextHash: compactContext.taskContextHash,
+        },
+        preparedGraphHome: {
+          fixtureHash: graphFixtureHash,
+          identitySha256: matchedEvaluationContinuationPreparedHomeIdentityHashV2(graphPreparedHome),
+        },
+        preparedHome: {
+          fixtureHash: compactFixtureHash,
+          identitySha256: matchedEvaluationContinuationPreparedHomeIdentityHashV2(compactPreparedHome),
+        },
+      },
+      taskId,
+    } as unknown as MatchedEvaluationContinuationPilotPlanV2;
+    const manifest = {
+      arms: [
+        {adapterConfigurationHash: sourceGraphHash, arm: 'threadnote-graph'},
+        {adapterConfigurationHash: sourceCompactHash, arm: 'threadnote-compact'},
+      ],
+    } as unknown as MatchedEvaluationManifestV1;
+    const runtime = {
+      arms: [
+        {adapterConfigFile: sourceGraphPath, arm: 'threadnote-graph'},
+        {adapterConfigFile: sourceCompactPath, arm: 'threadnote-compact'},
+      ],
+    } as unknown as MatchedEvaluationRuntimeV1;
+
+    const overrides = await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+      manifest,
+      plan,
+      planPath: join(root, 'plan.json'),
+      runtime,
+    });
+    expect(overrides.get('threadnote-graph')?.adapterConfigFile).toBe(checkpointGraphPath);
+    expect(overrides.get('threadnote-compact')?.adapterConfigFile).toBe(checkpointCompactPath);
+
+    const changedPolicy = {
+      ...checkpointCompact,
+      taskBudget: {...checkpointCompact.taskBudget, tokens: checkpointCompact.taskBudget.tokens + 1},
+    };
+    const changedBytes = `${JSON.stringify(changedPolicy)}\n`;
+    await writeFile(checkpointCompactPath, changedBytes);
+    await expect(
+      assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+        manifest,
+        plan: {
+          ...plan,
+          checkpoint: {
+            ...plan.checkpoint,
+            adapterConfigurations: {
+              ...plan.checkpoint.adapterConfigurations,
+              threadnoteCompactSha256: sha256HexSync(Buffer.from(changedBytes)),
+            },
+          },
+        },
+        planPath: join(root, 'plan.json'),
+        runtime,
+      }),
+    ).rejects.toThrow('changes the frozen execution policy');
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom('contextBudgetTokens', 'steps', 'tokens'),
+        fc.integer({min: 1, max: 10_000}),
+        async (field, delta) => {
+          const mutated =
+            field === 'contextBudgetTokens'
+              ? {...checkpointCompact, contextBudgetTokens: checkpointCompact.contextBudgetTokens + delta}
+              : {
+                  ...checkpointCompact,
+                  taskBudget: {
+                    ...checkpointCompact.taskBudget,
+                    [field]: checkpointCompact.taskBudget[field] + delta,
+                  },
+                };
+          const bytes = `${JSON.stringify(mutated)}\n`;
+          await writeFile(checkpointCompactPath, bytes);
+          await expect(
+            assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+              manifest,
+              plan: {
+                ...plan,
+                checkpoint: {
+                  ...plan.checkpoint,
+                  adapterConfigurations: {
+                    ...plan.checkpoint.adapterConfigurations,
+                    threadnoteCompactSha256: sha256HexSync(Buffer.from(bytes)),
+                  },
+                },
+              },
+              planPath: join(root, 'plan.json'),
+              runtime,
+            }),
+          ).rejects.toThrow('changes the frozen execution policy');
+        },
+      ),
+      {numRuns: 9},
+    );
+  });
+
+  it('stages a sealed continuation adapter-config override instead of the source config', async () => {
+    const root = await temporaryRoot(roots);
+    const adapterPath = join(root, 'adapter');
+    const sourceConfigPath = join(root, 'source-config.json');
+    const checkpointConfigPath = join(root, 'checkpoint-config.json');
+    const stagedDirectory = join(root, 'staged');
+    const adapter = Buffer.from('#!/bin/sh\nexit 0\n');
+    const sourceConfig = Buffer.from('{"contextHomes":[]}\n');
+    const checkpointConfig = Buffer.from('{"contextHomes":[{"taskId":"tsk_1234567890abcdef"}]}\n');
+    await Promise.all([
+      writeFile(adapterPath, adapter),
+      writeFile(sourceConfigPath, sourceConfig),
+      writeFile(checkpointConfigPath, checkpointConfig),
+      mkdir(stagedDirectory),
+    ]);
+    await chmod(adapterPath, 0o700);
+    const sourceConfigHash = sha256HexSync(sourceConfig);
+    const checkpointConfigHash = sha256HexSync(checkpointConfig);
+    const runtime = {
+      arms: [
+        {
+          adapterArguments: [],
+          adapterConfigFile: sourceConfigPath,
+          adapterExecutable: adapterPath,
+          arm: 'files',
+          environmentKeys: [],
+          toolExecutable: null,
+          toolLockFile: null,
+        },
+      ],
+      artifactDirectory: join(root, 'artifacts'),
+      repositories: [],
+      timeoutMilliseconds: 60_000,
+      verificationPlanHash: null,
+      version: 4,
+    } as const satisfies MatchedEvaluationRuntimeV1;
+    const definition = {
+      adapterArtifactHash: sha256HexSync(adapter),
+      adapterConfigurationHash: sourceConfigHash,
+      adapterProtocol: 'matched-evaluation-adapter-v5',
+      arm: 'files',
+      environmentPolicyHash: 'a'.repeat(64),
+      tool: {artifactHash: null, lockIdentityHash: null, name: 'none', version: 'none'},
+    } as const satisfies Parameters<typeof resolveRuntimeArm>[2];
+
+    const resolved = await resolveRuntimeArm(runtime, 'files', definition, null, {
+      adapterConfigFile: checkpointConfigPath,
+      adapterConfigurationHash: checkpointConfigHash,
+    });
+    if ('reason' in resolved) throw new Error(`Expected resolved arm, received ${resolved.reason}: ${resolved.detail}`);
+    expect(resolved.definition.adapterConfigurationHash).toBe(checkpointConfigHash);
+
+    const staged = await stageResolvedRuntimeArmV1(resolved, stagedDirectory);
+    expect(await readFile(staged.adapterConfigFile)).toEqual(checkpointConfig);
+    expect(staged.definition.adapterConfigurationHash).toBe(checkpointConfigHash);
+  });
+
   it('selects exactly one first-repetition row per pilot arm in frozen order', () => {
     const manifest = {
       activeArms: ['files', 'threadnote-graph', 'threadnote-compact'],
@@ -956,6 +1190,54 @@ describe('matched evaluation runtime integrity', () => {
     ).toThrow('runtime repository cluster ids must be unique');
   });
 });
+
+function continuationPreparedHome(
+  taskId: string,
+  homeDirectory: string,
+  homeFixtureHash: string,
+  expectedContext: Record<string, unknown>,
+  suffix: string,
+) {
+  return {
+    expectedContext,
+    homeDirectory,
+    homeFixtureHash,
+    identity: {account: `evaluation-${suffix}`, user: `agent-${suffix}`},
+    project: `continuation-${suffix}`,
+    taskId,
+  };
+}
+
+function continuationAdapterConfig(
+  arm: 'threadnote-compact' | 'threadnote-graph',
+  contextHomes: readonly ReturnType<typeof continuationPreparedHome>[],
+) {
+  return {
+    approvedCommands: [],
+    appServer: {
+      argumentsAfterSubcommand: [],
+      argumentsBeforeSubcommand: [],
+      executable: '/usr/bin/codex',
+      executableSha256: '1'.repeat(64),
+      version: 'codex-cli 1.0.0',
+    },
+    arm,
+    authSourcePath: '/tmp/auth.json',
+    contextBudgetTokens: 800,
+    contextHomes,
+    environmentPolicyHash: matchedEvaluationCodexEnvironmentPolicyHashV1(),
+    git: {executable: '/usr/bin/git', executableSha256: '2'.repeat(64)},
+    judgeModel: {id: 'judge-model', parametersHash: '3'.repeat(64), provider: 'openai', reasoningEffort: 'low'},
+    model: {id: 'agent-model', parametersHash: '4'.repeat(64), provider: 'openai', reasoningEffort: 'low'},
+    pricingMicrosPerMillionTokens: null,
+    safeBinaries: [],
+    safeExecutablePath: '/usr/bin:/bin',
+    taskBudget: {steps: 256, tokens: 10_000_000},
+    temporaryRoot: '/tmp',
+    verificationPlan: null,
+    version: 4,
+  } as const;
+}
 
 async function temporaryRoot(roots: string[]): Promise<string> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-matched-evaluation-')));

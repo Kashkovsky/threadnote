@@ -303,6 +303,10 @@ function continuationPlan(
     })),
     candidate: {toolArtifactHash: hex(3), toolVersion: '5.1.0-beta.1.local.test'},
     checkpoint: {
+      adapterConfigurations: {
+        threadnoteCompactSha256: hex(120),
+        threadnoteGraphSha256: hex(121),
+      },
       automaticHandoffReadSha256: hex(101),
       automaticHandoffUri: 'threadnote://memory/handoff/test',
       handoff,
@@ -333,6 +337,7 @@ function continuationPlan(
         linkReceiptsHash: hex(116),
         taskContextHash: hex(117),
       },
+      preparedGraphHome: {fixtureHash: hex(122), identitySha256: hex(123)},
       preparedHome: {fixtureHash: hex(118), identitySha256: hex(119)},
       repositoryFixtureHash: task.checkpointRepositoryFixtureHash,
       repositoryRevision: task.checkpointRevision,

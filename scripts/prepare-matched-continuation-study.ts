@@ -22,6 +22,7 @@ import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
 import {
+  assertMatchedEvaluationContinuationAdapterConfigurationsV2,
   continuationCheckpointStudyV2,
   parseMatchedEvaluationContinuationPilotPlanV1,
   parseMatchedEvaluationRuntimeV1,
@@ -157,6 +158,12 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
         parseJson(planBytes, `continuation plan ${taskIndex}`),
       );
       if (plan.version !== 2) throw new Error(`Continuation plan ${taskIndex} must use the substantive v2 contract.`);
+      await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+        manifest,
+        plan,
+        planPath: entry.planPath,
+        runtime: matchedRuntime,
+      });
       if (
         plan.candidate.toolArtifactHash !== compactArm.tool.artifactHash ||
         plan.candidate.toolVersion !== compactArm.tool.version
