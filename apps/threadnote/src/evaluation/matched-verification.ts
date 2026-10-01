@@ -4,7 +4,7 @@ export const MATCHED_EVALUATION_VERIFICATION_PLAN_VERSION = 1 as const;
 export const MATCHED_EVALUATION_VERIFICATION_STATUSES = ['passed', 'task-failed'] as const;
 export const MATCHED_CONTINUATION_PHASE_TWO_VERIFICATION_VERSION = 1 as const;
 export const MATCHED_CONTINUATION_PHASE_TWO_CHECK_POLICIES = ['must-pass', 'no-new-failures'] as const;
-export const MATCHED_CONTINUATION_PHASE_TWO_DIAGNOSTIC_PARSERS = ['pytest-summary-v1'] as const;
+export const MATCHED_CONTINUATION_PHASE_TWO_DIAGNOSTIC_PARSERS = ['pytest-summary-v1', 'vitest-summary-v1'] as const;
 
 export type MatchedEvaluationVerificationStatus = (typeof MATCHED_EVALUATION_VERIFICATION_STATUSES)[number];
 export type MatchedContinuationPhaseTwoCheckPolicy = (typeof MATCHED_CONTINUATION_PHASE_TWO_CHECK_POLICIES)[number];
@@ -285,6 +285,46 @@ export function parseMatchedContinuationPytestFailureIdsV1(stdout: string, stder
     if (match?.[1]) failures.push(match[1]);
   }
   return canonicalFailureIds(failures, 'pytest failure ids');
+}
+
+export function parseMatchedContinuationVitestFailureIdsV1(stdout: string, stderr: string): readonly string[] {
+  const failures = new Set<string>();
+  for (const line of `${stdout}\n${stderr}`.split(/\r?\n/u)) {
+    const match = /^FAIL\s+(.+?)$/u.exec(stripAnsiControlSequencesV1(line).trim());
+    if (match?.[1]) failures.add(match[1]);
+  }
+  return canonicalFailureIds([...failures], 'vitest failure ids');
+}
+
+export function parseMatchedContinuationFailureIdsV1(
+  diagnosticParser: MatchedContinuationPhaseTwoDiagnosticParser,
+  stdout: string,
+  stderr: string,
+): readonly string[] {
+  switch (diagnosticParser) {
+    case 'pytest-summary-v1':
+      return parseMatchedContinuationPytestFailureIdsV1(stdout, stderr);
+    case 'vitest-summary-v1':
+      return parseMatchedContinuationVitestFailureIdsV1(stdout, stderr);
+  }
+}
+
+function stripAnsiControlSequencesV1(value: string): string {
+  let stripped = '';
+  for (let index = 0; index < value.length;) {
+    if (value.charCodeAt(index) !== 0x1b || value[index + 1] !== '[') {
+      stripped += value[index];
+      index += 1;
+      continue;
+    }
+    index += 2;
+    while (index < value.length) {
+      const codePoint = value.charCodeAt(index);
+      index += 1;
+      if (codePoint >= 0x40 && codePoint <= 0x7e) break;
+    }
+  }
+  return stripped;
 }
 
 export function matchedEvaluationVerificationIdV1(taskId: string, selector: string): string {

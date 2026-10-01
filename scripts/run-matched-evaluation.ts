@@ -33,8 +33,9 @@ import {
   createMatchedContinuationPhaseTwoVerificationCheckReceiptV1,
   createMatchedContinuationPhaseTwoVerificationPlanV1,
   createMatchedContinuationPhaseTwoVerificationReceiptV1,
+  parseMatchedContinuationFailureIdsV1,
   parseMatchedContinuationPhaseTwoVerificationPlanV1,
-  parseMatchedContinuationPytestFailureIdsV1,
+  type MatchedContinuationPhaseTwoDiagnosticParser,
   type MatchedContinuationPhaseTwoVerificationCheckReceiptV1,
   type MatchedContinuationPhaseTwoVerificationPlanV1,
   type MatchedContinuationPhaseTwoVerificationReceiptV1,
@@ -3439,39 +3440,36 @@ async function prepareMatchedEvaluationContinuationPhaseTwoVerificationPlanV1(in
   const checks: Array<{
     readonly allowedBaselineFailureIds: readonly string[];
     readonly commandTokens: readonly string[];
-    readonly diagnosticParser: 'pytest-summary-v1';
+    readonly diagnosticParser: MatchedContinuationPhaseTwoDiagnosticParser;
     readonly policy: 'must-pass' | 'no-new-failures';
   }> = [];
   try {
     for (const [index, command] of input.commands.entries()) {
+      const diagnosticParser = matchedContinuationDiagnosticParserForCommandV1(command.tokens);
       const result = await runMatchedEvaluationContinuationFocusedCheckV1({
         commandTokens: command.tokens,
         repositoryDirectory: input.repositoryDirectory,
         safeExecutablePath: input.safeExecutablePath,
         temporaryDirectory: resolve(input.temporaryRoot, `check-${index + 1}`),
       });
-      if (result.exitCode !== 0 && result.exitCode !== 1) {
-        throw new Error(`Continuation phase-two baseline command ${index} failed as infrastructure.`);
-      }
-      const failureIds = parseMatchedContinuationPytestFailureIdsV1(result.stdout, result.stderr);
+      const failureIds = parseMatchedContinuationFailureIdsV1(diagnosticParser, result.stdout, result.stderr);
+      assertMatchedContinuationPhaseTwoBaselineResultV1({
+        checkIndex: index,
+        exitCode: result.exitCode,
+        failureIds,
+      });
       if (index === 0) {
-        if (result.exitCode !== 1 || failureIds.length === 0) {
-          throw new Error('Continuation phase-two target check must fail at the Phase-1 checkpoint.');
-        }
         checks.push({
           allowedBaselineFailureIds: [],
           commandTokens: command.tokens,
-          diagnosticParser: 'pytest-summary-v1',
+          diagnosticParser,
           policy: 'must-pass',
         });
       } else {
-        if (result.exitCode === 1 && failureIds.length === 0) {
-          throw new Error(`Continuation phase-two baseline command ${index} has unparseable failures.`);
-        }
         checks.push({
           allowedBaselineFailureIds: failureIds,
           commandTokens: command.tokens,
-          diagnosticParser: 'pytest-summary-v1',
+          diagnosticParser,
           policy: 'no-new-failures',
         });
       }
@@ -3484,6 +3482,36 @@ async function prepareMatchedEvaluationContinuationPhaseTwoVerificationPlanV1(in
     protectedPaths: input.protectedPaths,
     taskId: input.taskId,
   });
+}
+
+export function assertMatchedContinuationPhaseTwoBaselineResultV1(input: {
+  readonly checkIndex: number;
+  readonly exitCode: number | null;
+  readonly failureIds: readonly string[];
+}): void {
+  if (input.exitCode !== 0 && input.exitCode !== 1) {
+    throw new Error(`Continuation phase-two baseline command ${input.checkIndex} failed as infrastructure.`);
+  }
+  if (input.checkIndex === 0) {
+    if (input.exitCode !== 1 || input.failureIds.length === 0) {
+      throw new Error('Continuation phase-two target check must fail at the Phase-1 checkpoint.');
+    }
+    return;
+  }
+  if (input.exitCode === 1 && input.failureIds.length === 0) {
+    throw new Error(`Continuation phase-two baseline command ${input.checkIndex} has unparseable failures.`);
+  }
+}
+
+export function matchedContinuationDiagnosticParserForCommandV1(
+  commandTokens: readonly string[],
+): MatchedContinuationPhaseTwoDiagnosticParser {
+  const usesPytest = commandTokens.includes('pytest');
+  const usesVitest = commandTokens.includes('vitest');
+  if (usesPytest === usesVitest) {
+    throw new Error('Continuation phase-two command must select exactly one supported diagnostic parser.');
+  }
+  return usesPytest ? 'pytest-summary-v1' : 'vitest-summary-v1';
 }
 
 export async function verifyMatchedEvaluationContinuationArtifactV1(input: {
@@ -3531,7 +3559,7 @@ export async function verifyMatchedEvaluationContinuationArtifactV1(input: {
       if (result.exitCode !== 0 && result.exitCode !== 1) {
         throw new Error(`Continuation phase-two verification command ${index} failed as infrastructure.`);
       }
-      const failureIds = parseMatchedContinuationPytestFailureIdsV1(result.stdout, result.stderr);
+      const failureIds = parseMatchedContinuationFailureIdsV1(check.diagnosticParser, result.stdout, result.stderr);
       receipts.push(
         createMatchedContinuationPhaseTwoVerificationCheckReceiptV1({
           artifactHash: input.artifactHash,

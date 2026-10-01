@@ -8,8 +8,11 @@ import {
   createMatchedEvaluationVerificationPlanV1,
   createMatchedEvaluationVerificationReceiptV1,
   matchedEvaluationVerificationIdV1,
+  parseMatchedContinuationFailureIdsV1,
+  parseMatchedContinuationPhaseTwoVerificationPlanV1,
   parseMatchedContinuationPhaseTwoVerificationReceiptV1,
   parseMatchedContinuationPytestFailureIdsV1,
+  parseMatchedContinuationVitestFailureIdsV1,
   parseMatchedEvaluationVerificationPlanV1,
   parseMatchedEvaluationVerificationReceiptV1,
 } from '@threadnote/threadnote/evaluation/matched-verification';
@@ -231,6 +234,70 @@ describe('matched evaluation deterministic verification', () => {
         'ERROR tests/test_text.py::test_c - RuntimeError\n',
       ),
     ).toEqual(['tests/test_text.py::test_a', 'tests/test_text.py::test_b', 'tests/test_text.py::test_c']);
+  });
+
+  it('extracts and dispatches canonical Vitest failure ids', () => {
+    const escape = String.fromCodePoint(27);
+    const stdout = [
+      `${escape}[41m${escape}[1m FAIL ${escape}[22m${escape}[49m packages/zod/src/example.test.ts${escape}[2m > ${escape}[22mschema > handles beta`,
+      ' FAIL  packages/zod/src/example.test.ts > schema > handles alpha',
+      ' FAIL  packages/zod/src/example.test.ts > schema > handles beta',
+    ].join('\n');
+    const expected = [
+      'packages/zod/src/example.test.ts > schema > handles alpha',
+      'packages/zod/src/example.test.ts > schema > handles beta',
+    ];
+
+    expect(parseMatchedContinuationVitestFailureIdsV1(stdout, '')).toEqual(expected);
+    expect(parseMatchedContinuationFailureIdsV1('vitest-summary-v1', stdout, '')).toEqual(expected);
+    expect(
+      parseMatchedContinuationFailureIdsV1(
+        'pytest-summary-v1',
+        'FAILED tests/test_text.py::test_a - AssertionError\n',
+        '',
+      ),
+    ).toEqual(['tests/test_text.py::test_a']);
+  });
+
+  it('canonicalizes Vitest failure ids independently of diagnostic order and duplicates', () => {
+    fc.assert(
+      fc.property(fc.uniqueArray(fc.integer({min: 0, max: 10_000}), {minLength: 1, maxLength: 24}), values => {
+        const ids = values.map(value => `packages/example-${value}.test.ts > handles ${value}`);
+        const diagnostics = [...ids, ...ids]
+          .reverse()
+          .map(id => ` FAIL  ${id}`)
+          .join('\n');
+        expect(parseMatchedContinuationVitestFailureIdsV1(diagnostics, '')).toEqual([...ids].sort());
+      }),
+      {numRuns: 50},
+    );
+  });
+
+  it('round-trips a Vitest parser through sealed plan and receipt hashes', () => {
+    const failureId = 'packages/example.test.ts > schema > rejects ambiguous input';
+    const plan = createMatchedContinuationPhaseTwoVerificationPlanV1({
+      checks: [
+        {
+          allowedBaselineFailureIds: [failureId],
+          commandTokens: ['nub', 'exec', '--node', 'vitest', 'run', 'packages/example.test.ts'],
+          diagnosticParser: 'vitest-summary-v1',
+          policy: 'no-new-failures',
+        },
+      ],
+      protectedPaths: ['packages/example.test.ts'],
+      taskId: 'tsk_1111111111111111',
+    });
+    expect(parseMatchedContinuationPhaseTwoVerificationPlanV1(plan)).toEqual(plan);
+
+    const artifactHash = '8'.repeat(64);
+    const receipt = createMatchedContinuationPhaseTwoVerificationReceiptV1({
+      artifactHash,
+      checks: [checkReceipt(plan.planHash, artifactHash, plan.checks[0], 1, [failureId])],
+      plan,
+      protectedPathViolations: [],
+    });
+    expect(receipt.status).toBe('passed');
+    expect(parseMatchedContinuationPhaseTwoVerificationReceiptV1({artifactHash, plan, receipt})).toEqual(receipt);
   });
 });
 

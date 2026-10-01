@@ -25,6 +25,8 @@ import {
   type ParsedTaskReport,
 } from '../../../../scripts/finalize-matched-continuation-study.js';
 import {
+  assertMatchedContinuationPhaseTwoBaselineResultV1,
+  matchedContinuationDiagnosticParserForCommandV1,
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
   type MatchedEvaluationContinuationPilotPlanV3,
@@ -35,6 +37,43 @@ describe('matched continuation finalization', () => {
 
   afterEach(async () => {
     await Promise.all(roots.splice(0).map(root => rm(root, {force: true, recursive: true})));
+  });
+
+  it('seals exactly one supported diagnostic parser from each approved command', () => {
+    expect(
+      matchedContinuationDiagnosticParserForCommandV1(['python', '-m', 'pytest', '-q', 'tests/test_target.py']),
+    ).toBe('pytest-summary-v1');
+    expect(
+      matchedContinuationDiagnosticParserForCommandV1(['nub', 'exec', '--node', 'vitest', 'run', 'target.test.ts']),
+    ).toBe('vitest-summary-v1');
+    expect(() => matchedContinuationDiagnosticParserForCommandV1(['node', 'custom-test.js'])).toThrow(
+      'exactly one supported diagnostic parser',
+    );
+    expect(() => matchedContinuationDiagnosticParserForCommandV1(['pytest', 'vitest'])).toThrow(
+      'exactly one supported diagnostic parser',
+    );
+  });
+
+  it('rejects exit-one continuation baselines without parser-attributed failures', () => {
+    expect(() =>
+      assertMatchedContinuationPhaseTwoBaselineResultV1({checkIndex: 0, exitCode: 1, failureIds: []}),
+    ).toThrow('target check must fail');
+    expect(() =>
+      assertMatchedContinuationPhaseTwoBaselineResultV1({checkIndex: 1, exitCode: 1, failureIds: []}),
+    ).toThrow('unparseable failures');
+    expect(() =>
+      assertMatchedContinuationPhaseTwoBaselineResultV1({checkIndex: 1, exitCode: 2, failureIds: ['diagnostic']}),
+    ).toThrow('failed as infrastructure');
+    expect(() =>
+      assertMatchedContinuationPhaseTwoBaselineResultV1({
+        checkIndex: 0,
+        exitCode: 1,
+        failureIds: ['target.test.ts > target'],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedContinuationPhaseTwoBaselineResultV1({checkIndex: 1, exitCode: 0, failureIds: []}),
+    ).not.toThrow();
   });
 
   it('rehashes task-report evidence and rejects partial or tampered reports', async () => {
