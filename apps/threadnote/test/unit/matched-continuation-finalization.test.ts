@@ -18,6 +18,7 @@ import {
 } from '@threadnote/threadnote/evaluation/matched-continuation-study';
 import type {MatchedEvaluationMetricsV1} from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
 import {
+  matchedContinuationDeterministicallyVerifiedV1,
   parseAndVerifyMatchedContinuationTaskReportV1,
   projectMatchedContinuationOutcomesV1,
   publishMatchedContinuationFinalizationV1,
@@ -338,7 +339,10 @@ describe('matched continuation finalization', () => {
         }
         return {
           artifactSha256,
-          metrics: metrics(task.taskId, artifactSha256, study.sourceEvidence.verificationPlanHash),
+          metrics:
+            entry.globalRunOrder === 4
+              ? failedHeldOutMetrics(task.taskId, artifactSha256, study.sourceEvidence.verificationPlanHash)
+              : metrics(task.taskId, artifactSha256, study.sourceEvidence.verificationPlanHash),
           phaseTwoVerification:
             entry.globalRunOrder === 3
               ? failingPhaseTwoVerification(plan, artifactSha256)
@@ -385,6 +389,10 @@ describe('matched continuation finalization', () => {
       phaseTwo: {accountingSource: 'observation', elapsedMilliseconds: 130, providerTokens: {totalTokens: 50}},
       status: 'completed',
     });
+    expect(outcomes[3]).toMatchObject({
+      assessment: {deterministicVerified: false},
+      status: 'completed',
+    });
     fc.assert(
       fc.property(
         fc.shuffledSubarray(
@@ -397,6 +405,20 @@ describe('matched continuation finalization', () => {
         },
       ),
       {numRuns: 20},
+    );
+  });
+
+  it('requires both held-out and visible continuation verification', () => {
+    fc.assert(
+      fc.property(fc.boolean(), fc.boolean(), (heldOutPassed, phaseTwoPassed) => {
+        expect(
+          matchedContinuationDeterministicallyVerifiedV1({
+            heldOutStatus: heldOutPassed ? 'passed' : 'task-failed',
+            phaseTwoStatus: phaseTwoPassed ? 'passed' : 'task-failed',
+          }),
+        ).toBe(heldOutPassed && phaseTwoPassed);
+      }),
+      {numRuns: 64},
     );
   });
 
@@ -704,6 +726,20 @@ function metrics(taskId: string, artifactHash: string, planHash: string): Matche
       status: 'passed',
       taskId,
       verificationId: hex(206),
+    }),
+  };
+}
+
+function failedHeldOutMetrics(taskId: string, artifactHash: string, planHash: string): MatchedEvaluationMetricsV1 {
+  const passing = metrics(taskId, artifactHash, planHash);
+  return {
+    ...passing,
+    completion: {completed: false},
+    verification: createMatchedEvaluationVerificationReceiptV1({
+      ...passing.verification!,
+      diagnosticHash: hex(209),
+      exitCode: 1,
+      status: 'task-failed',
     }),
   };
 }

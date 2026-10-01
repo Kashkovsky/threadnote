@@ -26,6 +26,7 @@ import {
 } from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
 import {
   parseMatchedContinuationPhaseTwoVerificationReceiptV1,
+  type MatchedEvaluationVerificationStatus,
   type MatchedContinuationPhaseTwoVerificationReceiptV1,
 } from '@threadnote/threadnote/evaluation/matched-verification';
 import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
@@ -223,7 +224,10 @@ export function projectMatchedContinuationOutcomesV1(input: {
               authorizationLeaks: attempt.metrics.safety.authorizationLeaks,
               blockedActions: attempt.metrics.safety.blockedActions,
               correctnessScoreMilli: attempt.metrics.correctness.scoreMilli,
-              deterministicVerified: attempt.phaseTwoVerification.status === 'passed',
+              deterministicVerified: matchedContinuationDeterministicallyVerifiedV1({
+                heldOutStatus: attempt.metrics.verification!.status,
+                phaseTwoStatus: attempt.phaseTwoVerification.status,
+              }),
               falseCurrentOutcomes: attempt.metrics.drift.falseCurrentOutcomes,
               harmfulActions: attempt.metrics.safety.harmfulActions,
               judgeCompleted: attempt.metrics.correctness.judgeCompleted,
@@ -275,6 +279,13 @@ export function projectMatchedContinuationOutcomesV1(input: {
     previousOutcomeHash = runtimeTask.outcomeHash;
     return runtimeTask;
   });
+}
+
+export function matchedContinuationDeterministicallyVerifiedV1(input: {
+  readonly heldOutStatus: MatchedEvaluationVerificationStatus;
+  readonly phaseTwoStatus: MatchedEvaluationVerificationStatus;
+}): boolean {
+  return input.heldOutStatus === 'passed' && input.phaseTwoStatus === 'passed';
 }
 
 export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {

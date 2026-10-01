@@ -27,6 +27,7 @@ import {
   matchedEvaluationDependencyProjectionFixtureHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
   matchedEvaluationVerifierEnvironmentHashV1,
+  matchedEvaluationVerifierStatusFromDiagnosticV1,
   materializeMatchedEvaluationDependencyProjectionV1,
   parseMatchedEvaluationCodexAdapterRequestV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
@@ -504,6 +505,25 @@ describe('matched evaluation Codex adapter', () => {
     expect(() =>
       assertMatchedEvaluationContextDeliveryV1([base.event, graph.event, memory.event, failed.event], base.expected),
     ).not.toThrow();
+    const normalizedFailedReceipt = {
+      ...failed.event,
+      params: {
+        item: {
+          ...failed.item,
+          result: {
+            ...failed.item.result,
+            isError: undefined,
+            structuredContent: null,
+          },
+        },
+      },
+    };
+    expect(
+      assertMatchedEvaluationContextDeliveryV1(
+        [base.event, graph.event, memory.event, normalizedFailedReceipt],
+        base.expected,
+      ),
+    ).toEqual({incompleteOptionalFailures: 0, optionalFailures: 1, version: 1});
     const tampered = {...graph.event, params: {item: {...graph.item, arguments: {query: 'changed'}}}};
     expect(() => assertMatchedEvaluationContextDeliveryV1([base.event, tampered], base.expected)).toThrow(
       'requestSha256',
@@ -1462,11 +1482,15 @@ describe('matched evaluation Codex adapter', () => {
       repositoryRoot: '/fixture/repository',
       root: '/fixture/runtime',
       runner: '/fixture/verify.py',
+      temporaryDirectory: '/fixture/repository/.threadnote-verifier-tmp-fixture',
     });
 
     for (const directory of ['/fixture/environment', '/fixture/repository', '/fixture/runtime']) {
       expect(profile).toContain(`(literal "${directory}") (subpath "${directory}")`);
     }
+    expect(profile).toContain(
+      '(literal "/fixture/repository/.threadnote-verifier-tmp-fixture") (subpath "/fixture/repository/.threadnote-verifier-tmp-fixture")',
+    );
   });
 
   it('separates verifier task failures from invalid sandbox diagnostics', async () => {
@@ -1479,7 +1503,7 @@ describe('matched evaluation Codex adapter', () => {
     await writeFile(interpreter, '#!/bin/sh\nexec "$@"\n');
     await writeFile(
       runner,
-      '#!/bin/sh\ncase "$2" in *pass*) printf "%s verifier passed\\n" "$1"; exit 0 ;; *fail*) printf "%s verifier failed: fixture\\n" "$1" >&2; exit 1 ;; *) printf "sandbox-exec: denied\\n" >&2; exit 1 ;; esac\n',
+      '#!/bin/sh\ncase "$TMPDIR" in "$2"/.threadnote-verifier-tmp-*) : ;; *) printf "%s verifier failed: {\\"completed\\":false,\\"infrastructureError\\":\\"invalid scratch\\"}\\n" "$1" >&2; exit 1 ;; esac\n: > "$TMPDIR/probe"\ncase "$2" in *pass*) printf "%s verifier passed\\n" "$1"; exit 0 ;; *fail*) printf "%s verifier failed: fixture\\n" "$1" >&2; exit 1 ;; *) printf "sandbox-exec: denied\\n" >&2; exit 1 ;; esac\n',
     );
     await writeFile(sandbox, '#!/bin/sh\nshift 2\nexec "$@"\n');
     await Promise.all([chmod(interpreter, 0o700), chmod(runner, 0o700), chmod(sandbox, 0o700)]);
@@ -1519,7 +1543,15 @@ describe('matched evaluation Codex adapter', () => {
     const passRepository = join(root, 'pass-repository');
     const failRepository = join(root, 'fail-repository');
     const deniedRepository = join(root, 'denied-repository');
-    await Promise.all([mkdir(passRepository), mkdir(failRepository), mkdir(deniedRepository)]);
+    const setupRepository = join(root, 'setup-repository');
+    const setupRoot = join(root, 'setup-runtime');
+    await Promise.all([
+      mkdir(passRepository),
+      mkdir(failRepository),
+      mkdir(deniedRepository),
+      mkdir(setupRepository),
+      mkdir(join(setupRoot, 'home'), {recursive: true}),
+    ]);
 
     await expect(
       runMatchedEvaluationDeterministicVerifierV1({
@@ -1548,6 +1580,51 @@ describe('matched evaluation Codex adapter', () => {
         taskId,
       }),
     ).rejects.toThrow('invalid diagnostic protocol');
+    await expect(
+      runMatchedEvaluationDeterministicVerifierV1({
+        artifactHash: 'a'.repeat(64),
+        plan,
+        repositoryRoot: setupRepository,
+        root: setupRoot,
+        taskId,
+      }),
+    ).rejects.toMatchObject({code: 'EEXIST'});
+    for (const repository of [passRepository, failRepository, deniedRepository, setupRepository]) {
+      expect((await readdir(repository)).filter(entry => entry.startsWith('.threadnote-verifier-tmp-'))).toEqual([]);
+    }
+  });
+
+  it('rejects structured verifier failures that attest incomplete execution', () => {
+    const common = {
+      exitCode: 1 as const,
+      selector: 'fixture',
+      stdout: '',
+      verificationId: 'verification-fixture',
+    };
+    expect(
+      matchedEvaluationVerifierStatusFromDiagnosticV1({
+        ...common,
+        stderr: 'fixture verifier failed: {"completed":true,"failures":[{"case":"semantic"}]}\n',
+      }),
+    ).toBe('task-failed');
+    expect(() =>
+      matchedEvaluationVerifierStatusFromDiagnosticV1({
+        ...common,
+        stderr: 'fixture verifier failed: {"completed":false,"infrastructureError":"CollectionError"}\n',
+      }),
+    ).toThrow('reported incomplete execution');
+    expect(() =>
+      matchedEvaluationVerifierStatusFromDiagnosticV1({
+        ...common,
+        stderr: 'fixture verifier failed: {"completed":false,"failures":[{"case":"no collectors"}]}\n',
+      }),
+    ).toThrow('reported incomplete execution');
+    expect(() =>
+      matchedEvaluationVerifierStatusFromDiagnosticV1({
+        ...common,
+        stderr: 'fixture verifier failed: {"completed":true,\n',
+      }),
+    ).toThrow('invalid diagnostic protocol');
   });
 
   it('runs files-only and budget outcomes but retains failed-delivery evidence without an observation', async () => {

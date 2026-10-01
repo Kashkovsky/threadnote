@@ -1255,76 +1255,126 @@ export async function runMatchedEvaluationDeterministicVerifierV1(input: {
   await assertVerifierPlanArtifacts(input.plan);
   await mkdir(input.root, {recursive: true, mode: 0o700});
   const home = join(input.root, 'home');
-  const temporary = join(input.root, 'tmp');
-  await Promise.all([mkdir(home, {mode: 0o700}), mkdir(temporary, {mode: 0o700})]);
+  const temporary = await realpath(await mkdtemp(join(input.repositoryRoot, '.threadnote-verifier-tmp-')));
   const profilePath = join(input.root, 'profile.sb');
-  await writeFile(
-    profilePath,
-    renderVerifierSeatbeltProfile({
-      environmentDirectory: input.plan.environmentDirectory,
-      repositoryRoot: input.repositoryRoot,
-      root: input.root,
-      runner: input.plan.runner,
-    }),
-    {flag: 'wx', mode: 0o600},
-  );
-  const startedAt = Date.now();
-  const result = await captureCodeMemoryLinkProcessGroup({
-    allowFailure: true,
-    arguments: ['-f', profilePath, input.plan.interpreter, input.plan.runner, task.selector, input.repositoryRoot],
-    command: input.plan.sandbox.executable,
-    cwd: input.repositoryRoot,
-    environment: {
-      HOME: home,
-      LANG: 'C.UTF-8',
-      LC_ALL: 'C.UTF-8',
-      PATH: `${dirname(input.plan.interpreter)}:/usr/bin:/bin`,
-      PYTHONDONTWRITEBYTECODE: '1',
-      PYTHONNOUSERSITE: '1',
-      TMPDIR: temporary,
-    },
-    label: `Matched evaluation verifier ${task.verificationId}`,
-    maxOutputBytes: 64 * 1_024,
-    timeoutMilliseconds: input.plan.timeoutMilliseconds,
-  });
-  if (result.exitCode !== 0 && result.exitCode !== 1) {
+  try {
+    await mkdir(home, {mode: 0o700});
+    await writeFile(
+      profilePath,
+      renderVerifierSeatbeltProfile({
+        environmentDirectory: input.plan.environmentDirectory,
+        repositoryRoot: input.repositoryRoot,
+        root: input.root,
+        runner: input.plan.runner,
+        temporaryDirectory: temporary,
+      }),
+      {flag: 'wx', mode: 0o600},
+    );
+    const startedAt = Date.now();
+    const result = await captureCodeMemoryLinkProcessGroup({
+      allowFailure: true,
+      arguments: ['-f', profilePath, input.plan.interpreter, input.plan.runner, task.selector, input.repositoryRoot],
+      command: input.plan.sandbox.executable,
+      cwd: input.repositoryRoot,
+      environment: {
+        HOME: home,
+        LANG: 'C.UTF-8',
+        LC_ALL: 'C.UTF-8',
+        PATH: `${dirname(input.plan.interpreter)}:/usr/bin:/bin`,
+        PYTHONDONTWRITEBYTECODE: '1',
+        PYTHONNOUSERSITE: '1',
+        TMPDIR: temporary,
+      },
+      label: `Matched evaluation verifier ${task.verificationId}`,
+      maxOutputBytes: 64 * 1_024,
+      timeoutMilliseconds: input.plan.timeoutMilliseconds,
+    });
+    if (result.exitCode !== 0 && result.exitCode !== 1) {
+      throw new Error(
+        `Deterministic verifier infrastructure failed for ${task.verificationId} with exit code ${result.exitCode}.`,
+      );
+    }
+    const status = matchedEvaluationVerifierStatusFromDiagnosticV1({
+      exitCode: result.exitCode,
+      selector: task.selector,
+      stderr: result.stderr,
+      stdout: result.stdout,
+      verificationId: task.verificationId,
+    });
+    const diagnosticHash = sha256(
+      Buffer.from(
+        `matched-evaluation-verifier-diagnostic-v1\0${JSON.stringify({
+          exitCode: result.exitCode,
+          stderr: result.stderr,
+          stdout: result.stdout,
+        })}`,
+      ),
+    );
+    return createMatchedEvaluationVerificationReceiptV1({
+      artifactHash: input.artifactHash,
+      diagnosticHash,
+      durationMilliseconds: Math.max(0, Date.now() - startedAt),
+      environmentHash: input.plan.environmentHash,
+      exitCode: result.exitCode,
+      interpreterHash: input.plan.interpreterHash,
+      planHash: input.plan.planHash,
+      runnerHash: input.plan.runnerHash,
+      sandboxExecutableHash: input.plan.sandbox.executableHash,
+      status,
+      taskId: input.taskId,
+      verificationId: task.verificationId,
+    });
+  } finally {
+    await rm(temporary, {force: true, recursive: true});
+  }
+}
+
+export function matchedEvaluationVerifierStatusFromDiagnosticV1(input: {
+  readonly exitCode: 0 | 1;
+  readonly selector: string;
+  readonly stderr: string;
+  readonly stdout: string;
+  readonly verificationId: string;
+}): 'passed' | 'task-failed' {
+  const expectedPass = `${input.selector} verifier passed`;
+  const expectedFailurePrefix = `${input.selector} verifier failed:`;
+  if (input.exitCode === 0) {
+    if (input.stdout.trim() === expectedPass && input.stderr === '') return 'passed';
     throw new Error(
-      `Deterministic verifier infrastructure failed for ${task.verificationId} with exit code ${result.exitCode}.`,
+      `Deterministic verifier infrastructure returned an invalid diagnostic protocol for ${input.verificationId}.`,
     );
   }
-  const expectedPass = `${task.selector} verifier passed`;
-  const expectedFailurePrefix = `${task.selector} verifier failed:`;
-  if (
-    (result.exitCode === 0 && (result.stdout.trim() !== expectedPass || result.stderr !== '')) ||
-    (result.exitCode === 1 && (result.stdout !== '' || !result.stderr.startsWith(expectedFailurePrefix)))
-  ) {
+  if (input.stdout !== '' || !input.stderr.startsWith(expectedFailurePrefix)) {
     throw new Error(
-      `Deterministic verifier infrastructure returned an invalid diagnostic protocol for ${task.verificationId}.`,
+      `Deterministic verifier infrastructure returned an invalid diagnostic protocol for ${input.verificationId}.`,
     );
   }
-  const diagnosticHash = sha256(
-    Buffer.from(
-      `matched-evaluation-verifier-diagnostic-v1\0${JSON.stringify({
-        exitCode: result.exitCode,
-        stderr: result.stderr,
-        stdout: result.stdout,
-      })}`,
-    ),
-  );
-  return createMatchedEvaluationVerificationReceiptV1({
-    artifactHash: input.artifactHash,
-    diagnosticHash,
-    durationMilliseconds: Math.max(0, Date.now() - startedAt),
-    environmentHash: input.plan.environmentHash,
-    exitCode: result.exitCode,
-    interpreterHash: input.plan.interpreterHash,
-    planHash: input.plan.planHash,
-    runnerHash: input.plan.runnerHash,
-    sandboxExecutableHash: input.plan.sandbox.executableHash,
-    status: result.exitCode === 0 ? 'passed' : 'task-failed',
-    taskId: input.taskId,
-    verificationId: task.verificationId,
-  });
+  const diagnostic = input.stderr.slice(expectedFailurePrefix.length).trim();
+  if (diagnostic === '') {
+    throw new Error(
+      `Deterministic verifier infrastructure returned an invalid diagnostic protocol for ${input.verificationId}.`,
+    );
+  }
+  let structured: unknown;
+  try {
+    structured = JSON.parse(diagnostic) as unknown;
+  } catch {
+    if (diagnostic.startsWith('{')) {
+      throw new Error(
+        `Deterministic verifier infrastructure returned an invalid diagnostic protocol for ${input.verificationId}.`,
+      );
+    }
+    // Version-one verifier plans allowed a bounded human-readable failure
+    // after the sealed prefix. Keep those historical plans readable.
+    return 'task-failed';
+  }
+  if (structured === null || typeof structured !== 'object' || Array.isArray(structured)) return 'task-failed';
+  const record = structured as Record<string, unknown>;
+  if (!Object.hasOwn(record, 'completed')) return 'task-failed';
+  if (record.completed !== true || !Array.isArray(record.failures) || record.failures.length === 0) {
+    throw new Error(`Deterministic verifier infrastructure reported incomplete execution for ${input.verificationId}.`);
+  }
+  return 'task-failed';
 }
 
 async function assertVerifierPlanArtifacts(plan: MatchedEvaluationVerificationPlanV1): Promise<void> {
@@ -1366,6 +1416,7 @@ export function renderVerifierSeatbeltProfile(input: {
   readonly repositoryRoot: string;
   readonly root: string;
   readonly runner: string;
+  readonly temporaryDirectory: string;
 }): string {
   const literal = (value: string) => JSON.stringify(value);
   return [
@@ -1378,7 +1429,7 @@ export function renderVerifierSeatbeltProfile(input: {
     '(allow ipc-posix*)',
     '(allow file-read-metadata)',
     `(allow file-read* (literal ${literal('/')}) (subpath ${literal('/System')}) (subpath ${literal('/usr')}) (subpath ${literal('/Library')}) (subpath ${literal('/opt/homebrew')}) (subpath ${literal('/dev')}) (subpath ${literal('/private/etc')}) (literal ${literal(input.environmentDirectory)}) (subpath ${literal(input.environmentDirectory)}) (literal ${literal(input.repositoryRoot)}) (subpath ${literal(input.repositoryRoot)}) (literal ${literal(input.runner)}) (literal ${literal(input.root)}) (subpath ${literal(input.root)}))`,
-    `(allow file-write* (literal ${literal(input.root)}) (subpath ${literal(input.root)}) (literal ${literal('/dev/null')}))`,
+    `(allow file-write* (literal ${literal(input.root)}) (subpath ${literal(input.root)}) (literal ${literal(input.temporaryDirectory)}) (subpath ${literal(input.temporaryDirectory)}) (literal ${literal('/dev/null')}))`,
     '(deny network*)',
     '',
   ].join('\n');
@@ -3130,12 +3181,9 @@ export function assertMatchedEvaluationContextDeliveryV1(
     if (tool === 'context_brief' && briefCount === 1 && isError) {
       throw new Error('Context delivery failed: context_brief did not complete successfully.');
     }
-    if (status === 'failed' && !isError) {
+    if (status === 'failed' && !isError && (result._meta === null || result._meta === undefined)) {
       if (result.structuredContent !== null && result.structuredContent !== undefined) {
         throw new Error('Failed MCP context call contains unexpected structured content.');
-      }
-      if (result._meta !== null && result._meta !== undefined) {
-        throw new Error('Failed MCP context call contains incomplete receipt metadata.');
       }
       if (!Array.isArray(result.content) || result.content.length !== 1) {
         throw new Error('Failed MCP context call requires exactly one diagnostic text body.');
