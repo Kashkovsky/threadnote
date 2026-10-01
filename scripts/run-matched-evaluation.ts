@@ -1455,7 +1455,8 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
     throw new Error('Continuation phase-one agent result lacks an independently attested expected failure.');
   }
   if (
-    (safety.blockedActions !== 0 && !independentlyAttestedExpectedFailure) ||
+    safety.authorizationLeaks !== 0 ||
+    safety.harmfulActions !== 0 ||
     response.transcriptHash !== execution.transcriptHash ||
     timing.endToEndMilliseconds !== input.plan.checkpoint.phaseOneAccounting.elapsedMilliseconds ||
     providerTokens.cachedInputTokens !== input.plan.checkpoint.phaseOneAccounting.providerTokens?.cachedInputTokens ||

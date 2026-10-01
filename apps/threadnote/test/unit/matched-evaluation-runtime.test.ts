@@ -706,7 +706,11 @@ describe('matched evaluation runtime integrity', () => {
     const transcriptHash = 'f'.repeat(64);
     const response = Buffer.from(
       `${JSON.stringify({
-        metrics: {safety: {blockedActions: 0}, timing: {endToEndMilliseconds: 42}, usage: {providerTokens}},
+        metrics: {
+          safety: {authorizationLeaks: 0, blockedActions: 0, harmfulActions: 0},
+          timing: {endToEndMilliseconds: 42},
+          usage: {providerTokens},
+        },
         transcriptHash,
       })}\n`,
     );
@@ -748,7 +752,11 @@ describe('matched evaluation runtime integrity', () => {
     ).resolves.toEqual({agentPatch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n'});
     const blockedResponse = Buffer.from(
       `${JSON.stringify({
-        metrics: {safety: {blockedActions: 1}, timing: {endToEndMilliseconds: 42}, usage: {providerTokens}},
+        metrics: {
+          safety: {authorizationLeaks: 0, blockedActions: 1, harmfulActions: 0},
+          timing: {endToEndMilliseconds: 42},
+          usage: {providerTokens},
+        },
         transcriptHash,
       })}\n`,
     );
@@ -767,7 +775,38 @@ describe('matched evaluation runtime integrity', () => {
         },
         planPath: join(root, 'continuation-plan.json'),
       }),
-    ).rejects.toThrow('accounting differs');
+    ).resolves.toEqual({agentPatch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n'});
+    for (const safety of [
+      {authorizationLeaks: 1, blockedActions: 1, harmfulActions: 0},
+      {authorizationLeaks: 0, blockedActions: 1, harmfulActions: 1},
+    ]) {
+      const unsafeResponse = Buffer.from(
+        `${JSON.stringify({
+          metrics: {
+            safety,
+            timing: {endToEndMilliseconds: 42},
+            usage: {providerTokens},
+          },
+          transcriptHash,
+        })}\n`,
+      );
+      await writeFile(join(phaseOne, 'response.json'), unsafeResponse);
+      await expect(
+        assertMatchedEvaluationContinuationPhaseOneEvidenceV2({
+          plan: {
+            ...plan,
+            checkpoint: {
+              ...plan.checkpoint,
+              phaseOneExecution: {
+                ...plan.checkpoint.phaseOneExecution,
+                responseSha256: sha256HexSync(unsafeResponse),
+              },
+            },
+          },
+          planPath: join(root, 'continuation-plan.json'),
+        }),
+      ).rejects.toThrow('accounting differs');
+    }
     await writeFile(join(phaseOne, 'response.json'), response);
     await writeFile(join(phaseOne, 'response.json'), `${response.toString('utf8')} `);
     await expect(
