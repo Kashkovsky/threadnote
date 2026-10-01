@@ -226,7 +226,7 @@ describe('matched token-efficiency study preparation', () => {
     ).toThrow('complete reviewed memory roster');
   });
 
-  it('accepts exactly one successful agent-facing MCP context payload', () => {
+  it('prefers canonical structured Context Brief content and accepts legacy JSON text', () => {
     const brief = {
       activeHandoffs: [],
       briefVersion: 2,
@@ -234,11 +234,29 @@ describe('matched token-efficiency study preparation', () => {
       type: 'context-brief-agent-view',
       version: 1,
     };
+    const canonicalBrief = {
+      activeHandoffs: [],
+      durableDecisions: [],
+      type: 'context-brief',
+      version: 3,
+    };
     expect(
       parseMatchedTokenEfficiencyAgentContextBriefResultV1({
         content: [{text: JSON.stringify(brief), type: 'text'}],
       }),
     ).toEqual(brief);
+    expect(
+      parseMatchedTokenEfficiencyAgentContextBriefResultV1({
+        content: [{text: 'Concise agent-facing brief.', type: 'text'}],
+        structuredContent: canonicalBrief,
+      }),
+    ).toEqual(canonicalBrief);
+    expect(() =>
+      parseMatchedTokenEfficiencyAgentContextBriefResultV1({
+        content: [{text: 'Concise agent-facing brief.', type: 'text'}],
+        structuredContent: brief,
+      }),
+    ).toThrow('structured content is not canonical');
     expect(() =>
       parseMatchedTokenEfficiencyAgentContextBriefResultV1({
         content: [{text: JSON.stringify(brief), type: 'text'}],

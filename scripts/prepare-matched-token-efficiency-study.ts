@@ -1170,7 +1170,7 @@ async function readAgentContextBriefViaMcp(
           detail: 'compact',
           mode: 'brief',
           project: request.project,
-          responseFormat: 'agent',
+          responseFormat: 'dual',
           task: request.task,
         },
         name: 'context_brief',
@@ -1188,6 +1188,13 @@ async function readAgentContextBriefViaMcp(
 export function parseMatchedTokenEfficiencyAgentContextBriefResultV1(value: unknown): unknown {
   const result = object(value, 'agent Context Brief tool result');
   if (result.isError === true) throw new Error('Agent Context Brief tool call returned an error.');
+  if (result.structuredContent !== undefined) {
+    const structured = object(result.structuredContent, 'agent Context Brief structured content');
+    if (structured.type !== 'context-brief' || (structured.version !== 2 && structured.version !== 3)) {
+      throw new Error('Agent Context Brief structured content is not canonical.');
+    }
+    return structured;
+  }
   if (!Array.isArray(result.content)) throw new Error('Agent Context Brief tool result is missing content.');
   const text = result.content.flatMap((entry, index) => {
     const content = object(entry, `agent Context Brief content ${index}`);
