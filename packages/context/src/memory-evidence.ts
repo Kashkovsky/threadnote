@@ -16,14 +16,14 @@ import type {
 
 const MEMORY_EXCERPT_BYTES = 240;
 const CONTINUATION_FIELD_BYTES = {
-  blockers: 128,
-  decisions: 256,
-  invariants: 192,
-  nextStep: 160,
-  rationale: 192,
-  risks: 128,
+  blockers: 192,
+  decisions: 512,
+  invariants: 320,
+  nextStep: 384,
+  rationale: 384,
+  risks: 192,
   task: 192,
-  verification: 160,
+  verification: 512,
 } as const;
 
 const CONTINUATION_ELLIPSIS = '…';

@@ -232,11 +232,22 @@ describe('Context Brief continuation contracts', () => {
     expect(brief.evidenceState).toBe('sufficient');
     expect(brief.output.truncated).toBe(true);
     expect(brief.recommendedFollowUps).toEqual([]);
-    expect(agentView.answer).toBe(
-      'Resume orientation is sufficient. Verify cited source spans, then follow the continuation card. Skip broad source and graph discovery unless verification reveals a gap.',
-    );
+    expect(agentView.answer).toContain('Resume from the exact current handoff.');
+    expect(agentView.answer).toContain('_add_method_dunders');
+    expect(agentView.answer).toContain('C.__replace__.__qualname__ ends in C.evolve instead of C.__replace__');
+    expect(agentView.activeHandoffs?.[0]?.continuationCard).toBeUndefined();
+    expect(projected.text).not.toContain('"continuationCard"');
+    expect(agentView.output).toBeUndefined();
     expect(agentView.graph).toBeUndefined();
-    expect(projected.measurement.totalBytes).toBeLessThan(3_000);
+    expect(projected.measurement.totalBytes).toBeLessThan(2_200);
+  });
+
+  it('retains the structured continuation card in the dual text compatibility channel', () => {
+    const projected = projectContextBrief(validatedResumeLogical(), 1_500, 'dual');
+
+    expect(projected.text).toContain('"continuationCard"');
+    expect(projected.text).toContain('_add_method_dunders');
+    expect(projected.text).toContain('C.__replace__.__qualname__ ends in C.evolve instead of C.__replace__');
   });
 
   it('keeps graph evidence when resume citations are not exact and current-complete', () => {
@@ -330,9 +341,12 @@ describe('Context Brief continuation contracts', () => {
     fc.assert(
       fc.property(fc.integer({min: 800, max: 1_500}), budgetTokens => {
         const projected = projectValidatedResume(budgetTokens);
+        const agentView = parseContextBriefAgentViewText(projected.text);
         expect(projected.structuredContent.activeHandoffs[0]?.continuationCard?.nextStep).toContain(
           'h11/tests/test_io.py',
         );
+        expect(agentView.answer).toContain('C.__replace__.__qualname__ ends in C.evolve instead of C.__replace__');
+        expect(new TextEncoder().encode(agentView.answer).byteLength).toBeLessThanOrEqual(1_600);
         expect(projected.structuredContent.graph.cards).toEqual([]);
         expect(projected.measurement.totalBytes).toBeLessThanOrEqual(projected.maximumBytes);
       }),
@@ -428,6 +442,8 @@ function validatedResumeLogical(status: 'exact' | 'relocated' = 'exact', budgetT
         'Reject non-whitespace malformed bytes and preserve full-match validation, payload boundaries, and the size limit.',
       nextStep:
         'Update h11/_abnf.py and add size, extension, and strict-rejection regressions in h11/tests/test_io.py.',
+      rationale:
+        'The regression exposes the boundary between class-specific generated metadata and a process-wide shared callable without prescribing an implementation. The frozen source attaches shared evolve through _add_method_dunders, after which C.__replace__.__qualname__ ends in C.evolve instead of C.__replace__.',
     },
     uri,
   };

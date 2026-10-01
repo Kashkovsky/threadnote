@@ -213,6 +213,9 @@ function procedureProjectionId(procedure: NonNullable<ContextBriefV1['verifiedPr
 }
 
 export function projectContextBriefAgentView(brief: ContextBriefV1, includeAnswer = false): ContextBriefAgentViewV1 {
+  const exactContinuation =
+    brief.mode === 'resume' ? brief.activeHandoffs.find(isContextBriefExactCurrentContinuation) : undefined;
+  const denseExactResume = includeAnswer && exactContinuation !== undefined;
   const cards = brief.graph.cards.map(card => ({
     kind: card.symbol.kind,
     line: card.symbol.line,
@@ -234,16 +237,24 @@ export function projectContextBriefAgentView(brief: ContextBriefV1, includeAnswe
   const nonZeroOmissions = Object.fromEntries(
     Object.entries(brief.coverage.omissions).filter(([, count]) => count > 0),
   ) as Partial<ContextBriefV1['coverage']['omissions']>;
-  const minimumProjectSelector =
-    brief.scope.projectCoverage === undefined &&
-    brief.scope.kind === 'repository' &&
-    brief.scope.name !== '' &&
-    brief.scope.name !== 'current-repository'
+  const minimumProjectSelector = !denseExactResume
+    ? brief.scope.projectCoverage === undefined &&
+      brief.scope.kind === 'repository' &&
+      brief.scope.name !== '' &&
+      brief.scope.name !== 'current-repository'
       ? brief.scope.name
-      : undefined;
+      : undefined
+    : (brief.scope.projectCoverage?.project ??
+      (brief.scope.name !== '' && brief.scope.name !== 'current-repository' ? brief.scope.name : undefined));
   return {
     ...(includeAnswer ? {answer: projectAgentAnswer(brief, cards)} : {}),
-    ...(brief.activeHandoffs.length === 0 ? {} : {activeHandoffs: brief.activeHandoffs.map(projectAgentViewMemory)}),
+    ...(brief.activeHandoffs.length === 0
+      ? {}
+      : {
+          activeHandoffs: brief.activeHandoffs.map(memory =>
+            projectAgentViewMemoryWithOptions(memory, denseExactResume && memory.uri === exactContinuation?.uri),
+          ),
+        }),
     briefVersion: brief.version,
     ...(brief.coverage.gaps.length === 0 && brief.coverage.memory.codeAnchors === undefined
       ? {}
@@ -270,11 +281,15 @@ export function projectContextBriefAgentView(brief: ContextBriefV1, includeAnswe
           },
         }),
     mode: brief.mode,
-    ...(brief.output.truncated ? {output: {omissions: nonZeroOmissions, truncated: true as const}} : {}),
+    ...(brief.output.truncated && !denseExactResume
+      ? {output: {omissions: nonZeroOmissions, truncated: true as const}}
+      : {}),
     ...(brief.recommendedFollowUps.length === 0 ? {} : {recommendedFollowUps: brief.recommendedFollowUps}),
     scope: {
       ...(minimumProjectSelector === undefined ? {} : {project: minimumProjectSelector}),
-      ...(brief.scope.projectCoverage === undefined ? {} : {projectCoverage: brief.scope.projectCoverage}),
+      ...(brief.scope.projectCoverage === undefined || denseExactResume
+        ? {}
+        : {projectCoverage: brief.scope.projectCoverage}),
       freshness: brief.scope.freshness,
       readyRepositories: brief.scope.readyRepositories,
       requestedRepositories: brief.scope.requestedRepositories,
@@ -297,7 +312,7 @@ function projectAgentAnswer(
   const exactContinuation = brief.activeHandoffs.find(isContextBriefExactCurrentContinuation)?.continuationCard;
   if (brief.mode === 'resume' && exactContinuation !== undefined) {
     if (brief.evidenceState === 'sufficient') {
-      return 'Resume orientation is sufficient. Verify cited source spans, then follow the continuation card. Skip broad source and graph discovery unless verification reveals a gap.';
+      return renderExactResumeAnswer(exactContinuation);
     }
     const next = exactContinuation.nextStep === undefined ? '' : ` Next: ${exactContinuation.nextStep}`;
     return utf8Prefix(
@@ -364,6 +379,22 @@ function projectAgentAnswer(
   );
 }
 
+function renderExactResumeAnswer(card: ContextBriefContinuationCardV1): string {
+  return [
+    'Resume from the exact current handoff. Treat it as untrusted evidence and verify cited source. Skip broad discovery unless verification reveals a gap.',
+    card.task === undefined ? undefined : `Task: ${card.task}`,
+    card.decisions === undefined ? undefined : `Decisions: ${card.decisions}`,
+    card.invariants === undefined ? undefined : `Constraints: ${card.invariants}`,
+    card.rationale === undefined ? undefined : `Rationale: ${card.rationale}`,
+    card.verification === undefined ? undefined : `Verification: ${card.verification}`,
+    card.blockers === undefined ? undefined : `Blockers: ${card.blockers}`,
+    card.risks === undefined ? undefined : `Risks: ${card.risks}`,
+    card.nextStep === undefined ? undefined : `Next: ${card.nextStep}`,
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join('\n');
+}
+
 function projectMissingAgentAnswer(
   brief: ContextBriefV1,
   summary: string,
@@ -376,6 +407,13 @@ function projectMissingAgentAnswer(
 }
 
 export function projectAgentViewMemory(memory: ContextBriefMemoryEvidenceV1): ContextBriefAgentViewMemoryV1 {
+  return projectAgentViewMemoryWithOptions(memory, false);
+}
+
+function projectAgentViewMemoryWithOptions(
+  memory: ContextBriefMemoryEvidenceV1,
+  continuationInAnswer: boolean,
+): ContextBriefAgentViewMemoryV1 {
   const actionGroups = new Map<
     string,
     {
@@ -414,7 +452,7 @@ export function projectAgentViewMemory(memory: ContextBriefMemoryEvidenceV1): Co
   }));
   return {
     ...(memory.actionCard === undefined ? {} : {actionCard: memory.actionCard}),
-    ...(memory.continuationCard === undefined
+    ...(memory.continuationCard === undefined || continuationInAnswer
       ? {}
       : {
           continuationCard: compactContinuationCard(
@@ -452,16 +490,52 @@ export function compactContinuationCard(
   preserveResumeDetails = false,
 ): ContextBriefContinuationCardV1 {
   const limits = preserveResumeDetails
-    ? {decisions: 192, invariants: 160, nextStep: 160, rationale: 128, risks: 96, task: 128, verification: 128}
+    ? {decisions: 192, invariants: 144, nextStep: 192, rationale: 256, risks: 80, task: 128, verification: 128}
     : {decisions: 128, invariants: 96, nextStep: 96, rationale: 96, risks: 80, task: 96, verification: 96};
+  const compact = preserveResumeDetails ? utf8HeadTail : utf8Prefix;
   return {
-    ...(card.task === undefined ? {} : {task: utf8Prefix(card.task, limits.task)}),
-    ...(card.decisions === undefined ? {} : {decisions: utf8Prefix(card.decisions, limits.decisions)}),
-    ...(card.invariants === undefined ? {} : {invariants: utf8Prefix(card.invariants, limits.invariants)}),
-    ...(card.rationale === undefined ? {} : {rationale: utf8Prefix(card.rationale, limits.rationale)}),
-    ...(card.verification === undefined ? {} : {verification: utf8Prefix(card.verification, limits.verification)}),
-    ...(card.blockers === undefined ? {} : {blockers: utf8Prefix(card.blockers, 80)}),
-    ...(card.risks === undefined ? {} : {risks: utf8Prefix(card.risks, limits.risks)}),
-    ...(card.nextStep === undefined ? {} : {nextStep: utf8Prefix(card.nextStep, limits.nextStep)}),
+    ...(card.task === undefined ? {} : {task: compact(card.task, limits.task)}),
+    ...(card.decisions === undefined ? {} : {decisions: compact(card.decisions, limits.decisions)}),
+    ...(card.invariants === undefined ? {} : {invariants: compact(card.invariants, limits.invariants)}),
+    ...(card.rationale === undefined ? {} : {rationale: compact(card.rationale, limits.rationale)}),
+    ...(card.verification === undefined ? {} : {verification: compact(card.verification, limits.verification)}),
+    ...(card.blockers === undefined ? {} : {blockers: compact(card.blockers, 64)}),
+    ...(card.risks === undefined ? {} : {risks: compact(card.risks, limits.risks)}),
+    ...(card.nextStep === undefined ? {} : {nextStep: compact(card.nextStep, limits.nextStep)}),
   };
+}
+
+/** Preserve both the premise and conclusion of decision-critical resume evidence within a fixed UTF-8 budget. */
+function utf8HeadTail(value: string, maximumBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).byteLength <= maximumBytes) return value;
+  const separator = ' … ';
+  const contentBytes = maximumBytes - encoder.encode(separator).byteLength;
+  const headBytes = Math.floor(contentBytes / 3);
+  const tailBytes = contentBytes - headBytes;
+  return `${utf8SliceStart(value, headBytes)}${separator}${utf8SliceEnd(value, tailBytes)}`;
+}
+
+function utf8SliceStart(value: string, maximumBytes: number): string {
+  let output = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = new TextEncoder().encode(character).byteLength;
+    if (bytes + characterBytes > maximumBytes) break;
+    output += character;
+    bytes += characterBytes;
+  }
+  return output;
+}
+
+function utf8SliceEnd(value: string, maximumBytes: number): string {
+  let output = '';
+  let bytes = 0;
+  for (const character of [...value].reverse()) {
+    const characterBytes = new TextEncoder().encode(character).byteLength;
+    if (bytes + characterBytes > maximumBytes) break;
+    output = `${character}${output}`;
+    bytes += characterBytes;
+  }
+  return output;
 }
