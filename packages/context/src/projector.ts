@@ -350,8 +350,9 @@ export function renderContextBriefText(brief: ContextBriefV1): string {
   // text channel keeps legacy abstract labels that the parser expands back to
   // the bounded action shape.
   // The structured channel already carries the exact omission receipt. Avoid
-  // charging dual responses twice for audit-only projection bookkeeping.
-  const {briefVersion: _briefVersion, evidenceState: _evidenceState, output: _output, ...withoutDerivedState} = legacy;
+  // charging dual responses twice for audit-only projection bookkeeping while
+  // retaining the brief version, which cannot be inferred from optional coverage.
+  const {evidenceState: _evidenceState, output: _output, ...withoutDerivedState} = legacy;
   const compactLegacy =
     legacy.mode === 'brief' ? (({mode: _mode, ...value}) => value)(withoutDerivedState) : withoutDerivedState;
   if (legacyEvidenceState(compactLegacy) !== brief.evidenceState) {

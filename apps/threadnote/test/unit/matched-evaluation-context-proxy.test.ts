@@ -278,12 +278,12 @@ describe('matched evaluation context proxy', () => {
       answer: 'Resume from the exact handoff and preserve the implementation contract.',
       activeHandoffs: [{uri: 'prepared context'}],
     });
-    await expect(
-      handleMatchedEvaluationContextRequest(dense.packet, {
-        callerCwd: dense.repository,
-        mode: 'resume',
-      }),
-    ).resolves.toMatchObject({isError: false});
+    const denseResult = await handleMatchedEvaluationContextRequest(dense.packet, {
+      callerCwd: dense.repository,
+      mode: 'resume',
+    });
+    expect(denseResult.isError).not.toBe(true);
+    expect(denseResult.meta).toMatchObject({matchedEvaluation: {success: true}});
   });
 
   it('rejects tampered, rebound, and escaped runtime manifests', async () => {
