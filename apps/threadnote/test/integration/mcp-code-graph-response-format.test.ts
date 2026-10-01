@@ -42,6 +42,8 @@ describe('MCP code graph response format', () => {
         savings: {agentBytes: number; percent: number};
       };
       fixtureHash: string;
+      queries: readonly {dualBytes: number; id: string; textBytes: number}[];
+      totals: {dualBytes: number; textBytes: number};
     };
     let client: Client | undefined;
     try {
@@ -130,12 +132,13 @@ describe('MCP code graph response format', () => {
         const agentOnly = firstText(agent.content);
         const parsed = JSON.parse(textOnly);
         const dualProjection = dual.structuredContent as {
-          edges: readonly unknown[];
-          nodes: readonly unknown[];
-          operation: unknown;
-          repository: unknown;
-          snapshot: unknown;
-          trust: unknown;
+          readonly edges: readonly unknown[];
+          readonly nodes: readonly unknown[];
+          readonly operation: unknown;
+          readonly output: {readonly returnedEdges: number; readonly returnedNodes: number};
+          readonly repository: unknown;
+          readonly snapshot: unknown;
+          readonly trust: unknown;
         };
         expect(parsed).toMatchObject({
           operation: dualProjection.operation,
@@ -143,8 +146,10 @@ describe('MCP code graph response format', () => {
           snapshot: dualProjection.snapshot,
           trust: dualProjection.trust,
         });
-        expect(parsed.nodes.slice(0, dualProjection.nodes.length)).toEqual(dualProjection.nodes);
-        expect(parsed.edges.slice(0, dualProjection.edges.length)).toEqual(dualProjection.edges);
+        expect(parsed.nodes).toEqual(expect.arrayContaining([...dualProjection.nodes]));
+        expect(parsed.edges).toEqual(expect.arrayContaining([...dualProjection.edges]));
+        expect(parsed.output.returnedNodes).toBeGreaterThanOrEqual(dualProjection.output.returnedNodes);
+        expect(parsed.output.returnedEdges).toBeGreaterThanOrEqual(dualProjection.output.returnedEdges);
         expect(parsed.trust).toEqual((dual.structuredContent as {trust: unknown}).trust);
         expect(parsed.snapshot).toEqual((dual.structuredContent as {snapshot: unknown}).snapshot);
         expect(agentOnly.startsWith('TN-GRAPH/1\n')).toBe(true);
@@ -176,6 +181,8 @@ describe('MCP code graph response format', () => {
       expect({agentBytes, dualBytes, estimatedTokens: Math.ceil(agentBytes / 3), textBytes}).toEqual(
         comparison.after.totals,
       );
+      expect(measurements.map(({dualBytes, id, textBytes}) => ({dualBytes, id, textBytes}))).toEqual(baseline.queries);
+      expect({dualBytes, textBytes}).toEqual(baseline.totals);
       expect(textBytes).toBeLessThan(dualBytes * 0.9);
       expect(agentBytes).toBeLessThan(textBytes);
       expect(comparison.before.totals.agentBytes - agentBytes).toBe(comparison.savings.agentBytes);
