@@ -311,6 +311,14 @@ export interface MatchedEvaluationContinuationPilotPlanV2 {
 export type MatchedEvaluationContinuationPilotPlan =
   MatchedEvaluationContinuationPilotPlanV1 | MatchedEvaluationContinuationPilotPlanV2;
 
+export interface MatchedEvaluationContinuationSupplementV1 {
+  readonly parentReportSha256: string;
+  readonly parentSelectionSha256: string;
+  readonly parentVariants: readonly (typeof BASE_CONTINUATION_VARIANTS)[number][];
+  readonly variant: 'threadnote-preloaded-resume';
+  readonly version: 1;
+}
+
 export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): MatchedEvaluationContinuationPilotPlan {
   const plan = object(value, 'continuation pilot plan');
   const version = plan.version;
@@ -586,6 +594,98 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
     phaseTwoPromptSha256,
     sourceTask: parsedSourceTask,
     version,
+  };
+}
+
+/** Verify that a fifth treatment extends, rather than reruns, one completed four-arm pilot. */
+export function assertMatchedEvaluationContinuationSupplementV1(input: {
+  readonly parentReport: unknown;
+  readonly parentReportSha256: string;
+  readonly parentSelection: unknown;
+  readonly parentSelectionSha256: string;
+  readonly plan: MatchedEvaluationContinuationPilotPlan;
+}): MatchedEvaluationContinuationSupplementV1 {
+  if (input.plan.attempts.length !== CONTINUATION_VARIANTS.length) {
+    throw new Error('Continuation supplement requires a five-treatment sealed plan.');
+  }
+  const supplement = input.plan.attempts.find(attempt => attempt.variant === 'threadnote-preloaded-resume');
+  if (supplement === undefined || supplement.blindLabel !== 'E' || supplement.runOrder !== 5) {
+    throw new Error('Continuation supplement must reserve label E and order 5 for preloaded resume.');
+  }
+  const selection = object(input.parentSelection, 'continuation supplement parent selection');
+  const report = object(input.parentReport, 'continuation supplement parent report');
+  const selectionRows = array(selection.rows, 'continuation supplement parent rows');
+  const reportRows = array(report.rows, 'continuation supplement report rows');
+  const reportAttempts = array(report.attempts, 'continuation supplement parent attempts');
+  if (
+    report.completed !== true ||
+    selection.comparativeClaimsEligible !== false ||
+    report.comparativeClaimsEligible !== false ||
+    selection.version !== 1 ||
+    report.version !== 1 ||
+    selection.taskId !== input.plan.taskId ||
+    report.taskId !== input.plan.taskId
+  ) {
+    throw new Error('Continuation supplement parent is not one completed non-comparative pilot.');
+  }
+  for (const field of ['candidate', 'checkpoint'] as const) {
+    const expected =
+      field === 'candidate'
+        ? input.plan.candidate
+        : projectMatchedEvaluationContinuationSelectionCheckpointV1(input.plan);
+    if (!sameJson(selection[field], expected) || !sameJson(report[field], expected)) {
+      throw new Error(`Continuation supplement parent ${field} differs from the sealed plan.`);
+    }
+  }
+  if (
+    !sameJson(report.identities, selection.identities) ||
+    !sameJson(reportRows, selectionRows) ||
+    selectionRows.length !== BASE_CONTINUATION_VARIANTS.length ||
+    reportAttempts.length !== BASE_CONTINUATION_VARIANTS.length
+  ) {
+    throw new Error('Continuation supplement parent selection and report differ.');
+  }
+  const parentVariants = selectionRows.map((entry, index) => {
+    const row = object(entry, `continuation supplement parent row ${index}`);
+    const attempt = object(reportAttempts[index], `continuation supplement parent attempt ${index}`);
+    const variant = literal(
+      row.variant,
+      BASE_CONTINUATION_VARIANTS,
+      `continuation supplement parent row ${index} variant`,
+    );
+    const planned = input.plan.attempts.find(candidate => candidate.variant === variant);
+    if (
+      planned === undefined ||
+      row.taskId !== input.plan.taskId ||
+      row.blindLabel !== planned.blindLabel ||
+      row.runNonce !== planned.runNonce ||
+      row.runOrder !== planned.runOrder ||
+      attempt.status !== 'completed' ||
+      attempt.variant !== variant ||
+      attempt.runNonce !== planned.runNonce ||
+      attempt.runOrder !== planned.runOrder ||
+      attempt.arm !== row.arm
+    ) {
+      throw new Error('Continuation supplement parent attempt differs from its sealed completed row.');
+    }
+    return variant;
+  });
+  if (
+    new Set(parentVariants).size !== BASE_CONTINUATION_VARIANTS.length ||
+    BASE_CONTINUATION_VARIANTS.some(variant => !parentVariants.includes(variant))
+  ) {
+    throw new Error('Continuation supplement parent does not contain the four baseline variants.');
+  }
+  return {
+    parentReportSha256: matchingString(input.parentReportSha256, HASH, 'continuation supplement parent report hash'),
+    parentSelectionSha256: matchingString(
+      input.parentSelectionSha256,
+      HASH,
+      'continuation supplement parent selection hash',
+    ),
+    parentVariants,
+    variant: 'threadnote-preloaded-resume',
+    version: 1,
   };
 }
 
@@ -950,6 +1050,7 @@ const program = Effect.gen(function* () {
         return runMatchedEvaluationContinuationPilotFromFilesV1({
           corpusPath: options.corpusPath,
           manifestPath: options.manifestPath,
+          parentPilotDirectory: options.continuationParentPilotDirectory,
           pilotDirectory: options.pilotDirectory!,
           planPath: options.continuationPilotPlanPath,
           runtimePath: options.runtimePath,
@@ -1228,6 +1329,7 @@ export async function runMatchedEvaluationPilotFromFilesV1(options: {
 export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: {
   readonly corpusPath: string;
   readonly manifestPath: string;
+  readonly parentPilotDirectory?: string | null;
   readonly pilotDirectory: string;
   readonly planPath: string;
   readonly runtimePath: string;
@@ -1242,6 +1344,10 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   }
   const plan = parseMatchedEvaluationContinuationPilotPlanV1(planInput);
   const planFileHash = sha256Bytes(Buffer.from(planText));
+  const supplement =
+    options.parentPilotDirectory === null || options.parentPilotDirectory === undefined
+      ? null
+      : await readContinuationSupplementV1(options.parentPilotDirectory, plan);
   const phaseOneEvidence =
     plan.version === 2
       ? await assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: options.planPath})
@@ -1293,13 +1399,17 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     throw new Error('Continuation pilot directory must use its canonical path.');
   }
   await assertContinuationAutomaticHandoffV1({manifest, plan, runtime});
-  const selected = plan.attempts.map((attempt, index) => {
+  const plannedAttempts =
+    supplement === null
+      ? plan.attempts
+      : plan.attempts.filter(attempt => attempt.variant === 'threadnote-preloaded-resume');
+  const selected = plannedAttempts.map(attempt => {
     const {arm, treatment} = continuationTreatment(attempt.variant, plan.checkpoint);
     return {
       arm,
       row: {
         blindLabel: attempt.blindLabel,
-        position: continuationPosition(index),
+        position: continuationPosition(attempt.runOrder - 1),
         repetition: 1,
         runNonce: attempt.runNonce,
         runOrder: attempt.runOrder,
@@ -1328,6 +1438,11 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
         ? []
         : ['The common phase-one provider-token cost is unavailable and excluded from whole-workflow totals.']),
       'No retries are allowed; failed attempts remain in failure-inclusive completion accounting.',
+      ...(supplement === null
+        ? []
+        : [
+            'This is a non-blinded supplementary fifth treatment selected after the four-arm parent pilot; it estimates the preloading mechanism only and is not a randomized five-way comparison.',
+          ]),
     ],
     ...(plan.version === 2
       ? {
@@ -1342,6 +1457,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
         }
       : {}),
     rows: selected.map(({arm, row, variant}) => ({...row, arm, variant})),
+    ...(supplement === null ? {} : {supplementaryTo: supplement}),
     taskId: plan.taskId,
     version: 1,
   };
@@ -2323,6 +2439,7 @@ function parseRuntimeRepository(value: unknown, index: number): MatchedEvaluatio
 
 function parseArguments(args: readonly string[]): {
   readonly continuationPilotPlanPath: string | null;
+  readonly continuationParentPilotDirectory: string | null;
   readonly corpusPath: string;
   readonly manifestPath: string;
   readonly runtimePath: string;
@@ -2336,6 +2453,7 @@ function parseArguments(args: readonly string[]): {
     if (
       ![
         '--continuation-pilot-plan',
+        '--continuation-parent-pilot-directory',
         '--corpus',
         '--manifest',
         '--runtime',
@@ -2352,6 +2470,7 @@ function parseArguments(args: readonly string[]): {
   const pilotTaskId = values.get('--pilot-task') ?? null;
   const pilotDirectory = values.get('--pilot-directory') ?? null;
   const continuationPilotPlan = values.get('--continuation-pilot-plan') ?? null;
+  const continuationParentPilotDirectory = values.get('--continuation-parent-pilot-directory') ?? null;
   if (pilotTaskId !== null && continuationPilotPlan !== null) {
     throw ScriptError.make({message: '--pilot-task and --continuation-pilot-plan are mutually exclusive'});
   }
@@ -2360,11 +2479,18 @@ function parseArguments(args: readonly string[]): {
       message: 'Pilot mode requires exactly one pilot selector together with --pilot-directory',
     });
   }
+  if (continuationParentPilotDirectory !== null && continuationPilotPlan === null) {
+    throw ScriptError.make({message: '--continuation-parent-pilot-directory requires --continuation-pilot-plan'});
+  }
   if ((pilotTaskId !== null || continuationPilotPlan !== null) && values.get('--study') === undefined)
     throw ScriptError.make({message: 'Pilot mode requires --study'});
   return {
     continuationPilotPlanPath:
       continuationPilotPlan === null ? null : absolutePath(continuationPilotPlan, '--continuation-pilot-plan'),
+    continuationParentPilotDirectory:
+      continuationParentPilotDirectory === null
+        ? null
+        : absolutePath(continuationParentPilotDirectory, '--continuation-parent-pilot-directory'),
     corpusPath: absolutePath(required(values.get('--corpus'), '--corpus'), '--corpus'),
     manifestPath: absolutePath(required(values.get('--manifest'), '--manifest'), '--manifest'),
     runtimePath: absolutePath(required(values.get('--runtime'), '--runtime'), '--runtime'),
@@ -2431,6 +2557,50 @@ async function optionalBoundedRegularFileHash(
     if (isMissing(cause)) return null;
     throw cause;
   }
+}
+
+async function readContinuationSupplementV1(
+  parentPilotDirectory: string,
+  plan: MatchedEvaluationContinuationPilotPlan,
+): Promise<MatchedEvaluationContinuationSupplementV1> {
+  const canonicalParent = await canonicalDirectory(parentPilotDirectory, 'continuation supplement parent directory');
+  const selectionPath = resolve(canonicalParent, 'continuation-pilot-selection.json');
+  const reportPath = resolve(canonicalParent, 'continuation-pilot-report.json');
+  const [selectionText, reportText] = await Promise.all([
+    readRequiredText(selectionPath, MAXIMUM_JSON_BYTES),
+    readRequiredText(reportPath, MAXIMUM_JSON_BYTES),
+  ]);
+  let parentSelection: unknown;
+  let parentReport: unknown;
+  try {
+    parentSelection = JSON.parse(selectionText) as unknown;
+    parentReport = JSON.parse(reportText) as unknown;
+  } catch (cause) {
+    throw new Error('Continuation supplement parent evidence is not valid JSON.', {cause});
+  }
+  return assertMatchedEvaluationContinuationSupplementV1({
+    parentReport,
+    parentReportSha256: sha256Bytes(Buffer.from(reportText)),
+    parentSelection,
+    parentSelectionSha256: sha256Bytes(Buffer.from(selectionText)),
+    plan,
+  });
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(sortJson(left)) === JSON.stringify(sortJson(right));
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, sortJson(entry)]),
+    );
+  }
+  return value;
 }
 
 async function readContinuationFailureAccounting(path: string): Promise<{

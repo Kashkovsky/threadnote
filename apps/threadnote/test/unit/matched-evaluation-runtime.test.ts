@@ -14,6 +14,7 @@ import {
 } from '../../../../scripts/matched-evaluation-runtime-integrity.js';
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
 import {
+  assertMatchedEvaluationContinuationSupplementV1,
   assertMatchedEvaluationContinuationCheckpointV2,
   assertMatchedEvaluationContinuationPhaseOneEvidenceV2,
   continuationCheckpointStudyV2,
@@ -322,6 +323,83 @@ describe('matched evaluation runtime integrity', () => {
       }),
       {numRuns: 32},
     );
+
+    const supplementPlan = parseMatchedEvaluationContinuationPilotPlanV1({
+      ...versionTwo,
+      attempts: [
+        ...versionTwo.attempts,
+        {
+          blindLabel: 'E',
+          runNonce: 'run_00000000000000000000000000000005',
+          runOrder: 5,
+          variant: 'threadnote-preloaded-resume',
+        },
+      ],
+    });
+    const rows = supplementPlan.attempts.slice(0, 4).map((attempt, index) => ({
+      arm:
+        attempt.variant === 'threadnote-graph'
+          ? 'threadnote-graph'
+          : attempt.variant === 'threadnote-resume'
+            ? 'threadnote-compact'
+            : 'files',
+      blindLabel: attempt.blindLabel,
+      position: index + 1,
+      repetition: 1,
+      runNonce: attempt.runNonce,
+      runOrder: attempt.runOrder,
+      taskId: supplementPlan.taskId,
+      variant: attempt.variant,
+    }));
+    const parentSelection = {
+      candidate: supplementPlan.candidate,
+      checkpoint: projectMatchedEvaluationContinuationSelectionCheckpointV1(supplementPlan),
+      comparativeClaimsEligible: false,
+      identities: {planFileHash: 'a'.repeat(64)},
+      rows,
+      taskId: supplementPlan.taskId,
+      version: 1,
+    };
+    const parentReport = {
+      ...parentSelection,
+      attempts: rows.map(row => ({
+        arm: row.arm,
+        runNonce: row.runNonce,
+        runOrder: row.runOrder,
+        status: 'completed',
+        variant: row.variant,
+      })),
+      completed: true,
+    };
+    expect(
+      assertMatchedEvaluationContinuationSupplementV1({
+        parentReport,
+        parentReportSha256: 'b'.repeat(64),
+        parentSelection,
+        parentSelectionSha256: 'c'.repeat(64),
+        plan: supplementPlan,
+      }),
+    ).toEqual({
+      parentReportSha256: 'b'.repeat(64),
+      parentSelectionSha256: 'c'.repeat(64),
+      parentVariants: rows.map(row => row.variant),
+      variant: 'threadnote-preloaded-resume',
+      version: 1,
+    });
+    expect(() =>
+      assertMatchedEvaluationContinuationSupplementV1({
+        parentReport: {
+          ...parentReport,
+          attempts: parentReport.attempts.map((attempt, index) =>
+            index === 0 ? {...attempt, status: 'failed'} : attempt,
+          ),
+        },
+        parentReportSha256: 'b'.repeat(64),
+        parentSelection,
+        parentSelectionSha256: 'c'.repeat(64),
+        plan: supplementPlan,
+      }),
+    ).toThrow('differs from its sealed completed row');
   });
 
   it('binds v2 phase-one provenance claims to the preserved adapter evidence files', async () => {
