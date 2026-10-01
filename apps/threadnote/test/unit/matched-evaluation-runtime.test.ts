@@ -147,6 +147,32 @@ describe('matched evaluation runtime integrity', () => {
       ],
     });
     expect(withPreloadedResume.attempts.map(attempt => attempt.variant)).toContain('threadnote-preloaded-resume');
+    const matchedContext = parseMatchedEvaluationContinuationPilotPlanV1({
+      ...base,
+      attempts: [
+        {...base.attempts[2], runOrder: 1},
+        {...base.attempts[1], runOrder: 2},
+        {
+          blindLabel: 'A',
+          runNonce: 'run_00000000000000000000000000000005',
+          runOrder: 3,
+          variant: 'threadnote-preloaded-resume',
+        },
+      ],
+    });
+    expect(matchedContext.attempts.map(attempt => attempt.variant)).toEqual([
+      'files-bare',
+      'manual-handoff',
+      'threadnote-preloaded-resume',
+    ]);
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...base,
+        attempts: matchedContext.attempts.map((attempt, index) =>
+          index === 2 ? {...attempt, variant: 'threadnote-graph'} : attempt,
+        ),
+      }),
+    ).toThrow('one unique attempt per variant');
     expect(() =>
       parseMatchedEvaluationContinuationPilotPlanV1({
         ...base,
@@ -650,6 +676,68 @@ describe('matched evaluation runtime integrity', () => {
         first.sourceTask.taskId,
       ),
     ).toThrow('nonempty test patch');
+  });
+
+  it('seals the matched-context three-treatment design before continuation phase one runs', () => {
+    const sourceTaskPrompt = 'Implement the frozen source task.';
+    const packet = parseMatchedEvaluationContinuationPhaseOneTaskPacketV1({
+      phaseOneAllowedPaths: ['tests/test_regression.py'],
+      phaseOneDirective: 'Add only the failing regression and stop.',
+      phaseOneFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
+      phaseTwoFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
+      phaseTwoPrompt: 'Continue from the checkpoint and implement the production correction.',
+      repositoryName: 'example',
+      sourceRevision: 'a'.repeat(40),
+      sourceTaskPrompt,
+      status: 'draft-unsealed',
+      taskKey: 'example-regression',
+      treatmentSet: 'matched-context-v1',
+      version: 2,
+    });
+    const selectionInput = {
+      packet,
+      repositoryRevision: packet.sourceRevision,
+      task: {
+        promptHash: matchedEvaluationPromptHashV1(sourceTaskPrompt),
+        repositoryFixtureHash: 'b'.repeat(64),
+        taskId: 'tsk_1234567890abcdef',
+      } as MatchedEvaluationManifestV1['tasks'][number],
+      taskPacketSha256: 'c'.repeat(64),
+      taskPrompt: sourceTaskPrompt,
+    };
+    const selection = createMatchedEvaluationContinuationPhaseOneSelectionV1(selectionInput);
+
+    expect(selection.continuationAttempts).toHaveLength(3);
+    expect(selection.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3]);
+    expect(new Set(selection.continuationAttempts.map(attempt => attempt.variant))).toEqual(
+      new Set(['files-bare', 'manual-handoff', 'threadnote-preloaded-resume']),
+    );
+    expect(parseMatchedEvaluationContinuationPhaseOneSelectionV1(selection)).toEqual(selection);
+    if (packet.version !== 2) throw new Error('Expected the matched-context v2 packet.');
+    const {treatmentSet: _treatmentSet, ...v1Packet} = packet;
+    expect(() =>
+      parseMatchedEvaluationContinuationPhaseOneSelectionV1({
+        ...selection,
+        taskPacket: {...v1Packet, version: 1},
+      }),
+    ).toThrow('treatment set differs from its task packet');
+    fc.assert(
+      fc.property(fc.stringMatching(/^[0-9a-f]{64}$/u), taskPacketSha256 => {
+        const candidate = createMatchedEvaluationContinuationPhaseOneSelectionV1({
+          ...selectionInput,
+          taskPacketSha256,
+        });
+        expect(candidate.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3]);
+        expect(new Set(candidate.continuationAttempts.map(attempt => attempt.variant))).toEqual(
+          new Set(['files-bare', 'manual-handoff', 'threadnote-preloaded-resume']),
+        );
+        expect(new Set(candidate.continuationAttempts.map(attempt => attempt.runNonce))).toHaveProperty('size', 3);
+        expect(createMatchedEvaluationContinuationPhaseOneSelectionV1({...selectionInput, taskPacketSha256})).toEqual(
+          candidate,
+        );
+      }),
+      {numRuns: 8},
+    );
   });
 
   it('matches quoted empty command arguments against sealed token arrays', () => {
