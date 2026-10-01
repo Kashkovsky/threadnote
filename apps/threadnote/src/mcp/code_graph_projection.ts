@@ -6,6 +6,12 @@ import {
 import {renderCodeGraphResult} from '@threadnote/graph/query';
 import type {CodeGraphProjectCoverage, CodeGraphQueryResult} from '@threadnote/graph/types';
 import type {CodeGraphRefreshContinuity} from '@threadnote/graph/watcher';
+import {
+  graphAgentNumber,
+  graphAgentRecord,
+  graphAgentString,
+  renderCodeGraphAgentProvenance,
+} from './code_graph_agent_provenance.js';
 
 const MCP_CODE_GRAPH_STRUCTURED_CONTENT_BYTES = 24 * 1_024;
 const MCP_CODE_GRAPH_STRUCTURED_CONTENT_RESERVE_BYTES = 768;
@@ -497,23 +503,19 @@ export function renderCodeGraphAgentResponse(value: unknown): string {
   const nodes = result.nodes ?? [];
   const aliases = new Map(nodes.map((node, index) => [String(node.id), `n${index + 1}`]));
   const scalar = (item: unknown) => JSON.stringify(item);
-  const lines = ['TN-GRAPH/1'];
-  for (const key of [
-    'operation',
-    'repository',
-    'snapshot',
-    'freshness',
-    'trust',
-    'sourceVersion',
-    'projectCoverage',
-    'outsideProjectGraph',
-    'outsideScopeChangedPaths',
-    'scope',
-    'searchCoverage',
-    'source',
-    'refresh',
-  ]) {
+  const provenance = renderCodeGraphAgentProvenance(result).trimEnd();
+  const lines = ['TN-GRAPH/1', ...(provenance.length === 0 ? [] : provenance.split('\n'))];
+  for (const key of ['outsideProjectGraph', 'outsideScopeChangedPaths', 'scope', 'searchCoverage']) {
     if (result[key] !== undefined) lines.push(`${key}\t${scalar(result[key])}`);
+  }
+  const source = graphAgentRecord(result.source);
+  if (source !== undefined) {
+    lines.push(
+      `source\t${scalar({
+        ...(graphAgentString(source.kind) === undefined ? {} : {kind: graphAgentString(source.kind)}),
+        ...(graphAgentNumber(source.deltaCount) === undefined ? {} : {deltaCount: graphAgentNumber(source.deltaCount)}),
+      })}`,
+    );
   }
   lines.push(`coverage\t${scalar(result.output ?? {})}`);
   for (const node of nodes) {

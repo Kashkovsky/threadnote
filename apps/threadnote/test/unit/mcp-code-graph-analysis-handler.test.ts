@@ -614,6 +614,10 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       expect(result.content).toEqual([
         expect.objectContaining({type: 'text', text: expect.stringContaining('Graph analysis:')}),
       ]);
+      const text = (result.content[0] as {readonly text: string}).text;
+      expect(text).not.toContain('Read:');
+      expect(text).not.toContain(ready.identity.repositoryId);
+      expect(text).not.toContain(ready.readySnapshot!.id);
       expect(harness.observation.ensureOptions).toEqual([]);
       expect(harness.observation.refreshOptions).toEqual([]);
       expect(harness.observation.watcherStatusCalls).toBe(0);
@@ -621,6 +625,62 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       expect(harness.observation.statusOptions).toHaveLength(2);
       expect(harness.observation.statusOptions[0]).toMatchObject({requestMaintenance: false});
       expect(harness.observation.attachOptions).toEqual([]);
+    }).pipe(provideTestLayer(harness.layer));
+  });
+
+  effectIt.effect(
+    'retains stale analysis provenance without repeating opaque repository or snapshot identities',
+    () => {
+      const stale = codeGraphStatus({ready: true, stale: true});
+      const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [stale]});
+
+      return Effect.gen(function* () {
+        const result = yield* harness.invoke({
+          callerCwd: stale.identity.repoRoot,
+          freshness: 'ready',
+          operation: 'stats',
+        });
+        const text = (result.content[0] as {readonly text: string}).text;
+
+        expect(text).toContain(
+          `evidence\t{"freshness":"stale","commit":"${stale.readySnapshot!.commit.slice(0, 12)}"}`,
+        );
+        expect(text).not.toContain('Read:');
+        expect(text).not.toContain(stale.identity.repositoryId);
+        expect(text).not.toContain(stale.readySnapshot!.id);
+      }).pipe(provideTestLayer(harness.layer));
+    },
+  );
+
+  effectIt.effect('retains actionable partial project scope in the default analysis projection', () => {
+    const base = codeGraphStatus({ready: true, stale: false});
+    const ready: CodeGraphStatus = {
+      ...base,
+      projectCoverage: {
+        completeness: 'partial',
+        configuredRoots: ['root-a', 'root-b', 'root-c'],
+        dependencyComponents: 2,
+        kind: 'project',
+        negativeProof: 'selected-graph-only',
+        observedWorktreeCommit: base.identity.headCommit,
+        project: 'threadnote-app',
+        reusedEquivalentSnapshot: false,
+        rootComponents: 1,
+      },
+    };
+    const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});
+
+    return Effect.gen(function* () {
+      const result = yield* harness.invoke({
+        callerCwd: ready.identity.repoRoot,
+        operation: 'stats',
+        project: 'threadnote-app',
+      });
+      const text = (result.content[0] as {readonly text: string}).text;
+
+      expect(text).toContain(
+        'projectScope\t{"project":"threadnote-app","kind":"project","completeness":"partial","negativeProof":"selected-graph-only","configuredRoots":["root-a","root-b"],"configuredRootsOmitted":1}',
+      );
     }).pipe(provideTestLayer(harness.layer));
   });
 
@@ -637,6 +697,10 @@ describe('registered analyze_code_graph snapshot resolution', () => {
 
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
       expect(result.structuredContent).toMatchObject({operation: 'stats', type: 'code-graph-analysis'});
+      const text = (result.content[0] as {readonly text: string}).text;
+      expect(text.startsWith('Read: ')).toBe(true);
+      expect(text).toContain(ready.identity.repositoryId);
+      expect(text).toContain(ready.readySnapshot!.id);
     }).pipe(provideTestLayer(harness.layer));
   });
 

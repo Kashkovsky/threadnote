@@ -11,6 +11,32 @@
     {"id": "missing-payment-service", "dualBytes": 815, "textBytes": 676}
   ],
   "totals": {"dualBytes": 66686, "textBytes": 53404},
+  "agentEnvelopeComparison": {
+    "comparisonBaseCommit": "30475f6899bf8512eef8ebdcf71541ba8f1e04f7",
+    "measurement": "serialized model-facing MCP text UTF-8 bytes; dual also includes structuredContent",
+    "before": {
+      "queries": [
+        {"id": "definition-exclusive-lock", "agentBytes": 2067},
+        {"id": "path-app-to-lock", "agentBytes": 2383},
+        {"id": "impact-lock", "agentBytes": 11208},
+        {"id": "documentation-recovery", "agentBytes": 2390},
+        {"id": "missing-payment-service", "agentBytes": 595}
+      ],
+      "totals": {"agentBytes": 18643, "estimatedTokens": 6215}
+    },
+    "after": {
+      "queries": [
+        {"id": "definition-exclusive-lock", "agentBytes": 2325, "dualBytes": 2378, "textBytes": 2225},
+        {"id": "path-app-to-lock", "agentBytes": 1896, "dualBytes": 3392, "textBytes": 2713},
+        {"id": "impact-lock", "agentBytes": 10719, "dualBytes": 18419, "textBytes": 14203},
+        {"id": "documentation-recovery", "agentBytes": 2309, "dualBytes": 2395, "textBytes": 2225},
+        {"id": "missing-payment-service", "agentBytes": 164, "dualBytes": 815, "textBytes": 676}
+      ],
+      "totals": {"agentBytes": 17413, "dualBytes": 27399, "estimatedTokens": 5805, "textBytes": 22042}
+    },
+    "savings": {"agentBytes": 1230, "estimatedTokens": 410, "percent": 6.6},
+    "caveat": "The five deterministic synthetic queries measure response-envelope bytes, not provider-billed tokens or verified task completion. One query grew because the same budget admitted more graph evidence after metadata compaction."
+  },
   "modelPilot": {
     "model": "gpt-5.6-luna",
     "harness": "codex exec --json --ephemeral --ignore-user-config --skip-git-repo-check -s read-only",

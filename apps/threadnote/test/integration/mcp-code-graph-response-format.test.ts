@@ -32,7 +32,17 @@ describe('MCP code graph response format', () => {
     );
     const baseline = (await Bun.file(
       join(process.cwd(), 'apps/threadnote/test/evaluation/baselines/graph-response-single-channel-v1/baseline.json'),
-    ).json()) as {fixtureHash: string; totals: {dualBytes: number; textBytes: number}};
+    ).json()) as {
+      agentEnvelopeComparison: {
+        after: {
+          queries: readonly {agentBytes: number; dualBytes: number; id: string; textBytes: number}[];
+          totals: {agentBytes: number; dualBytes: number; estimatedTokens: number; textBytes: number};
+        };
+        before: {totals: {agentBytes: number}};
+        savings: {agentBytes: number; percent: number};
+      };
+      fixtureHash: string;
+    };
     let client: Client | undefined;
     try {
       cpSync(
@@ -86,8 +96,10 @@ describe('MCP code graph response format', () => {
       const tool = (await client.listTools()).tools.find(candidate => candidate.name === 'inspect_code_graph');
       expect(JSON.stringify(tool?.inputSchema)).toContain('responseFormat');
 
+      let agentBytes = 0;
       let dualBytes = 0;
       let textBytes = 0;
+      const measurements: {agentBytes: number; dualBytes: number; id: string; textBytes: number}[] = [];
       for (const query of fixture.queries) {
         const args = {
           callerCwd: repository,
@@ -117,20 +129,61 @@ describe('MCP code graph response format', () => {
         const textOnly = firstText(text.content);
         const agentOnly = firstText(agent.content);
         const parsed = JSON.parse(textOnly);
-        expect(parsed).toEqual(dual.structuredContent);
+        const dualProjection = dual.structuredContent as {
+          edges: readonly unknown[];
+          nodes: readonly unknown[];
+          operation: unknown;
+          repository: unknown;
+          snapshot: unknown;
+          trust: unknown;
+        };
+        expect(parsed).toMatchObject({
+          operation: dualProjection.operation,
+          repository: dualProjection.repository,
+          snapshot: dualProjection.snapshot,
+          trust: dualProjection.trust,
+        });
+        expect(parsed.nodes.slice(0, dualProjection.nodes.length)).toEqual(dualProjection.nodes);
+        expect(parsed.edges.slice(0, dualProjection.edges.length)).toEqual(dualProjection.edges);
         expect(parsed.trust).toEqual((dual.structuredContent as {trust: unknown}).trust);
         expect(parsed.snapshot).toEqual((dual.structuredContent as {snapshot: unknown}).snapshot);
         expect(agentOnly.startsWith('TN-GRAPH/1\n')).toBe(true);
         expect(agentOnly).toContain('coverage\t');
-        dualBytes += measureAgentToolResponse({
+        expect(agentOnly).not.toContain('\noperation\t');
+        expect(agentOnly).not.toContain('\nrepository\t');
+        expect(agentOnly).not.toContain('\nsnapshot\t');
+        expect(agentOnly).not.toContain('\ntrust\t');
+        expect(agentOnly).not.toContain('\nsourceVersion\t');
+        const measuredDualBytes = measureAgentToolResponse({
           text: dualText,
           structuredContent: dual.structuredContent,
         }).totalBytes;
-        textBytes += measureAgentToolResponse({text: textOnly}).totalBytes;
+        const measuredTextBytes = measureAgentToolResponse({text: textOnly}).totalBytes;
+        const measuredAgentBytes = measureAgentToolResponse({text: agentOnly}).totalBytes;
+        dualBytes += measuredDualBytes;
+        textBytes += measuredTextBytes;
+        agentBytes += measuredAgentBytes;
+        measurements.push({
+          agentBytes: measuredAgentBytes,
+          dualBytes: measuredDualBytes,
+          id: query.id,
+          textBytes: measuredTextBytes,
+        });
       }
       expect(codeGraphEvaluationFixtureHash(fixture)).toBe(baseline.fixtureHash);
-      expect({dualBytes, textBytes}).toEqual(baseline.totals);
+      const comparison = baseline.agentEnvelopeComparison;
+      expect(measurements).toEqual(comparison.after.queries);
+      expect({agentBytes, dualBytes, estimatedTokens: Math.ceil(agentBytes / 3), textBytes}).toEqual(
+        comparison.after.totals,
+      );
       expect(textBytes).toBeLessThan(dualBytes * 0.9);
+      expect(agentBytes).toBeLessThan(textBytes);
+      expect(comparison.before.totals.agentBytes - agentBytes).toBe(comparison.savings.agentBytes);
+      expect(
+        Number(
+          (((comparison.before.totals.agentBytes - agentBytes) / comparison.before.totals.agentBytes) * 100).toFixed(1),
+        ),
+      ).toBe(comparison.savings.percent);
     } finally {
       await client?.close();
       rmSync(root, {recursive: true, force: true});

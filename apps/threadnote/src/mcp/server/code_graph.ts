@@ -876,9 +876,10 @@ export function registerCodeGraphTool(
               },
               metadata(),
             );
-            return responseFormat === 'dual'
-              ? {content: [{type: 'text' as const, text: response.text}], structuredContent: response.structuredContent}
-              : {content: [{type: 'text' as const, text: response.text}]};
+            return format({
+              content: [{type: 'text' as const, text: response.text}],
+              structuredContent: response.structuredContent,
+            });
           }),
         );
       }).pipe(
@@ -1026,7 +1027,6 @@ interface CodeGraphMcpOutputCoverage {
   readonly complete: boolean;
   readonly truncated: boolean;
 }
-
 type CodeGraphMcpAnalysisTextCoverage = CodeGraphMcpOutputCoverage;
 
 interface CodeGraphMcpAnalysisStringObservation {
@@ -1196,7 +1196,7 @@ export function codeGraphAnalysisMcpResponse(
 
   const projectionOmissions = codeGraphMcpAnalysisOmissions(compactSource, projected, operation);
   const projectionComplete = observation.truncated === 0 && Object.keys(projectionOmissions).length === 0;
-  const rendered = `${metadata === undefined ? '' : `Read: ${JSON.stringify(metadata)}\n`}${renderCodeGraphAnalysis(projected, operation, 'mcp')}`;
+  const rendered = renderCodeGraphAnalysis(projected, operation, 'mcp');
   const boundedText = boundedCodeGraphMcpAnalysisText(rendered, result.coverage.topology.state, projectionComplete);
   const structuredContent = finalizedCodeGraphMcpAnalysisEnvelope(
     compactSource,

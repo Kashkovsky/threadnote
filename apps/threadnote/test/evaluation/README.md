@@ -194,6 +194,14 @@ dual versus 151,708 text-only across those calls. The model pilot uses synthetic
 so it is not a powered task-quality or provider-cost claim. Explicit dual remains the canonical compatibility path;
 a product-level savings claim still requires a larger paired corpus and supported-client compatibility evidence.
 
+The same baseline also freezes the compact-by-default agent-envelope change against exact parent
+`30475f6899bf8512eef8ebdcf71541ba8f1e04f7`. The five queries fell from 18,643 to
+17,413 serialized agent bytes (1,230 bytes, or 6.6%; 410 conservative `ceil(bytes / 3)` estimated tokens). Clean/current
+responses omit operation, repository/snapshot IDs, invariant trust text, and schema versions; stale, dirty, project,
+refresh, bounded-search, outside-project, and truncation qualifiers remain explicit. Explicit `dual` remains the full
+diagnostic/canonical contract. This envelope fixture is not provider billing or tokens-per-completed-task evidence; one
+query grew because its unchanged budget admitted more useful graph evidence after the metadata shrank.
+
 ## MemoryConnectionsBench v1 (A+B)
 
 `fixtures/memory-connections-bench-v1/fixture.json` freezes the typed-authoring and memory-link selector projection contract introduced in schema v12. The private recall cache now uses schema v13: source URIs are copied from indexed documents to order bounded neighborhoods directly in the source/target indexes. Selector values, canonical proof requirements, fixture inputs, and result ordering are unchanged.

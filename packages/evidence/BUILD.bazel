@@ -96,6 +96,7 @@ bun_test(
         "//apps/threadnote:src/git_proposal/materializer.ts",
         "//apps/threadnote:src/guidance/index.ts",
         "//apps/threadnote:src/installations.ts",
+        "//apps/threadnote:src/mcp/code_graph_agent_provenance.ts",
         "//apps/threadnote:src/mcp/code_graph_projection.ts",
         "//apps/threadnote:src/mcp/codex_org_attach.ts",
         "//apps/threadnote:src/mcp/composer_attach.ts",

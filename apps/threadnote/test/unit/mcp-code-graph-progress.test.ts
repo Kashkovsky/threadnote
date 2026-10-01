@@ -795,8 +795,95 @@ describe('MCP code graph indexing progress', () => {
     expect(text).toContain('coverage\t');
     expect(text).toContain('node\tn1\t');
     expect(text).toContain('edge\t');
+    expect(text).not.toContain('\noperation\t');
+    expect(text).not.toContain('\nrepository\t');
+    expect(text).not.toContain('\nsnapshot\t');
+    expect(text).not.toContain('\ntrust\t');
+    expect(text).not.toContain('\nsourceVersion\t');
     expect(measureAgentToolResponse({text}).totalBytes).toBeLessThanOrEqual(1_500 * 3);
   });
+
+  it('keeps only actionable stale, dirty, project, and refresh provenance in the agent receipt', () => {
+    const source = verboseCodeGraphResult();
+    const response = codeGraphMcpResponse(
+      {
+        ...source,
+        edges: [],
+        freshness: 'stale',
+        nodes: [],
+        projectCoverage: {
+          completeness: 'partial',
+          configuredRoots: ['root-a', 'root-b', 'root-c'],
+          dependencyComponents: 2,
+          kind: 'project',
+          negativeProof: 'selected-graph-only',
+          observedWorktreeCommit: 'b'.repeat(40),
+          project: 'threadnote-app',
+          reusedEquivalentSnapshot: false,
+          rootComponents: 1,
+        },
+        snapshot: {...source.snapshot, commit: 'b'.repeat(40), dirty: true},
+        warnings: [],
+      },
+      1_500,
+      {
+        failure: {
+          code: 'transient-io',
+          operation: 'refresh code graph',
+          recovery: 'retry-read-only',
+          retryable: true,
+        },
+        retryAfterMilliseconds: 5_000,
+        state: 'deferred',
+        type: 'code-graph-refresh-continuity',
+        version: 1,
+      },
+      'agent',
+    );
+    const text = formatCodeGraphMcpResponse(response, 'agent').content[0].text;
+
+    expect(text).toContain(
+      'evidence\t{"freshness":"stale","dirty":true,"commit":"bbbbbbbbbbbb","refresh":{"state":"deferred","retryAfterMilliseconds":5000,"failure":{"code":"transient-io","retryable":true,"recovery":"retry-read-only"}}}',
+    );
+    expect(text).toContain(
+      'projectScope\t{"project":"threadnote-app","kind":"project","completeness":"partial","negativeProof":"selected-graph-only","configuredRoots":["root-a","root-b"],"configuredRootsOmitted":1}',
+    );
+    expect(text).not.toContain(source.repository.repositoryId);
+    expect(text).not.toContain(source.snapshot.id);
+  });
+
+  fcProp(
+    it,
+    'makes clean-current agent receipts invariant to redundant operation and opaque identity metadata',
+    {
+      commit: FC.stringMatching(/^[a-f0-9]{40}$/u),
+      operation: FC.constantFrom('query' as const, 'node' as const, 'neighbors' as const, 'explain' as const),
+      repositoryId: FC.string({minLength: 1, maxLength: 64}),
+      snapshotId: FC.string({minLength: 1, maxLength: 64}),
+      worktreeId: FC.string({minLength: 1, maxLength: 64}),
+    },
+    ({commit, operation, repositoryId, snapshotId, worktreeId}) => {
+      const source = verboseCodeGraphResult();
+      const base = {...source, edges: [], nodes: [], warnings: []};
+      const expected = formatCodeGraphMcpResponse(codeGraphMcpResponse(base, 1_500, undefined, 'agent'), 'agent');
+      const actual = formatCodeGraphMcpResponse(
+        codeGraphMcpResponse(
+          {
+            ...base,
+            operation,
+            repository: {displayName: `repository-${repositoryId}`, repositoryId},
+            snapshot: {commit, dirty: false, id: snapshotId, worktreeId},
+          },
+          1_500,
+          undefined,
+          'agent',
+        ),
+        'agent',
+      );
+      expect(actual).toEqual(expected);
+    },
+    {fastCheck: {numRuns: 50}},
+  );
 
   it('admits the advertised minimum budget for every local graph response format', () => {
     for (const responseFormat of ['dual', 'text', 'agent'] as const) {
@@ -855,14 +942,28 @@ describe('MCP code graph indexing progress', () => {
     for (const responseFormat of ['dual', 'text', 'agent'] as const) {
       const response = codeGraphMcpResponse(result, 800, refresh, responseFormat);
       const formatted = formatCodeGraphMcpResponse(response, responseFormat);
-      expect(response.structuredContent.output).toMatchObject({metadataTruncated: true, truncated: true});
-      expect(response.structuredContent.output).toMatchObject({
-        metadataOmissions: {
-          outsideProjectGraph: {paths: 50, suggestedActions: 50},
-          projectCoverage: {configuredRoots: 50},
-          refresh: true,
-        },
-      });
+      if (responseFormat === 'agent') {
+        const structured = response.structuredContent as {
+          readonly outsideProjectGraph?: unknown;
+          readonly projectCoverage?: unknown;
+        };
+        expect(response.structuredContent.output).toMatchObject({truncated: false});
+        expect(structured.projectCoverage).toMatchObject({configuredRootsOmitted: 48});
+        expect(structured.outsideProjectGraph).toMatchObject({
+          pathsOmitted: 48,
+          suggestedActionsOmitted: 49,
+        });
+        expect(formatted.content[0].text).toContain('configuredRootsOmitted');
+      } else {
+        expect(response.structuredContent.output).toMatchObject({metadataTruncated: true, truncated: true});
+        expect(response.structuredContent.output).toMatchObject({
+          metadataOmissions: {
+            outsideProjectGraph: {paths: 50, suggestedActions: 50},
+            projectCoverage: {configuredRoots: 50},
+            refresh: true,
+          },
+        });
+      }
       expect(
         measureAgentToolResponse({
           ...(formatted.structuredContent === undefined ? {} : {structuredContent: formatted.structuredContent}),
@@ -1309,8 +1410,9 @@ describe('MCP code graph indexing progress', () => {
         },
         metadata,
       );
-      expect(first.text.startsWith('Read: ')).toBe(true);
-      expect(first.text).toContain(JSON.stringify(metadata));
+      expect(first.text.startsWith('Graph analysis:')).toBe(true);
+      expect(first.text).not.toContain('Read:');
+      expect(first.text).not.toContain(JSON.stringify(metadata));
       const structuredBytes = new TextEncoder().encode(JSON.stringify(first.structuredContent)).byteLength;
       const textBytes = new TextEncoder().encode(first.text).byteLength;
 
