@@ -471,6 +471,33 @@ describe('Code Memory Link real-agent protocol', () => {
     expect(JSON.parse(empty.content[0].text)).toEqual(empty.structuredContent);
   });
 
+  it('preserves the brief version independently of optional code-anchor coverage', () => {
+    fc.assert(
+      fc.property(fc.constantFrom(2 as const, 3 as const), fc.boolean(), (version, includeCodeAnchors) => {
+        const structured = contextBriefStructuredContent();
+        structured.version = version;
+        (structured.output as Record<string, unknown>).projectorVersion = version;
+        const memory = (structured.durableDecisions as Array<Record<string, unknown>>)[0];
+        if (version === 2) {
+          delete memory.codeRelations;
+          delete memory.selectionBasis;
+        }
+        const coverage = structured.coverage as Record<string, unknown>;
+        const memoryCoverage = coverage.memory as Record<string, unknown>;
+        if (includeCodeAnchors) {
+          memoryCoverage.codeAnchors = {complete: true, matchedMemories: 1, requested: 1, resolved: 1};
+        } else {
+          delete memoryCoverage.codeAnchors;
+        }
+
+        const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(structured, {requireAgentView: true});
+
+        expect(parseContextBriefAgentViewText(canonical.content[0].text).briefVersion).toBe(version);
+      }),
+      {numRuns: 20},
+    );
+  });
+
   it('treats MCP content object-key order as insignificant while preserving exact content', () => {
     fc.assert(
       fc.property(fc.boolean(), textFirst => {
