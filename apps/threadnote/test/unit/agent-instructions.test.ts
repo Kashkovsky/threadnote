@@ -146,6 +146,8 @@ describe('agent instructions', () => {
       '`citationPolicy: "defer"`',
       '`--defer-code-refs`',
       '`citationPolicy: "require-current"`',
+      '1-4 key changed paths or graph handles',
+      'compact exact-current resume cannot activate',
       '`finalize_code_refs`',
       'private pending anchor',
       '`share_publish`',

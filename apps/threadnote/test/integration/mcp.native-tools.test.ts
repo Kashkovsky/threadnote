@@ -595,6 +595,7 @@ describe('Threadnote MCP toolsets', () => {
         }
         const remember = tools.tools.find(tool => tool.name === 'remember_context');
         expect(remember?.description).toContain('task; decisions/invariants; verification; blockers/risks; next_step');
+        expect(remember?.description).toContain('CodeRefs enable compact resume');
         expect(remember?.description).toContain('Skip Knowledge Delta review');
         expect(remember?.inputSchema).toMatchObject({
           properties: {
@@ -675,6 +676,49 @@ describe('Threadnote MCP toolsets', () => {
           text: 'Handoff keyword schema guidance regression.',
         });
         expect(handoffKeywords).toContain('Keyword authoring is not supported for handoff memories');
+
+        const unanchoredHandoff = await client.callTool(
+          {
+            arguments: {
+              kind: 'handoff',
+              project: 'threadnote',
+              text: 'task: Continue implementation.\nnext_step: Inspect the changed source.',
+              topic: 'unanchored-resume',
+            },
+            name: 'remember_context',
+          },
+          undefined,
+          {timeout: 5000},
+        );
+        expect((unanchoredHandoff.content as TextContent[]).map(item => item.text).join('\n')).toContain(
+          'No codeRefs: compact exact-current resume is unavailable for this handoff.',
+        );
+        expect(unanchoredHandoff.structuredContent).toMatchObject({
+          exactCurrentResume: {eligible: false, reason: 'missing-code-refs'},
+        });
+
+        const pendingHandoff = await client.callTool(
+          {
+            arguments: {
+              callerCwd: process.cwd(),
+              citationPolicy: 'defer',
+              codeRefs: ['apps/threadnote/src/mcp/server/store.ts'],
+              kind: 'handoff',
+              project: 'threadnote',
+              text: 'task: Continue implementation.\nnext_step: Verify the cited store behavior.',
+              topic: 'anchored-resume',
+            },
+            name: 'remember_context',
+          },
+          undefined,
+          {timeout: 5000},
+        );
+        expect((pendingHandoff.content as TextContent[]).map(item => item.text).join('\n')).toContain(
+          'CodeRefs pending: compact exact-current resume remains unavailable until citations finalize.',
+        );
+        expect(pendingHandoff.structuredContent).toMatchObject({
+          exactCurrentResume: {eligible: false, reason: 'pending-code-refs'},
+        });
       },
       {toolset: 'core'},
     );
@@ -1861,6 +1905,27 @@ describe('Threadnote MCP toolsets', () => {
           codeCitations: [expect.objectContaining({path: 'apps/docs-mobile/index.ts'})],
           project: 'docs-mobile',
         });
+        const anchoredHandoff = await client.callTool(
+          {
+            arguments: {
+              callerCwd: docsMobile,
+              citationPolicy: 'require-current',
+              codeRefs: ['apps/docs-mobile/index.ts'],
+              kind: 'handoff',
+              project: 'docs-mobile',
+              text: 'task: Continue native docs work.\nnext_step: Verify the cited entry point.',
+              topic: 'root-alias-handoff',
+            },
+            name: 'remember_context',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(anchoredHandoff.isError, JSON.stringify(anchoredHandoff)).not.toBe(true);
+        expect((anchoredHandoff.content as TextContent[]).map(item => item.text).join('\n')).not.toContain(
+          'compact exact-current resume',
+        );
+        expect(anchoredHandoff.structuredContent).not.toHaveProperty('exactCurrentResume');
         const closeout = await client.callTool(
           {
             arguments: {

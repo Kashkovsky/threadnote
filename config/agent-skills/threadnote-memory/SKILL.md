@@ -31,11 +31,11 @@ Use `kind: durable` for reusable decisions/contracts and `kind: handoff` for sta
 identities + `replaceUri` prevent duplicates. Confirm before durable sharing. Author `relations` only from read memories or
 explicit review evidence; a replacement supplies the complete set, so carry forward every still-valid relation.
 
-For consequential code claims cite verified paths or graph handles and observed verification. Personal code-ref writes use
-`citationPolicy: "defer"` or `--defer-code-refs`; strict/shared writes use `citationPolicy: "require-current"` or
-`--require-current-code-refs`. Finalize the private pending anchor with `finalize_code_refs` or `threadnote finalize-code-refs` after a
-ready graph; replace unresolved locators. Never share pending anchors. Use `share_publish` for approved durable team
-publication and `share_propose` only for an applied reviewed delta export.
+For code-work handoffs, put 1-4 key changed paths or graph handles in `codeRefs`; without citations compact exact-current
+resume cannot activate. Cite verification. Current writes use `citationPolicy: "require-current"` or
+`--require-current-code-refs`; private pending anchors use `citationPolicy: "defer"` or `--defer-code-refs`, then
+`finalize_code_refs` or `threadnote finalize-code-refs`. Replace unresolved locators; never share pending anchors.
+Publish approved durable memory with `share_publish`; use `share_propose` only for applied reviewed deltas.
 
 Maintenance: `threadnote context check --project <name>` checks direct citations. Health uses
 `context_health`, `context_health_aggregate`, `context_health_repair_preview`, `context_health_repair_apply`,
