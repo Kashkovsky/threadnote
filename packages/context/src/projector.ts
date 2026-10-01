@@ -38,6 +38,7 @@ import {
   contextBriefResumeFocusUri,
   contextBriefRelationshipMemoryByUri,
   deriveContextBriefEvidenceState,
+  isContextBriefExactCurrentContinuation,
   isContextBriefGraphOnlyGap,
   requiredContextBriefAgentMemoryItem,
   withStableContextBriefMemoryIdentityGap,
@@ -57,7 +58,13 @@ import {
   withAdjustedContextBriefSourceExcerpt,
 } from './source_projection.js';
 import {jsonStringPrefix, utf8Prefix} from './projection_text.js';
-import {compactContinuationCard, preservesBaselineEvidence, projectContextBriefAgentView} from './projection_view.js';
+import {
+  compactContextBriefScope,
+  compactContinuationCard,
+  compactMinimumContextBriefScope,
+  preservesBaselineEvidence,
+  projectContextBriefAgentView,
+} from './projection_view.js';
 import {preservesResumeBaselineEvidence} from './projection_view.js';
 
 export {
@@ -164,6 +171,7 @@ function projectContextBriefCore(
       requiredContextBriefAgentMemoryItem(logical, items, responseFormat),
       ...requiredContextBriefSourceProjectionItems(logical, items),
       ...requiredAgentWorksetRecoveryItems(logical, items, responseFormat),
+      ...(resumeFocusUri === undefined ? [] : [items.find(item => item.lane === 'graph-card')]),
       graphRecoveryItem,
     ].filter((item): item is ProjectionItem => item !== undefined),
   );
@@ -305,11 +313,20 @@ function measureContextBriefResponse(brief: ContextBriefV1, responseFormat: Cont
 
 export function renderContextBriefText(brief: ContextBriefV1): string {
   const view = projectContextBriefAgentView(brief, false);
+  const exactResume =
+    brief.mode === 'resume' &&
+    brief.activeHandoffs.length === 1 &&
+    brief.stalenessAndConflicts.length === 0 &&
+    brief.activeHandoffs.some(isContextBriefExactCurrentContinuation);
   const compactMemories = (memories: ContextBriefAgentViewV1['durableDecisions']) =>
     memories?.map(memory => {
-      if (memory.freshnessBasis !== 'source-commit' && memory.selectionBasis !== 'code-citation') return memory;
-      const {freshnessBasis: _freshnessBasis, ...compact} = memory;
-      return compact;
+      const compact =
+        memory.freshnessBasis !== 'source-commit' && memory.selectionBasis !== 'code-citation'
+          ? memory
+          : (({freshnessBasis: _freshnessBasis, ...value}) => value)(memory);
+      return !exactResume || compact.continuationCard === undefined
+        ? compact
+        : {...compact, continuationCard: compactContinuationCard(compact.continuationCard)};
     });
   const legacyFollowUps = view.recommendedFollowUps?.map(({arguments: action, tool: _tool, ...followUp}) => ({
     ...followUp,
@@ -1177,7 +1194,7 @@ function renderProjection(
       truncated: omittedItems > 0,
     },
     recommendedFollowUps,
-    scope: compactScope(logical.scope),
+    scope: compactContextBriefScope(logical.scope),
     stalenessAndConflicts,
     task,
     trust: logical.trust,
@@ -1253,7 +1270,7 @@ function renderMinimumProjection(
       truncated: true,
     },
     recommendedFollowUps,
-    scope: compactMinimumScope(logical.scope),
+    scope: compactMinimumContextBriefScope(logical.scope),
     stalenessAndConflicts: [],
     task: {summary: '', truncated: true},
     trust: logical.trust,
@@ -1382,9 +1399,13 @@ function projectionItems(
       compareText(left.id, right.id),
   );
   if (resumeFocusUri === undefined) return projected;
+  const primaryGraphCardId = [...logical.graph.cards].sort(
+    (left, right) => left.rank - right.rank || compareText(left.id, right.id),
+  )[0]?.id;
   return projected.filter(
     item =>
       (item.lane === 'handoff' && item.id === resumeFocusUri) ||
+      (item.lane === 'graph-card' && item.id === primaryGraphCardId) ||
       (item.lane === 'coverage-gap' && !isContextBriefGraphOnlyGap(item.id.slice('gap:'.length))) ||
       item.lane === 'verified-procedure',
   );
@@ -1805,23 +1826,6 @@ function selectById<T extends {readonly id?: string; readonly rank: number; read
     });
 }
 
-function compactScope(scope: ContextBriefLogicalResultV1['scope']): ContextBriefV1['scope'] {
-  const name = jsonStringPrefix(scope.name, 66);
-  return {...scope, name, ...(name === scope.name ? {} : {nameTruncated: true as const})};
-}
-
-function compactMinimumScope(scope: ContextBriefLogicalResultV1['scope']): ContextBriefV1['scope'] {
-  const name = jsonStringPrefix(scope.projectCoverage?.project ?? scope.name, 15);
-  return {
-    freshness: scope.freshness,
-    kind: scope.kind,
-    name,
-    readyRepositories: scope.readyRepositories,
-    requestedRepositories: scope.requestedRepositories,
-    ...(name === (scope.projectCoverage?.project ?? scope.name) ? {} : {nameTruncated: true as const}),
-  };
-}
-
 function compactProjectedMemory(
   memory: ContextBriefLogicalResultV1['durableDecisions'][number],
   protectRelationshipBundle = false,
@@ -1842,9 +1846,11 @@ function compactProjectedMemory(
   const stableUri =
     allowIdentityAlias && memoryId !== undefined && isMemoryId(memoryId) ? memoryIdentityAlias(memoryId) : memory.uri;
   if (memory.selectionBasis !== 'code-citation') {
+    const {citationReceipts, ...resumeMemory} = withoutIdentity;
     return {
-      ...withoutIdentity,
+      ...(preserveContinuationDetails ? resumeMemory : withoutIdentity),
       ...compactContinuation,
+      ...(preserveContinuationDetails && citationReceipts !== undefined ? {citationDetailsOmitted: true as const} : {}),
       ...(hasProjectedCard ? {excerpt: ''} : {}),
       uri: stableUri,
     };
@@ -1900,10 +1906,12 @@ function compactProjectedMemory(
       uri: stableUri,
     };
   }
+  const {citationReceipts, ...resumeCompact} = compact;
   return {
-    ...compact,
+    ...(preserveContinuationDetails ? resumeCompact : compact),
     ...compactActionCard,
     ...compactContinuation,
+    ...(preserveContinuationDetails && citationReceipts !== undefined ? {citationDetailsOmitted: true as const} : {}),
     excerpt: hasProjectedCard ? '' : utf8Prefix(memory.excerpt, 96),
     uri: stableUri,
   };

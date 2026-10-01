@@ -57,6 +57,9 @@ export function deriveContextBriefEvidenceState(input: {
     input.resumeFocusUri !== undefined &&
     input.gaps.length === 0 &&
     input.logical.stalenessAndConflicts.length === 0 &&
+    input.logical.scope.freshness === 'fresh' &&
+    input.logical.coverage.graph.complete &&
+    input.cards.length > 0 &&
     input.activeHandoffs.some(isContextBriefExactCurrentContinuation)
   ) {
     return 'sufficient';

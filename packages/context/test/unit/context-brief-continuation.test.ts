@@ -205,7 +205,7 @@ describe('Context Brief continuation contracts', () => {
     ).toBe(false);
   });
 
-  it('projects an exact current resume as a compact continuation instead of optional graph breadth', () => {
+  it('projects an exact current resume with one compact implementation anchor instead of optional graph breadth', () => {
     const projected = projectValidatedResume(1_500);
     const brief = projected.structuredContent;
     const agentView = parseContextBriefAgentViewText(projected.text);
@@ -217,37 +217,59 @@ describe('Context Brief continuation contracts', () => {
         nextStep: expect.stringContaining('h11/tests/test_io.py'),
       },
       citationSummary: {coverage: 'current-complete', exact: 1, relocated: 0, stale: 0, unknown: 0},
+      citationDetailsOmitted: true,
       freshness: 'fresh',
       preciseStatus: 'exact',
     });
     expect(brief.durableDecisions).toEqual([]);
-    expect(brief.graph).toEqual({cards: [], contracts: []});
+    expect(brief.graph).toEqual({cards: [expect.objectContaining({id: 'card-1', ref: REF})], contracts: []});
     expect(brief.coverage.gaps).toEqual([]);
     expect(brief.coverage.omissions).toMatchObject({
       activeHandoffs: 0,
       durableDecisions: 1,
-      graphCards: 16,
+      graphCards: 15,
       graphContracts: 32,
     });
     expect(brief.evidenceState).toBe('sufficient');
     expect(brief.output.truncated).toBe(true);
     expect(brief.recommendedFollowUps).toEqual([]);
     expect(agentView.answer).toContain('Resume from the exact current handoff.');
+    expect(agentView.answer).toContain('Start at graph.cards[0]');
     expect(agentView.answer).toContain('_add_method_dunders');
     expect(agentView.answer).toContain('C.__replace__.__qualname__ ends in C.evolve instead of C.__replace__');
     expect(agentView.activeHandoffs?.[0]?.continuationCard).toBeUndefined();
     expect(projected.text).not.toContain('"continuationCard"');
     expect(agentView.output).toBeUndefined();
-    expect(agentView.graph).toBeUndefined();
+    expect(agentView.graph?.cards?.[0]).toMatchObject({ref: REF});
     expect(projected.measurement.totalBytes).toBeLessThan(2_200);
+  });
+
+  it('does not call an exact current resume sufficient without a fresh implementation anchor', () => {
+    const logical = validatedResumeLogical();
+    const withoutAnchor = projectContextBrief(
+      {...logical, graph: {...logical.graph, cards: []}},
+      1_500,
+      'agent',
+    ).structuredContent;
+    const unknownGraph = projectContextBrief(
+      {...logical, scope: {...logical.scope, freshness: 'unknown'}},
+      1_500,
+      'agent',
+    ).structuredContent;
+
+    expect(withoutAnchor.graph.cards).toEqual([]);
+    expect(withoutAnchor.evidenceState).toBe('partial');
+    expect(unknownGraph.graph.cards[0]?.id).toBe('card-1');
+    expect(unknownGraph.evidenceState).toBe('degraded');
   });
 
   it('retains the structured continuation card in the dual text compatibility channel', () => {
     const projected = projectContextBrief(validatedResumeLogical(), 1_500, 'dual');
 
+    expect(projected.structuredContent.graph.cards[0]?.id).toBe('card-1');
     expect(projected.text).toContain('"continuationCard"');
-    expect(projected.text).toContain('_add_method_dunders');
-    expect(projected.text).toContain('C.__replace__.__qualname__ ends in C.evolve instead of C.__replace__');
+    expect(projected.text).toContain('h11/_abnf.py');
+    expect(parseContextBriefAgentViewText(projected.text).graph?.cards?.[0]?.ref).toBe(REF);
   });
 
   it('keeps graph evidence when resume citations are not exact and current-complete', () => {
@@ -320,8 +342,8 @@ describe('Context Brief continuation contracts', () => {
     const projected = result.structuredContent;
     expect(projected.coverage.gaps).toEqual(['memory-citation-limited']);
     expect(projected.evidenceState).toBe('partial');
-    expect(projected.graph.cards).toEqual([]);
-    expect(parseContextBriefAgentViewText(result.text).answer).toContain('Verify cited source directly');
+    expect(projected.graph.cards[0]?.id).toBe('card-1');
+    expect(parseContextBriefAgentViewText(result.text).answer).toContain('Start at graph.cards[0]');
     expect(parseContextBriefAgentViewText(result.text).answer).not.toContain('orientation is sufficient');
   });
 
@@ -347,9 +369,41 @@ describe('Context Brief continuation contracts', () => {
         );
         expect(agentView.answer).toContain('C.__replace__.__qualname__ ends in C.evolve instead of C.__replace__');
         expect(new TextEncoder().encode(agentView.answer).byteLength).toBeLessThanOrEqual(1_600);
-        expect(projected.structuredContent.graph.cards).toEqual([]);
+        expect(projected.structuredContent.graph.cards[0]?.id).toBe('card-1');
+        if (projected.structuredContent.evidenceState === 'sufficient') {
+          expect(projected.structuredContent.scope.freshness).toBe('fresh');
+          expect(projected.structuredContent.coverage.graph.complete).toBe(true);
+        }
         expect(projected.measurement.totalBytes).toBeLessThanOrEqual(projected.maximumBytes);
       }),
+      {numRuns: 50},
+    );
+  });
+
+  it('requires fresh complete graph coverage before exact current resume is sufficient', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          budgetTokens: fc.integer({min: 800, max: 1_500}),
+          complete: fc.boolean(),
+          freshness: fc.constantFrom('fresh' as const, 'stale' as const, 'unknown' as const),
+        }),
+        ({budgetTokens, complete, freshness}) => {
+          const logical = validatedResumeLogical('exact', budgetTokens);
+          const projected = projectContextBrief(
+            {
+              ...logical,
+              coverage: {...logical.coverage, graph: {...logical.coverage.graph, complete}},
+              scope: {...logical.scope, freshness},
+            },
+            budgetTokens,
+            'agent',
+          ).structuredContent;
+
+          expect(projected.graph.cards[0]?.id).toBe('card-1');
+          expect(projected.evidenceState === 'sufficient').toBe(freshness === 'fresh' && complete);
+        },
+      ),
       {numRuns: 50},
     );
   });
