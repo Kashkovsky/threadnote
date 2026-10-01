@@ -54,6 +54,14 @@ export interface CodexResumeReceiptV1 {
   readonly version: typeof CODEX_RESUME_RECEIPT_VERSION;
 }
 
+export type CodexResumeIneligibilityReason =
+  | 'empty-delivery'
+  | 'multiple-selected-handoffs'
+  | 'no-selected-handoff'
+  | 'not-resume-mode'
+  | 'scope-not-fresh'
+  | 'selected-not-exact-current';
+
 export type CodexResumeHookResult =
   | {
       readonly context: string;
@@ -63,6 +71,7 @@ export type CodexResumeHookResult =
       readonly outcome: 'injected';
     }
   | {
+      readonly diagnosticReason?: CodexResumeIneligibilityReason;
       readonly estimatedTokens: number;
       readonly evidenceState?: ContextBriefEvidenceState;
       readonly outputBytes: number;
@@ -106,16 +115,20 @@ export function promptCarriesActiveHandoff(prompt: string): boolean {
 }
 
 export function contextBriefIsEligibleForCodexResume(projected: ProjectedContextBriefV1): boolean {
+  return codexResumeIneligibilityReason(projected) === undefined;
+}
+
+export function codexResumeIneligibilityReason(
+  projected: ProjectedContextBriefV1,
+): CodexResumeIneligibilityReason | undefined {
   const brief = projected.structuredContent;
   const handoff = brief.activeHandoffs[0];
-  return (
-    projected.text !== '' &&
-    brief.mode === 'resume' &&
-    brief.scope.freshness === 'fresh' &&
-    brief.activeHandoffs.length === 1 &&
-    handoff !== undefined &&
-    isContextBriefExactCurrentContinuation(handoff)
-  );
+  if (brief.mode !== 'resume') return 'not-resume-mode';
+  if (brief.scope.freshness !== 'fresh') return 'scope-not-fresh';
+  if (handoff === undefined) return 'no-selected-handoff';
+  if (brief.activeHandoffs.length !== 1) return 'multiple-selected-handoffs';
+  if (!isContextBriefExactCurrentContinuation(handoff)) return 'selected-not-exact-current';
+  return projected.text === '' ? 'empty-delivery' : undefined;
 }
 
 export function projectCodexResumePreload(
@@ -162,8 +175,9 @@ export function decideCodexResumePreload<Requirements>(
 
     const projected = yield* dependencies.compile(event.cwd, event.prompt);
     const evidenceState = projected.structuredContent.evidenceState;
-    if (!contextBriefIsEligibleForCodexResume(projected)) {
-      return {...emptyResult('ineligible-evidence'), evidenceState};
+    const diagnosticReason = codexResumeIneligibilityReason(projected);
+    if (diagnosticReason !== undefined) {
+      return {...emptyResult('ineligible-evidence'), diagnosticReason, evidenceState};
     }
     const outputBytes = UTF8.encode(projected.text).byteLength;
     if (
@@ -233,7 +247,10 @@ export function runCodexResumeHook(config: RuntimeConfig, options: {readonly dia
       outputBytes: result.outputBytes,
       timestamp: DateTime.formatIso(DateTime.makeUnsafe(completedAt)),
     }).pipe(Effect.timeoutOrElse({duration: '250 millis', orElse: () => Effect.void}), Effect.ignore);
-    if (options.diagnostic) yield* Console.error(`threadnote codex-resume-hook: ${result.outcome}`);
+    if (options.diagnostic) {
+      const detail = result.outcome === 'ineligible-evidence' ? `:${result.diagnosticReason ?? 'unspecified'}` : '';
+      yield* Console.error(`threadnote codex-resume-hook: ${result.outcome}${detail}`);
+    }
   }).pipe(
     Effect.catchCause(() =>
       options.diagnostic ? Console.error('threadnote codex-resume-hook: lookup-unavailable') : Effect.void,

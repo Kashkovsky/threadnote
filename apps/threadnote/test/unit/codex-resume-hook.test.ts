@@ -3,6 +3,7 @@ import {Effect, Ref} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  codexResumeIneligibilityReason,
   contextBriefIsEligibleForCodexResume,
   decideCodexResumePreload,
   parseCodexResumeHookEvent,
@@ -100,6 +101,8 @@ describe('Codex resume preload', () => {
 
       expect(contextBriefIsEligibleForCodexResume(projected('sufficient', {freshness: 'stale'}))).toBe(false);
       expect(contextBriefIsEligibleForCodexResume(projected('sufficient', {handoff: false}))).toBe(false);
+      expect(codexResumeIneligibilityReason(projected('sufficient', {freshness: 'stale'}))).toBe('scope-not-fresh');
+      expect(codexResumeIneligibilityReason(projected('sufficient', {handoff: false}))).toBe('no-selected-handoff');
     }),
   );
 
