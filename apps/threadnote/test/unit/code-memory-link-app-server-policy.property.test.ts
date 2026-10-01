@@ -308,6 +308,23 @@ describe('Code Memory Link pre-execution app-server policy', () => {
         ),
       ).toThrow();
     }
+
+    const repositoryRoot = '/private/tmp/matched-evaluation-codex-abc/repository';
+    const duplicatedWorkingDirectory =
+      '/private/tmp/matched-evaluation-codex-abc/matched-evaluation-codex-abc/repository';
+    const rootBoundScope = {...SCOPE, repositoryRoot};
+    const wrongCwd = shellCommandApproval(approved.join(' '), duplicatedWorkingDirectory);
+    expect(() =>
+      approveCodeMemoryLinkAppServerRequest(
+        {
+          method: 'item/commandExecution/requestApproval',
+          params: wrongCwd.params,
+          scope: rootBoundScope,
+          startedItem: wrongCwd.item,
+        },
+        policy,
+      ),
+    ).toThrow('outside the public task repository');
   });
 
   it('rejects shell-control, expansion, unquoted glob, and mutating sed syntax before execution', () => {
@@ -489,13 +506,13 @@ function commandApproval(command: string, path: string, repositoryRoot = ROOT) {
   };
 }
 
-function shellCommandApproval(projected: string) {
+function shellCommandApproval(projected: string, repositoryRoot = ROOT) {
   const command = `/bin/zsh -c ${shellWord(projected)}`;
   const commandActions = [{command: projected, type: 'unknown'}];
   const item = {
     command,
     commandActions,
-    cwd: ROOT,
+    cwd: repositoryRoot,
     id: 'item_task_command',
     source: 'agent',
     status: 'inProgress',
@@ -508,7 +525,7 @@ function shellCommandApproval(projected: string) {
       availableDecisions: ['accept', 'cancel'],
       command,
       commandActions,
-      cwd: ROOT,
+      cwd: repositoryRoot,
       environmentId: 'local',
       itemId: item.id,
       networkApprovalContext: null,

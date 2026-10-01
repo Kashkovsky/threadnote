@@ -28,6 +28,7 @@ import {
   parseMatchedEvaluationCodexAdapterRequestV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
   renderMatchedEvaluationAgentPromptV1,
+  renderMatchedEvaluationApprovedCommandV1,
   renderMatchedEvaluationJudgePromptV1,
   renderMatchedEvaluationCommandReviewRulesV1,
   renderMatchedEvaluationAgentInstructionsV1,
@@ -37,6 +38,7 @@ import {
   runMatchedEvaluationDeterministicVerifierV1,
   type MatchedEvaluationExpectedContextDeliveryV1,
 } from '../../../../scripts/matched-evaluation-codex-adapter.js';
+import {tokenizeCodeMemoryLinkCommandV1} from '../../../../scripts/code-memory-link-app-server-policy.js';
 import {MATCHED_EVALUATION_CONTEXT_PROXY_VERSION} from '../../../../scripts/matched-evaluation-context-proxy.js';
 import {hashMatchedEvaluationContextRequest} from '../../../../scripts/matched-evaluation-context-proxy.js';
 import {
@@ -180,6 +182,15 @@ describe('matched evaluation Codex adapter', () => {
     expect(agentPrompt).toContain(manualHandoff);
     expect(agentPrompt).toContain('Keep discovery output bounded');
     expect(agentPrompt).toContain('separate commands');
+    const approvedCommands = [
+      ['PYTHONPATH=src', 'pytest', '-q', 'tests/test service.py', '-k', "test_'quoted'"],
+      ['python', '-m', 'compileall', 'src'],
+    ] as const;
+    const promptWithChecks = renderMatchedEvaluationAgentPromptV1(manual, null, 1_200, null, approvedCommands);
+    expect(promptWithChecks).toContain('run each exactly as written, in this order');
+    expect(promptWithChecks).toContain(`1. ${renderMatchedEvaluationApprovedCommandV1(approvedCommands[0])}`);
+    expect(promptWithChecks).toContain(`2. ${renderMatchedEvaluationApprovedCommandV1(approvedCommands[1])}`);
+    expect(promptWithChecks).toContain('Do not set or change their working directory');
     expect(renderMatchedEvaluationAgentPromptV1(resume, 'threadnote', 1_200)).toContain('mode "resume"');
     const preloaded = parseMatchedEvaluationCodexAdapterRequestV1(
       adapterRequest('threadnote-compact', {
@@ -215,6 +226,29 @@ describe('matched evaluation Codex adapter', () => {
     });
     expect(judgePrompt).not.toContain(manualHandoff);
     expect(judgePrompt).toContain(manual.agentTask.prompt);
+  });
+
+  it('renders every approved command token sequence without changing its shell meaning', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.constantFrom(
+            'PYTHONPATH=src',
+            'pytest',
+            '-q',
+            'tests/test_service.py',
+            'name with spaces',
+            "single'quote",
+            'selector[case]',
+          ),
+          {maxLength: 12, minLength: 1},
+        ),
+        tokens => {
+          expect(tokenizeCodeMemoryLinkCommandV1(renderMatchedEvaluationApprovedCommandV1(tokens))).toEqual(tokens);
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('requires successful context delivery bound to the sealed prompt, run, home and response', () => {
@@ -611,6 +645,23 @@ describe('matched evaluation Codex adapter', () => {
     expect((await readdir(repository)).filter(name => name.startsWith('.threadnote-evaluation-preflight-'))).toEqual(
       [],
     );
+  });
+
+  it('preflights every exact task-approved command before a provider turn', async () => {
+    const root = await temporaryRoot(roots);
+    const repository = join(root, 'repository');
+    await mkdir(repository);
+    await writeFile(join(repository, 'service.ts'), 'export const value = 1;\n');
+
+    const receipt = await runMatchedEvaluationActionPreflightV1({
+      approvedCommandTokens: [['PYTHONPATH=src', 'pytest', '-q', 'tests/test_service.py']],
+      repositoryRoot: repository,
+      runNonce: 'run_0123456789abcdef0123456789abcdef',
+      safeExecutablePath: '/usr/bin:/bin',
+      sourcePath: 'service.ts',
+    });
+
+    expect(receipt).toMatchObject({approvedActions: 7, rejectedActions: 4});
   });
 
   it('parses a pinned files-only adapter configuration and rejects treatment context in that arm', () => {
