@@ -4,6 +4,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   codexResumeIneligibilityReason,
+  codexResumeProjectionIneligibilityReason,
   contextBriefIsEligibleForCodexResume,
   decideCodexResumePreload,
   parseCodexResumeHookEvent,
@@ -126,7 +127,9 @@ describe('Codex resume preload', () => {
     const conflicting = projectCodexResumePreload(logicalResume({selectedConflict: true}), 800, 'agent');
     const unavailable = projectCodexResumePreload(logicalResume({gaps: ['memory-recall-unavailable']}), 800, 'agent');
     expect(conflicting.text).toBe('');
+    expect(codexResumeProjectionIneligibilityReason(conflicting)).toBe('selected-conflict');
     expect(unavailable.text).toBe('');
+    expect(codexResumeProjectionIneligibilityReason(unavailable)).toBe('non-graph-coverage-gap');
   });
 
   it('keeps arbitrary continuation-card content inside the delivery budget', () => {

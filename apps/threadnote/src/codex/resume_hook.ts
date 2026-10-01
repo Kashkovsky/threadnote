@@ -56,11 +56,22 @@ export interface CodexResumeReceiptV1 {
 
 export type CodexResumeIneligibilityReason =
   | 'empty-delivery'
+  | 'graph-incomplete'
   | 'multiple-selected-handoffs'
+  | 'no-ranked-handoff'
   | 'no-selected-handoff'
+  | 'non-graph-coverage-gap'
   | 'not-resume-mode'
+  | 'rank-zero-missing'
   | 'scope-not-fresh'
-  | 'selected-not-exact-current';
+  | 'selected-conflict'
+  | 'selected-not-exact-current'
+  | 'selected-not-retained';
+
+const CODEX_RESUME_PROJECTION_DIAGNOSTIC = Symbol('codex-resume-projection-diagnostic');
+type CodexResumeProjectedContextBrief = ProjectedContextBriefV1 & {
+  readonly [CODEX_RESUME_PROJECTION_DIAGNOSTIC]?: CodexResumeIneligibilityReason;
+};
 
 export type CodexResumeHookResult =
   | {
@@ -131,6 +142,12 @@ export function codexResumeIneligibilityReason(
   return projected.text === '' ? 'empty-delivery' : undefined;
 }
 
+export function codexResumeProjectionIneligibilityReason(
+  projected: ProjectedContextBriefV1,
+): CodexResumeIneligibilityReason | undefined {
+  return (projected as CodexResumeProjectedContextBrief)[CODEX_RESUME_PROJECTION_DIAGNOSTIC];
+}
+
 export function projectCodexResumePreload(
   logical: ContextBriefLogicalResultV1,
   maximumEstimatedTokens: number,
@@ -138,11 +155,19 @@ export function projectCodexResumePreload(
 ): ProjectedContextBriefV1 {
   const deliveryTokenLimit = Math.min(maximumEstimatedTokens, CODEX_RESUME_ADDITIONAL_CONTEXT_LIMIT);
   const ordinary = projectContextBrief(logical, CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS, 'agent');
-  const handoff = selectCodexResumeHandoff(logical);
-  const projectedHandoff = ordinary.structuredContent.activeHandoffs.find(candidate => candidate.uri === handoff?.uri);
-  const text = handoff === undefined || projectedHandoff === undefined ? '' : renderCodexResumePreloadContext(handoff);
+  const selection = selectCodexResumeHandoff(logical);
+  const projectedHandoff = ordinary.structuredContent.activeHandoffs.find(
+    candidate => candidate.uri === selection.handoff?.uri,
+  );
+  const projectionDiagnostic =
+    selection.reason ??
+    (selection.handoff !== undefined && projectedHandoff === undefined ? 'selected-not-retained' : undefined);
+  const text =
+    selection.handoff === undefined || projectedHandoff === undefined
+      ? ''
+      : renderCodexResumePreloadContext(selection.handoff);
   const structuredContent =
-    handoff === undefined || projectedHandoff === undefined
+    selection.handoff === undefined || projectedHandoff === undefined
       ? ordinary.structuredContent
       : {
           ...ordinary.structuredContent,
@@ -155,12 +180,16 @@ export function projectCodexResumePreload(
             },
           },
         };
-  return {
+  const projected: CodexResumeProjectedContextBrief = {
     maximumBytes: deliveryTokenLimit * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN,
     measurement: measureAgentToolResponse({text}),
     structuredContent,
     text,
   };
+  if (projectionDiagnostic !== undefined) {
+    Object.defineProperty(projected, CODEX_RESUME_PROJECTION_DIAGNOSTIC, {value: projectionDiagnostic});
+  }
+  return projected;
 }
 
 export function decideCodexResumePreload<Requirements>(
@@ -176,7 +205,8 @@ export function decideCodexResumePreload<Requirements>(
 
     const projected = yield* dependencies.compile(event.cwd, event.prompt);
     const evidenceState = projected.structuredContent.evidenceState;
-    const diagnosticReason = codexResumeIneligibilityReason(projected);
+    const diagnosticReason =
+      codexResumeProjectionIneligibilityReason(projected) ?? codexResumeIneligibilityReason(projected);
     if (diagnosticReason !== undefined) {
       return {...emptyResult('ineligible-evidence'), diagnosticReason, evidenceState};
     }
@@ -317,20 +347,25 @@ const runEligibleCodexResumeHook = Effect.fn('hooks.runCodexResumeEligible')(fun
 
 function selectCodexResumeHandoff(
   logical: ContextBriefLogicalResultV1,
-): ContextBriefLogicalMemoryEvidenceV1 | undefined {
-  if (
-    logical.mode !== 'resume' ||
-    logical.scope.freshness !== 'fresh' ||
-    !logical.coverage.graph.complete ||
-    logical.coverage.gaps.some(gap => !isContextBriefGraphOnlyGap(gap))
-  ) {
-    return undefined;
+):
+  | {readonly handoff: ContextBriefLogicalMemoryEvidenceV1; readonly reason?: undefined}
+  | {readonly handoff?: undefined; readonly reason: CodexResumeIneligibilityReason} {
+  if (logical.mode !== 'resume') return {reason: 'not-resume-mode'};
+  if (logical.scope.freshness !== 'fresh') return {reason: 'scope-not-fresh'};
+  if (!logical.coverage.graph.complete) return {reason: 'graph-incomplete'};
+  if (logical.coverage.gaps.some(gap => !isContextBriefGraphOnlyGap(gap))) {
+    return {reason: 'non-graph-coverage-gap'};
   }
   const handoff = [...logical.activeHandoffs].sort(
     (left, right) => left.rank - right.rank || left.uri.localeCompare(right.uri),
   )[0];
-  if (handoff === undefined || handoff.rank !== 0 || !isContextBriefExactCurrentContinuation(handoff)) return undefined;
-  return logical.stalenessAndConflicts.some(issue => issue.uris.includes(handoff.uri)) ? undefined : handoff;
+  if (handoff === undefined) return {reason: 'no-ranked-handoff'};
+  if (handoff.rank !== 0) return {reason: 'rank-zero-missing'};
+  if (!isContextBriefExactCurrentContinuation(handoff)) return {reason: 'selected-not-exact-current'};
+  if (logical.stalenessAndConflicts.some(issue => issue.uris.includes(handoff.uri))) {
+    return {reason: 'selected-conflict'};
+  }
+  return {handoff};
 }
 
 function renderCodexResumePreloadContext(handoff: ContextBriefLogicalMemoryEvidenceV1): string {
