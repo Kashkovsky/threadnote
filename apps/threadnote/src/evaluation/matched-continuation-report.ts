@@ -46,7 +46,8 @@ export interface MatchedContinuationOutcomeV1 {
 }
 
 export interface MatchedContinuationAccountingV1 {
-  readonly accountingSource: 'sealed-phase-one' | 'observation' | 'failure-checkpoint' | 'unavailable';
+  readonly accountingSource:
+    'sealed-phase-one' | 'observation' | 'failure-checkpoint' | 'verification-unavailable' | 'unavailable';
   readonly elapsedMilliseconds: number | null;
   readonly providerTokens: MatchedEvaluationProviderTokensV1 | null;
 }
@@ -649,12 +650,23 @@ function parseOutcomeWithoutHash(
   if (
     (status === 'completed' && phaseTwo.accountingSource !== 'observation') ||
     (status === 'failed' && !['failure-checkpoint', 'unavailable'].includes(phaseTwo.accountingSource)) ||
-    (status === 'unavailable' && phaseTwo.accountingSource !== 'unavailable')
+    (status === 'unavailable' && !['verification-unavailable', 'unavailable'].includes(phaseTwo.accountingSource))
   ) {
     invalid('phase two accounting source differs from the attempt status');
   }
-  if (status === 'unavailable' && (phaseTwo.elapsedMilliseconds !== null || phaseTwo.providerTokens !== null)) {
+  if (
+    status === 'unavailable' &&
+    phaseTwo.accountingSource === 'unavailable' &&
+    (phaseTwo.elapsedMilliseconds !== null || phaseTwo.providerTokens !== null)
+  ) {
     invalid('unavailable attempts must not invent phase-two accounting');
+  }
+  if (
+    status === 'unavailable' &&
+    phaseTwo.accountingSource === 'verification-unavailable' &&
+    (phaseTwo.elapsedMilliseconds === null || phaseTwo.providerTokens === null)
+  ) {
+    invalid('verification-unavailable attempts must retain measured phase-two accounting');
   }
   return {
     assessment,
@@ -688,7 +700,7 @@ function parseAccounting(value: unknown, label: string): MatchedContinuationAcco
   return {
     accountingSource: literal(
       accounting.accountingSource,
-      ['sealed-phase-one', 'observation', 'failure-checkpoint', 'unavailable'] as const,
+      ['sealed-phase-one', 'observation', 'failure-checkpoint', 'verification-unavailable', 'unavailable'] as const,
       `${label} accounting source`,
     ),
     elapsedMilliseconds:

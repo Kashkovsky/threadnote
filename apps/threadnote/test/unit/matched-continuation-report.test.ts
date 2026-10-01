@@ -97,6 +97,23 @@ describe('matched continuation claim report', () => {
     expect(report.supportedClaims).toHaveLength(0);
   });
 
+  it('retains measured cost for a provider-complete row whose verification is unavailable', () => {
+    const study = createStudy();
+    const outcomes = createOutcomes(study, {
+      measuredUnavailableFor: new Set(['files-bare:0']),
+      statusFor: new Map([['files-bare:0', 'unavailable']]),
+    });
+
+    const report = evaluateMatchedContinuationStudyV1({outcomes, study});
+    const files = report.variants.find(result => result.variant === 'files-bare')!;
+
+    expect(files.fullLifecycleProviderTokens?.totalTokens).toBe(500);
+    expect(files.missingProviderUsage).toBe(0);
+    expect(files.unavailable).toBe(1);
+    expect(files.tokensPerVerifiedCompletion).toBe(125);
+    expect(report.supportedClaims).toHaveLength(0);
+  });
+
   it('charges measured failed-attempt tokens without calling the failed task a cheap completion', () => {
     const study = createStudy();
     const outcomes = createOutcomes(study, {
@@ -138,6 +155,7 @@ describe('matched continuation claim report', () => {
 function createOutcomes(
   study: ReturnType<typeof createStudy>,
   options: {
+    readonly measuredUnavailableFor?: ReadonlySet<string>;
     readonly missingUsageFor?: ReadonlySet<string>;
     readonly statusFor?: ReadonlyMap<string, 'completed' | 'failed' | 'unavailable'>;
     readonly tokenScale?: number;
@@ -156,6 +174,7 @@ function createOutcomes(
     const taskIndex = study.tasks.findIndex(task => task.taskId === scheduled.taskId);
     const key = `${scheduled.variant}:${taskIndex}`;
     const status = options.statusFor?.get(key) ?? 'completed';
+    const measuredUnavailable = status === 'unavailable' && options.measuredUnavailableFor?.has(key) === true;
     const task = study.tasks[taskIndex];
     const phaseOne = tokens(10 * scale);
     const phaseTwo = options.missingUsageFor?.has(key) ? null : tokens((totals[scheduled.variant] - 10) * scale);
@@ -175,19 +194,26 @@ function createOutcomes(
           : null,
       clusterId: task.clusterId,
       evidence: {
-        artifactSha256: status === 'completed' ? hex(scheduled.globalRunOrder + 100) : null,
-        requestSha256: status === 'completed' ? hex(scheduled.globalRunOrder + 200) : null,
-        responseSha256: status === 'completed' ? hex(scheduled.globalRunOrder + 300) : null,
+        artifactSha256: status === 'completed' || measuredUnavailable ? hex(scheduled.globalRunOrder + 100) : null,
+        requestSha256: status === 'completed' || measuredUnavailable ? hex(scheduled.globalRunOrder + 200) : null,
+        responseSha256: status === 'completed' || measuredUnavailable ? hex(scheduled.globalRunOrder + 300) : null,
         sourceReportSha256: hex(taskIndex + 400),
-        transcriptHash: status === 'completed' ? hex(scheduled.globalRunOrder + 500) : null,
+        transcriptHash: status === 'completed' || measuredUnavailable ? hex(scheduled.globalRunOrder + 500) : null,
       },
       globalRunOrder: scheduled.globalRunOrder,
       phaseOne: {accountingSource: 'sealed-phase-one', elapsedMilliseconds: 100, providerTokens: phaseOne},
       phaseTwo: {
         accountingSource:
-          status === 'completed' ? 'observation' : status === 'failed' ? 'failure-checkpoint' : 'unavailable',
-        elapsedMilliseconds: status === 'unavailable' ? null : (totals[scheduled.variant] - 10) * 10,
-        providerTokens: status === 'unavailable' ? null : phaseTwo,
+          status === 'completed'
+            ? 'observation'
+            : status === 'failed'
+              ? 'failure-checkpoint'
+              : measuredUnavailable
+                ? 'verification-unavailable'
+                : 'unavailable',
+        elapsedMilliseconds:
+          status === 'unavailable' && !measuredUnavailable ? null : (totals[scheduled.variant] - 10) * 10,
+        providerTokens: status === 'unavailable' && !measuredUnavailable ? null : phaseTwo,
       },
       planSha256: task.planSha256,
       previousOutcomeHash,

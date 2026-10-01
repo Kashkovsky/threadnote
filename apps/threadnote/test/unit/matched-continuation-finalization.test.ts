@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
-import {mkdtemp, readFile, readdir, realpath, rm, writeFile} from '@threadnote/testing/node-fs-promises';
+import {mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile} from '@threadnote/testing/node-fs-promises';
 import {tmpdir} from '@threadnote/testing/node-os';
 import {join} from '@threadnote/testing/node-path';
 import {sha256HexSync} from '@threadnote/platform/sha256';
@@ -26,9 +26,12 @@ import {
 } from '../../../../scripts/finalize-matched-continuation-study.js';
 import {
   assertMatchedContinuationPhaseTwoBaselineResultV1,
+  initializeMatchedEvaluationContinuationNonceStatesV1,
+  markMatchedEvaluationContinuationNonceStartedV1,
   matchedContinuationDiagnosticParserForCommandV1,
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
+  recoverMatchedEvaluationContinuationAttemptsV1,
   type MatchedEvaluationContinuationPilotPlanV3,
 } from '../../../../scripts/run-matched-evaluation.js';
 
@@ -104,6 +107,45 @@ describe('matched continuation finalization', () => {
     expect(parsed.attempts).toHaveLength(5);
     expect(parsed.phaseOne.providerTokens.totalTokens).toBe(30);
 
+    const unavailableAttempt = {
+      ...attempts[0],
+      accountingStatus: 'retained-observation',
+      diagnostics: 'verification command failed as infrastructure',
+      phaseTwoVerification: null,
+      status: 'verification-unavailable',
+    } as const;
+    const unavailableParsed = await parseAndVerifyMatchedContinuationTaskReportV1({
+      plan,
+      reportInput: {...report, attempts: [unavailableAttempt, ...attempts.slice(1)], completed: false},
+      sourceReportSha256: hex(904),
+      study,
+    });
+    expect(unavailableParsed.attempts[0]).toMatchObject({
+      accountingStatus: 'retained-observation',
+      status: 'verification-unavailable',
+    });
+    await expect(
+      parseAndVerifyMatchedContinuationTaskReportV1({
+        plan,
+        reportInput: {
+          ...report,
+          attempts: [
+            {
+              ...unavailableAttempt,
+              metrics: {
+                ...unavailableAttempt.metrics,
+                usage: {...unavailableAttempt.metrics.usage, providerTokens: null},
+              },
+            },
+            ...attempts.slice(1),
+          ],
+          completed: false,
+        },
+        sourceReportSha256: hex(905),
+        study,
+      }),
+    ).rejects.toThrow('lacks measured provider usage');
+
     await expect(
       parseAndVerifyMatchedContinuationTaskReportV1({
         plan,
@@ -131,6 +173,96 @@ describe('matched continuation finalization', () => {
         study,
       }),
     ).rejects.toThrow('artifact differs from its report hash');
+  });
+
+  it('recovers only terminal-journal attempts and blocks provider-ambiguous nonces', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-continuation-resume-')));
+    roots.push(root);
+    const pilotDirectory = join(root, 'pilot');
+    const study = createStudy();
+    const plan = continuationPlan(study.tasks[0], study.sourceEvidence.verificationPlanHash);
+    const first = plan.attempts[0];
+    const runDirectory = join(pilotDirectory, 'runs', first.runNonce);
+    const transcriptDirectory = join(pilotDirectory, 'transcripts');
+    await Promise.all([mkdir(runDirectory, {recursive: true}), mkdir(transcriptDirectory, {recursive: true})]);
+    const rawArtifactPath = join(runDirectory, 'artifact.json');
+    const requestPath = join(runDirectory, 'request.json');
+    const responsePath = join(runDirectory, 'response.json');
+    const transcriptPath = join(transcriptDirectory, `${first.runNonce}.jsonl`);
+    const artifactBytes = Buffer.from('{"artifact":true}\n');
+    const requestBytes = Buffer.from('{"request":true}\n');
+    const responseBytes = Buffer.from('{"response":true}\n');
+    const transcriptBytes = Buffer.from('{"transcript":true}\n');
+    await Promise.all([
+      writeFile(rawArtifactPath, artifactBytes),
+      writeFile(requestPath, requestBytes),
+      writeFile(responsePath, responseBytes),
+      writeFile(transcriptPath, transcriptBytes),
+    ]);
+    const artifactSha256 = sha256HexSync(artifactBytes);
+    const terminal = {
+      accountingStatus: 'retained-observation',
+      arm: underlyingArm(first.variant),
+      artifactSha256,
+      checkpointPath: `${transcriptPath}.agent.jsonl`,
+      diagnostics: 'verification infrastructure unavailable',
+      metrics: metrics(plan.taskId, artifactSha256, study.sourceEvidence.verificationPlanHash),
+      phaseTwoVerification: null,
+      rawArtifactPath,
+      requestPath,
+      requestSha256: sha256HexSync(requestBytes),
+      responsePath,
+      responseSha256: sha256HexSync(responseBytes),
+      runNonce: first.runNonce,
+      runOrder: first.runOrder,
+      status: 'verification-unavailable',
+      taskId: plan.taskId,
+      transcriptHash: sha256HexSync(transcriptBytes),
+      transcriptPath,
+      variant: first.variant,
+    } as const;
+    await writeFile(join(runDirectory, 'terminal-attempt.json'), `${JSON.stringify(terminal)}\n`);
+    const selected = plan.attempts.map(attempt => ({
+      arm: underlyingArm(attempt.variant),
+      row: {runNonce: attempt.runNonce, runOrder: attempt.runOrder},
+      variant: attempt.variant,
+    }));
+    await initializeMatchedEvaluationContinuationNonceStatesV1({pilotDirectory, plan, selected});
+    await markMatchedEvaluationContinuationNonceStartedV1({pilotDirectory, plan, row: selected[0].row});
+
+    const recovered = await recoverMatchedEvaluationContinuationAttemptsV1({
+      pilotDirectory,
+      plan,
+      reportPath: join(pilotDirectory, 'continuation-pilot-report.json'),
+      selected,
+      selection: {},
+    });
+    expect(recovered).toEqual([terminal]);
+
+    const second = plan.attempts[1];
+    const secondRunDirectory = join(pilotDirectory, 'runs', second.runNonce);
+    await mkdir(secondRunDirectory, {recursive: true});
+    await writeFile(join(secondRunDirectory, 'request.json'), '{}\n');
+    await expect(
+      recoverMatchedEvaluationContinuationAttemptsV1({
+        pilotDirectory,
+        plan,
+        reportPath: join(pilotDirectory, 'continuation-pilot-report.json'),
+        selected,
+        selection: {},
+      }),
+    ).rejects.toThrow('provider-ambiguous evidence without a terminal journal');
+
+    await rm(runDirectory, {force: true, recursive: true});
+    await expect(
+      recoverMatchedEvaluationContinuationAttemptsV1({
+        pilotDirectory,
+        plan,
+        reportPath: join(pilotDirectory, 'continuation-pilot-report.json'),
+        selected,
+        selection: {},
+      }),
+    ).rejects.toThrow('started without a terminal journal; replay is forbidden');
   });
 
   it('projects the sealed global schedule and retains failed-attempt lifecycle accounting', () => {
@@ -161,11 +293,31 @@ describe('matched continuation finalization', () => {
           };
         }
         const artifactSha256 = hex(1_000 + entry.globalRunOrder);
+        if (entry.globalRunOrder === 2) {
+          return {
+            accountingStatus: 'retained-observation',
+            artifactSha256,
+            diagnostics: 'verification command failed as infrastructure',
+            metrics: metrics(task.taskId, artifactSha256, study.sourceEvidence.verificationPlanHash),
+            rawArtifactPath: `/tmp/${entry.runNonce}-artifact.json`,
+            requestPath: `/tmp/${entry.runNonce}-request.json`,
+            requestSha256: hex(1_100 + entry.globalRunOrder),
+            responsePath: `/tmp/${entry.runNonce}-response.json`,
+            responseSha256: hex(1_200 + entry.globalRunOrder),
+            runNonce: entry.runNonce,
+            runOrder: entry.withinTaskRunOrder,
+            status: 'verification-unavailable',
+            taskId: task.taskId,
+            transcriptHash: hex(1_300 + index),
+            transcriptPath: `/tmp/${entry.runNonce}.jsonl`,
+            variant: entry.variant,
+          };
+        }
         return {
           artifactSha256,
           metrics: metrics(task.taskId, artifactSha256, study.sourceEvidence.verificationPlanHash),
           phaseTwoVerification:
-            entry.globalRunOrder === 2
+            entry.globalRunOrder === 3
               ? failingPhaseTwoVerification(plan, artifactSha256)
               : passingPhaseTwoVerification(plan, artifactSha256),
           rawArtifactPath: `/tmp/${entry.runNonce}-artifact.json`,
@@ -201,6 +353,11 @@ describe('matched continuation finalization', () => {
     });
     expect(outcomes[1].previousOutcomeHash).toBe(outcomes[0].outcomeHash);
     expect(outcomes[1]).toMatchObject({
+      assessment: null,
+      phaseTwo: {accountingSource: 'verification-unavailable', elapsedMilliseconds: 120},
+      status: 'unavailable',
+    });
+    expect(outcomes[2]).toMatchObject({
       assessment: {deterministicVerified: false},
       phaseTwo: {accountingSource: 'observation', elapsedMilliseconds: 130, providerTokens: {totalTokens: 50}},
       status: 'completed',

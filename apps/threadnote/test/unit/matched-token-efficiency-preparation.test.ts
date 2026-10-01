@@ -273,6 +273,10 @@ describe('matched token-efficiency study preparation', () => {
       heldOutRepository(join(root, 'repository-one'), 'https://github.com/example/preparation-one.git'),
       heldOutRepository(join(root, 'repository-two'), 'https://github.com/example/preparation-two.git'),
     ]);
+    const dependencySource = join(repositories[0].directory, 'node_modules');
+    await mkdir(dependencySource);
+    await writeFile(join(dependencySource, 'fixture-package.js'), 'export const fixture = true;\n');
+    await writeFile(join(repositories[0].directory, '.git', 'info', 'exclude'), 'node_modules/\n');
     const fixtureInput = JSON.parse(
       await readFile(
         join(process.cwd(), 'apps/threadnote/test/evaluation/fixtures/matched-evaluation-v1/fixture.json'),
@@ -422,6 +426,14 @@ describe('matched token-efficiency study preparation', () => {
         {
           adapter: {
             approvedCommands: [{taskId: corpus.tasks[0].taskId, tokens: ['true', '--version']}],
+            dependencyProjections: [
+              {
+                lockFileRelativePath: 'service.ts',
+                sourceDirectory: dependencySource,
+                targetRelativePath: 'node_modules',
+                taskId: corpus.tasks[0].taskId,
+              },
+            ],
             appServer: {
               argumentsAfterSubcommand: [],
               argumentsBeforeSubcommand: [],
@@ -550,6 +562,14 @@ describe('matched token-efficiency study preparation', () => {
       expect(hash, definition.arm).toBe(receipt.adapterConfigurationHashes[definition.arm]);
     }
     expect(configs.every(entry => entry.config.approvedCommands[0]?.taskId === corpus.tasks[0].taskId)).toBe(true);
+    expect(configs.every(entry => entry.config.dependencyProjections.length === 1)).toBe(true);
+    expect(configs[0].config.dependencyProjections[0]).toMatchObject({
+      lockFileRelativePath: 'service.ts',
+      sourceDirectory: dependencySource,
+      sourceRepositoryDirectory: repositories[0].directory,
+      targetRelativePath: 'node_modules',
+      taskId: corpus.tasks[0].taskId,
+    });
     const graphConfig = configs.find(entry => entry.config.arm === 'threadnote-graph')?.config;
     const compactConfig = configs.find(entry => entry.config.arm === 'threadnote-compact')?.config;
     expect(graphConfig?.contextHomes).toHaveLength(corpus.tasks.length);

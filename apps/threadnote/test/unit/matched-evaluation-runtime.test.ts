@@ -937,6 +937,7 @@ describe('matched evaluation runtime integrity', () => {
       artifactPath,
       checkpointRepository: repository,
       checkpointRevision,
+      dependencyProjection: null,
       plan,
       safeExecutablePath: '/usr/bin:/bin',
     });

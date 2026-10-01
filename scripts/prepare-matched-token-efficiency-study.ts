@@ -43,11 +43,13 @@ import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
 import {
   matchedEvaluationCodexEnvironmentPolicyHashV1,
+  matchedEvaluationDependencyProjectionFixtureHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
   matchedEvaluationVerifierEnvironmentHashV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
   runMatchedEvaluationDeterministicVerifierV1,
   type MatchedEvaluationCodexAdapterConfigV1,
+  type MatchedEvaluationDependencyProjectionV1,
   type MatchedEvaluationPreparedContextHomeV1,
   MATCHED_EVALUATION_CODEX_ADAPTER_VERSION,
 } from './matched-evaluation-codex-adapter.js';
@@ -97,6 +99,7 @@ interface PreparationPlanV1 {
     };
     readonly authSourcePath: string;
     readonly contextBudgetTokens: number;
+    readonly dependencyProjections?: readonly DependencyProjectionPlanV1[];
     readonly executable: string;
     readonly gitExecutable: string;
     readonly judgeModel: ModelPlanV1;
@@ -133,6 +136,13 @@ interface PreparationPlanV1 {
   readonly timeoutMilliseconds: number;
   readonly verification: VerificationPreparationPlanV1;
   readonly version: typeof MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION;
+}
+
+interface DependencyProjectionPlanV1 {
+  readonly lockFileRelativePath: string;
+  readonly sourceDirectory: string;
+  readonly targetRelativePath: string;
+  readonly taskId: string;
 }
 
 interface VerificationPreparationPlanV1 {
@@ -281,6 +291,7 @@ export async function prepareMatchedTokenEfficiencyStudyV1(
   await mkdir(plan.adapter.temporaryRoot, {mode: 0o700, recursive: true});
   await canonicalDirectory(plan.adapter.temporaryRoot, 'adapter temporary root');
   const clusterObservations = await prepareClusters(plan, corpus);
+  const dependencyProjections = await prepareDependencyProjections(plan);
   const verificationPlan = await prepareVerificationPlan(plan, corpus, clusterObservations);
   const provisionalManifest = createMatchedEvaluationManifestV1({
     activeArms,
@@ -302,6 +313,7 @@ export async function prepareMatchedTokenEfficiencyStudyV1(
   const configs = createAdapterConfigs({
     plan,
     prepared: tasks,
+    dependencyProjections,
     runtimeFileHashes,
     verificationPlan,
   });
@@ -789,7 +801,57 @@ async function prepareTasks(input: {
   return prepared;
 }
 
+async function prepareDependencyProjections(
+  plan: PreparationPlanV1,
+): Promise<readonly MatchedEvaluationDependencyProjectionV1[]> {
+  return await Promise.all(
+    (plan.adapter.dependencyProjections ?? []).map(async projection => {
+      const task = required(
+        plan.taskContexts.find(candidate => candidate.taskId === projection.taskId),
+        `dependency projection task ${projection.taskId}`,
+      );
+      const cluster = required(
+        plan.clusters.find(candidate => candidate.clusterId === task.clusterId),
+        `dependency projection cluster ${task.clusterId}`,
+      );
+      const sourceRepositoryDirectory = await canonicalDirectory(
+        cluster.repositoryDirectory,
+        `dependency projection repository ${projection.taskId}`,
+      );
+      const sourceDirectory = await canonicalDirectory(
+        projection.sourceDirectory,
+        `dependency projection source ${projection.taskId}`,
+      );
+      const sourceFromRepository = relative(sourceRepositoryDirectory, sourceDirectory);
+      if (
+        !sourceFromRepository ||
+        sourceFromRepository === '..' ||
+        sourceFromRepository.startsWith(`..${sep}`) ||
+        isAbsolute(sourceFromRepository)
+      ) {
+        throw new Error(`Dependency projection source for ${projection.taskId} escapes its repository.`);
+      }
+      const lockFile = containedPath(sourceRepositoryDirectory, projection.lockFileRelativePath);
+      return {
+        architecture: process.arch,
+        fixtureHash: await matchedEvaluationDependencyProjectionFixtureHashV1(
+          sourceDirectory,
+          sourceRepositoryDirectory,
+        ),
+        lockFileRelativePath: projection.lockFileRelativePath,
+        lockFileSha256: await hashCanonicalFile(lockFile, false, `dependency lock file ${projection.taskId}`),
+        platform: process.platform,
+        sourceDirectory,
+        sourceRepositoryDirectory,
+        targetRelativePath: projection.targetRelativePath,
+        taskId: projection.taskId,
+      };
+    }),
+  );
+}
+
 function createAdapterConfigs(input: {
+  readonly dependencyProjections: readonly MatchedEvaluationDependencyProjectionV1[];
   readonly plan: PreparationPlanV1;
   readonly prepared: readonly PreparedTask[];
   readonly runtimeFileHashes: ReadonlyMap<string, string>;
@@ -815,6 +877,7 @@ function createAdapterConfigs(input: {
       authSourcePath: input.plan.adapter.authSourcePath,
       contextBudgetTokens: input.plan.adapter.contextBudgetTokens,
       contextHomes,
+      dependencyProjections: input.dependencyProjections,
       environmentPolicyHash:
         arm === 'reference-scope'
           ? matchedEvaluationReferenceEnvironmentPolicyHashV1()
@@ -1481,6 +1544,7 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
   const adapter = object(plan.adapter, 'adapter plan');
   exactKeys(adapter, [
     ...(adapter.approvedCommands === undefined ? [] : ['approvedCommands']),
+    ...(adapter.dependencyProjections === undefined ? [] : ['dependencyProjections']),
     'appServer',
     'authSourcePath',
     'contextBudgetTokens',
@@ -1578,6 +1642,35 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
   if (approvedCommands.some(command => !preparedTaskIds.has(command.taskId))) {
     invalid('approved commands must reference prepared task contexts');
   }
+  const dependencyProjections =
+    adapter.dependencyProjections === undefined
+      ? []
+      : array(adapter.dependencyProjections, 'dependency projections').map((value, index) => {
+          const projection = object(value, `dependency projection ${index}`);
+          exactKeys(projection, ['lockFileRelativePath', 'sourceDirectory', 'targetRelativePath', 'taskId']);
+          return {
+            lockFileRelativePath: safePlanRelativePath(
+              projection.lockFileRelativePath,
+              `dependency projection ${index} lock file`,
+            ),
+            sourceDirectory: absolutePath(
+              projection.sourceDirectory,
+              `dependency projection ${index} source directory`,
+            ),
+            targetRelativePath: safePlanRelativePath(
+              projection.targetRelativePath,
+              `dependency projection ${index} target`,
+            ),
+            taskId: matching(projection.taskId, TASK_ID, `dependency projection ${index} task id`),
+          };
+        });
+  unique(
+    dependencyProjections.map(projection => projection.taskId),
+    'dependency projection task ids',
+  );
+  if (dependencyProjections.some(projection => !preparedTaskIds.has(projection.taskId))) {
+    invalid('dependency projections must reference prepared task contexts');
+  }
   return {
     activeArms,
     adapter: {
@@ -1590,6 +1683,7 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
       },
       authSourcePath: absolutePath(adapter.authSourcePath, 'auth source'),
       contextBudgetTokens: integer(adapter.contextBudgetTokens, 800, 1_500, 'context budget'),
+      dependencyProjections,
       executable: absolutePath(adapter.executable, 'adapter executable'),
       gitExecutable: absolutePath(adapter.gitExecutable, 'Git executable'),
       judgeModel: parseModelPlan(adapter.judgeModel, 'judge model'),
@@ -1982,6 +2076,21 @@ function containedPath(root: string, path: string): string {
     throw new Error('Prepared output path escaped its root.');
   }
   return absolute;
+}
+
+function safePlanRelativePath(value: unknown, label: string): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 4_096 ||
+    value.includes('\0') ||
+    value.includes('\\') ||
+    isAbsolute(value) ||
+    value.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    invalid(`${label} must be one normalized relative path`);
+  }
+  return value;
 }
 
 function firstObservation(

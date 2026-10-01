@@ -24,8 +24,10 @@ import {
   createMatchedEvaluationAppServerFailureEvidenceV1,
   extractMatchedEvaluationProviderUsageV1,
   matchedEvaluationCodexEnvironmentPolicyHashV1,
+  matchedEvaluationDependencyProjectionFixtureHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
   matchedEvaluationVerifierEnvironmentHashV1,
+  materializeMatchedEvaluationDependencyProjectionV1,
   parseMatchedEvaluationCodexAdapterRequestV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
   persistMatchedEvaluationFailureTranscriptsV1,
@@ -666,6 +668,138 @@ describe('matched evaluation Codex adapter', () => {
     expect(receipt).toMatchObject({approvedActions: 7, rejectedActions: 4});
   });
 
+  it('materializes a hash-bound dependency projection with repository-local workspace symlinks', async () => {
+    const root = await temporaryRoot(roots);
+    const sourceRepository = join(root, 'source-repository');
+    const targetRepository = join(root, 'target-repository');
+    for (const repository of [sourceRepository, targetRepository]) {
+      await mkdir(join(repository, 'packages'), {recursive: true});
+      await writeFile(join(repository, 'bun.lock'), 'sealed-lock\n');
+      await writeFile(join(repository, 'packages', 'workspace.js'), 'export const workspace = true;\n');
+    }
+    const sourceDependencies = join(sourceRepository, 'node_modules');
+    await mkdir(join(sourceDependencies, '.store', 'pkg'), {recursive: true});
+    await writeFile(join(sourceDependencies, '.store', 'pkg', 'index.js'), 'export const pkg = true;\n');
+    await symlink('.store/pkg', join(sourceDependencies, 'pkg'));
+    await symlink('../packages/workspace.js', join(sourceDependencies, 'workspace.js'));
+    await symlink('.store/optional-missing', join(sourceDependencies, 'optional-missing'));
+    const fixtureHash = await matchedEvaluationDependencyProjectionFixtureHashV1(sourceDependencies, sourceRepository);
+    const projection = {
+      architecture: process.arch,
+      fixtureHash,
+      lockFileRelativePath: 'bun.lock',
+      lockFileSha256: sha256HexSync('sealed-lock\n'),
+      platform: process.platform,
+      sourceDirectory: sourceDependencies,
+      sourceRepositoryDirectory: sourceRepository,
+      targetRelativePath: 'node_modules',
+      taskId: 'tsk_0123456789abcdef',
+    } as const;
+
+    const materialized = await materializeMatchedEvaluationDependencyProjectionV1({
+      projection,
+      repositoryRoot: targetRepository,
+    });
+
+    expect(materialized.fixtureHash).toBe(fixtureHash);
+    expect(
+      await matchedEvaluationDependencyProjectionFixtureHashV1(
+        join(targetRepository, 'node_modules'),
+        targetRepository,
+      ),
+    ).toBe(fixtureHash);
+    expect(await readFile(join(targetRepository, 'node_modules', 'pkg', 'index.js'), 'utf8')).toContain('pkg = true');
+    expect(await readFile(join(targetRepository, 'node_modules', 'workspace.js'), 'utf8')).toContain(
+      'workspace = true',
+    );
+  });
+
+  it('rejects a dependency projection symlink that escapes its source repository', async () => {
+    const root = await temporaryRoot(roots);
+    const repository = join(root, 'repository');
+    const dependencies = join(repository, 'node_modules');
+    await mkdir(dependencies, {recursive: true});
+    await writeFile(join(root, 'outside.js'), 'outside\n');
+    await symlink('../../outside.js', join(dependencies, 'escape.js'));
+
+    await expect(matchedEvaluationDependencyProjectionFixtureHashV1(dependencies, repository)).rejects.toThrow(
+      'escapes its source repository',
+    );
+  });
+
+  it('rejects a dependency lock symlink that escapes its source repository', async () => {
+    const root = await temporaryRoot(roots);
+    const sourceRepository = join(root, 'source');
+    const targetRepository = join(root, 'target');
+    const dependencies = join(sourceRepository, 'node_modules');
+    await Promise.all([mkdir(dependencies, {recursive: true}), mkdir(targetRepository)]);
+    await writeFile(join(dependencies, 'package.js'), 'package\n');
+    await writeFile(join(root, 'outside.lock'), 'outside\n');
+    await symlink('../outside.lock', join(sourceRepository, 'bun.lock'));
+    await writeFile(join(targetRepository, 'bun.lock'), 'outside\n');
+    const fixtureHash = await matchedEvaluationDependencyProjectionFixtureHashV1(dependencies, sourceRepository);
+
+    await expect(
+      materializeMatchedEvaluationDependencyProjectionV1({
+        projection: {
+          architecture: process.arch,
+          fixtureHash,
+          lockFileRelativePath: 'bun.lock',
+          lockFileSha256: sha256HexSync('outside\n'),
+          platform: process.platform,
+          sourceDirectory: dependencies,
+          sourceRepositoryDirectory: sourceRepository,
+          targetRelativePath: 'node_modules',
+          taskId: 'tsk_0123456789abcdef',
+        },
+        repositoryRoot: targetRepository,
+      }),
+    ).rejects.toThrow('lock escapes its repository');
+  });
+
+  it('hashes dependency projections independently of filesystem creation order', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.uniqueArray(
+          fc.record({
+            content: fc.string({maxLength: 64}),
+            name: fc.stringMatching(/^[a-z][a-z0-9]{0,7}$/u),
+          }),
+          {maxLength: 8, minLength: 1, selector: entry => entry.name},
+        ),
+        async entries => {
+          const root = await temporaryRoot(roots);
+          const repositories = [join(root, 'forward'), join(root, 'reverse')];
+          for (const [index, repository] of repositories.entries()) {
+            const dependencies = join(repository, 'node_modules');
+            await mkdir(dependencies, {recursive: true});
+            const ordered = index === 0 ? entries : [...entries].reverse();
+            for (const entry of ordered) await writeFile(join(dependencies, entry.name), entry.content);
+          }
+          await expect(
+            Promise.all(
+              repositories.map(repository =>
+                matchedEvaluationDependencyProjectionFixtureHashV1(join(repository, 'node_modules'), repository),
+              ),
+            ),
+          ).resolves.toEqual([expect.any(String), expect.any(String)]);
+          expect(
+            await matchedEvaluationDependencyProjectionFixtureHashV1(
+              join(repositories[0], 'node_modules'),
+              repositories[0],
+            ),
+          ).toBe(
+            await matchedEvaluationDependencyProjectionFixtureHashV1(
+              join(repositories[1], 'node_modules'),
+              repositories[1],
+            ),
+          );
+        },
+      ),
+      {numRuns: 10},
+    );
+  });
+
   it('parses a pinned files-only adapter configuration and rejects treatment context in that arm', () => {
     const config = adapterConfig();
 
@@ -726,6 +860,29 @@ describe('matched evaluation Codex adapter', () => {
         }),
       ).toThrow('approved command');
     }
+  });
+
+  it('parses task-scoped dependency projection identities and rejects repository escapes', () => {
+    const projection = {
+      architecture: 'arm64',
+      fixtureHash: '7'.repeat(64),
+      lockFileRelativePath: 'bun.lock',
+      lockFileSha256: '8'.repeat(64),
+      platform: 'darwin',
+      sourceDirectory: '/tmp/source/node_modules',
+      sourceRepositoryDirectory: '/tmp/source',
+      targetRelativePath: 'node_modules',
+      taskId: 'tsk_0123456789abcdef',
+    };
+    expect(
+      parseMatchedEvaluationCodexAdapterConfigV1({...adapterConfig(), dependencyProjections: [projection]}),
+    ).toMatchObject({dependencyProjections: [projection]});
+    expect(() =>
+      parseMatchedEvaluationCodexAdapterConfigV1({
+        ...adapterConfig(),
+        dependencyProjections: [{...projection, sourceDirectory: '/tmp/outside'}],
+      }),
+    ).toThrow('source directory must be inside');
   });
 
   it('keeps the study hash out of immutable prepared-home configuration', () => {
@@ -1807,6 +1964,7 @@ function adapterConfig() {
     authSourcePath: '/tmp/auth.json',
     contextBudgetTokens: 1_200,
     contextHomes: [],
+    dependencyProjections: [],
     environmentPolicyHash: matchedEvaluationCodexEnvironmentPolicyHashV1(),
     git: {executable: '/usr/bin/git', executableSha256: '3'.repeat(64)},
     judgeModel: {id: 'judge-model', parametersHash: '4'.repeat(64), provider: 'openai', reasoningEffort: 'low'},

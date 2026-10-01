@@ -91,7 +91,26 @@ export interface ParsedFailedAttempt {
   readonly variant: MatchedContinuationVariant;
 }
 
-export type ParsedAttempt = ParsedCompletedAttempt | ParsedFailedAttempt;
+export interface ParsedVerificationUnavailableAttempt {
+  readonly accountingStatus: 'retained-observation';
+  readonly artifactSha256: string;
+  readonly diagnostics: string;
+  readonly metrics: MatchedEvaluationMetricsV1;
+  readonly rawArtifactPath: string;
+  readonly requestPath: string;
+  readonly requestSha256: string;
+  readonly responsePath: string;
+  readonly responseSha256: string;
+  readonly runNonce: string;
+  readonly runOrder: number;
+  readonly status: 'verification-unavailable';
+  readonly taskId: string;
+  readonly transcriptHash: string;
+  readonly transcriptPath: string;
+  readonly variant: MatchedContinuationVariant;
+}
+
+export type ParsedAttempt = ParsedCompletedAttempt | ParsedFailedAttempt | ParsedVerificationUnavailableAttempt;
 
 export interface ParsedTaskReport {
   readonly attempts: readonly ParsedAttempt[];
@@ -217,7 +236,7 @@ export function projectMatchedContinuationOutcomesV1(input: {
         requestSha256: attempt.requestSha256,
         responseSha256: attempt.responseSha256,
         sourceReportSha256: report.sourceReportSha256,
-        transcriptHash: attempt.status === 'completed' ? attempt.transcriptHash : null,
+        transcriptHash: attempt.status === 'failed' ? null : attempt.transcriptHash,
       },
       globalRunOrder: scheduled.globalRunOrder,
       phaseOne: report.phaseOne,
@@ -229,18 +248,24 @@ export function projectMatchedContinuationOutcomesV1(input: {
                 attempt.metrics.timing.endToEndMilliseconds + attempt.phaseTwoVerification.durationMilliseconds,
               providerTokens: attempt.metrics.usage.providerTokens,
             }
-          : {
-              accountingSource: attempt.providerUsage === null ? 'unavailable' : 'failure-checkpoint',
-              elapsedMilliseconds:
-                attempt.timing === null
-                  ? null
-                  : attempt.timing.agentTaskMilliseconds + attempt.timing.preparationMilliseconds,
-              providerTokens: attempt.providerUsage,
-            },
+          : attempt.status === 'verification-unavailable'
+            ? {
+                accountingSource: 'verification-unavailable',
+                elapsedMilliseconds: attempt.metrics.timing.endToEndMilliseconds,
+                providerTokens: attempt.metrics.usage.providerTokens,
+              }
+            : {
+                accountingSource: attempt.providerUsage === null ? 'unavailable' : 'failure-checkpoint',
+                elapsedMilliseconds:
+                  attempt.timing === null
+                    ? null
+                    : attempt.timing.agentTaskMilliseconds + attempt.timing.preparationMilliseconds,
+                providerTokens: attempt.providerUsage,
+              },
       planSha256: task.planSha256,
       previousOutcomeHash,
       runNonce: scheduled.runNonce,
-      status: attempt.status,
+      status: attempt.status === 'verification-unavailable' ? 'unavailable' : attempt.status,
       studyHash: study.studyHash,
       taskId: scheduled.taskId,
       underlyingArm: underlyingArm(scheduled.variant),
@@ -377,7 +402,11 @@ export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
 
 function parseAttempt(value: unknown, index: number, plan: MatchedEvaluationContinuationPilotPlanV3): ParsedAttempt {
   const attempt = object(value, `task report attempt ${index}`);
-  const status = literal(attempt.status, ['completed', 'failed'] as const, `attempt ${index} status`);
+  const status = literal(
+    attempt.status,
+    ['completed', 'failed', 'verification-unavailable'] as const,
+    `attempt ${index} status`,
+  );
   if (status === 'completed') {
     exactKeys(attempt, [
       'arm',
@@ -419,6 +448,64 @@ function parseAttempt(value: unknown, index: number, plan: MatchedEvaluationCont
       artifactSha256,
       metrics: observation.metrics,
       phaseTwoVerification,
+      rawArtifactPath: absolutePath(attempt.rawArtifactPath, `attempt ${index} artifact path`),
+      requestPath: absolutePath(attempt.requestPath, `attempt ${index} request path`),
+      requestSha256: matching(attempt.requestSha256, HASH, `attempt ${index} request hash`),
+      responsePath: absolutePath(attempt.responsePath, `attempt ${index} response path`),
+      responseSha256: matching(attempt.responseSha256, HASH, `attempt ${index} response hash`),
+      runNonce: matching(attempt.runNonce, /^run_[0-9a-f]{32}$/u, `attempt ${index} nonce`),
+      runOrder: integer(attempt.runOrder, 1, 5, `attempt ${index} order`),
+      status,
+      taskId: matching(attempt.taskId, /^tsk_[0-9a-f]{16,64}$/u, `attempt ${index} task id`),
+      transcriptHash,
+      transcriptPath: absolutePath(attempt.transcriptPath, `attempt ${index} transcript path`),
+      variant,
+    };
+  }
+  if (status === 'verification-unavailable') {
+    exactKeys(attempt, [
+      'accountingStatus',
+      'arm',
+      'artifactSha256',
+      'checkpointPath',
+      'diagnostics',
+      'metrics',
+      'phaseTwoVerification',
+      'rawArtifactPath',
+      'requestPath',
+      'requestSha256',
+      'responsePath',
+      'responseSha256',
+      'runNonce',
+      'runOrder',
+      'status',
+      'taskId',
+      'transcriptHash',
+      'transcriptPath',
+      'variant',
+    ]);
+    if (attempt.accountingStatus !== 'retained-observation' || attempt.phaseTwoVerification !== null) {
+      invalid(`verification-unavailable attempt ${index} has invalid accounting or verification evidence`);
+    }
+    const artifactSha256 = matching(attempt.artifactSha256, HASH, `attempt ${index} artifact hash`);
+    const transcriptHash = matching(attempt.transcriptHash, HASH, `attempt ${index} transcript hash`);
+    const observation = parseMatchedEvaluationObservationV1({
+      artifactHash: artifactSha256,
+      metrics: attempt.metrics,
+      transcriptHash,
+      version: 5,
+    });
+    if (observation.metrics.usage.providerTokens === null) {
+      invalid(`verification-unavailable attempt ${index} lacks measured provider usage`);
+    }
+    const variant = continuationVariant(attempt.variant, `attempt ${index} variant`);
+    if (attempt.arm !== underlyingArm(variant)) invalid(`attempt ${index} arm differs from its variant`);
+    absolutePath(attempt.checkpointPath, `attempt ${index} checkpoint path`);
+    return {
+      accountingStatus: 'retained-observation',
+      artifactSha256,
+      diagnostics: boundedString(attempt.diagnostics, 1, 2_048, `attempt ${index} diagnostics`),
+      metrics: observation.metrics,
       rawArtifactPath: absolutePath(attempt.rawArtifactPath, `attempt ${index} artifact path`),
       requestPath: absolutePath(attempt.requestPath, `attempt ${index} request path`),
       requestSha256: matching(attempt.requestSha256, HASH, `attempt ${index} request hash`),
@@ -500,7 +587,7 @@ async function verifyAttemptEvidence(attempt: ParsedAttempt): Promise<void> {
     [attempt.rawArtifactPath, attempt.artifactSha256, MAXIMUM_JSON_BYTES, 'artifact'],
     [
       attempt.transcriptPath,
-      attempt.status === 'completed' ? attempt.transcriptHash : null,
+      attempt.status === 'failed' ? null : attempt.transcriptHash,
       MAXIMUM_TRANSCRIPT_BYTES,
       'transcript',
     ],

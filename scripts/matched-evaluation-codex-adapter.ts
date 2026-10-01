@@ -1,9 +1,11 @@
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed adapter owns Codex, Git worktree, credential-copy, and local evidence boundaries. */
 
 import {createHash, randomUUID} from 'node:crypto';
+import {constants as fsConstants} from 'node:fs';
 import type {Stats} from 'node:fs';
 import {
   chmod,
+  copyFile,
   lstat,
   mkdir,
   mkdtemp,
@@ -14,6 +16,7 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import {basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
@@ -82,6 +85,7 @@ const ARMS = ['files', 'threadnote-graph', 'threadnote-compact', 'threadnote-sou
 const MAXIMUM_PATCH_BYTES = 6 * 1_024 * 1_024;
 const MAXIMUM_TRANSCRIPT_BYTES = 48 * 1_024 * 1_024;
 const MAXIMUM_PREPARED_HOME_BYTES = 2 * 1_024 * 1_024 * 1_024;
+const MAXIMUM_DEPENDENCY_PROJECTION_BYTES = 4 * 1_024 * 1_024 * 1_024;
 const MAXIMUM_VERIFIER_ENVIRONMENT_BYTES = 1 * 1_024 * 1_024 * 1_024;
 const MATCHED_EVALUATION_PROMPT_RULE_PREFIXES = [
   '/bin/zsh',
@@ -122,6 +126,7 @@ export interface MatchedEvaluationCodexAdapterConfigV1 {
   readonly authSourcePath: string;
   readonly contextBudgetTokens: number;
   readonly contextHomes: readonly MatchedEvaluationPreparedContextHomeV1[];
+  readonly dependencyProjections: readonly MatchedEvaluationDependencyProjectionV1[];
   readonly environmentPolicyHash: string;
   readonly git: {readonly executable: string; readonly executableSha256: string};
   readonly judgeModel: MatchedEvaluationCodexModelV1;
@@ -137,6 +142,18 @@ export interface MatchedEvaluationCodexAdapterConfigV1 {
   readonly temporaryRoot: string;
   readonly verificationPlan: MatchedEvaluationVerificationPlanV1 | null;
   readonly version: typeof MATCHED_EVALUATION_CODEX_ADAPTER_VERSION;
+}
+
+export interface MatchedEvaluationDependencyProjectionV1 {
+  readonly architecture: string;
+  readonly fixtureHash: string;
+  readonly lockFileRelativePath: string;
+  readonly lockFileSha256: string;
+  readonly platform: string;
+  readonly sourceDirectory: string;
+  readonly sourceRepositoryDirectory: string;
+  readonly targetRelativePath: string;
+  readonly taskId: string;
 }
 
 export interface MatchedEvaluationCodexModelV1 {
@@ -355,6 +372,16 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     await runGit(config, process.cwd(), ['worktree', 'add', '--detach', repositoryRoot, request.repository.revision]);
     worktreeCreated = true;
     await assertMatchedEvaluationRepositoryV1(repositoryRoot, request.repository);
+    const dependencyProjection = config.dependencyProjections.find(
+      projection => projection.taskId === request.agentTask.taskId,
+    );
+    if (dependencyProjection !== undefined) {
+      await assertMatchedEvaluationRepositoryV1(dependencyProjection.sourceRepositoryDirectory, request.repository);
+      await materializeMatchedEvaluationDependencyProjectionV1({
+        projection: dependencyProjection,
+        repositoryRoot,
+      });
+    }
     const approvedCommandTokens = config.approvedCommands
       .filter(command => command.taskId === request.agentTask.taskId)
       .map(command => command.tokens);
@@ -941,7 +968,7 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
       'verificationPlan',
       'version',
     ],
-    ['approvedCommands'],
+    ['approvedCommands', 'dependencyProjections'],
   );
   if (config.version !== MATCHED_EVALUATION_CODEX_ADAPTER_VERSION) invalid('adapter config version must be 4');
   const appServer = object(config.appServer, 'app server');
@@ -985,6 +1012,13 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     approvedCommands.map(command => `${command.taskId}\0${JSON.stringify(command.tokens)}`),
     'approved commands',
   );
+  const dependencyProjections = (
+    config.dependencyProjections === undefined ? [] : array(config.dependencyProjections, 'dependency projections')
+  ).map(parseDependencyProjection);
+  unique(
+    dependencyProjections.map(projection => projection.taskId),
+    'dependency projection task ids',
+  );
   return {
     approvedCommands,
     appServer: {
@@ -998,6 +1032,7 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     authSourcePath: absolutePath(config.authSourcePath, 'auth source'),
     contextBudgetTokens: integer(config.contextBudgetTokens, 800, 1_500, 'context budget'),
     contextHomes,
+    dependencyProjections,
     environmentPolicyHash,
     git: {
       executable: absolutePath(git.executable, 'Git executable'),
@@ -1023,6 +1058,44 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     verificationPlan:
       config.verificationPlan === null ? null : parseMatchedEvaluationVerificationPlanV1(config.verificationPlan),
     version: MATCHED_EVALUATION_CODEX_ADAPTER_VERSION,
+  };
+}
+
+function parseDependencyProjection(value: unknown, index: number): MatchedEvaluationDependencyProjectionV1 {
+  const projection = object(value, `dependency projection ${index}`);
+  exactKeys(projection, [
+    'architecture',
+    'fixtureHash',
+    'lockFileRelativePath',
+    'lockFileSha256',
+    'platform',
+    'sourceDirectory',
+    'sourceRepositoryDirectory',
+    'targetRelativePath',
+    'taskId',
+  ]);
+  const sourceRepositoryDirectory = absolutePath(
+    projection.sourceRepositoryDirectory,
+    `dependency projection ${index} source repository`,
+  );
+  const sourceDirectory = absolutePath(projection.sourceDirectory, `dependency projection ${index} source directory`);
+  if (!isContainedPath(sourceRepositoryDirectory, sourceDirectory)) {
+    invalid(`dependency projection ${index} source directory must be inside its source repository`);
+  }
+  return {
+    architecture: matching(
+      projection.architecture,
+      /^[A-Za-z0-9._-]{1,64}$/u,
+      `dependency projection ${index} architecture`,
+    ),
+    fixtureHash: matching(projection.fixtureHash, HASH, `dependency projection ${index} fixture hash`),
+    lockFileRelativePath: safeRelativePath(projection.lockFileRelativePath, `dependency projection ${index} lock file`),
+    lockFileSha256: matching(projection.lockFileSha256, HASH, `dependency projection ${index} lock file hash`),
+    platform: matching(projection.platform, /^[A-Za-z0-9._-]{1,64}$/u, `dependency projection ${index} platform`),
+    sourceDirectory,
+    sourceRepositoryDirectory,
+    targetRelativePath: safeRelativePath(projection.targetRelativePath, `dependency projection ${index} target`),
+    taskId: matching(projection.taskId, TASK_ID, `dependency projection ${index} task id`),
   };
 }
 
@@ -3495,6 +3568,186 @@ async function walkVerifierEnvironment(
   }
 }
 
+export async function matchedEvaluationDependencyProjectionFixtureHashV1(
+  rootInput: string,
+  repositoryRootInput: string,
+): Promise<string> {
+  const [root, repositoryRoot] = await Promise.all([realpath(rootInput), realpath(repositoryRootInput)]);
+  if (!isContainedPath(repositoryRoot, root)) {
+    throw new Error('Dependency projection must be inside its source repository.');
+  }
+  const entries: Array<{
+    readonly hash: string | null;
+    readonly kind: 'directory' | 'file' | 'symlink';
+    readonly mode: number;
+    readonly path: string;
+    readonly resolvedKind: 'directory' | 'file' | null;
+    readonly resolvedPath: string | null;
+    readonly size: number;
+    readonly target: string | null;
+  }> = [];
+  let totalBytes = 0;
+  const walkProjection = async (directory: string): Promise<void> => {
+    for (const name of (await readdir(directory)).sort()) {
+      const absolute = join(directory, name);
+      const metadata = await lstat(absolute);
+      const path = relative(root, absolute).replaceAll('\\', '/');
+      if (metadata.isDirectory()) {
+        entries.push({
+          hash: null,
+          kind: 'directory',
+          mode: metadata.mode & 0o777,
+          path,
+          resolvedKind: null,
+          resolvedPath: null,
+          size: 0,
+          target: null,
+        });
+        await walkProjection(absolute);
+        continue;
+      }
+      if (metadata.isSymbolicLink()) {
+        const target = await readlink(absolute);
+        const resolved = await realpath(absolute).catch(cause => {
+          if ((cause as {readonly code?: unknown}).code === 'ENOENT') return null;
+          throw cause;
+        });
+        let resolvedKind: 'directory' | 'file' | null = null;
+        let resolvedPath: string | null = null;
+        if (resolved !== null) {
+          if (!isContainedPath(repositoryRoot, resolved)) {
+            throw new Error(`Dependency projection symlink escapes its source repository: ${path}`);
+          }
+          const resolvedMetadata = await stat(resolved);
+          resolvedKind = resolvedMetadata.isDirectory() ? 'directory' : resolvedMetadata.isFile() ? 'file' : null;
+          if (resolvedKind === null) {
+            throw new Error(`Dependency projection symlink resolves to an unsupported entry: ${path}`);
+          }
+          resolvedPath = relative(repositoryRoot, resolved).replaceAll('\\', '/');
+        }
+        totalBytes += Buffer.byteLength(target);
+        entries.push({
+          hash: null,
+          kind: 'symlink',
+          mode: metadata.mode & 0o777,
+          path,
+          resolvedKind,
+          resolvedPath,
+          size: metadata.size,
+          target,
+        });
+        continue;
+      }
+      if (!metadata.isFile()) {
+        throw new Error(`Dependency projection contains an unsupported filesystem entry: ${path}`);
+      }
+      totalBytes += metadata.size;
+      if (totalBytes > MAXIMUM_DEPENDENCY_PROJECTION_BYTES) {
+        throw new Error('Dependency projection exceeds 4 GiB.');
+      }
+      entries.push({
+        hash: sha256(await readFile(absolute)),
+        kind: 'file',
+        mode: metadata.mode & 0o777,
+        path,
+        resolvedKind: null,
+        resolvedPath: null,
+        size: metadata.size,
+        target: null,
+      });
+    }
+  };
+  await walkProjection(root);
+  return sha256(Buffer.from(`matched-evaluation-dependency-projection-v1\n${JSON.stringify(entries)}`));
+}
+
+async function assertMatchedEvaluationDependencyProjectionSourceV1(
+  projection: MatchedEvaluationDependencyProjectionV1,
+): Promise<void> {
+  if (projection.platform !== process.platform || projection.architecture !== process.arch) {
+    throw new Error('Dependency projection platform or architecture differs from the current runtime.');
+  }
+  const lockFile = containedPath(projection.sourceRepositoryDirectory, projection.lockFileRelativePath);
+  if (
+    (await containedRegularFileHash(projection.sourceRepositoryDirectory, lockFile, 'dependency projection lock')) !==
+    projection.lockFileSha256
+  ) {
+    throw new Error('Dependency projection lock file differs from its pinned hash.');
+  }
+  if (
+    (await matchedEvaluationDependencyProjectionFixtureHashV1(
+      projection.sourceDirectory,
+      projection.sourceRepositoryDirectory,
+    )) !== projection.fixtureHash
+  ) {
+    throw new Error('Dependency projection source differs from its pinned fixture hash.');
+  }
+}
+
+export async function materializeMatchedEvaluationDependencyProjectionV1(input: {
+  readonly projection: MatchedEvaluationDependencyProjectionV1;
+  readonly repositoryRoot: string;
+}): Promise<{readonly fixtureHash: string; readonly targetDirectory: string}> {
+  const repositoryRoot = await realpath(input.repositoryRoot);
+  await assertMatchedEvaluationDependencyProjectionSourceV1(input.projection);
+  const repositoryLockFile = containedPath(repositoryRoot, input.projection.lockFileRelativePath);
+  if (
+    (await containedRegularFileHash(repositoryRoot, repositoryLockFile, 'isolated dependency lock')) !==
+    input.projection.lockFileSha256
+  ) {
+    throw new Error('Isolated repository lock file differs from the dependency projection.');
+  }
+  const targetDirectory = containedPath(repositoryRoot, input.projection.targetRelativePath);
+  const targetParent = await realpath(dirname(targetDirectory));
+  if (!isContainedPath(repositoryRoot, targetParent)) {
+    throw new Error('Dependency projection target parent escapes the isolated repository.');
+  }
+  try {
+    await lstat(targetDirectory);
+    throw new Error('Dependency projection target already exists in the isolated repository.');
+  } catch (cause) {
+    if ((cause as {readonly code?: unknown}).code !== 'ENOENT') throw cause;
+  }
+  await copyDependencyProjectionDirectory(input.projection.sourceDirectory, targetDirectory);
+  const targetFixtureHash = await matchedEvaluationDependencyProjectionFixtureHashV1(targetDirectory, repositoryRoot);
+  if (targetFixtureHash !== input.projection.fixtureHash) {
+    throw new Error('Materialized dependency projection differs from its pinned fixture hash.');
+  }
+  return {fixtureHash: targetFixtureHash, targetDirectory};
+}
+
+async function containedRegularFileHash(root: string, path: string, label: string): Promise<string> {
+  const canonical = await realpath(path);
+  if (!isContainedPath(root, canonical)) throw new Error(`${label} escapes its repository.`);
+  const metadata = await lstat(canonical);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error(`${label} must be one regular file.`);
+  return await sha256File(canonical);
+}
+
+async function copyDependencyProjectionDirectory(source: string, destination: string): Promise<void> {
+  const sourceMetadata = await stat(source);
+  await mkdir(destination, {mode: sourceMetadata.mode & 0o777});
+  const copyDirectoryEntries = async (fromDirectory: string, toDirectory: string): Promise<void> => {
+    for (const name of (await readdir(fromDirectory)).sort()) {
+      const from = join(fromDirectory, name);
+      const to = join(toDirectory, name);
+      const metadata = await lstat(from);
+      if (metadata.isDirectory()) {
+        await mkdir(to, {mode: metadata.mode & 0o777});
+        await copyDirectoryEntries(from, to);
+      } else if (metadata.isSymbolicLink()) {
+        await symlink(await readlink(from), to);
+      } else if (metadata.isFile()) {
+        await copyFile(from, to, fsConstants.COPYFILE_FICLONE);
+        await chmod(to, metadata.mode & 0o777);
+      } else {
+        throw new Error('Dependency projection contains an unsupported filesystem entry.');
+      }
+    }
+  };
+  await copyDirectoryEntries(source, destination);
+}
+
 async function copyTree(sourceInput: string, destination: string): Promise<void> {
   const source = await realpath(sourceInput);
   await mkdir(destination, {mode: 0o700});
@@ -3660,6 +3913,27 @@ function containedPath(root: string, path: string): string {
     throw new Error('Citation path escaped the repository.');
   }
   return absolute;
+}
+
+function isContainedPath(root: string, path: string): boolean {
+  const fromRoot = relative(root, path);
+  return fromRoot === '' || (fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
+}
+
+function safeRelativePath(value: unknown, label: string): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 4_096 ||
+    value.includes('\0') ||
+    value.includes('\\') ||
+    isAbsolute(value) ||
+    resolve('/', value) === '/' ||
+    value.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    invalid(`${label} must be one normalized relative path`);
+  }
+  return value;
 }
 
 function absolutePath(value: unknown, label: string): string {

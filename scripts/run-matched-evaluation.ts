@@ -8,7 +8,7 @@ import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {createHash} from 'node:crypto';
 import {cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {dirname, isAbsolute, join, resolve, sep} from 'node:path';
+import {dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
 import {Effect} from 'effect';
 import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
@@ -34,6 +34,7 @@ import {
   createMatchedContinuationPhaseTwoVerificationPlanV1,
   createMatchedContinuationPhaseTwoVerificationReceiptV1,
   parseMatchedContinuationFailureIdsV1,
+  parseMatchedContinuationPhaseTwoVerificationReceiptV1,
   parseMatchedContinuationPhaseTwoVerificationPlanV1,
   type MatchedContinuationPhaseTwoDiagnosticParser,
   type MatchedContinuationPhaseTwoVerificationCheckReceiptV1,
@@ -55,8 +56,11 @@ import {
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
 import {tokenizeCodeMemoryLinkCommandV1} from './code-memory-link-app-server-policy.js';
 import {
+  matchedEvaluationDependencyProjectionFixtureHashV1,
+  materializeMatchedEvaluationDependencyProjectionV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
+  type MatchedEvaluationDependencyProjectionV1,
 } from './matched-evaluation-codex-adapter.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
@@ -1646,6 +1650,7 @@ const program = Effect.gen(function* () {
           parentPilotDirectory: options.continuationParentPilotDirectory,
           pilotDirectory: options.pilotDirectory!,
           planPath: options.continuationPilotPlanPath,
+          resume: options.continuationPilotResume,
           runtimePath: options.runtimePath,
           studyPath: options.studyPath!,
         });
@@ -2314,6 +2319,11 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     commandTexts: selection.taskPacket.phaseTwoFocusedChecks,
     taskId: corpusTask.taskId,
   });
+  const dependencyProjection = dependencyProjectionForTaskV1(filesConfig, corpusTask.taskId);
+  await ensureMatchedEvaluationDependencyProjectionV1({
+    projection: dependencyProjection,
+    repositoryDirectory: checkpointRepository,
+  });
   const focusedCommand = phaseTwoCommands[0];
   const focusedCheck = await runMatchedEvaluationContinuationFocusedCheckV1({
     commandTokens: focusedCommand.tokens,
@@ -2351,7 +2361,9 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     repositoryDirectory: checkpointRepository,
   });
   const phaseTwoVerification = await prepareMatchedEvaluationContinuationPhaseTwoVerificationPlanV1({
+    checkpointRevision: checkpoint.revision,
     commands: phaseTwoCommands,
+    dependencyProjection,
     protectedPaths: selection.taskPacket.phaseOneAllowedPaths,
     repositoryDirectory: checkpointRepository,
     safeExecutablePath: filesConfig.safeExecutablePath,
@@ -2811,6 +2823,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   readonly planPath: string;
   readonly runtimePath: string;
   readonly studyPath: string;
+  readonly resume?: boolean;
 }): Promise<void> {
   const planText = await readRequiredText(options.planPath, MAXIMUM_JSON_BYTES);
   let planInput: unknown;
@@ -2940,17 +2953,29 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     version: 2,
   };
   const markerPath = resolve(pilotDirectory, 'continuation-pilot-selection.json');
-  try {
-    await writeFile(markerPath, `${JSON.stringify(selection, undefined, 2)}\n`, {
-      encoding: 'utf8',
-      flag: 'wx',
-      mode: 0o600,
-    });
-  } catch (cause) {
-    if ((cause as {code?: string}).code === 'EEXIST') {
-      throw new Error('Continuation pilot selection already exists; resume/retry is not supported.', {cause});
+  if (options.resume === true) {
+    const existingSelection = await readJson(markerPath);
+    if (!sameJson(existingSelection, selection)) {
+      throw new Error('Continuation pilot resume selection differs from the immutable sealed selection.');
     }
-    throw cause;
+  } else {
+    try {
+      await writeFile(markerPath, `${JSON.stringify(selection, undefined, 2)}\n`, {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
+    } catch (cause) {
+      if ((cause as {code?: string}).code === 'EEXIST') {
+        throw new Error('Continuation pilot selection already exists; use explicit resume recovery.', {cause});
+      }
+      throw cause;
+    }
+    await initializeMatchedEvaluationContinuationNonceStatesV1({
+      pilotDirectory,
+      plan,
+      selected,
+    });
   }
   const pilotRuntime = {...runtime, artifactDirectory: pilotDirectory};
   const repositories = await resolveMatchedEvaluationRuntimeRepositoriesV1(
@@ -3009,12 +3034,33 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     resolvedCompactArm: requiredResolvedArm(resolved, 'threadnote-compact'),
   });
   const reportPath = resolve(pilotDirectory, 'continuation-pilot-report.json');
-  const attempts: Array<Record<string, unknown>> = [];
+  const attempts: Array<Record<string, unknown>> =
+    options.resume === true
+      ? await recoverMatchedEvaluationContinuationAttemptsV1({
+          pilotDirectory,
+          plan,
+          reportPath,
+          selected,
+          selection,
+        })
+      : [];
   const writeReport = async (completed: boolean) =>
     atomicWrite(reportPath, `${JSON.stringify({...selection, attempts, completed}, undefined, 2)}\n`);
+  const persistTerminalAttempt = async (attempt: Record<string, unknown>) => {
+    const runNonce = matchingString(attempt.runNonce, /^run_[0-9a-f]{32}$/u, 'terminal attempt nonce');
+    const terminalPath = resolve(pilotDirectory, 'runs', runNonce, 'terminal-attempt.json');
+    await writeFile(terminalPath, `${JSON.stringify(attempt, undefined, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    attempts.push(attempt);
+    await writeReport(false);
+  };
   await writeReport(false);
   for (const selectedAttempt of selected) {
     const {arm, row, treatment, variant} = selectedAttempt;
+    if (attempts.some(attempt => attempt.runNonce === row.runNonce)) continue;
     const definition = manifest.arms.find(candidate => candidate.arm === arm);
     if (definition === undefined) throw new Error(`Continuation pilot arm ${arm} is not defined.`);
     const rawArtifactPath = resolve(pilotDirectory, 'runs', row.runNonce, 'artifact.json');
@@ -3026,6 +3072,11 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     const repository = requiredRuntimeRepository(repositories, plan.taskId, study);
     const projectedTaskOverride = projectMatchedEvaluationContinuationAdapterTaskV2(request, study, plan);
     await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected);
+    await markMatchedEvaluationContinuationNonceStartedV1({
+      pilotDirectory,
+      plan,
+      row,
+    });
     try {
       const observation = await executeArm(
         pilotRuntime,
@@ -3044,15 +3095,44 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
       if (artifactSha256 !== observation.artifactHash) {
         throw new Error('Continuation pilot report artifact hash differs from the adapter observation.');
       }
-      const phaseTwoVerification = await verifyMatchedEvaluationContinuationArtifactV1({
-        artifactHash: artifactSha256,
-        artifactPath: rawArtifactPath,
-        checkpointRepository: repository.repositoryDirectory,
-        checkpointRevision: plan.checkpoint.repositoryRevision,
-        plan: plan.phaseTwoVerification,
-        safeExecutablePath: verificationAdapterConfig.safeExecutablePath,
-      });
-      attempts.push({
+      let phaseTwoVerification: MatchedContinuationPhaseTwoVerificationReceiptV1;
+      try {
+        phaseTwoVerification = await verifyMatchedEvaluationContinuationArtifactV1({
+          artifactHash: artifactSha256,
+          artifactPath: rawArtifactPath,
+          checkpointRepository: repository.repositoryDirectory,
+          checkpointRevision: plan.checkpoint.repositoryRevision,
+          dependencyProjection: dependencyProjectionForTaskV1(verificationAdapterConfig, plan.taskId),
+          plan: plan.phaseTwoVerification,
+          safeExecutablePath: verificationAdapterConfig.safeExecutablePath,
+        });
+      } catch (verificationCause) {
+        await persistTerminalAttempt({
+          accountingStatus: 'retained-observation',
+          arm,
+          artifactSha256,
+          checkpointPath,
+          diagnostics: boundedFailureDiagnostic(verificationCause),
+          metrics: observation.metrics,
+          phaseTwoVerification: null,
+          rawArtifactPath,
+          requestPath,
+          responsePath,
+          responseSha256,
+          runNonce: row.runNonce,
+          runOrder: row.runOrder,
+          requestSha256,
+          status: 'verification-unavailable',
+          taskId: plan.taskId,
+          transcriptHash: observation.transcriptHash,
+          transcriptPath,
+          variant,
+        });
+        throw new Error('Continuation pilot stopped after retaining a provider-complete verification failure.', {
+          cause: verificationCause,
+        });
+      }
+      await persistTerminalAttempt({
         arm,
         artifactSha256,
         checkpointPath,
@@ -3079,7 +3159,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
         optionalBoundedRegularFileHash(responsePath, MAXIMUM_JSON_BYTES, 'continuation pilot failed response'),
         optionalBoundedRegularFileHash(rawArtifactPath, MAXIMUM_JSON_BYTES, 'continuation pilot failed artifact'),
       ]);
-      attempts.push({
+      await persistTerminalAttempt({
         accountingStatus: failureAccounting === null ? 'unavailable-before-checkpoint' : 'retained-agent-checkpoint',
         arm,
         artifactSha256,
@@ -3103,7 +3183,6 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     } finally {
       await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected);
     }
-    await writeReport(false);
   }
   await assertResolvedRuntimeRepositories(repositories);
   const allCompleted = attempts.every(attempt => attempt.status === 'completed');
@@ -3111,6 +3190,402 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   process.stdout.write(
     `${JSON.stringify({artifactDirectory: pilotDirectory, attemptCount: attempts.length, comparativeClaimsEligible: false, completed: allCompleted, finished: true, version: 2})}\n`,
   );
+}
+
+export async function initializeMatchedEvaluationContinuationNonceStatesV1(input: {
+  readonly pilotDirectory: string;
+  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
+  readonly selected: readonly {readonly row: {readonly runNonce: string; readonly runOrder: number}}[];
+}): Promise<void> {
+  const directory = resolve(input.pilotDirectory, 'nonce-state');
+  await mkdir(directory, {mode: 0o700});
+  await Promise.all(
+    input.selected.map(({row}) =>
+      writeFile(
+        continuationNonceStatePath(input.pilotDirectory, row.runNonce, 'unstarted'),
+        continuationNonceStateContent(input.plan, row),
+        {encoding: 'utf8', flag: 'wx', mode: 0o600},
+      ),
+    ),
+  );
+}
+
+export async function markMatchedEvaluationContinuationNonceStartedV1(input: {
+  readonly pilotDirectory: string;
+  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
+  readonly row: {readonly runNonce: string; readonly runOrder: number};
+}): Promise<void> {
+  const expected = continuationNonceStateContent(input.plan, input.row);
+  const unstartedPath = continuationNonceStatePath(input.pilotDirectory, input.row.runNonce, 'unstarted');
+  const startedPath = continuationNonceStatePath(input.pilotDirectory, input.row.runNonce, 'started');
+  if ((await readOptionalTextOrNull(unstartedPath, 4 * 1_024)) !== expected) {
+    throw new Error(`Continuation nonce ${input.row.runNonce} lacks its exact unstarted capability.`);
+  }
+  await writeFile(startedPath, expected, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+  await rm(unstartedPath);
+}
+
+function continuationNonceStatePath(pilotDirectory: string, runNonce: string, state: 'started' | 'unstarted'): string {
+  return resolve(pilotDirectory, 'nonce-state', `${runNonce}.${state}.json`);
+}
+
+function continuationNonceStateContent(
+  plan: MatchedEvaluationContinuationPilotPlanV3,
+  row: {readonly runNonce: string; readonly runOrder: number},
+): string {
+  return `${JSON.stringify({
+    planIdentityHash: sha256Bytes(Buffer.from(`matched-continuation-plan-identity-v1\0${JSON.stringify(plan)}`)),
+    runNonce: row.runNonce,
+    runOrder: row.runOrder,
+    taskId: plan.taskId,
+    version: 1,
+  })}\n`;
+}
+
+export async function recoverMatchedEvaluationContinuationAttemptsV1(input: {
+  readonly pilotDirectory: string;
+  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
+  readonly reportPath: string;
+  readonly selected: readonly {
+    readonly arm: MatchedEvaluationArm;
+    readonly row: {readonly runNonce: string; readonly runOrder: number};
+    readonly variant: MatchedEvaluationContinuationVariantV1;
+  }[];
+  readonly selection: Record<string, unknown>;
+}): Promise<Array<Record<string, unknown>>> {
+  const attempts: Array<Record<string, unknown>> = [];
+  let encounteredUntouchedNonce = false;
+  for (const selected of input.selected) {
+    const runDirectory = resolve(input.pilotDirectory, 'runs', selected.row.runNonce);
+    const terminalPath = resolve(runDirectory, 'terminal-attempt.json');
+    const expectedNonceState = continuationNonceStateContent(input.plan, selected.row);
+    const [terminal, startedState, unstartedState] = await Promise.all([
+      readOptionalJson(terminalPath, MAXIMUM_JSON_BYTES),
+      readOptionalTextOrNull(
+        continuationNonceStatePath(input.pilotDirectory, selected.row.runNonce, 'started'),
+        4 * 1_024,
+      ),
+      readOptionalTextOrNull(
+        continuationNonceStatePath(input.pilotDirectory, selected.row.runNonce, 'unstarted'),
+        4 * 1_024,
+      ),
+    ]);
+    if (
+      (startedState !== null && startedState !== expectedNonceState) ||
+      (unstartedState !== null && unstartedState !== expectedNonceState) ||
+      (startedState !== null && unstartedState !== null)
+    ) {
+      throw new Error(`Continuation nonce ${selected.row.runNonce} has invalid or conflicting state capabilities.`);
+    }
+    if (terminal === null) {
+      if (startedState !== null) {
+        throw new Error(
+          `Continuation pilot nonce ${selected.row.runNonce} started without a terminal journal; replay is forbidden.`,
+        );
+      }
+      if (unstartedState === null) {
+        throw new Error(`Continuation pilot nonce ${selected.row.runNonce} lost its unstarted capability.`);
+      }
+      const runEntries = await readdir(runDirectory).catch(cause => {
+        if (isMissing(cause)) return [];
+        throw cause;
+      });
+      const transcriptPath = resolve(input.pilotDirectory, 'transcripts', `${selected.row.runNonce}.jsonl`);
+      const transcriptEvidence = await Promise.all(
+        [transcriptPath, `${transcriptPath}.agent.jsonl`, `${transcriptPath}.preflight.json`].map(path =>
+          lstat(path).then(
+            () => true,
+            cause => {
+              if (isMissing(cause)) return false;
+              throw cause;
+            },
+          ),
+        ),
+      );
+      if (runEntries.length > 0 || transcriptEvidence.some(Boolean)) {
+        throw new Error(
+          `Continuation pilot nonce ${selected.row.runNonce} has provider-ambiguous evidence without a terminal journal.`,
+        );
+      }
+      encounteredUntouchedNonce = true;
+      continue;
+    }
+    if (startedState === null || unstartedState !== null) {
+      throw new Error(`Continuation terminal attempt ${selected.row.runNonce} lacks its started capability.`);
+    }
+    if (encounteredUntouchedNonce) {
+      throw new Error('Continuation terminal journals must form one prefix of the sealed attempt order.');
+    }
+    attempts.push(
+      await validateRecoveredContinuationAttemptV1({
+        arm: selected.arm,
+        pilotDirectory: input.pilotDirectory,
+        plan: input.plan,
+        row: selected.row,
+        value: terminal,
+        variant: selected.variant,
+      }),
+    );
+  }
+  const existingReport = await readOptionalJson(input.reportPath, MAXIMUM_JSON_BYTES);
+  if (existingReport !== null) {
+    const report = object(existingReport, 'continuation resume report');
+    const reportAttempts = array(report.attempts, 'continuation resume report attempts');
+    const reportCompleted = report.completed;
+    const {attempts: _attempts, completed: _completed, ...reportSelection} = report;
+    if (!sameJson(reportSelection, input.selection)) {
+      throw new Error('Continuation pilot resume report differs from the immutable selection.');
+    }
+    if (
+      reportAttempts.length > attempts.length ||
+      !sameJson(reportAttempts, attempts.slice(0, reportAttempts.length)) ||
+      reportCompleted !==
+        (attempts.length === input.selected.length && attempts.every(attempt => attempt.status === 'completed'))
+    ) {
+      throw new Error('Continuation pilot resume report differs from its terminal journals.');
+    }
+  }
+  return attempts;
+}
+
+async function validateRecoveredContinuationAttemptV1(input: {
+  readonly arm: MatchedEvaluationArm;
+  readonly pilotDirectory: string;
+  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
+  readonly row: {readonly runNonce: string; readonly runOrder: number};
+  readonly value: unknown;
+  readonly variant: MatchedEvaluationContinuationVariantV1;
+}): Promise<Record<string, unknown>> {
+  const attempt = object(input.value, `terminal attempt ${input.row.runNonce}`);
+  const status = literal(
+    attempt.status,
+    ['completed', 'failed', 'verification-unavailable'] as const,
+    'terminal attempt status',
+  );
+  exactKeys(
+    attempt,
+    status === 'completed'
+      ? [
+          'arm',
+          'artifactSha256',
+          'checkpointPath',
+          'metrics',
+          'phaseTwoVerification',
+          'rawArtifactPath',
+          'requestPath',
+          'requestSha256',
+          'responsePath',
+          'responseSha256',
+          'runNonce',
+          'runOrder',
+          'status',
+          'taskId',
+          'transcriptHash',
+          'transcriptPath',
+          'variant',
+        ]
+      : status === 'verification-unavailable'
+        ? [
+            'accountingStatus',
+            'arm',
+            'artifactSha256',
+            'checkpointPath',
+            'diagnostics',
+            'metrics',
+            'phaseTwoVerification',
+            'rawArtifactPath',
+            'requestPath',
+            'requestSha256',
+            'responsePath',
+            'responseSha256',
+            'runNonce',
+            'runOrder',
+            'status',
+            'taskId',
+            'transcriptHash',
+            'transcriptPath',
+            'variant',
+          ]
+        : [
+            'accountingStatus',
+            'arm',
+            'artifactSha256',
+            'checkpointPath',
+            'diagnostics',
+            'metrics',
+            'providerUsage',
+            'rawArtifactPath',
+            'requestPath',
+            'requestSha256',
+            'responsePath',
+            'responseSha256',
+            'runNonce',
+            'runOrder',
+            'status',
+            'taskId',
+            'timing',
+            'transcriptPath',
+            'variant',
+          ],
+    `terminal attempt ${input.row.runNonce}`,
+  );
+  const expectedPaths = {
+    checkpointPath: resolve(input.pilotDirectory, 'transcripts', `${input.row.runNonce}.jsonl.agent.jsonl`),
+    rawArtifactPath: resolve(input.pilotDirectory, 'runs', input.row.runNonce, 'artifact.json'),
+    requestPath: resolve(input.pilotDirectory, 'runs', input.row.runNonce, 'request.json'),
+    responsePath: resolve(input.pilotDirectory, 'runs', input.row.runNonce, 'response.json'),
+    transcriptPath: resolve(input.pilotDirectory, 'transcripts', `${input.row.runNonce}.jsonl`),
+  } as const;
+  if (
+    attempt.arm !== input.arm ||
+    attempt.runNonce !== input.row.runNonce ||
+    attempt.runOrder !== input.row.runOrder ||
+    attempt.taskId !== input.plan.taskId ||
+    attempt.variant !== input.variant ||
+    Object.entries(expectedPaths).some(([key, path]) => attempt[key] !== path)
+  ) {
+    throw new Error(`Continuation terminal attempt ${input.row.runNonce} differs from its sealed row.`);
+  }
+  const validateEvidenceHash = async (
+    path: string,
+    hash: unknown,
+    maximumBytes: number,
+    label: string,
+    nullable = false,
+  ) => {
+    if (hash === null && nullable) return;
+    const expectedHash = matchingString(hash, HASH, label);
+    if ((await boundedRegularFileHash(path, maximumBytes, label)) !== expectedHash) {
+      throw new Error(`${label} differs from its terminal journal hash.`);
+    }
+  };
+  await Promise.all([
+    validateEvidenceHash(
+      expectedPaths.requestPath,
+      attempt.requestSha256,
+      MAXIMUM_JSON_BYTES,
+      'terminal request',
+      true,
+    ),
+    validateEvidenceHash(
+      expectedPaths.responsePath,
+      attempt.responseSha256,
+      MAXIMUM_JSON_BYTES,
+      'terminal response',
+      true,
+    ),
+    validateEvidenceHash(
+      expectedPaths.rawArtifactPath,
+      attempt.artifactSha256,
+      MAXIMUM_JSON_BYTES,
+      'terminal artifact',
+      true,
+    ),
+  ]);
+  if (status === 'failed') {
+    if (attempt.metrics !== null) {
+      throw new Error('Failed continuation terminal attempt contains unsupported verification evidence.');
+    }
+    boundedString(attempt.diagnostics, 1, 2_048, 'failed terminal diagnostic');
+    parseRecoveredFailureAccountingV1(attempt);
+    return attempt;
+  }
+  const artifactSha256 = matchingString(attempt.artifactSha256, HASH, 'terminal artifact hash');
+  const transcriptHash = matchingString(attempt.transcriptHash, HASH, 'terminal transcript hash');
+  await validateEvidenceHash(
+    expectedPaths.transcriptPath,
+    transcriptHash,
+    MAXIMUM_TRANSCRIPT_BYTES,
+    'terminal transcript',
+  );
+  const observation = parseMatchedEvaluationObservationV1({
+    artifactHash: artifactSha256,
+    metrics: attempt.metrics,
+    transcriptHash,
+    version: 5,
+  });
+  if (status === 'completed') {
+    parseMatchedContinuationPhaseTwoVerificationReceiptV1({
+      artifactHash: artifactSha256,
+      plan: input.plan.phaseTwoVerification,
+      receipt: attempt.phaseTwoVerification,
+    });
+  } else {
+    if (attempt.accountingStatus !== 'retained-observation' || attempt.phaseTwoVerification !== null) {
+      throw new Error('Verification-unavailable terminal attempt lacks retained observation accounting.');
+    }
+    boundedString(attempt.diagnostics, 1, 2_048, 'verification-unavailable terminal diagnostic');
+    if (observation.metrics.usage.providerTokens === null) {
+      throw new Error('Verification-unavailable terminal attempt lacks measured provider usage.');
+    }
+  }
+  return attempt;
+}
+
+function parseRecoveredFailureAccountingV1(attempt: Record<string, unknown>): void {
+  const accountingStatus = literal(
+    attempt.accountingStatus,
+    ['retained-agent-checkpoint', 'unavailable-before-checkpoint'] as const,
+    'failed terminal accounting status',
+  );
+  if (accountingStatus === 'unavailable-before-checkpoint') {
+    if (attempt.providerUsage !== null || attempt.timing !== null) {
+      throw new Error('Failed terminal attempt invents unavailable accounting.');
+    }
+    return;
+  }
+  const usage = object(attempt.providerUsage, 'failed terminal provider usage');
+  exactKeys(
+    usage,
+    ['cachedInputTokens', 'inputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens'],
+    'failed terminal provider usage',
+  );
+  const cachedInputTokens = boundedNonnegativeInteger(
+    usage.cachedInputTokens,
+    Number.MAX_SAFE_INTEGER,
+    'failed terminal cached-input tokens',
+  );
+  const inputTokens = boundedNonnegativeInteger(
+    usage.inputTokens,
+    Number.MAX_SAFE_INTEGER,
+    'failed terminal input tokens',
+  );
+  const outputTokens = boundedNonnegativeInteger(
+    usage.outputTokens,
+    Number.MAX_SAFE_INTEGER,
+    'failed terminal output tokens',
+  );
+  const reasoningOutputTokens = boundedNonnegativeInteger(
+    usage.reasoningOutputTokens,
+    Number.MAX_SAFE_INTEGER,
+    'failed terminal reasoning-output tokens',
+  );
+  const totalTokens = boundedNonnegativeInteger(
+    usage.totalTokens,
+    Number.MAX_SAFE_INTEGER,
+    'failed terminal total tokens',
+  );
+  if (
+    cachedInputTokens > inputTokens ||
+    reasoningOutputTokens > outputTokens ||
+    totalTokens !== inputTokens + outputTokens
+  ) {
+    throw new Error('Failed terminal provider usage is inconsistent.');
+  }
+  const timing = object(attempt.timing, 'failed terminal timing');
+  exactKeys(timing, ['agentTaskMilliseconds', 'preparationMilliseconds'], 'failed terminal timing');
+  boundedNonnegativeInteger(timing.agentTaskMilliseconds, 86_400_000, 'failed terminal agent time');
+  boundedNonnegativeInteger(timing.preparationMilliseconds, 86_400_000, 'failed terminal preparation time');
+}
+
+async function readOptionalJson(path: string, maximumBytes: number): Promise<unknown | null> {
+  const text = await readOptionalTextOrNull(path, maximumBytes);
+  if (text === null) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (cause) {
+    throw new Error(`${path} is not valid JSON.`, {cause});
+  }
 }
 
 export function parseMatchedEvaluationRuntimeV1(value: unknown): MatchedEvaluationRuntimeV1 {
@@ -3402,6 +3877,56 @@ async function runMatchedEvaluationContinuationFocusedCheckV1(input: {
   });
 }
 
+async function ensureMatchedEvaluationDependencyProjectionV1(input: {
+  readonly projection: MatchedEvaluationDependencyProjectionV1 | null;
+  readonly repositoryDirectory: string;
+}): Promise<void> {
+  if (input.projection === null) return;
+  const targetDirectory = resolve(input.repositoryDirectory, input.projection.targetRelativePath);
+  const exists = await lstat(targetDirectory).then(
+    metadata => {
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        throw new Error('Dependency projection target exists but is not one directory.');
+      }
+      return true;
+    },
+    cause => {
+      if (isMissing(cause)) return false;
+      throw cause;
+    },
+  );
+  if (!exists) {
+    await materializeMatchedEvaluationDependencyProjectionV1({
+      projection: input.projection,
+      repositoryRoot: input.repositoryDirectory,
+    });
+    return;
+  }
+  if (
+    (await matchedEvaluationDependencyProjectionFixtureHashV1(targetDirectory, input.repositoryDirectory)) !==
+    input.projection.fixtureHash
+  ) {
+    throw new Error('Existing dependency projection differs from its pinned fixture hash.');
+  }
+  const lockFile = await realpath(resolve(input.repositoryDirectory, input.projection.lockFileRelativePath));
+  const lockFromRepository = relative(input.repositoryDirectory, lockFile);
+  if (
+    lockFromRepository === '..' ||
+    lockFromRepository.startsWith(`..${sep}`) ||
+    isAbsolute(lockFromRepository) ||
+    sha256Bytes(await readFile(lockFile)) !== input.projection.lockFileSha256
+  ) {
+    throw new Error('Existing dependency projection lock file differs from its pinned hash.');
+  }
+}
+
+function dependencyProjectionForTaskV1(
+  config: ReturnType<typeof parseMatchedEvaluationCodexAdapterConfigV1>,
+  taskId: string,
+): MatchedEvaluationDependencyProjectionV1 | null {
+  return config.dependencyProjections.find(projection => projection.taskId === taskId) ?? null;
+}
+
 export function matchContinuationPhaseTwoCommandsV1(input: {
   readonly approvedCommands: ReturnType<typeof parseMatchedEvaluationCodexAdapterConfigV1>['approvedCommands'];
   readonly commandTexts: readonly string[];
@@ -3430,7 +3955,9 @@ export function matchContinuationPhaseTwoCommandsV1(input: {
 }
 
 async function prepareMatchedEvaluationContinuationPhaseTwoVerificationPlanV1(input: {
+  readonly checkpointRevision: string;
   readonly commands: ReturnType<typeof matchContinuationPhaseTwoCommandsV1>;
+  readonly dependencyProjection: MatchedEvaluationDependencyProjectionV1 | null;
   readonly protectedPaths: readonly string[];
   readonly repositoryDirectory: string;
   readonly safeExecutablePath: string;
@@ -3443,12 +3970,27 @@ async function prepareMatchedEvaluationContinuationPhaseTwoVerificationPlanV1(in
     readonly diagnosticParser: MatchedContinuationPhaseTwoDiagnosticParser;
     readonly policy: 'must-pass' | 'no-new-failures';
   }> = [];
+  const repositoryDirectory = resolve(input.temporaryRoot, 'repository');
+  let worktreeCreated = false;
   try {
+    await mkdir(input.temporaryRoot, {mode: 0o700});
+    await captureContinuationGit(input.repositoryDirectory, [
+      'worktree',
+      'add',
+      '--detach',
+      repositoryDirectory,
+      input.checkpointRevision,
+    ]);
+    worktreeCreated = true;
+    await ensureMatchedEvaluationDependencyProjectionV1({
+      projection: input.dependencyProjection,
+      repositoryDirectory,
+    });
     for (const [index, command] of input.commands.entries()) {
       const diagnosticParser = matchedContinuationDiagnosticParserForCommandV1(command.tokens);
       const result = await runMatchedEvaluationContinuationFocusedCheckV1({
         commandTokens: command.tokens,
-        repositoryDirectory: input.repositoryDirectory,
+        repositoryDirectory,
         safeExecutablePath: input.safeExecutablePath,
         temporaryDirectory: resolve(input.temporaryRoot, `check-${index + 1}`),
       });
@@ -3475,6 +4017,9 @@ async function prepareMatchedEvaluationContinuationPhaseTwoVerificationPlanV1(in
       }
     }
   } finally {
+    if (worktreeCreated) {
+      await captureContinuationGit(input.repositoryDirectory, ['worktree', 'remove', '--force', repositoryDirectory]);
+    }
     await rm(input.temporaryRoot, {force: true, recursive: true});
   }
   return createMatchedContinuationPhaseTwoVerificationPlanV1({
@@ -3519,6 +4064,7 @@ export async function verifyMatchedEvaluationContinuationArtifactV1(input: {
   readonly artifactPath: string;
   readonly checkpointRepository: string;
   readonly checkpointRevision: string;
+  readonly dependencyProjection: MatchedEvaluationDependencyProjectionV1 | null;
   readonly plan: MatchedContinuationPhaseTwoVerificationPlanV1;
   readonly safeExecutablePath: string;
 }): Promise<MatchedContinuationPhaseTwoVerificationReceiptV1> {
@@ -3540,6 +4086,10 @@ export async function verifyMatchedEvaluationContinuationArtifactV1(input: {
       input.checkpointRevision,
     ]);
     worktreeCreated = true;
+    await ensureMatchedEvaluationDependencyProjectionV1({
+      projection: input.dependencyProjection,
+      repositoryDirectory,
+    });
     await writeFile(patchPath, patch, {encoding: 'utf8', flag: 'wx', mode: 0o600});
     await captureContinuationGit(repositoryDirectory, ['apply', '--index', '--whitespace=nowarn', patchPath]);
     const changedPaths = (
@@ -4284,6 +4834,7 @@ function parseArguments(args: readonly string[]): {
   readonly continuationPhaseOneExpectedSelectionPath: string | null;
   readonly continuationPhaseOneTaskPacketPath: string | null;
   readonly continuationPilotPlanPath: string | null;
+  readonly continuationPilotResume: boolean;
   readonly continuationParentPilotDirectory: string | null;
   readonly corpusPath: string;
   readonly manifestPath: string;
@@ -4302,6 +4853,7 @@ function parseArguments(args: readonly string[]): {
         '--continuation-phase-one-expected-selection',
         '--continuation-phase-one-packet',
         '--continuation-pilot-plan',
+        '--continuation-pilot-resume',
         '--continuation-parent-pilot-directory',
         '--corpus',
         '--manifest',
@@ -4323,6 +4875,11 @@ function parseArguments(args: readonly string[]): {
   const continuationPhaseOneDirectory = values.get('--continuation-phase-one-directory') ?? null;
   const continuationPhaseOneExpectedSelection = values.get('--continuation-phase-one-expected-selection') ?? null;
   const continuationPilotPlan = values.get('--continuation-pilot-plan') ?? null;
+  const continuationPilotResumeValue = values.get('--continuation-pilot-resume') ?? null;
+  if (continuationPilotResumeValue !== null && continuationPilotResumeValue !== 'true') {
+    throw ScriptError.make({message: '--continuation-pilot-resume accepts only the literal value true'});
+  }
+  const continuationPilotResume = continuationPilotResumeValue === 'true';
   const continuationParentPilotDirectory = values.get('--continuation-parent-pilot-directory') ?? null;
   if (
     [
@@ -4341,6 +4898,9 @@ function parseArguments(args: readonly string[]): {
   }
   if (continuationParentPilotDirectory !== null && continuationPilotPlan === null) {
     throw ScriptError.make({message: '--continuation-parent-pilot-directory requires --continuation-pilot-plan'});
+  }
+  if (continuationPilotResume && continuationPilotPlan === null) {
+    throw ScriptError.make({message: '--continuation-pilot-resume requires --continuation-pilot-plan'});
   }
   if (
     new Set([
@@ -4381,6 +4941,7 @@ function parseArguments(args: readonly string[]): {
         : absolutePath(continuationPhaseOneTaskPacket, '--continuation-phase-one-packet'),
     continuationPilotPlanPath:
       continuationPilotPlan === null ? null : absolutePath(continuationPilotPlan, '--continuation-pilot-plan'),
+    continuationPilotResume,
     continuationParentPilotDirectory:
       continuationParentPilotDirectory === null
         ? null
@@ -4632,6 +5193,11 @@ function boundedDiagnostic(result: {readonly stderr: string; readonly stdout: st
     .filter(Boolean)
     .join('\n');
   return diagnostic.slice(-2_048) || '(no output)';
+}
+
+function boundedFailureDiagnostic(cause: unknown): string {
+  const diagnostic = cause instanceof Error ? cause.message : 'Unknown continuation verification failure.';
+  return diagnostic.slice(-2_048) || 'Continuation verification failed without a diagnostic.';
 }
 
 function requiredResolvedArm(
