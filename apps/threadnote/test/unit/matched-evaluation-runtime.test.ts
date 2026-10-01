@@ -473,7 +473,17 @@ describe('matched evaluation runtime integrity', () => {
       new Set(['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume', 'threadnote-preloaded-resume']),
     );
     expect(new Set(first.continuationAttempts.map(attempt => attempt.runNonce))).toHaveProperty('size', 5);
-    expect(first.phaseOnePrompt).toBe(`${sourceTaskPrompt}\n\n${packet.phaseOneDirective}`);
+    expect(first.phaseOnePrompt).toBe(
+      `${sourceTaskPrompt}\n\n${packet.phaseOneDirective}\n\nRequired focused check (run exactly as written; do not change its flags or selector):\nPYTHONPATH=src python -m pytest -q tests/test_regression.py`,
+    );
+    const legacyPhaseOnePrompt = `${sourceTaskPrompt}\n\n${packet.phaseOneDirective}`;
+    expect(
+      parseMatchedEvaluationContinuationPhaseOneSelectionV1({
+        ...first,
+        phaseOnePrompt: legacyPhaseOnePrompt,
+        phaseOnePromptSha256: sha256HexSync(Buffer.from(legacyPhaseOnePrompt)),
+      }).phaseOnePrompt,
+    ).toBe(legacyPhaseOnePrompt);
     expect(() =>
       parseMatchedEvaluationContinuationPhaseOneSelectionV1({
         ...first,

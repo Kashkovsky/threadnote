@@ -540,6 +540,13 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
   };
 }
 
+function renderMatchedEvaluationContinuationPhaseOnePromptV1(
+  packet: MatchedEvaluationContinuationPhaseOneTaskPacketV1,
+): string {
+  const focusedCheck = packet.phaseOneFocusedChecks[0].replaceAll('{python}', 'python');
+  return `${packet.sourceTaskPrompt}\n\n${packet.phaseOneDirective}\n\nRequired focused check (run exactly as written; do not change its flags or selector):\n${focusedCheck}`;
+}
+
 export function createMatchedEvaluationContinuationPhaseOneSelectionV1(input: {
   readonly packet: MatchedEvaluationContinuationPhaseOneTaskPacketV1;
   readonly taskPacketSha256: string;
@@ -554,7 +561,7 @@ export function createMatchedEvaluationContinuationPhaseOneSelectionV1(input: {
     throw new Error('Continuation phase-one task packet differs from the frozen source revision.');
   }
   const packetHash = matchingString(input.taskPacketSha256, HASH, 'phase-one task packet hash');
-  const phaseOnePrompt = `${input.packet.sourceTaskPrompt}\n\n${input.packet.phaseOneDirective}`;
+  const phaseOnePrompt = renderMatchedEvaluationContinuationPhaseOnePromptV1(input.packet);
   const variants = CONTINUATION_VARIANTS.map(variant => ({
     score: sha256Bytes(
       Buffer.from(`matched-continuation-treatment-order-v1\0${packetHash}\0${input.task.taskId}\0${variant}`),
@@ -609,9 +616,12 @@ export function parseMatchedEvaluationContinuationPhaseOneSelectionV1(
   );
   if (selection.version !== 1) invalid('continuation phase-one selection version is invalid');
   const taskPacket = parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(selection.taskPacket);
-  const phaseOnePrompt = boundedString(selection.phaseOnePrompt, 1, 20_000, 'continuation phase-one prompt');
-  const expectedPhaseOnePrompt = `${taskPacket.sourceTaskPrompt}\n\n${taskPacket.phaseOneDirective}`;
-  if (phaseOnePrompt !== expectedPhaseOnePrompt) invalid('continuation phase-one prompt differs from its packet');
+  const phaseOnePrompt = boundedString(selection.phaseOnePrompt, 1, 28_000, 'continuation phase-one prompt');
+  const legacyPhaseOnePrompt = `${taskPacket.sourceTaskPrompt}\n\n${taskPacket.phaseOneDirective}`;
+  const expectedPhaseOnePrompt = renderMatchedEvaluationContinuationPhaseOnePromptV1(taskPacket);
+  if (phaseOnePrompt !== expectedPhaseOnePrompt && phaseOnePrompt !== legacyPhaseOnePrompt) {
+    invalid('continuation phase-one prompt differs from its packet');
+  }
   const phaseOnePromptSha256 = matchingString(
     selection.phaseOnePromptSha256,
     HASH,
@@ -1003,7 +1013,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
   if (!common.checkpoint.phaseOneAccounting.providerTokensMeasured) {
     invalid('continuation pilot v2 requires measured phase-one provider tokens');
   }
-  const phaseOnePrompt = boundedString(checkpoint.phaseOnePrompt, 1, 12_000, 'continuation pilot phase-one prompt');
+  const phaseOnePrompt = boundedString(checkpoint.phaseOnePrompt, 1, 28_000, 'continuation pilot phase-one prompt');
   const phaseOnePromptSha256 = matchingString(
     checkpoint.phaseOnePromptSha256,
     HASH,
