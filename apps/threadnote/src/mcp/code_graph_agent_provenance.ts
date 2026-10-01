@@ -47,6 +47,19 @@ function graphAgentScope(value: GraphAgentRecord): GraphAgentRecord | undefined 
 export function renderCodeGraphAgentProvenance(value: unknown): string {
   const record = graphAgentRecord(value);
   if (record === undefined) return '';
+  const oneLine = (text: string) => {
+    let output = '';
+    let replacingControl = false;
+    for (const character of text) {
+      const codePoint = character.codePointAt(0) ?? 0;
+      const control =
+        codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f) || codePoint === 0x2028 || codePoint === 0x2029;
+      if (!control) output += character;
+      else if (!replacingControl) output += ' ';
+      replacingControl = control;
+    }
+    return output.trim();
+  };
   const evidence: Record<string, unknown> = {};
   const freshness = graphAgentString(record.freshness);
   if (freshness !== undefined && freshness !== 'current') evidence.freshness = freshness;
@@ -79,8 +92,39 @@ export function renderCodeGraphAgentProvenance(value: unknown): string {
     };
   }
   const lines: string[] = [];
-  if (Object.keys(evidence).length > 0) lines.push(`evidence\t${JSON.stringify(evidence)}`);
+  if (Object.keys(evidence).length > 0) {
+    const parts = [
+      graphAgentString(evidence.freshness) === undefined
+        ? undefined
+        : `freshness ${oneLine(graphAgentString(evidence.freshness)!)}`,
+      evidence.dirty === true ? 'dirty worktree' : undefined,
+      graphAgentString(evidence.commit) === undefined
+        ? undefined
+        : `commit ${oneLine(graphAgentString(evidence.commit)!)}`,
+      evidence.refresh === undefined
+        ? undefined
+        : `refresh ${(JSON.stringify(evidence.refresh) ?? 'null').replaceAll('\u2028', '\\u2028').replaceAll('\u2029', '\\u2029')}`,
+    ].filter((part): part is string => part !== undefined);
+    lines.push(`Evidence: ${parts.join(', ')}.`);
+  }
   const scope = graphAgentScope(record);
-  if (scope !== undefined) lines.push(`projectScope\t${JSON.stringify(scope)}`);
+  if (scope !== undefined) {
+    const roots = Array.isArray(scope.configuredRoots)
+      ? scope.configuredRoots.filter((root): root is string => typeof root === 'string')
+      : [];
+    const parts = [
+      graphAgentString(scope.project) === undefined ? undefined : oneLine(graphAgentString(scope.project)!),
+      graphAgentString(scope.kind) === undefined ? undefined : oneLine(graphAgentString(scope.kind)!),
+      graphAgentString(scope.completeness) === undefined ? undefined : oneLine(graphAgentString(scope.completeness)!),
+      graphAgentString(scope.negativeProof) === undefined
+        ? undefined
+        : `negative proof ${oneLine(graphAgentString(scope.negativeProof)!)}`,
+      roots.length === 0 ? undefined : `roots ${roots.map(oneLine).join(', ')}`,
+      graphAgentNumber(scope.configuredRootsOmitted) === undefined
+        ? undefined
+        : `${graphAgentNumber(scope.configuredRootsOmitted)} root(s) omitted`,
+    ].filter((part): part is string => part !== undefined);
+    lines.push(`Project scope: ${parts.join(', ')}.`);
+  }
   return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
 }

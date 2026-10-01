@@ -642,9 +642,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
         });
         const text = (result.content[0] as {readonly text: string}).text;
 
-        expect(text).toContain(
-          `evidence\t{"freshness":"stale","commit":"${stale.readySnapshot!.commit.slice(0, 12)}"}`,
-        );
+        expect(text).toContain(`Evidence: freshness stale, commit ${stale.readySnapshot!.commit.slice(0, 12)}.`);
         expect(text).not.toContain('Read:');
         expect(text).not.toContain(stale.identity.repositoryId);
         expect(text).not.toContain(stale.readySnapshot!.id);
@@ -679,7 +677,7 @@ describe('registered analyze_code_graph snapshot resolution', () => {
       const text = (result.content[0] as {readonly text: string}).text;
 
       expect(text).toContain(
-        'projectScope\t{"project":"threadnote-app","kind":"project","completeness":"partial","negativeProof":"selected-graph-only","configuredRoots":["root-a","root-b"],"configuredRootsOmitted":1}',
+        'Project scope: threadnote-app, project, partial, negative proof selected-graph-only, roots root-a, root-b, 1 root(s) omitted.',
       );
     }).pipe(provideTestLayer(harness.layer));
   });

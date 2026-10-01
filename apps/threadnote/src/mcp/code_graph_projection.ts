@@ -614,8 +614,8 @@ function measureFormattedCodeGraphMcpResponse<T>(
   });
 }
 
-/** A deterministic, text-only receipt for local graph inspection. Every cell
- * is JSON encoded, so delimiters and Unicode remain grammar-safe. */
+/** A deterministic, text-only receipt for direct agent reading. The structured
+ * dual channel remains available to machine consumers. */
 export function renderCodeGraphAgentResponse(value: unknown): string {
   const result = value as {
     readonly edges?: readonly Record<string, unknown>[];
@@ -626,33 +626,86 @@ export function renderCodeGraphAgentResponse(value: unknown): string {
   };
   const nodes = result.nodes ?? [];
   const aliases = new Map(nodes.map((node, index) => [String(node.id), `n${index + 1}`]));
-  const scalar = (item: unknown) => JSON.stringify(item);
+  const scalar = (item: unknown) =>
+    (JSON.stringify(item) ?? 'null').replaceAll('\u2028', '\\u2028').replaceAll('\u2029', '\\u2029');
+  const oneLine = (item: unknown) => {
+    let output = '';
+    let replacingControl = false;
+    for (const character of String(item ?? '')) {
+      const codePoint = character.codePointAt(0) ?? 0;
+      const control =
+        codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f) || codePoint === 0x2028 || codePoint === 0x2029;
+      if (!control) output += character;
+      else if (!replacingControl) output += ' ';
+      replacingControl = control;
+    }
+    return output.trim();
+  };
   const provenance = renderCodeGraphAgentProvenance(result).trimEnd();
   const lines = ['TN-GRAPH/1', ...(provenance.length === 0 ? [] : provenance.split('\n'))];
-  for (const key of ['outsideProjectGraph', 'outsideScopeChangedPaths', 'scope', 'searchCoverage']) {
-    if (result[key] !== undefined) lines.push(`${key}\t${scalar(result[key])}`);
-  }
+  if (result.outsideProjectGraph !== undefined)
+    lines.push(`Outside project graph: ${scalar(result.outsideProjectGraph)}`);
+  if (result.outsideScopeChangedPaths !== undefined)
+    lines.push(`Outside-scope changed paths: ${scalar(result.outsideScopeChangedPaths)}`);
+  if (result.scope !== undefined) lines.push(`Scope: ${scalar(result.scope)}`);
+  if (result.searchCoverage !== undefined) lines.push(`Search coverage: ${scalar(result.searchCoverage)}`);
   const source = graphAgentRecord(result.source);
   if (source !== undefined) {
-    lines.push(
-      `source\t${scalar({
-        ...(graphAgentString(source.kind) === undefined ? {} : {kind: graphAgentString(source.kind)}),
-        ...(graphAgentNumber(source.deltaCount) === undefined ? {} : {deltaCount: graphAgentNumber(source.deltaCount)}),
-      })}`,
-    );
+    const kind = graphAgentString(source.kind);
+    const deltaCount = graphAgentNumber(source.deltaCount);
+    if (kind !== undefined || deltaCount !== undefined)
+      lines.push(`Source: ${kind ?? 'graph'}${deltaCount === undefined ? '' : `, ${deltaCount} delta(s)`}.`);
   }
-  lines.push(`coverage\t${scalar(result.output ?? {})}`);
+  const output = graphAgentRecord(result.output);
+  const returnedNodes = graphAgentNumber(output?.returnedNodes) ?? nodes.length;
+  const totalNodes = graphAgentNumber(output?.totalNodes) ?? returnedNodes;
+  const returnedEdges = graphAgentNumber(output?.returnedEdges) ?? result.edges?.length ?? 0;
+  const totalEdges = graphAgentNumber(output?.totalEdges) ?? returnedEdges;
+  lines.push(
+    `Coverage: ${returnedNodes}/${totalNodes} symbols, ${returnedEdges}/${totalEdges} relationships${output?.truncated === true ? '; truncated' : ''}${output?.metadataTruncated === true ? '; metadata truncated' : ''}.`,
+  );
   for (const node of nodes) {
-    const {id, ...rest} = node;
-    lines.push(`node\t${aliases.get(String(id))}\t${scalar(id)}\t${scalar(rest)}`);
+    const id = graphAgentString(node.id) ?? '';
+    const alias = aliases.get(id) ?? `n${lines.length}`;
+    const kind = graphAgentString(node.kind) ?? 'symbol';
+    const name = graphAgentString(node.name) ?? graphAgentString(node.qualifiedName) ?? id;
+    const path = graphAgentString(node.path);
+    const span = graphAgentRecord(node.span);
+    const line = graphAgentNumber(span?.line);
+    const location = path === undefined ? '' : ` — ${oneLine(path)}${line === undefined ? '' : `:${line}`}`;
+    lines.push(`${alias}. ${node.exported === true ? 'exported ' : ''}${kind} ${oneLine(name)}${location} — ${id}`);
+    const signature = graphAgentString(node.signature);
+    if (signature !== undefined) lines.push(`   Signature: ${oneLine(signature)}`);
+    const qualifiedName = graphAgentString(node.qualifiedName);
+    if (qualifiedName !== undefined && qualifiedName !== name) lines.push(`   Qualified: ${oneLine(qualifiedName)}`);
   }
   for (const edge of result.edges ?? []) {
     const {id: _id, sourceId, targetId, ...rest} = edge;
-    const source = sourceId === undefined ? null : (aliases.get(String(sourceId)) ?? sourceId);
-    const target = targetId === undefined ? null : (aliases.get(String(targetId)) ?? targetId);
-    lines.push(`edge\t${scalar(source)}\t${scalar(target)}\t${scalar(rest)}`);
+    const source =
+      sourceId === undefined
+        ? (graphAgentString(rest.sourceName) ?? 'unknown')
+        : (aliases.get(String(sourceId)) ?? graphAgentString(rest.sourceName) ?? sourceId);
+    const target =
+      targetId === undefined
+        ? (graphAgentString(rest.targetName) ?? 'unknown')
+        : (aliases.get(String(targetId)) ?? graphAgentString(rest.targetName) ?? targetId);
+    const relation = graphAgentString(rest.relation) ?? 'related to';
+    const evidencePath = graphAgentString(rest.evidencePath);
+    const evidenceSpan = graphAgentRecord(rest.evidenceSpan);
+    const evidenceLine = graphAgentNumber(evidenceSpan?.line);
+    const evidence =
+      evidencePath === undefined
+        ? ''
+        : ` — ${oneLine(evidencePath)}${evidenceLine === undefined ? '' : `:${evidenceLine}`}`;
+    const confidence = graphAgentNumber(rest.confidence);
+    const relationshipEvidence = [graphAgentString(rest.provenance), confidence === undefined ? undefined : confidence]
+      .filter(item => item !== undefined)
+      .join(' ');
+    lines.push(
+      `${oneLine(source)} → ${oneLine(target)}: ${oneLine(relation)}${relationshipEvidence ? ` (${relationshipEvidence})` : ''}${evidence}`,
+    );
   }
-  for (const warning of result.warnings ?? []) lines.push(`warning\t${scalar(warning)}`);
-  if (result.output?.truncated === true) lines.push('recovery\t"refine-query-or-follow-a-stable-cgs-handle"');
+  for (const warning of result.warnings ?? []) lines.push(`Warning: ${oneLine(warning)}`);
+  if (result.output?.truncated === true) lines.push('Recovery: refine the query or follow a stable cgs_ handle.');
   return `${lines.join('\n')}\n`;
 }

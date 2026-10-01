@@ -797,9 +797,9 @@ describe('MCP code graph indexing progress', () => {
     expect(first).toEqual(second);
     expect(first).not.toHaveProperty('structuredContent');
     expect(text.startsWith('TN-GRAPH/1\n')).toBe(true);
-    expect(text).toContain('coverage\t');
-    expect(text).toContain('node\tn1\t');
-    expect(text).toContain('edge\t');
+    expect(text).toContain('Coverage:');
+    expect(text).toContain('n1. ');
+    expect(text).toContain(' → ');
     expect(text).not.toContain('\noperation\t');
     expect(text).not.toContain('\nrepository\t');
     expect(text).not.toContain('\nsnapshot\t');
@@ -983,11 +983,9 @@ describe('MCP code graph indexing progress', () => {
     );
     const text = formatCodeGraphMcpResponse(response, 'agent').content[0].text;
 
+    expect(text).toContain('Evidence: freshness stale, dirty worktree, commit bbbbbbbbbbbb, refresh');
     expect(text).toContain(
-      'evidence\t{"freshness":"stale","dirty":true,"commit":"bbbbbbbbbbbb","refresh":{"state":"deferred","retryAfterMilliseconds":5000,"failure":{"code":"transient-io","retryable":true,"recovery":"retry-read-only"}}}',
-    );
-    expect(text).toContain(
-      'projectScope\t{"project":"threadnote-app","kind":"project","completeness":"partial","negativeProof":"selected-graph-only","configuredRoots":["root-a","root-b"],"configuredRootsOmitted":1}',
+      'Project scope: threadnote-app, project, partial, negative proof selected-graph-only, roots root-a, root-b, 1 root(s) omitted.',
     );
     expect(text).not.toContain(source.repository.repositoryId);
     expect(text).not.toContain(source.snapshot.id);
@@ -1094,7 +1092,8 @@ describe('MCP code graph indexing progress', () => {
           pathsOmitted: 48,
           suggestedActionsOmitted: 49,
         });
-        expect(formatted.content[0].text).toContain('configuredRootsOmitted');
+        expect(formatted.content[0].text).toContain('48 root(s) omitted');
+        expect(formatted.content[0].text).not.toContain('metadata truncated');
       } else {
         expect(response.structuredContent.output).toMatchObject({metadataTruncated: true, truncated: true});
         expect(response.structuredContent.output).toMatchObject({
@@ -1172,7 +1171,7 @@ describe('MCP code graph indexing progress', () => {
     {fastCheck: {numRuns: 30}},
   );
 
-  it('keeps agent edge cells valid JSON when endpoints or scalar values are irregular', () => {
+  it('keeps agent relationship lines readable when endpoints or scalar values are irregular', () => {
     const result = verboseCodeGraphResult();
     const response = codeGraphMcpResponse(
       {
@@ -1181,7 +1180,7 @@ describe('MCP code graph indexing progress', () => {
         edges: [
           {
             ...result.edges[0],
-            evidencePath: 'src/界\tnewline\nfile.ts',
+            evidencePath: 'src/界\tnewline\nfile\u001b\u2028.ts',
             sourceId: undefined,
             sourceName: 'source\t界\n',
             targetId: undefined,
@@ -1195,14 +1194,13 @@ describe('MCP code graph indexing progress', () => {
       'agent',
     );
     const text = formatCodeGraphMcpResponse(response, 'agent').content[0].text;
-    const edge = text
-      .split('\n')
-      .find(line => line.startsWith('edge\t'))!
-      .split('\t');
-    expect(edge).toHaveLength(4);
-    expect(JSON.parse(edge[1])).toBeNull();
-    expect(JSON.parse(edge[2])).toBeNull();
-    expect(JSON.parse(edge[3])).toMatchObject({evidencePath: 'src/界\tnewline\nfile.ts'});
+    const edge = text.split('\n').find(line => line.includes(' → '));
+    expect(edge).toContain('source 界 → target 界:');
+    expect(edge).toContain('src/界 newline file .ts');
+    expect(edge).not.toContain('\t');
+    expect(edge).not.toContain('\n');
+    expect(edge).not.toContain('\u001b');
+    expect(edge).not.toContain('\u2028');
   });
 
   fcProp(

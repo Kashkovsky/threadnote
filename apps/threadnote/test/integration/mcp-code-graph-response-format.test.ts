@@ -156,7 +156,7 @@ describe('MCP code graph response format', () => {
         expect(parsed.trust).toEqual((dual.structuredContent as {trust: unknown}).trust);
         expect(parsed.snapshot).toEqual((dual.structuredContent as {snapshot: unknown}).snapshot);
         expect(agentOnly.startsWith('TN-GRAPH/1\n')).toBe(true);
-        expect(agentOnly).toContain('coverage\t');
+        expect(agentOnly).toContain('Coverage:');
         expect(agentOnly).not.toContain('\noperation\t');
         expect(agentOnly).not.toContain('\nrepository\t');
         expect(agentOnly).not.toContain('\nsnapshot\t');
@@ -164,10 +164,10 @@ describe('MCP code graph response format', () => {
         expect(agentOnly).not.toContain('\nsourceVersion\t');
         if (query.operation === 'impact' || query.operation === 'query') {
           for (const symbol of query.relevantSymbols ?? []) {
-            expect(agentOnly).toContain(`"name":"${symbol}"`);
+            expect(agentOnly).toContain(symbol);
           }
           if (query.operation === 'query' && query.answerable && (query.relevantPaths?.length ?? 0) > 0) {
-            expect(query.relevantPaths?.some(path => agentOnly.includes(`"path":"${path}"`))).toBe(true);
+            expect(query.relevantPaths?.some(path => agentOnly.includes(path))).toBe(true);
           }
           expect(agentGraphHasOnlyVisibleEdgeAliases(agentOnly)).toBe(true);
           const largerCeiling = await client.callTool({
@@ -331,21 +331,16 @@ function firstText(content: unknown): string {
 }
 
 function agentGraphHasOnlyVisibleEdgeAliases(text: string): boolean {
-  const rows = text
-    .trimEnd()
-    .split('\n')
-    .map(line => line.split('\t'));
-  const aliases = new Set(rows.filter(([kind]) => kind === 'node').map(([, alias]) => alias));
-  return rows
-    .filter(([kind]) => kind === 'edge')
-    .every(([, source, target]) => aliases.has(String(JSON.parse(source))) && aliases.has(String(JSON.parse(target))));
+  const lines = text.trimEnd().split('\n');
+  const aliases = new Set(lines.flatMap(line => line.match(/^(n\d+)\. /u)?.slice(1) ?? []));
+  return lines.flatMap(line => line.match(/^(.+?) → (.+?): /u)?.slice(1) ?? []).every(alias => aliases.has(alias));
 }
 
 function agentGraphNodeCount(text: string): number {
   return text
     .trimEnd()
     .split('\n')
-    .filter(line => line.startsWith('node\t')).length;
+    .filter(line => /^n\d+\. /u.test(line)).length;
 }
 
 function withoutWorksetCursor(value: unknown): unknown {

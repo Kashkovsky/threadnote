@@ -26,16 +26,16 @@
     },
     "after": {
       "queries": [
-        {"id": "definition-exclusive-lock", "agentBytes": 1699, "dualBytes": 2378, "textBytes": 2225},
-        {"id": "path-app-to-lock", "agentBytes": 1896, "dualBytes": 3392, "textBytes": 2713},
-        {"id": "impact-lock", "agentBytes": 3352, "dualBytes": 18419, "textBytes": 14203},
-        {"id": "documentation-recovery", "agentBytes": 1496, "dualBytes": 2395, "textBytes": 2225},
-        {"id": "missing-payment-service", "agentBytes": 164, "dualBytes": 815, "textBytes": 676}
+        {"id": "definition-exclusive-lock", "agentBytes": 932, "dualBytes": 2378, "textBytes": 2225},
+        {"id": "path-app-to-lock", "agentBytes": 855, "dualBytes": 3392, "textBytes": 2713},
+        {"id": "impact-lock", "agentBytes": 1408, "dualBytes": 18419, "textBytes": 14203},
+        {"id": "documentation-recovery", "agentBytes": 869, "dualBytes": 2395, "textBytes": 2225},
+        {"id": "missing-payment-service", "agentBytes": 104, "dualBytes": 815, "textBytes": 676}
       ],
-      "totals": {"agentBytes": 8607, "dualBytes": 27399, "estimatedTokens": 2869, "textBytes": 22042}
+      "totals": {"agentBytes": 4168, "dualBytes": 27399, "estimatedTokens": 1390, "textBytes": 22042}
     },
-    "savings": {"agentBytes": 10036, "estimatedTokens": 3346, "percent": 53.8},
-    "caveat": "The five deterministic synthetic queries measure response-envelope bytes, not provider-billed tokens or verified task completion. Impact uses a complete connected behavioral core. Query returns the top three ranked nodes and relationships between them unless nodeLimit explicitly requests a larger result. Both operations treat the token budget as a ceiling rather than refilling it."
+    "savings": {"agentBytes": 14475, "estimatedTokens": 4825, "percent": 77.6},
+    "caveat": "The five deterministic synthetic queries measure response-envelope bytes, not provider-billed tokens or verified task completion. Impact uses a complete connected behavioral core. Query returns the top three ranked nodes and relationships between them unless nodeLimit explicitly requests a larger result. Both operations treat the token budget as a ceiling rather than refilling it. Agent mode renders the same selected graph as concise readable lines; dual and text retain structured compatibility."
   },
   "modelPilot": {
     "model": "gpt-5.6-luna",
