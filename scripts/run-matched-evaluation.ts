@@ -2187,16 +2187,8 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     selectionSha256,
   });
   assertMatchedEvaluationContinuationPhaseOneResultV1(artifactInput, responseObservation, corpusTask.taskId);
-  const agentPatch = boundedString(
-    artifact.patch,
-    1,
-    8 * 1_024 * 1_024,
-    'continuation phase-one agent patch',
-  );
-  if (
-    request.runNonce !== selection.phaseOneRunNonce ||
-    artifact.runNonce !== selection.phaseOneRunNonce
-  ) {
+  const agentPatch = boundedString(artifact.patch, 1, 8 * 1_024 * 1_024, 'continuation phase-one agent patch');
+  if (request.runNonce !== selection.phaseOneRunNonce || artifact.runNonce !== selection.phaseOneRunNonce) {
     throw new Error('Continuation phase-one evidence differs from its sealed selection.');
   }
   const checkpointRepository = resolve(outputDirectory, 'checkpoint-repository');
@@ -2788,7 +2780,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   if (
     plan.version === 2 &&
     (task.prompt !== plan.sourceTask.prompt ||
-      sha256Bytes(Buffer.from(task.prompt)) !== plan.sourceTask.promptSha256 ||
+      matchedEvaluationPromptHashV1(task.prompt) !== plan.sourceTask.promptSha256 ||
       task.repositoryFixtureHash !== plan.sourceTask.repositoryFixtureHash)
   ) {
     throw new Error('Continuation pilot source task differs from the frozen corpus.');
