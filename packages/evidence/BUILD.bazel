@@ -346,6 +346,7 @@ bun_test(
         "//apps/threadnote:test/evaluation/fixtures/token-efficiency-calibration-v1/fixture.json",
         "//:package.json",
         "//packages/context:package.json",
+        "//packages/context:src/agent_view_text.ts",
         "//packages/context:src/citation/capture.ts",
         "//packages/context:src/citation_validation.ts",
         "//packages/context:src/compiler.ts",

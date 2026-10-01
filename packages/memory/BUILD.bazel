@@ -396,6 +396,7 @@ bun_test(
         "//apps/threadnote:src/workspace_component.ts",
         "//:package.json",
         "//packages/context:package.json",
+        "//packages/context:src/agent_view_text.ts",
         "//packages/context:src/check.ts",
         "//packages/context:src/citation/capture.ts",
         "//packages/context:src/citation_validation.ts",

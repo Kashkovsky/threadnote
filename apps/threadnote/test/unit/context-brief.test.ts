@@ -249,6 +249,27 @@ describe('Context Brief compiler', () => {
       }),
   );
 
+  effectIt.effect('keeps singleton current memory recovery executable at the default budget', () =>
+    Effect.gen(function* () {
+      for (const responseFormat of ['dual', 'agent'] as const) {
+        const result = yield* compileCodeLinkedRecoveryFixture(1, 1, 1_250, {
+          responseFormat,
+          task: 'Recover the contract after the cited symbol moved.',
+          validationStatus: 'relocated',
+        });
+        const brief = result.structuredContent;
+        const memories = [...brief.activeHandoffs, ...brief.durableDecisions];
+
+        expect(memories).toHaveLength(1);
+        expect(memories[0]).toMatchObject({freshness: 'fresh', selectionBasis: 'code-citation'});
+        if (brief.graph.continuation?.state === 'rerun-required') {
+          expect(brief.recommendedFollowUps[0]).toMatchObject({operation: 'inspect-node', rank: 0});
+        }
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_250 * 3);
+      }
+    }),
+  );
+
   effectIt.effect('keeps two direct memories for one code anchor visible at the default budget', () =>
     Effect.gen(function* () {
       const task = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks.find(
@@ -2964,7 +2985,7 @@ function compileCodeLinkedRecoveryFixture(
     readonly mode?: 'impact' | 'locate' | 'trace';
     readonly omitMemoryId?: boolean;
     readonly projectCoverage?: NonNullable<ContextBriefGraphEvidenceV1['projectCoverage']>;
-    readonly responseFormat?: 'agent';
+    readonly responseFormat?: 'agent' | 'dual';
     readonly scope?: ContextBriefScopeV1;
     readonly sharedCodeAnchor?: boolean;
     readonly shortMemoryEvidence?: readonly string[];
@@ -2972,8 +2993,8 @@ function compileCodeLinkedRecoveryFixture(
     readonly task?: string;
     readonly unmatchedExactCitationOnFirst?: boolean;
     readonly unresolvedOrdinals?: readonly number[];
-    readonly validationStatus?: 'changed' | 'exact';
-    readonly validationStatusesByMemory?: readonly ('changed' | 'exact')[];
+    readonly validationStatus?: 'changed' | 'exact' | 'relocated';
+    readonly validationStatusesByMemory?: readonly ('changed' | 'exact' | 'relocated')[];
   } = {},
 ) {
   const anchorOrdinalsByMemory = Array.from(
@@ -3059,7 +3080,12 @@ function compileCodeLinkedRecoveryFixture(
                 kind: 'file' as const,
                 observedAt: '2026-08-30T00:00:00.000Z',
                 observedPath: citation.path,
-                reason: status === 'changed' ? ('source-changed' as const) : ('exact' as const),
+                reason:
+                  status === 'changed'
+                    ? ('source-changed' as const)
+                    : status === 'relocated'
+                      ? ('relocated' as const)
+                      : ('exact' as const),
                 status,
                 strategy: 'file-path' as const,
                 validatorVersion: 1 as const,

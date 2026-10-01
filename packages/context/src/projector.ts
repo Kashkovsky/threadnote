@@ -21,7 +21,6 @@ import {
   CONTEXT_BRIEF_PROCEDURE_VERSION,
   CONTEXT_BRIEF_PROJECTOR_VERSION,
   CONTEXT_BRIEF_VERSION,
-  type ContextBriefEvidenceState,
   type ContextBriefGraphCardV1,
   type ContextBriefGraphContractV1,
   type ContextBriefLogicalResultV1,
@@ -33,12 +32,12 @@ import {
   type ProjectedContextBriefV1,
 } from './types.js';
 import {isMemoryId, memoryIdentityAlias} from '@threadnote/memory/identity-alias';
+import {legacyEvidenceState, renderContextBriefText} from './agent_view_text.js';
 import {parseVerifiedProcedureEvidenceList} from './procedure/selection.js';
 import {
   contextBriefResumeFocusUri,
   contextBriefRelationshipMemoryByUri,
   deriveContextBriefEvidenceState,
-  isContextBriefExactCurrentContinuation,
   isContextBriefGraphOnlyGap,
   requiredContextBriefAgentMemoryItem,
   withStableContextBriefMemoryIdentityGap,
@@ -83,6 +82,8 @@ export {
 } from './projection_view.js';
 
 export {isContextBriefExactCurrentContinuation, isContextBriefGraphOnlyGap} from './memory_projection.js';
+
+export {renderContextBriefText} from './agent_view_text.js';
 
 export {CONTEXT_BRIEF_AGENT_VIEW_SOURCE_EXCERPT_FIELD_POLICY} from './source_projection.js';
 
@@ -236,6 +237,22 @@ function projectContextBriefCore(
     const measurement = measureContextBriefResponse(structuredContent, responseFormat);
     if (measurement.totalBytes <= maximumBytes) selectedCount = count;
   }
+  const codeLinkedFallbackItem = currentCodeLinkedMemoryFallbackItem(logical, items);
+  const projectCodeLinkedFallback = (): ProjectedContextBriefV1 | undefined => {
+    if (codeLinkedFallbackItem === undefined) return undefined;
+    const fallbackItems = uniqueProjectionItems([...baseRequiredItems, codeLinkedFallbackItem]);
+    const structuredContent = parseContextBriefV1(
+      renderProjection(logical, fallbackItems, undefined, new Set([codeLinkedFallbackItem.id]), resumeFocusUri),
+    );
+    const measurement = measureContextBriefResponse(structuredContent, responseFormat);
+    if (measurement.totalBytes > maximumBytes) return undefined;
+    return {
+      maximumBytes,
+      measurement,
+      structuredContent,
+      text: renderContextBriefForFormat(structuredContent, responseFormat),
+    };
+  };
   if (selectedCount === undefined) {
     const sourceAdjusted = fitRequiredSourceProjection({
       compactMemoryUris,
@@ -248,12 +265,21 @@ function projectContextBriefCore(
     if (sourceAdjusted !== logical) {
       return projectContextBriefCore(sourceAdjusted, maximumEstimatedTokens, responseFormat, resumeFocusUri);
     }
+    const codeLinkedFallback = projectCodeLinkedFallback();
+    if (codeLinkedFallback !== undefined) return codeLinkedFallback;
     const structuredContent = parseContextBriefV1(renderMinimumProjection(logical, baseRequiredItems));
     const text = renderContextBriefForFormat(structuredContent, responseFormat);
     const measurement = measureContextBriefResponse(structuredContent, responseFormat);
     if (measurement.totalBytes > maximumBytes)
       throw AgentResponseBudgetTooSmallError.of(maximumBytes, measurement.totalBytes);
     return {maximumBytes, measurement, structuredContent, text};
+  }
+  if (
+    codeLinkedFallbackItem !== undefined &&
+    !selectItems(selectedCount).some(item => projectionItemKey(item) === projectionItemKey(codeLinkedFallbackItem))
+  ) {
+    const codeLinkedFallback = projectCodeLinkedFallback();
+    if (codeLinkedFallback !== undefined) return codeLinkedFallback;
   }
   const structuredContent = parseContextBriefV1(
     renderProjection(logical, selectItems(selectedCount), protectedMemoryUri, compactMemoryUris, resumeFocusUri),
@@ -312,53 +338,6 @@ function renderContextBriefForFormat(brief: ContextBriefV1, responseFormat: Cont
 function measureContextBriefResponse(brief: ContextBriefV1, responseFormat: ContextBriefResponseFormat) {
   const text = renderContextBriefForFormat(brief, responseFormat);
   return measureAgentToolResponse(responseFormat === 'agent' ? {text} : {structuredContent: brief, text});
-}
-
-export function renderContextBriefText(brief: ContextBriefV1): string {
-  const view = projectContextBriefAgentView(brief, false);
-  const exactResume =
-    brief.mode === 'resume' &&
-    brief.activeHandoffs.length === 1 &&
-    brief.stalenessAndConflicts.length === 0 &&
-    brief.activeHandoffs.some(isContextBriefExactCurrentContinuation);
-  const compactMemories = (memories: ContextBriefAgentViewV1['durableDecisions']) =>
-    memories?.map(memory => {
-      const compact =
-        memory.freshnessBasis !== 'source-commit' && memory.selectionBasis !== 'code-citation'
-          ? memory
-          : (({freshnessBasis: _freshnessBasis, ...value}) => value)(memory);
-      return !exactResume || compact.continuationCard === undefined
-        ? compact
-        : {...compact, continuationCard: compactContinuationCard(compact.continuationCard)};
-    });
-  const legacyFollowUps = view.recommendedFollowUps?.map(({arguments: action, tool: _tool, ...followUp}) => ({
-    ...followUp,
-    ...('callerCwd' in action ? {callerCwd: action.callerCwd} : {}),
-  }));
-  const compactScope =
-    view.scope.readyRepositories === view.scope.requestedRepositories
-      ? (({requestedRepositories: _requestedRepositories, ...scope}) => scope)(view.scope)
-      : view.scope;
-  const legacy = {
-    ...view,
-    ...(view.activeHandoffs === undefined ? {} : {activeHandoffs: compactMemories(view.activeHandoffs)}),
-    ...(view.durableDecisions === undefined ? {} : {durableDecisions: compactMemories(view.durableDecisions)}),
-    scope: compactScope,
-    ...(legacyFollowUps === undefined ? {} : {recommendedFollowUps: legacyFollowUps}),
-  };
-  // The structured channel remains the executable source of truth. Its paired
-  // text channel keeps legacy abstract labels that the parser expands back to
-  // the bounded action shape.
-  // The structured channel already carries the exact omission receipt. Avoid
-  // charging dual responses twice for audit-only projection bookkeeping while
-  // retaining the brief version, which cannot be inferred from optional coverage.
-  const {evidenceState: _evidenceState, output: _output, ...withoutDerivedState} = legacy;
-  const compactLegacy =
-    legacy.mode === 'brief' ? (({mode: _mode, ...value}) => value)(withoutDerivedState) : withoutDerivedState;
-  if (legacyEvidenceState(compactLegacy) !== brief.evidenceState) {
-    return JSON.stringify({...compactLegacy, evidenceState: brief.evidenceState});
-  }
-  return JSON.stringify(compactLegacy);
 }
 
 export function parseContextBriefAgentViewText(text: string): ContextBriefAgentViewV1 {
@@ -745,25 +724,6 @@ function normalizeLegacyFollowUp(value: unknown, scopeCallerCwd?: string): unkno
 function withoutLegacyCallerCwd(value: Record<string, unknown>): Record<string, unknown> {
   const {callerCwd: _callerCwd, ...withoutCallerCwd} = value;
   return withoutCallerCwd;
-}
-
-function legacyEvidenceState(value: Record<string, unknown>): ContextBriefEvidenceState {
-  if (
-    value.evidenceState === 'sufficient' ||
-    value.evidenceState === 'partial' ||
-    value.evidenceState === 'degraded' ||
-    value.evidenceState === 'no-match'
-  )
-    return value.evidenceState;
-  const scope = Predicate.isObject(value.scope) ? value.scope : undefined;
-  if (scope?.freshness === 'stale' || scope?.freshness === 'unknown') return 'degraded';
-  const graph = Predicate.isObject(value.graph) ? value.graph : undefined;
-  const cards = Array.isArray(graph?.cards) ? graph.cards : [];
-  const handoffs = Array.isArray(value.activeHandoffs) ? value.activeHandoffs : [];
-  const decisions = Array.isArray(value.durableDecisions) ? value.durableDecisions : [];
-  if (cards.length === 0 && handoffs.length === 0 && decisions.length === 0) return 'no-match';
-  const coverage = Predicate.isObject(value.coverage) ? value.coverage : undefined;
-  return Array.isArray(coverage?.gaps) && coverage.gaps.length > 0 ? 'partial' : 'sufficient';
 }
 
 function validateAgentViewGraphCard(value: unknown, index: number): void {
@@ -1636,6 +1596,27 @@ function requiredCodeLinkedEvidenceCore(
       relationshipIncluded: false,
       requiredItems: uniqueProjectionItems(baseRequiredItems),
     }
+  );
+}
+
+/** Prefer one unambiguous current memory over secondary graph inspection in brief mode. */
+function currentCodeLinkedMemoryFallbackItem(
+  logical: ContextBriefLogicalResultV1,
+  items: readonly ProjectionItem[],
+): ProjectionItem | undefined {
+  if (logical.mode !== 'brief') return undefined;
+  const memories = [...logical.activeHandoffs, ...logical.durableDecisions]
+    .filter(
+      candidate =>
+        candidate.selectionBasis === 'code-citation' &&
+        (candidate.cohortCodeRelations ?? candidate.codeRelations ?? []).some(
+          relation => relation.status === 'exact' || relation.status === 'relocated',
+        ),
+    )
+    .sort((left, right) => left.rank - right.rank || compareText(left.uri, right.uri));
+  if (memories.length !== 1) return undefined;
+  return items.find(
+    item => (item.lane === 'handoff' || item.lane === 'durable-decision') && item.id === memories[0].uri,
   );
 }
 
