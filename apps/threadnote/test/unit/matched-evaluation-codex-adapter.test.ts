@@ -418,6 +418,9 @@ describe('matched evaluation Codex adapter', () => {
     const config = adapterConfig();
 
     expect(parseMatchedEvaluationCodexAdapterConfigV1(config)).toEqual(config);
+    const legacyConfig = {...config} as Record<string, unknown>;
+    delete legacyConfig.approvedCommands;
+    expect(parseMatchedEvaluationCodexAdapterConfigV1(legacyConfig)).toMatchObject({approvedCommands: []});
     expect(() =>
       parseMatchedEvaluationCodexAdapterConfigV1({
         ...config,
@@ -439,6 +442,38 @@ describe('matched evaluation Codex adapter', () => {
         ],
       }),
     ).toThrow('only Threadnote arms may configure prepared context homes');
+  });
+
+  it('accepts only bounded task-scoped approved command tokens', () => {
+    const command = {
+      taskId: 'tsk_0123456789abcdef',
+      tokens: [
+        'PYTHONPATH=src',
+        'pytest',
+        '-q',
+        'tests/test_markers.py',
+        '-k',
+        'test_marker_str_roundtrip_preserves_nested_group_precedence',
+      ],
+    };
+    expect(parseMatchedEvaluationCodexAdapterConfigV1({...adapterConfig(), approvedCommands: [command]})).toMatchObject(
+      {
+        approvedCommands: [command],
+      },
+    );
+    for (const tokens of [
+      ['HOME=/tmp', 'pytest', '-q', 'tests/test_markers.py'],
+      ['PYTHONPATH=src', '/tmp/pytest', '-q', 'tests/test_markers.py'],
+      ['PYTHONPATH=src', 'pytest', '-q', '../outside/test_markers.py'],
+      ['PYTHONPATH=src', 'pytest', '-q', 'tests/test_markers.py;pwd'],
+    ]) {
+      expect(() =>
+        parseMatchedEvaluationCodexAdapterConfigV1({
+          ...adapterConfig(),
+          approvedCommands: [{taskId: command.taskId, tokens}],
+        }),
+      ).toThrow('approved command');
+    }
   });
 
   it('keeps the study hash out of immutable prepared-home configuration', () => {
@@ -1064,8 +1099,9 @@ describe('matched evaluation Codex adapter', () => {
     await chmod(authSourcePath, 0o600);
     const config = {
       ...adapterConfig(),
+      approvedCommands: [{taskId: 'tsk_0123456789abcdef', tokens: ['PYTHONPATH=src', 'true', '--version']}],
       appServer: {
-        argumentsAfterSubcommand: ['--exercise-approvals'],
+        argumentsAfterSubcommand: ['--exercise-approvals', '--exercise-auto-approval', '--exercise-task-command'],
         argumentsBeforeSubcommand: [fakeAppServer],
         executable: bunExecutable,
         executableSha256: sha256HexSync(await readFile(bunExecutable)),
@@ -1074,7 +1110,7 @@ describe('matched evaluation Codex adapter', () => {
       authSourcePath,
       git: {executable: gitExecutable, executableSha256: sha256HexSync(await readFile(gitExecutable))},
       judgeModel: {...adapterConfig().judgeModel, reasoningEffort: 'medium'},
-      safeBinaries: [],
+      safeBinaries: [{path: selfExecutable, sha256: sha256HexSync(await readFile(selfExecutable))}],
       safeExecutablePath: [dirname(bunExecutable), dirname(gitExecutable)].join(delimiter),
       temporaryRoot: root,
     };
@@ -1150,6 +1186,33 @@ describe('matched evaluation Codex adapter', () => {
     });
     expect(sha256HexSync(await readFile(artifactPath))).toBe(response.artifactHash);
     expect(sha256HexSync(await readFile(transcriptPath))).toBe(response.transcriptHash);
+
+    const unpinnedConfig = {...config, safeBinaries: []};
+    const unpinnedConfigPath = join(root, 'unpinned-adapter-config.json');
+    const unpinnedConfigBytes = Buffer.from(`${JSON.stringify(unpinnedConfig)}\n`);
+    const unpinnedRequestPath = join(root, 'unpinned-request.json');
+    await writeFile(unpinnedConfigPath, unpinnedConfigBytes);
+    await writeFile(
+      unpinnedRequestPath,
+      `${JSON.stringify({
+        ...request,
+        adapterConfigurationHash: sha256HexSync(unpinnedConfigBytes),
+        runNonce: 'run_11111111111111111111111111111111',
+      })}\n`,
+    );
+    try {
+      process.chdir(repository);
+      await expect(
+        runMatchedEvaluationCodexAdapter({
+          configPath: unpinnedConfigPath,
+          requestPath: unpinnedRequestPath,
+          responsePath: join(root, 'unpinned-response.json'),
+          selfExecutable,
+        }),
+      ).rejects.toThrow('not the first matching hash-pinned safe binary');
+    } finally {
+      process.chdir(originalCwd);
+    }
 
     const budgetConfig = {...config, taskBudget: {steps: 100, tokens: 100}};
     const budgetConfigPath = join(root, 'budget-adapter-config.json');
@@ -1415,6 +1478,7 @@ function adapterRequest(arm: 'files' | 'threadnote-graph' | 'threadnote-compact'
 
 function adapterConfig() {
   return {
+    approvedCommands: [],
     appServer: {
       argumentsAfterSubcommand: [],
       argumentsBeforeSubcommand: [],

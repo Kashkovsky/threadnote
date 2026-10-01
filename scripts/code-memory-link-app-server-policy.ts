@@ -10,6 +10,12 @@ export interface CodeMemoryLinkAppServerApprovalReceiptV1 {
   readonly requestDigest: string;
 }
 
+export interface CodeMemoryLinkCommandPolicyV1 {
+  readonly approvedCommandTokens: readonly (readonly string[])[];
+}
+
+const EMPTY_COMMAND_POLICY: CodeMemoryLinkCommandPolicyV1 = {approvedCommandTokens: []};
+
 interface ApprovalScope {
   readonly repositoryRoot: string;
   readonly threadId: string;
@@ -45,14 +51,17 @@ export class CodeMemoryLinkActionDeniedError extends Schema.TaggedError<CodeMemo
   }
 }
 
-export function approveCodeMemoryLinkAppServerRequest(input: {
-  readonly method: string;
-  readonly params: unknown;
-  readonly scope: ApprovalScope;
-  readonly startedItem: unknown;
-}): CodeMemoryLinkAppServerApprovalReceiptV1 {
+export function approveCodeMemoryLinkAppServerRequest(
+  input: {
+    readonly method: string;
+    readonly params: unknown;
+    readonly scope: ApprovalScope;
+    readonly startedItem: unknown;
+  },
+  commandPolicy: CodeMemoryLinkCommandPolicyV1 = EMPTY_COMMAND_POLICY,
+): CodeMemoryLinkAppServerApprovalReceiptV1 {
   if (input.method === 'item/commandExecution/requestApproval') {
-    return approveCommand(input.params, input.startedItem, input.scope);
+    return approveCommand(input.params, input.startedItem, input.scope, commandPolicy);
   }
   if (input.method === 'item/fileChange/requestApproval') {
     return approveFileChange(input.params, input.startedItem, input.scope);
@@ -63,10 +72,11 @@ export function approveCodeMemoryLinkAppServerRequest(input: {
 export function assertCodeMemoryLinkPublicAction(
   itemInput: unknown,
   repositoryRoot: string,
+  commandPolicy: CodeMemoryLinkCommandPolicyV1 = EMPTY_COMMAND_POLICY,
 ): 'commandExecution' | 'fileChange' | null {
   const item = object(itemInput, 'app-server action item');
   if (item.type === 'commandExecution') {
-    assertReadCommand(item, repositoryRoot);
+    assertReadCommand(item, repositoryRoot, commandPolicy);
     return 'commandExecution';
   }
   if (item.type === 'fileChange') {
@@ -80,6 +90,7 @@ function approveCommand(
   paramsInput: unknown,
   startedItemInput: unknown,
   scope: ApprovalScope,
+  commandPolicy: CodeMemoryLinkCommandPolicyV1,
 ): CodeMemoryLinkAppServerApprovalReceiptV1 {
   const params = object(paramsInput, 'command approval params');
   exactKeys(
@@ -126,7 +137,7 @@ function approveCommand(
   }
   denyUnsupportedAction(() => {
     assertProposedExecpolicyAmendment(params.proposedExecpolicyAmendment);
-    assertReadCommand(item, scope.repositoryRoot);
+    assertReadCommand(item, scope.repositoryRoot, commandPolicy);
   });
   return receipt('commandExecution', String(params.itemId), params);
 }
@@ -190,11 +201,23 @@ function assertApprovalScope(params: Record<string, unknown>, scope: ApprovalSco
   }
 }
 
-function assertReadCommand(item: Record<string, unknown>, repositoryRoot: string): void {
+function assertReadCommand(
+  item: Record<string, unknown>,
+  repositoryRoot: string,
+  commandPolicy: CodeMemoryLinkCommandPolicyV1,
+): void {
   const cwd = containedPath(text(item.cwd, 'command cwd'), repositoryRoot);
   const command = text(item.command, 'command');
   const commands = reviewableCommands(item, repositoryRoot, cwd);
-  for (const command of commands) assertSingleReadCommand(command, repositoryRoot, cwd);
+  if (
+    commands.length !== 1 &&
+    commands.some(candidate =>
+      commandPolicy.approvedCommandTokens.some(approved => equalTokens(tokenize(candidate), approved)),
+    )
+  ) {
+    throw new Error('Code Memory Link task-scoped commands must run as one exact standalone command.');
+  }
+  for (const command of commands) assertSingleReadCommand(command, repositoryRoot, cwd, commandPolicy);
   if (tokenize(command)[0] !== '/bin/zsh') {
     if (!Array.isArray(item.commandActions) || item.commandActions.length === 0) {
       throw new Error('Code Memory Link command lacks a reviewable read-only action projection.');
@@ -203,8 +226,14 @@ function assertReadCommand(item: Record<string, unknown>, repositoryRoot: string
   }
 }
 
-function assertSingleReadCommand(command: string, repositoryRoot: string, cwd: string): void {
+function assertSingleReadCommand(
+  command: string,
+  repositoryRoot: string,
+  cwd: string,
+  commandPolicy: CodeMemoryLinkCommandPolicyV1,
+): void {
   const tokens = tokenize(command);
+  if (commandPolicy.approvedCommandTokens.some(approved => equalTokens(tokens, approved))) return;
   const executable = tokens[0];
   if (!executable || executable.includes('/') || executable.includes('\\')) {
     throw new Error('Code Memory Link commands require one bare reviewed executable name.');
@@ -224,6 +253,10 @@ function assertSingleReadCommand(command: string, repositoryRoot: string, cwd: s
       `Code Memory Link command executable ${safeExecutableLabel(executable)} is outside the reviewed read-only allowlist.`,
     );
   }
+}
+
+function equalTokens(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((token, index) => token === right[index]);
 }
 
 function safeExecutableLabel(executable: string): string {

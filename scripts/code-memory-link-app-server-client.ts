@@ -8,6 +8,7 @@ import {
   approveCodeMemoryLinkAppServerRequest,
   assertCodeMemoryLinkPublicAction,
   type CodeMemoryLinkAppServerApprovalReceiptV1,
+  type CodeMemoryLinkCommandPolicyV1,
 } from './code-memory-link-app-server-policy.js';
 import {
   classifyCodeMemoryLinkCodexTerminal,
@@ -74,16 +75,19 @@ export class CodeMemoryLinkAppServerClient {
   readonly #startedItems = new Map<string, Record<string, unknown>>();
   readonly #unexpectedServerRequests: Record<string, unknown>[] = [];
   readonly #repositoryRoot: string;
+  readonly #commandPolicy: CodeMemoryLinkCommandPolicyV1;
   #approvalScope: {readonly threadId: string; readonly turnId: string} | undefined;
   #failure: Error | undefined;
   #nextId = 1;
 
   constructor(input: {
     readonly command: CodeMemoryLinkAppServerCommand;
+    readonly commandPolicy?: CodeMemoryLinkCommandPolicyV1;
     readonly cwd: string;
     readonly environment: Readonly<Record<string, string>>;
   }) {
     this.#repositoryRoot = input.cwd;
+    this.#commandPolicy = input.commandPolicy ?? {approvedCommandTokens: []};
     this.#process = spawn(
       input.command.executable,
       [
@@ -277,7 +281,7 @@ export class CodeMemoryLinkAppServerClient {
             return;
           }
         } else {
-          const actionType = assertCodeMemoryLinkPublicAction(item, this.#repositoryRoot);
+          const actionType = assertCodeMemoryLinkPublicAction(item, this.#repositoryRoot, this.#commandPolicy);
           if (actionType !== null && !this.#approvedItemIds.has(itemId) && !this.#autoApprovedItemIds.has(itemId)) {
             this.#abort(new Error('Codex completed an action without a reviewed pre-execution approval.'));
             return;
@@ -303,7 +307,12 @@ export class CodeMemoryLinkAppServerClient {
     const review = record(params.review, 'approval auto-review');
     if (review.status !== 'inProgress') throw new Error('Codex approval auto-review did not start in progress.');
     const action = record(params.action, 'approval auto-review action');
-    assertCodeMemoryLinkAutoReviewAction(action, this.#startedItems.get(targetItemId), this.#repositoryRoot);
+    assertCodeMemoryLinkAutoReviewAction(
+      action,
+      this.#startedItems.get(targetItemId),
+      this.#repositoryRoot,
+      this.#commandPolicy,
+    );
     if (this.#autoApprovalReviews.has(reviewId)) throw new Error('Codex repeated an approval auto-review id.');
     this.#autoApprovalReviews.set(reviewId, {action: JSON.stringify(action), startedAtMs, targetItemId});
   }
@@ -328,7 +337,12 @@ export class CodeMemoryLinkAppServerClient {
     const action = record(params.action, 'approval auto-review action');
     if (JSON.stringify(action) !== prior.action)
       throw new Error('Codex approval auto-review action changed in flight.');
-    assertCodeMemoryLinkAutoReviewAction(action, this.#startedItems.get(targetItemId), this.#repositoryRoot);
+    assertCodeMemoryLinkAutoReviewAction(
+      action,
+      this.#startedItems.get(targetItemId),
+      this.#repositoryRoot,
+      this.#commandPolicy,
+    );
     const review = record(params.review, 'approval auto-review');
     if (review.status === 'approved') {
       if (this.#approvedItemIds.has(targetItemId) || this.#declinedItemIds.has(targetItemId)) {
@@ -350,12 +364,15 @@ export class CodeMemoryLinkAppServerClient {
       const itemId = textValue(params.itemId, `${method} item id`);
       const startedItem = this.#startedItems.get(itemId);
       if (!startedItem) throw new Error('Codex requested approval for an item that did not start first.');
-      const approval = approveCodeMemoryLinkAppServerRequest({
-        method,
-        params,
-        scope: {...this.#approvalScope, repositoryRoot: this.#repositoryRoot},
-        startedItem,
-      });
+      const approval = approveCodeMemoryLinkAppServerRequest(
+        {
+          method,
+          params,
+          scope: {...this.#approvalScope, repositoryRoot: this.#repositoryRoot},
+          startedItem,
+        },
+        this.#commandPolicy,
+      );
       if (
         this.#approvedItemIds.has(itemId) ||
         this.#autoApprovedItemIds.has(itemId) ||
@@ -834,6 +851,7 @@ function assertCodeMemoryLinkAutoReviewAction(
   action: Record<string, unknown>,
   startedItemInput: Record<string, unknown> | undefined,
   repositoryRoot: string,
+  commandPolicy: CodeMemoryLinkCommandPolicyV1,
 ): void {
   if (!startedItemInput) throw new Error('Codex approval auto-review target did not start first.');
   const item = record(startedItemInput, 'approval auto-review target item');
@@ -844,7 +862,7 @@ function assertCodeMemoryLinkAutoReviewAction(
     if (action.type === 'command' && action.command !== item.command) {
       throw new Error('Codex command approval auto-review changed the command.');
     }
-    assertCodeMemoryLinkPublicAction(item, repositoryRoot);
+    assertCodeMemoryLinkPublicAction(item, repositoryRoot, commandPolicy);
     return;
   }
   if (item.type === 'fileChange') {
@@ -856,7 +874,7 @@ function assertCodeMemoryLinkAutoReviewAction(
       throw new Error('Codex file-change approval auto-review contains invalid paths.');
     }
     for (const path of action.files) assertContainedAutoReviewPath(path, repositoryRoot);
-    assertCodeMemoryLinkPublicAction(item, repositoryRoot);
+    assertCodeMemoryLinkPublicAction(item, repositoryRoot, commandPolicy);
     return;
   }
   if (

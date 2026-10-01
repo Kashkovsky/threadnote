@@ -233,6 +233,83 @@ describe('Code Memory Link pre-execution app-server policy', () => {
     }
   });
 
+  it('accepts only an exact task-scoped command token sequence', () => {
+    const approved = [
+      'PYTHONPATH=src',
+      'pytest',
+      '-q',
+      'tests/test_markers.py',
+      '-k',
+      'test_marker_str_roundtrip_preserves_nested_group_precedence',
+    ] as const;
+    const policy = {approvedCommandTokens: [approved]};
+    const exact = shellCommandApproval(approved.join(' '));
+
+    expect(() =>
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: exact.params,
+        scope: SCOPE,
+        startedItem: exact.item,
+      }),
+    ).toThrow('outside the reviewed read-only allowlist');
+    expect(
+      approveCodeMemoryLinkAppServerRequest(
+        {
+          method: 'item/commandExecution/requestApproval',
+          params: exact.params,
+          scope: SCOPE,
+          startedItem: exact.item,
+        },
+        policy,
+      ),
+    ).toMatchObject({itemType: 'commandExecution'});
+
+    fc.assert(
+      fc.property(
+        fc.integer({max: approved.length - 1, min: 0}),
+        fc.constantFrom('PYTHONPATH=other', 'python', '--collect-only', 'tests/other.py', 'other_test'),
+        (index, replacement) => {
+          const mutated: string[] = [...approved];
+          mutated[index] = replacement;
+          const attempt = shellCommandApproval(mutated.join(' '));
+          expect(() =>
+            approveCodeMemoryLinkAppServerRequest(
+              {
+                method: 'item/commandExecution/requestApproval',
+                params: attempt.params,
+                scope: SCOPE,
+                startedItem: attempt.item,
+              },
+              policy,
+            ),
+          ).toThrow();
+        },
+      ),
+      {numRuns: 50},
+    );
+
+    for (const command of [
+      `${approved.join(' ')} --collect-only`,
+      `PYTHONPATH=other ${approved.slice(1).join(' ')}`,
+      `PYTHONPATH=src pytest -q ../outside/test_markers.py -k ${approved.at(-1)}`,
+      `${approved.join(' ')}; pwd`,
+    ]) {
+      const attempt = shellCommandApproval(command);
+      expect(() =>
+        approveCodeMemoryLinkAppServerRequest(
+          {
+            method: 'item/commandExecution/requestApproval',
+            params: attempt.params,
+            scope: SCOPE,
+            startedItem: attempt.item,
+          },
+          policy,
+        ),
+      ).toThrow();
+    }
+  });
+
   it('rejects shell-control, expansion, unquoted glob, and mutating sed syntax before execution', () => {
     fc.assert(
       fc.property(fc.constantFrom(';', '|', '&', '$', '`', '>', '<', '*', '?', '[x]'), operator => {
@@ -400,6 +477,39 @@ function commandApproval(command: string, path: string, repositoryRoot = ROOT) {
       commandActions,
       cwd: repositoryRoot,
       environmentId: null,
+      itemId: item.id,
+      networkApprovalContext: null,
+      proposedExecpolicyAmendment: null,
+      proposedNetworkPolicyAmendments: null,
+      reason: null,
+      startedAtMs: 1,
+      threadId: SCOPE.threadId,
+      turnId: SCOPE.turnId,
+    },
+  };
+}
+
+function shellCommandApproval(projected: string) {
+  const command = `/bin/zsh -c ${shellWord(projected)}`;
+  const commandActions = [{command: projected, type: 'unknown'}];
+  const item = {
+    command,
+    commandActions,
+    cwd: ROOT,
+    id: 'item_task_command',
+    source: 'agent',
+    status: 'inProgress',
+    type: 'commandExecution',
+  };
+  return {
+    item,
+    params: {
+      approvalId: null,
+      availableDecisions: ['accept', 'cancel'],
+      command,
+      commandActions,
+      cwd: ROOT,
+      environmentId: 'local',
       itemId: item.id,
       networkApprovalContext: null,
       proposedExecpolicyAmendment: null,

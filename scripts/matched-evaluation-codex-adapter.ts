@@ -106,6 +106,10 @@ const MATCHED_EVALUATION_PROMPT_RULE_PREFIXES = [
 type MatchedEvaluationArm = (typeof ARMS)[number];
 
 export interface MatchedEvaluationCodexAdapterConfigV1 {
+  readonly approvedCommands: readonly {
+    readonly taskId: string;
+    readonly tokens: readonly string[];
+  }[];
   readonly appServer: {
     readonly argumentsAfterSubcommand: readonly string[];
     readonly argumentsBeforeSubcommand: readonly string[];
@@ -351,6 +355,9 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       config.contextBudgetTokens,
     );
     const agentTurn = await runAppServerTurn({
+      approvedCommandTokens: config.approvedCommands
+        .filter(command => command.taskId === request.agentTask.taskId)
+        .map(command => command.tokens),
       command: agentIsolation.command,
       cwd: repositoryRoot,
       developerInstructions: renderMatchedEvaluationAgentInstructionsV1(
@@ -464,6 +471,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     });
     const judgeSetupFinishedAt = monotonicMilliseconds();
     const judgeTurn = await runAppServerTurn({
+      approvedCommandTokens: [],
       command: judgeIsolation.command,
       cwd: judgeWorkspace,
       developerInstructions: JUDGE_DEVELOPER_INSTRUCTIONS,
@@ -790,24 +798,28 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
   value: MatchedEvaluationCodexAdapterConfigV1 | unknown,
 ): MatchedEvaluationCodexAdapterConfigV1 {
   const config = object(value, 'adapter config');
-  exactKeys(config, [
-    'appServer',
-    'arm',
-    'authSourcePath',
-    'contextBudgetTokens',
-    'contextHomes',
-    'environmentPolicyHash',
-    'git',
-    'judgeModel',
-    'model',
-    'pricingMicrosPerMillionTokens',
-    'safeBinaries',
-    'safeExecutablePath',
-    'taskBudget',
-    'temporaryRoot',
-    'verificationPlan',
-    'version',
-  ]);
+  exactKeysAllowOmitted(
+    config,
+    [
+      'appServer',
+      'arm',
+      'authSourcePath',
+      'contextBudgetTokens',
+      'contextHomes',
+      'environmentPolicyHash',
+      'git',
+      'judgeModel',
+      'model',
+      'pricingMicrosPerMillionTokens',
+      'safeBinaries',
+      'safeExecutablePath',
+      'taskBudget',
+      'temporaryRoot',
+      'verificationPlan',
+      'version',
+    ],
+    ['approvedCommands'],
+  );
   if (config.version !== MATCHED_EVALUATION_CODEX_ADAPTER_VERSION) invalid('adapter config version must be 4');
   const appServer = object(config.appServer, 'app server');
   exactKeys(appServer, [
@@ -842,7 +854,16 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
   if ((arm === 'files' || arm === 'reference-scope') !== (contextHomes.length === 0)) {
     invalid('only Threadnote arms may configure prepared context homes');
   }
+  const approvedCommandInputs =
+    config.approvedCommands === undefined ? [] : array(config.approvedCommands, 'approved commands');
+  if (approvedCommandInputs.length > 256) invalid('approved commands has invalid bounds');
+  const approvedCommands = approvedCommandInputs.map(parseApprovedCommand);
+  unique(
+    approvedCommands.map(command => `${command.taskId}\0${JSON.stringify(command.tokens)}`),
+    'approved commands',
+  );
   return {
+    approvedCommands,
     appServer: {
       argumentsAfterSubcommand: stringArray(appServer.argumentsAfterSubcommand, 0, 32, 1_024, 'app-server arguments'),
       argumentsBeforeSubcommand: stringArray(appServer.argumentsBeforeSubcommand, 0, 32, 1_024, 'app-server arguments'),
@@ -879,6 +900,37 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
     verificationPlan:
       config.verificationPlan === null ? null : parseMatchedEvaluationVerificationPlanV1(config.verificationPlan),
     version: MATCHED_EVALUATION_CODEX_ADAPTER_VERSION,
+  };
+}
+
+function parseApprovedCommand(
+  value: unknown,
+  index: number,
+): {readonly taskId: string; readonly tokens: readonly string[]} {
+  const command = object(value, `approved command ${index}`);
+  exactKeys(command, ['taskId', 'tokens']);
+  const tokens = stringArray(command.tokens, 1, 64, 1_024, `approved command ${index} tokens`);
+  const executableIndex = tokens.findIndex(token => !token.includes('='));
+  if (executableIndex < 0) invalid(`approved command ${index} lacks an executable`);
+  for (const assignment of tokens.slice(0, executableIndex)) {
+    if (assignment !== 'PYTHONPATH=src') invalid(`approved command ${index} has an unsupported environment assignment`);
+  }
+  const executable = tokens[executableIndex];
+  if (!/^[A-Za-z0-9._+-]{1,128}$/u.test(executable)) {
+    invalid(`approved command ${index} executable must be one bare name`);
+  }
+  for (const token of tokens.slice(executableIndex + 1)) {
+    if (
+      /[\0\r\n;&|<>`$(){}\\]/u.test(token) ||
+      isAbsolute(token) ||
+      token.split('/').some(segment => segment === '..')
+    ) {
+      invalid(`approved command ${index} argument is outside the sealed task-command grammar`);
+    }
+  }
+  return {
+    taskId: matching(command.taskId, TASK_ID, `approved command ${index} task id`),
+    tokens,
   };
 }
 
@@ -1660,6 +1712,7 @@ async function createCodexIsolation(input: {
 }
 
 async function runAppServerTurn(input: {
+  readonly approvedCommandTokens: readonly (readonly string[])[];
   readonly command: CodeMemoryLinkAppServerCommand;
   readonly cwd: string;
   readonly developerInstructions: string;
@@ -1675,6 +1728,7 @@ async function runAppServerTurn(input: {
 }): Promise<AppServerTurnResult> {
   const client = new CodeMemoryLinkAppServerClient({
     command: input.command,
+    commandPolicy: {approvedCommandTokens: input.approvedCommandTokens},
     cwd: input.cwd,
     environment: input.environment,
   });
@@ -2252,6 +2306,7 @@ async function assertAdapterArtifacts(
           ),
         ]),
   ]);
+  await assertApprovedCommandsResolveToPinnedBinaries(config);
   if (request.tool.executable !== null && request.tool.artifactHash !== null) {
     await assertPinnedFile(request.tool.executable, request.tool.artifactHash, true, 'Threadnote executable');
   }
@@ -2265,6 +2320,29 @@ async function assertAdapterArtifacts(
     true,
   );
   if (version.stdout.trim() !== config.appServer.version) throw new Error('App-server version differs from config.');
+}
+
+async function assertApprovedCommandsResolveToPinnedBinaries(
+  config: MatchedEvaluationCodexAdapterConfigV1,
+): Promise<void> {
+  const pinnedPaths = new Set(config.safeBinaries.map(binary => binary.path));
+  for (const [index, command] of config.approvedCommands.entries()) {
+    const executable = command.tokens.find(token => !token.includes('='));
+    if (executable === undefined) throw new Error(`Approved command ${index} lacks an executable.`);
+    let resolvedExecutable: string | undefined;
+    for (const directory of config.safeExecutablePath.split(delimiter)) {
+      try {
+        resolvedExecutable = await realpath(join(directory, executable));
+        break;
+      } catch (cause) {
+        const code = (cause as {readonly code?: unknown}).code;
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') throw cause;
+      }
+    }
+    if (resolvedExecutable === undefined || !pinnedPaths.has(resolvedExecutable)) {
+      throw new Error(`Approved command ${index} executable is not the first matching hash-pinned safe binary.`);
+    }
+  }
 }
 
 async function runGit(

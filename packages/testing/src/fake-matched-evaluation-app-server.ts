@@ -169,6 +169,49 @@ lines.on('line', line => {
       };
       notify('item/started', {item: approval.item, threadId, turnId});
       const requestId = 10_000 + turnIndex * 2;
+      if (process.argv.includes('--exercise-auto-approval')) {
+        const action = {command: approval.item.command, cwd: approval.item.cwd, source: 'unifiedExec', type: 'command'};
+        const review = {
+          action,
+          reviewId: `review_matched_${turnIndex}`,
+          startedAtMs: 1,
+          targetItemId: approval.item.id,
+          threadId,
+          turnId,
+        };
+        notify('item/autoApprovalReview/started', {
+          ...review,
+          review: {rationale: null, riskLevel: null, status: 'inProgress', userAuthorization: null},
+        });
+        notify('item/autoApprovalReview/completed', {
+          ...review,
+          completedAtMs: 2,
+          decisionSource: 'agent',
+          review: {rationale: 'sealed task command', riskLevel: 'low', status: 'approved', userAuthorization: 'low'},
+        });
+        notify('item/completed', {
+          item: {
+            ...approval.item,
+            aggregatedOutput: 'true (fixture)\n',
+            durationMs: 1,
+            exitCode: 0,
+            status: 'completed',
+          },
+          threadId,
+          turnId,
+        });
+        notify('item/started', {item: fileItem, threadId, turnId});
+        sendRequest(requestId, 'item/fileChange/requestApproval', {
+          grantRoot: null,
+          itemId: fileItem.id,
+          reason: null,
+          startedAtMs: 2,
+          threadId,
+          turnId,
+        });
+        pendingApproval = {fileItem, final, requestId, stage: 'file', threadId, turnId};
+        return;
+      }
       sendRequest(requestId, 'item/commandExecution/requestApproval', approval.params);
       pendingApproval = {fileItem, final, requestId, stage: 'command', threadId, turnId};
       return;
@@ -196,10 +239,13 @@ lines.on('line', line => {
 });
 
 function approvalCommandItem(threadId: string, turnId: string) {
-  const command = `/bin/zsh -c "sed -n '1p' service.ts"`;
-  const commandActions = [
-    {command: "sed -n '1p' service.ts", name: 'service.ts', path: `${process.cwd()}/service.ts`, type: 'read'},
-  ];
+  const projected = process.argv.includes('--exercise-task-command')
+    ? 'PYTHONPATH=src true --version'
+    : "sed -n '1p' service.ts";
+  const command = `/bin/zsh -c "${projected}"`;
+  const commandActions = process.argv.includes('--exercise-task-command')
+    ? [{command: projected, type: 'unknown'}]
+    : [{command: projected, name: 'service.ts', path: `${process.cwd()}/service.ts`, type: 'read'}];
   const item = {
     aggregatedOutput: null,
     command,

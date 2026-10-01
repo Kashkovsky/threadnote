@@ -85,6 +85,10 @@ interface PreparationPlanV1 {
   /** Selected runtime subset; v3 plans must declare this explicitly. */
   readonly activeArms: readonly MatchedEvaluationArm[];
   readonly adapter: {
+    readonly approvedCommands: readonly {
+      readonly taskId: string;
+      readonly tokens: readonly string[];
+    }[];
     readonly appServer: {
       readonly argumentsAfterSubcommand: readonly string[];
       readonly argumentsBeforeSubcommand: readonly string[];
@@ -799,6 +803,7 @@ function createAdapterConfigs(input: {
           ? input.prepared.map(task => task.linkedHome)
           : [];
     const config = parseMatchedEvaluationCodexAdapterConfigV1({
+      approvedCommands: input.plan.adapter.approvedCommands,
       appServer: {
         ...input.plan.adapter.appServer,
         executableSha256: required(
@@ -1475,6 +1480,7 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
   if (plan.version !== MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION) invalid('preparation plan version must be 3');
   const adapter = object(plan.adapter, 'adapter plan');
   exactKeys(adapter, [
+    ...(adapter.approvedCommands === undefined ? [] : ['approvedCommands']),
     'appServer',
     'authSourcePath',
     'contextBudgetTokens',
@@ -1559,9 +1565,23 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
           return arm;
         });
   if (targetArms !== undefined) unique(targetArms, 'target arms');
+  const approvedCommands =
+    adapter.approvedCommands === undefined
+      ? []
+      : array(adapter.approvedCommands, 'approved commands').map(parseApprovedCommandPlan);
+  if (approvedCommands.length > 256) invalid('approved commands has invalid bounds');
+  unique(
+    approvedCommands.map(command => `${command.taskId}\0${JSON.stringify(command.tokens)}`),
+    'approved commands',
+  );
+  const preparedTaskIds = new Set(taskContexts.map(context => context.taskId));
+  if (approvedCommands.some(command => !preparedTaskIds.has(command.taskId))) {
+    invalid('approved commands must reference prepared task contexts');
+  }
   return {
     activeArms,
     adapter: {
+      approvedCommands,
       appServer: {
         argumentsAfterSubcommand: stringArray(appServer.argumentsAfterSubcommand, 'app-server trailing arguments'),
         argumentsBeforeSubcommand: stringArray(appServer.argumentsBeforeSubcommand, 'app-server leading arguments'),
@@ -1747,6 +1767,40 @@ function parseModelPlan(value: unknown, label: string): ModelPlanV1 {
     id: boundedText(model.id, 1, 128, `${label} id`),
     provider: boundedText(model.provider, 1, 128, `${label} provider`),
     reasoningEffort: boundedText(model.reasoningEffort, 1, 32, `${label} reasoning effort`),
+  };
+}
+
+function parseApprovedCommandPlan(
+  value: unknown,
+  index: number,
+): {readonly taskId: string; readonly tokens: readonly string[]} {
+  const command = object(value, `approved command ${index}`);
+  exactKeys(command, ['taskId', 'tokens']);
+  const tokenInputs = array(command.tokens, `approved command ${index} tokens`);
+  if (tokenInputs.length < 1 || tokenInputs.length > 64) invalid(`approved command ${index} tokens has invalid bounds`);
+  const tokens = tokenInputs.map((token, tokenIndex) =>
+    boundedText(token, 1, 1_024, `approved command ${index} token ${tokenIndex}`),
+  );
+  const executableIndex = tokens.findIndex(token => !token.includes('='));
+  if (executableIndex < 0) invalid(`approved command ${index} lacks an executable`);
+  for (const assignment of tokens.slice(0, executableIndex)) {
+    if (assignment !== 'PYTHONPATH=src') invalid(`approved command ${index} has an unsupported environment assignment`);
+  }
+  if (!/^[A-Za-z0-9._+-]{1,128}$/u.test(tokens[executableIndex])) {
+    invalid(`approved command ${index} executable must be one bare name`);
+  }
+  for (const token of tokens.slice(executableIndex + 1)) {
+    if (
+      /[\0\r\n;&|<>`$(){}\\]/u.test(token) ||
+      isAbsolute(token) ||
+      token.split('/').some(segment => segment === '..')
+    ) {
+      invalid(`approved command ${index} argument is outside the sealed task-command grammar`);
+    }
+  }
+  return {
+    taskId: matching(command.taskId, TASK_ID, `approved command ${index} task id`),
+    tokens,
   };
 }
 

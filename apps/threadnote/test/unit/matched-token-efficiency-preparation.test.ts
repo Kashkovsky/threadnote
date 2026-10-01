@@ -421,6 +421,7 @@ describe('matched token-efficiency study preparation', () => {
       `${JSON.stringify(
         {
           adapter: {
+            approvedCommands: [{taskId: corpus.tasks[0].taskId, tokens: ['true', '--version']}],
             appServer: {
               argumentsAfterSubcommand: [],
               argumentsBeforeSubcommand: [],
@@ -438,7 +439,7 @@ describe('matched token-efficiency study preparation', () => {
             },
             model: {id: 'agent-model', provider: 'fixture', reasoningEffort: 'medium'},
             pricingMicrosPerMillionTokens: null,
-            safeBinaries: [],
+            safeBinaries: ['/usr/bin/true'],
             safeExecutablePath: '/usr/bin:/bin',
             taskBudget: {steps: 100, tokens: 100_000},
             temporaryRoot: adapterTemporaryRoot,
@@ -548,6 +549,7 @@ describe('matched token-efficiency study preparation', () => {
       expect(hash, definition.arm).toBe(definition.adapterConfigurationHash);
       expect(hash, definition.arm).toBe(receipt.adapterConfigurationHashes[definition.arm]);
     }
+    expect(configs.every(entry => entry.config.approvedCommands[0]?.taskId === corpus.tasks[0].taskId)).toBe(true);
     const graphConfig = configs.find(entry => entry.config.arm === 'threadnote-graph')?.config;
     const compactConfig = configs.find(entry => entry.config.arm === 'threadnote-compact')?.config;
     expect(graphConfig?.contextHomes).toHaveLength(corpus.tasks.length);
