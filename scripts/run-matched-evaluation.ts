@@ -3,8 +3,10 @@
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This evaluation runner owns pinned local executable, artifact, and process-group boundaries. */
 
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {createHash} from 'node:crypto';
-import {lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises';
+import {cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, isAbsolute, join, resolve, sep} from 'node:path';
 import {Effect} from 'effect';
@@ -29,7 +31,11 @@ import {
 import {
   assertMatchedTokenEfficiencyObservationContextV1,
   assertMatchedTokenEfficiencyStudyMatchesV1,
+  createMatchedTokenEfficiencyTaskContextV1,
   evaluateMatchedTokenEfficiencyV1,
+  matchedTokenEfficiencyCitationHashV1,
+  matchedTokenEfficiencyGraphContentHashV1,
+  matchedTokenEfficiencyGraphSnapshotHashV1,
   parseMatchedTokenEfficiencyStudyV1,
   renderMatchedTokenEfficiencyArticleEvidenceV1,
   type MatchedTokenEfficiencyStudyV1,
@@ -168,6 +174,51 @@ export function projectMatchedEvaluationContinuationAdapterTaskV2(
 }
 
 type MatchedEvaluationProjectedAdapterTask = ReturnType<typeof projectMatchedEvaluationAdapterTaskV1>;
+
+export interface MatchedEvaluationContinuationPhaseOneTaskPacketV1 {
+  readonly phaseOneAllowedPaths: readonly string[];
+  readonly phaseOneDirective: string;
+  readonly phaseOneFocusedChecks: readonly string[];
+  readonly phaseTwoFocusedChecks: readonly string[];
+  readonly phaseTwoPrompt: string;
+  readonly repositoryName: string;
+  readonly sourceRevision: string;
+  readonly sourceTaskPrompt: string;
+  readonly status: 'draft-unsealed';
+  readonly taskKey: string;
+  readonly version: 1;
+}
+
+export interface MatchedEvaluationContinuationPhaseOneSelectionV1 {
+  readonly continuationAttempts: MatchedEvaluationContinuationPilotPlanV2['attempts'];
+  readonly phaseOnePrompt: string;
+  readonly phaseOnePromptSha256: string;
+  readonly phaseOneRunNonce: string;
+  readonly sourceTask: MatchedEvaluationContinuationPilotPlanV2['sourceTask'];
+  readonly taskPacket: MatchedEvaluationContinuationPhaseOneTaskPacketV1;
+  readonly taskPacketSha256: string;
+  readonly version: 1;
+}
+
+export interface MatchedEvaluationContinuationPhaseOneReceiptV1 {
+  readonly continuationAttempts: MatchedEvaluationContinuationPhaseOneSelectionV1['continuationAttempts'];
+  readonly evidenceSha256: {
+    readonly adapterArtifactHash: string;
+    readonly adapterConfigurationFileSha256: string;
+    readonly artifactSha256: string;
+    readonly requestSha256: string;
+    readonly responseSha256: string;
+    readonly transcriptSha256: string;
+  };
+  readonly metrics: ReturnType<typeof parseMatchedEvaluationObservationV1>['metrics'];
+  readonly phaseOnePromptSha256: string;
+  readonly phaseOneRunNonce: string;
+  readonly selectionSha256: string;
+  readonly taskId: string;
+  readonly taskPacketSha256: string;
+  readonly transcriptHash: string;
+  readonly version: 1;
+}
 
 export interface ResolvedRuntimeArm {
   readonly config: MatchedEvaluationRuntimeArmV1;
@@ -419,6 +470,301 @@ export interface MatchedEvaluationContinuationPilotPlanV2 {
 
 export type MatchedEvaluationContinuationPilotPlan =
   MatchedEvaluationContinuationPilotPlanV1 | MatchedEvaluationContinuationPilotPlanV2;
+
+export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
+  value: unknown,
+): MatchedEvaluationContinuationPhaseOneTaskPacketV1 {
+  const packet = object(value, 'continuation phase-one task packet');
+  exactKeys(
+    packet,
+    [
+      'phaseOneAllowedPaths',
+      'phaseOneDirective',
+      'phaseOneFocusedChecks',
+      'phaseTwoFocusedChecks',
+      'phaseTwoPrompt',
+      'repositoryName',
+      'sourceRevision',
+      'sourceTaskPrompt',
+      'status',
+      'taskKey',
+      'version',
+    ],
+    'continuation phase-one task packet',
+  );
+  if (packet.version !== 1 || packet.status !== 'draft-unsealed') {
+    invalid('continuation phase-one task packet version or status is invalid');
+  }
+  const paths = stringArray(packet.phaseOneAllowedPaths, 1, 16, 4_096, 'phase-one allowed paths');
+  if (
+    new Set(paths).size !== paths.length ||
+    paths.some(path => isAbsolute(path) || path.startsWith('.') || path.split('/').some(segment => segment === '..'))
+  ) {
+    invalid('continuation phase-one allowed paths are invalid');
+  }
+  return {
+    phaseOneAllowedPaths: paths,
+    phaseOneDirective: boundedString(packet.phaseOneDirective, 1, 8_000, 'phase-one directive'),
+    phaseOneFocusedChecks: stringArray(packet.phaseOneFocusedChecks, 1, 8, 4_096, 'phase-one focused checks'),
+    phaseTwoFocusedChecks: stringArray(packet.phaseTwoFocusedChecks, 1, 8, 4_096, 'phase-two focused checks'),
+    phaseTwoPrompt: boundedString(packet.phaseTwoPrompt, 1, 12_000, 'phase-two prompt'),
+    repositoryName: matchingString(packet.repositoryName, /^[a-z0-9][a-z0-9._-]{1,127}$/u, 'repository name'),
+    sourceRevision: matchingString(packet.sourceRevision, /^[0-9a-f]{40}$/u, 'source revision'),
+    sourceTaskPrompt: boundedString(packet.sourceTaskPrompt, 1, 12_000, 'source task prompt'),
+    status: packet.status,
+    taskKey: matchingString(packet.taskKey, /^[a-z][a-z0-9-]{2,127}$/u, 'task key'),
+    version: packet.version,
+  };
+}
+
+export function createMatchedEvaluationContinuationPhaseOneSelectionV1(input: {
+  readonly packet: MatchedEvaluationContinuationPhaseOneTaskPacketV1;
+  readonly taskPacketSha256: string;
+  readonly task: MatchedEvaluationManifestV1['tasks'][number];
+  readonly taskPrompt: string;
+  readonly repositoryRevision: string;
+}): MatchedEvaluationContinuationPhaseOneSelectionV1 {
+  if (input.packet.sourceTaskPrompt !== input.taskPrompt) {
+    throw new Error('Continuation phase-one task packet differs from the frozen source prompt.');
+  }
+  if (input.packet.sourceRevision !== input.repositoryRevision) {
+    throw new Error('Continuation phase-one task packet differs from the frozen source revision.');
+  }
+  const packetHash = matchingString(input.taskPacketSha256, HASH, 'phase-one task packet hash');
+  const phaseOnePrompt = `${input.packet.sourceTaskPrompt}\n\n${input.packet.phaseOneDirective}`;
+  const variants = BASE_CONTINUATION_VARIANTS.map(variant => ({
+    score: sha256Bytes(
+      Buffer.from(`matched-continuation-treatment-order-v1\0${packetHash}\0${input.task.taskId}\0${variant}`),
+    ),
+    variant,
+  })).sort((left, right) => left.score.localeCompare(right.score));
+  const labels = ['A', 'B', 'C', 'D'] as const;
+  return {
+    continuationAttempts: variants.map(({variant}, index) => ({
+      blindLabel: labels[index],
+      runNonce: `run_${sha256Bytes(
+        Buffer.from(`matched-continuation-phase-two-run-v1\0${packetHash}\0${input.task.taskId}\0${variant}`),
+      ).slice(0, 32)}`,
+      runOrder: index + 1,
+      variant,
+    })),
+    phaseOnePrompt,
+    phaseOnePromptSha256: sha256Bytes(Buffer.from(phaseOnePrompt)),
+    phaseOneRunNonce: `run_${sha256Bytes(
+      Buffer.from(`matched-continuation-phase-one-run-v1\0${packetHash}\0${input.task.taskId}`),
+    ).slice(0, 32)}`,
+    sourceTask: {
+      prompt: input.taskPrompt,
+      promptSha256: input.task.promptHash,
+      repositoryFixtureHash: input.task.repositoryFixtureHash,
+      repositoryRevision: input.repositoryRevision,
+      taskId: input.task.taskId,
+    },
+    taskPacket: input.packet,
+    taskPacketSha256: packetHash,
+    version: 1,
+  };
+}
+
+export function parseMatchedEvaluationContinuationPhaseOneSelectionV1(
+  value: unknown,
+): MatchedEvaluationContinuationPhaseOneSelectionV1 {
+  const selection = object(value, 'continuation phase-one selection');
+  exactKeys(
+    selection,
+    [
+      'continuationAttempts',
+      'phaseOnePrompt',
+      'phaseOnePromptSha256',
+      'phaseOneRunNonce',
+      'sourceTask',
+      'taskPacket',
+      'taskPacketSha256',
+      'version',
+    ],
+    'continuation phase-one selection',
+  );
+  if (selection.version !== 1) invalid('continuation phase-one selection version is invalid');
+  const taskPacket = parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(selection.taskPacket);
+  const phaseOnePrompt = boundedString(selection.phaseOnePrompt, 1, 20_000, 'continuation phase-one prompt');
+  const expectedPhaseOnePrompt = `${taskPacket.sourceTaskPrompt}\n\n${taskPacket.phaseOneDirective}`;
+  if (phaseOnePrompt !== expectedPhaseOnePrompt) invalid('continuation phase-one prompt differs from its packet');
+  const phaseOnePromptSha256 = matchingString(
+    selection.phaseOnePromptSha256,
+    HASH,
+    'continuation phase-one prompt hash',
+  );
+  if (phaseOnePromptSha256 !== sha256Bytes(Buffer.from(phaseOnePrompt))) {
+    invalid('continuation phase-one prompt hash differs');
+  }
+  const sourceTask = object(selection.sourceTask, 'continuation phase-one source task');
+  exactKeys(
+    sourceTask,
+    ['prompt', 'promptSha256', 'repositoryFixtureHash', 'repositoryRevision', 'taskId'],
+    'continuation phase-one source task',
+  );
+  const sourcePrompt = boundedString(sourceTask.prompt, 1, 12_000, 'continuation phase-one source prompt');
+  const parsedSourceTask = {
+    prompt: sourcePrompt,
+    promptSha256: matchingString(sourceTask.promptSha256, HASH, 'continuation phase-one source prompt hash'),
+    repositoryFixtureHash: matchingString(
+      sourceTask.repositoryFixtureHash,
+      HASH,
+      'continuation phase-one source fixture hash',
+    ),
+    repositoryRevision: matchingString(
+      sourceTask.repositoryRevision,
+      /^[0-9a-f]{40}$/u,
+      'continuation phase-one source revision',
+    ),
+    taskId: matchingString(sourceTask.taskId, /^tsk_[0-9a-f]{16,64}$/u, 'continuation phase-one task id'),
+  };
+  if (
+    parsedSourceTask.prompt !== taskPacket.sourceTaskPrompt ||
+    parsedSourceTask.promptSha256 !== sha256Bytes(Buffer.from(parsedSourceTask.prompt)) ||
+    parsedSourceTask.repositoryRevision !== taskPacket.sourceRevision
+  ) {
+    invalid('continuation phase-one source task differs from its packet');
+  }
+  const attempts = parseContinuationPhaseOneAttemptsV1(
+    selection.continuationAttempts,
+    'continuation phase-one attempts',
+  );
+  return {
+    continuationAttempts: [...attempts].sort((left, right) => left.runOrder - right.runOrder),
+    phaseOnePrompt,
+    phaseOnePromptSha256,
+    phaseOneRunNonce: matchingString(
+      selection.phaseOneRunNonce,
+      /^run_[0-9a-f]{32}$/u,
+      'continuation phase-one run nonce',
+    ),
+    sourceTask: parsedSourceTask,
+    taskPacket,
+    taskPacketSha256: matchingString(selection.taskPacketSha256, HASH, 'continuation phase-one packet hash'),
+    version: 1,
+  };
+}
+
+export function parseMatchedEvaluationContinuationPhaseOneReceiptV1(
+  value: unknown,
+): MatchedEvaluationContinuationPhaseOneReceiptV1 {
+  const receipt = object(value, 'continuation phase-one receipt');
+  exactKeys(
+    receipt,
+    [
+      'continuationAttempts',
+      'evidenceSha256',
+      'metrics',
+      'phaseOnePromptSha256',
+      'phaseOneRunNonce',
+      'selectionSha256',
+      'taskId',
+      'taskPacketSha256',
+      'transcriptHash',
+      'version',
+    ],
+    'continuation phase-one receipt',
+  );
+  if (receipt.version !== 1) invalid('continuation phase-one receipt version is invalid');
+  const evidence = object(receipt.evidenceSha256, 'continuation phase-one receipt evidence');
+  exactKeys(
+    evidence,
+    [
+      'adapterArtifactHash',
+      'adapterConfigurationFileSha256',
+      'artifactSha256',
+      'requestSha256',
+      'responseSha256',
+      'transcriptSha256',
+    ],
+    'continuation phase-one receipt evidence',
+  );
+  const evidenceSha256 = {
+    adapterArtifactHash: matchingString(evidence.adapterArtifactHash, HASH, 'phase-one receipt adapter hash'),
+    adapterConfigurationFileSha256: matchingString(
+      evidence.adapterConfigurationFileSha256,
+      HASH,
+      'phase-one receipt adapter config hash',
+    ),
+    artifactSha256: matchingString(evidence.artifactSha256, HASH, 'phase-one receipt artifact hash'),
+    requestSha256: matchingString(evidence.requestSha256, HASH, 'phase-one receipt request hash'),
+    responseSha256: matchingString(evidence.responseSha256, HASH, 'phase-one receipt response hash'),
+    transcriptSha256: matchingString(evidence.transcriptSha256, HASH, 'phase-one receipt transcript hash'),
+  };
+  const transcriptHash = matchingString(receipt.transcriptHash, HASH, 'phase-one receipt transcript hash');
+  const observation = parseMatchedEvaluationObservationV1({
+    artifactHash: evidenceSha256.artifactSha256,
+    metrics: receipt.metrics,
+    transcriptHash,
+    version: 5,
+  });
+  return {
+    continuationAttempts: parseContinuationPhaseOneAttemptsV1(
+      receipt.continuationAttempts,
+      'continuation phase-one receipt attempts',
+    ),
+    evidenceSha256,
+    metrics: observation.metrics,
+    phaseOnePromptSha256: matchingString(receipt.phaseOnePromptSha256, HASH, 'phase-one receipt prompt hash'),
+    phaseOneRunNonce: matchingString(receipt.phaseOneRunNonce, /^run_[0-9a-f]{32}$/u, 'phase-one receipt run nonce'),
+    selectionSha256: matchingString(receipt.selectionSha256, HASH, 'phase-one receipt selection hash'),
+    taskId: matchingString(receipt.taskId, /^tsk_[0-9a-f]{16,64}$/u, 'phase-one receipt task id'),
+    taskPacketSha256: matchingString(receipt.taskPacketSha256, HASH, 'phase-one receipt task packet hash'),
+    transcriptHash,
+    version: 1,
+  };
+}
+
+export function assertMatchedEvaluationContinuationPhaseOneReceiptV1(input: {
+  readonly evidenceSha256: MatchedEvaluationContinuationPhaseOneReceiptV1['evidenceSha256'];
+  readonly receipt: MatchedEvaluationContinuationPhaseOneReceiptV1;
+  readonly responseObservation: ReturnType<typeof parseMatchedEvaluationObservationV1>;
+  readonly selection: MatchedEvaluationContinuationPhaseOneSelectionV1;
+  readonly selectionSha256: string;
+}): void {
+  if (
+    JSON.stringify(input.receipt.continuationAttempts) !== JSON.stringify(input.selection.continuationAttempts) ||
+    JSON.stringify(input.receipt.evidenceSha256) !== JSON.stringify(input.evidenceSha256) ||
+    JSON.stringify(input.receipt.metrics) !== JSON.stringify(input.responseObservation.metrics) ||
+    input.receipt.phaseOnePromptSha256 !== input.selection.phaseOnePromptSha256 ||
+    input.receipt.phaseOneRunNonce !== input.selection.phaseOneRunNonce ||
+    input.receipt.selectionSha256 !== input.selectionSha256 ||
+    input.receipt.taskId !== input.selection.sourceTask.taskId ||
+    input.receipt.taskPacketSha256 !== input.selection.taskPacketSha256 ||
+    input.receipt.transcriptHash !== input.responseObservation.transcriptHash ||
+    input.responseObservation.artifactHash !== input.receipt.evidenceSha256.artifactSha256 ||
+    input.responseObservation.transcriptHash !== input.receipt.evidenceSha256.transcriptSha256
+  ) {
+    throw new Error('Continuation phase-one receipt differs from the sealed selection or preserved evidence.');
+  }
+}
+
+function parseContinuationPhaseOneAttemptsV1(
+  value: unknown,
+  label: string,
+): MatchedEvaluationContinuationPhaseOneSelectionV1['continuationAttempts'] {
+  const attempts = array(value, label).map((entry, index) => {
+    const attempt = object(entry, `${label} entry ${index}`);
+    exactKeys(attempt, ['blindLabel', 'runNonce', 'runOrder', 'variant'], `${label} entry ${index}`);
+    return {
+      blindLabel: literal(attempt.blindLabel, ['A', 'B', 'C', 'D'] as const, `${label} entry ${index} label`),
+      runNonce: matchingString(attempt.runNonce, /^run_[0-9a-f]{32}$/u, `${label} entry ${index} nonce`),
+      runOrder: boundedPositiveInteger(attempt.runOrder, 1, 4, `${label} entry ${index} order`),
+      variant: literal(attempt.variant, BASE_CONTINUATION_VARIANTS, `${label} entry ${index} variant`),
+    };
+  });
+  if (
+    attempts.length !== 4 ||
+    new Set(attempts.map(attempt => attempt.blindLabel)).size !== 4 ||
+    new Set(attempts.map(attempt => attempt.runNonce)).size !== 4 ||
+    new Set(attempts.map(attempt => attempt.runOrder)).size !== 4 ||
+    new Set(attempts.map(attempt => attempt.variant)).size !== 4
+  ) {
+    invalid(`${label} must contain four unique treatments`);
+  }
+  return [...attempts].sort((left, right) => left.runOrder - right.runOrder);
+}
 
 export interface MatchedEvaluationContinuationSupplementV1 {
   readonly adapterArtifactSha256: string;
@@ -1195,6 +1541,25 @@ const program = Effect.gen(function* () {
   const options = parseArguments(yield* scriptArguments());
   yield* Effect.tryPromise({
     try: () => {
+      if (options.continuationFinalizeDirectory !== null) {
+        return finalizeMatchedEvaluationContinuationCheckpointFromFilesV1({
+          corpusPath: options.corpusPath,
+          manifestPath: options.manifestPath,
+          outputDirectory: options.continuationFinalizeDirectory,
+          runtimePath: options.runtimePath,
+          studyPath: options.studyPath!,
+        });
+      }
+      if (options.continuationPhaseOneTaskPacketPath !== null) {
+        return runMatchedEvaluationContinuationPhaseOneFromFilesV1({
+          corpusPath: options.corpusPath,
+          manifestPath: options.manifestPath,
+          outputDirectory: options.continuationPhaseOneDirectory!,
+          runtimePath: options.runtimePath,
+          studyPath: options.studyPath!,
+          taskPacketPath: options.continuationPhaseOneTaskPacketPath,
+        });
+      }
       if (options.continuationPilotPlanPath !== null) {
         return runMatchedEvaluationContinuationPilotFromFilesV1({
           corpusPath: options.corpusPath,
@@ -1472,6 +1837,804 @@ export async function runMatchedEvaluationPilotFromFilesV1(options: {
   process.stdout.write(
     `${JSON.stringify({artifactDirectory: pilotDirectory, attemptCount: attempts.length, comparativeClaimsEligible: false, completed: allCompleted, finished: true, version: 1})}\n`,
   );
+}
+
+/** Execute one common test-only Phase 1 after sealing its prompt and later treatment order. */
+export async function runMatchedEvaluationContinuationPhaseOneFromFilesV1(options: {
+  readonly corpusPath: string;
+  readonly manifestPath: string;
+  readonly outputDirectory: string;
+  readonly runtimePath: string;
+  readonly studyPath: string;
+  readonly taskPacketPath: string;
+}): Promise<void> {
+  const [corpus, manifest, runtime, study, taskPacketBytes] = await Promise.all([
+    readJson(options.corpusPath).then(parseMatchedEvaluationCorpusV1),
+    readJson(options.manifestPath).then(parseMatchedEvaluationManifestV1),
+    readJson(options.runtimePath).then(parseMatchedEvaluationRuntimeV1),
+    readJson(options.studyPath).then(parseMatchedTokenEfficiencyStudyV1),
+    readFile(options.taskPacketPath),
+  ]);
+  assertMatchedTokenEfficiencyStudyMatchesV1(study, corpus, manifest);
+  if (runtime.verificationPlanHash !== study.verificationPlanHash) {
+    throw new Error('Runtime and study disagree on the sealed verification plan.');
+  }
+  const packet = parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
+    JSON.parse(taskPacketBytes.toString('utf8')) as unknown,
+  );
+  const matchingTasks = corpus.tasks.filter(task => task.prompt === packet.sourceTaskPrompt);
+  if (matchingTasks.length !== 1) {
+    throw new Error('Continuation phase-one packet must match exactly one frozen corpus task.');
+  }
+  const corpusTask = matchingTasks[0];
+  const manifestTask = manifest.tasks.find(task => task.taskId === corpusTask.taskId);
+  if (manifestTask === undefined) throw new Error(`Manifest lacks task ${corpusTask.taskId}.`);
+  const taskContext = study.taskContexts.find(context => context.taskId === corpusTask.taskId);
+  if (taskContext === undefined) throw new Error(`Study lacks task context ${corpusTask.taskId}.`);
+  const cluster = study.clusters.find(candidate => candidate.clusterId === taskContext.clusterId);
+  if (cluster === undefined) throw new Error(`Study lacks cluster ${taskContext.clusterId}.`);
+  if (
+    cluster.revision !== packet.sourceRevision ||
+    cluster.repositoryFixtureHash !== corpusTask.repositoryFixtureHash ||
+    manifestTask.promptHash !== sha256Bytes(Buffer.from(packet.sourceTaskPrompt))
+  ) {
+    throw new Error('Continuation phase-one packet differs from the frozen task identity.');
+  }
+  const outputDirectory = absolutePath(options.outputDirectory, 'continuation phase-one output directory');
+  if (outputDirectory === runtime.artifactDirectory) {
+    throw new Error('Continuation phase-one output must differ from the full-study artifact directory.');
+  }
+  await mkdir(outputDirectory, {recursive: true, mode: 0o700});
+  if ((await realpath(outputDirectory)) !== outputDirectory) {
+    throw new Error('Continuation phase-one output directory must use its canonical path.');
+  }
+  const selection = createMatchedEvaluationContinuationPhaseOneSelectionV1({
+    packet,
+    repositoryRevision: cluster.revision,
+    task: manifestTask,
+    taskPacketSha256: sha256Bytes(taskPacketBytes),
+    taskPrompt: corpusTask.prompt,
+  });
+  await writeFile(resolve(outputDirectory, 'phase-one-task-packet.json'), taskPacketBytes, {flag: 'wx', mode: 0o600});
+  const selectionPath = resolve(outputDirectory, 'phase-one-selection.json');
+  try {
+    await writeFile(selectionPath, `${JSON.stringify(selection, undefined, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+  } catch (cause) {
+    if ((cause as {code?: string}).code === 'EEXIST') {
+      throw new Error('Continuation phase-one selection already exists; retry is not supported.', {cause});
+    }
+    throw cause;
+  }
+  const filesDefinition = manifest.arms.find(definition => definition.arm === 'files');
+  if (filesDefinition === undefined) throw new Error('Manifest lacks the files arm definition.');
+  const executionDirectory = resolve(outputDirectory, 'phase-one-execution');
+  const phaseOneRuntime = {...runtime, artifactDirectory: executionDirectory};
+  const repositories = await resolveMatchedEvaluationRuntimeRepositoriesV1(phaseOneRuntime, study, manifest.repository);
+  await assertResolvedRuntimeRepositories(repositories);
+  const resolution = await resolveRuntimeArm(phaseOneRuntime, 'files', filesDefinition);
+  if ('reason' in resolution) {
+    throw new Error(`Continuation phase-one files runtime unavailable: ${resolution.detail}`);
+  }
+  const blindLabel = Object.entries(manifest.blindAssignment).find(([, arm]) => arm === 'files')?.[0] as
+    MatchedEvaluationRunRequestV1['schedule']['blindLabel'] | undefined;
+  if (blindLabel === undefined) throw new Error('Manifest blind assignment lacks the files arm.');
+  const request: MatchedEvaluationRunRequestV1 = {
+    arm: 'files',
+    armDefinition: filesDefinition,
+    manifest,
+    schedule: {
+      blindLabel,
+      position: 1,
+      repetition: 0,
+      runNonce: selection.phaseOneRunNonce,
+      runOrder: 0,
+      taskId: corpusTask.taskId,
+    },
+    task: {...corpusTask, prompt: selection.phaseOnePrompt},
+  };
+  const repository = requiredRuntimeRepository(repositories, corpusTask.taskId, study);
+  const observation = await executeArm(phaseOneRuntime, resolution, repository, request, study);
+  await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected);
+  const runDirectory = resolve(executionDirectory, 'runs', selection.phaseOneRunNonce);
+  const transcriptPath = resolve(executionDirectory, 'transcripts', `${selection.phaseOneRunNonce}.jsonl`);
+  const evidenceDirectory = resolve(outputDirectory, 'phase-one');
+  await mkdir(evidenceDirectory, {mode: 0o700});
+  const evidence = [
+    [resolve(runDirectory, 'runtime', 'adapter'), resolve(evidenceDirectory, 'adapter')],
+    [resolve(runDirectory, 'runtime', 'adapter-config.json'), resolve(evidenceDirectory, 'adapter-config.json')],
+    [resolve(runDirectory, 'artifact.json'), resolve(evidenceDirectory, 'artifact.json')],
+    [resolve(runDirectory, 'request.json'), resolve(evidenceDirectory, 'request.json')],
+    [resolve(runDirectory, 'response.json'), resolve(evidenceDirectory, 'response.json')],
+    [transcriptPath, resolve(evidenceDirectory, 'transcript.jsonl')],
+  ] as const;
+  await Promise.all(
+    evidence.map(async ([source, destination]) =>
+      writeFile(destination, await readFile(source), {
+        flag: 'wx',
+        mode: destination.endsWith('/adapter') ? 0o700 : 0o600,
+      }),
+    ),
+  );
+  const artifact = object(
+    await readJson(resolve(evidenceDirectory, 'artifact.json')),
+    'continuation phase-one artifact',
+  );
+  const agentResult = object(artifact.agentResult, 'continuation phase-one agent result');
+  if (agentResult.completed !== true || typeof artifact.patch !== 'string' || artifact.patch.length === 0) {
+    throw new Error('Continuation phase-one agent did not return one completed nonempty test patch.');
+  }
+  const [
+    adapterArtifactHash,
+    adapterConfigurationFileSha256,
+    artifactSha256,
+    requestSha256,
+    responseSha256,
+    transcriptSha256,
+  ] = await Promise.all([
+    boundedRegularFileHash(resolve(evidenceDirectory, 'adapter'), 128 * 1_024 * 1_024, 'phase-one adapter'),
+    boundedRegularFileHash(
+      resolve(evidenceDirectory, 'adapter-config.json'),
+      MAXIMUM_JSON_BYTES,
+      'phase-one adapter config',
+    ),
+    boundedRegularFileHash(resolve(evidenceDirectory, 'artifact.json'), MAXIMUM_JSON_BYTES, 'phase-one artifact'),
+    boundedRegularFileHash(resolve(evidenceDirectory, 'request.json'), MAXIMUM_JSON_BYTES, 'phase-one request'),
+    boundedRegularFileHash(resolve(evidenceDirectory, 'response.json'), MAXIMUM_JSON_BYTES, 'phase-one response'),
+    boundedRegularFileHash(
+      resolve(evidenceDirectory, 'transcript.jsonl'),
+      MAXIMUM_TRANSCRIPT_BYTES,
+      'phase-one transcript',
+    ),
+  ]);
+  const receipt: MatchedEvaluationContinuationPhaseOneReceiptV1 = {
+    continuationAttempts: selection.continuationAttempts,
+    evidenceSha256: {
+      adapterArtifactHash,
+      adapterConfigurationFileSha256,
+      artifactSha256,
+      requestSha256,
+      responseSha256,
+      transcriptSha256,
+    },
+    metrics: observation.metrics,
+    phaseOnePromptSha256: selection.phaseOnePromptSha256,
+    phaseOneRunNonce: selection.phaseOneRunNonce,
+    selectionSha256: await boundedRegularFileHash(
+      selectionPath,
+      MAXIMUM_JSON_BYTES,
+      'continuation phase-one selection',
+    ),
+    taskId: corpusTask.taskId,
+    taskPacketSha256: selection.taskPacketSha256,
+    transcriptHash: observation.transcriptHash,
+    version: 1,
+  } as const;
+  await atomicWrite(resolve(outputDirectory, 'phase-one-receipt.json'), `${JSON.stringify(receipt, undefined, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({outputDirectory, taskId: corpusTask.taskId, version: 1})}\n`);
+}
+
+/** Turn preserved Phase-1 evidence into one direct-child checkpoint and sealed v2 continuation plan. */
+export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1(options: {
+  readonly corpusPath: string;
+  readonly manifestPath: string;
+  readonly outputDirectory: string;
+  readonly runtimePath: string;
+  readonly studyPath: string;
+}): Promise<void> {
+  const outputDirectory = await canonicalDirectory(options.outputDirectory, 'continuation checkpoint output directory');
+  const selectionPath = resolve(outputDirectory, 'phase-one-selection.json');
+  const [
+    corpus,
+    manifest,
+    runtime,
+    study,
+    taskPacketBytes,
+    selectionInput,
+    receiptInput,
+    artifactInput,
+    requestInput,
+    responseInput,
+  ] = await Promise.all([
+    readJson(options.corpusPath).then(parseMatchedEvaluationCorpusV1),
+    readJson(options.manifestPath).then(parseMatchedEvaluationManifestV1),
+    readJson(options.runtimePath).then(parseMatchedEvaluationRuntimeV1),
+    readJson(options.studyPath).then(parseMatchedTokenEfficiencyStudyV1),
+    readFile(resolve(outputDirectory, 'phase-one-task-packet.json')),
+    readJson(selectionPath),
+    readJson(resolve(outputDirectory, 'phase-one-receipt.json')),
+    readJson(resolve(outputDirectory, 'phase-one', 'artifact.json')),
+    readJson(resolve(outputDirectory, 'phase-one', 'request.json')),
+    readJson(resolve(outputDirectory, 'phase-one', 'response.json')),
+  ]);
+  assertMatchedTokenEfficiencyStudyMatchesV1(study, corpus, manifest);
+  const selection = parseMatchedEvaluationContinuationPhaseOneSelectionV1(selectionInput);
+  const phaseOneReceipt = parseMatchedEvaluationContinuationPhaseOneReceiptV1(receiptInput);
+  if (sha256Bytes(taskPacketBytes) !== selection.taskPacketSha256) {
+    throw new Error('Continuation phase-one task packet bytes differ from the sealed selection.');
+  }
+  const corpusTask = corpus.tasks.find(task => task.taskId === selection.sourceTask.taskId);
+  if (corpusTask === undefined || corpusTask.prompt !== selection.sourceTask.prompt) {
+    throw new Error('Continuation checkpoint selection differs from the frozen corpus task.');
+  }
+  const taskContext = study.taskContexts.find(context => context.taskId === corpusTask.taskId);
+  if (taskContext === undefined) throw new Error(`Study lacks task context ${corpusTask.taskId}.`);
+  const cluster = study.clusters.find(candidate => candidate.clusterId === taskContext.clusterId);
+  if (cluster === undefined) throw new Error(`Study lacks cluster ${taskContext.clusterId}.`);
+  const runtimeRepository = runtime.repositories.find(repository => repository.clusterId === cluster.clusterId);
+  if (runtimeRepository === undefined) throw new Error(`Runtime lacks cluster ${cluster.clusterId}.`);
+  await assertMatchedEvaluationRepositoryV1(runtimeRepository.repositoryDirectory, {
+    dirty: false,
+    fixtureHash: cluster.repositoryFixtureHash,
+    identityHash: cluster.repositoryIdentityHash,
+    revision: cluster.revision,
+  });
+  const artifact = object(artifactInput, 'continuation phase-one artifact');
+  const agentResult = object(artifact.agentResult, 'continuation phase-one agent result');
+  const request = object(requestInput, 'continuation phase-one request');
+  const response = object(responseInput, 'continuation phase-one response');
+  const responseObservation = parseMatchedEvaluationObservationV1(responseInput);
+  const [
+    adapterArtifactHash,
+    adapterConfigurationFileSha256,
+    artifactSha256,
+    requestSha256,
+    responseSha256,
+    transcriptSha256,
+    selectionSha256,
+  ] = await Promise.all([
+    boundedRegularFileHash(resolve(outputDirectory, 'phase-one', 'adapter'), 128 * 1_024 * 1_024, 'phase-one adapter'),
+    boundedRegularFileHash(
+      resolve(outputDirectory, 'phase-one', 'adapter-config.json'),
+      MAXIMUM_JSON_BYTES,
+      'phase-one adapter config',
+    ),
+    boundedRegularFileHash(
+      resolve(outputDirectory, 'phase-one', 'artifact.json'),
+      MAXIMUM_JSON_BYTES,
+      'phase-one artifact',
+    ),
+    boundedRegularFileHash(
+      resolve(outputDirectory, 'phase-one', 'request.json'),
+      MAXIMUM_JSON_BYTES,
+      'phase-one request',
+    ),
+    boundedRegularFileHash(
+      resolve(outputDirectory, 'phase-one', 'response.json'),
+      MAXIMUM_JSON_BYTES,
+      'phase-one response',
+    ),
+    boundedRegularFileHash(
+      resolve(outputDirectory, 'phase-one', 'transcript.jsonl'),
+      MAXIMUM_TRANSCRIPT_BYTES,
+      'phase-one transcript',
+    ),
+    boundedRegularFileHash(selectionPath, MAXIMUM_JSON_BYTES, 'continuation phase-one selection'),
+  ]);
+  assertMatchedEvaluationContinuationPhaseOneReceiptV1({
+    evidenceSha256: {
+      adapterArtifactHash,
+      adapterConfigurationFileSha256,
+      artifactSha256,
+      requestSha256,
+      responseSha256,
+      transcriptSha256,
+    },
+    receipt: phaseOneReceipt,
+    responseObservation,
+    selection,
+    selectionSha256,
+  });
+  if (
+    agentResult.completed !== true ||
+    typeof artifact.patch !== 'string' ||
+    artifact.patch.length === 0 ||
+    request.runNonce !== selection.phaseOneRunNonce ||
+    artifact.runNonce !== selection.phaseOneRunNonce
+  ) {
+    throw new Error('Continuation phase-one evidence differs from its sealed selection.');
+  }
+  const checkpointRepository = resolve(outputDirectory, 'checkpoint-repository');
+  await captureContinuationGit(runtimeRepository.repositoryDirectory, [
+    'worktree',
+    'add',
+    '--detach',
+    checkpointRepository,
+    selection.sourceTask.repositoryRevision,
+  ]);
+  const agentPatchPath = resolve(outputDirectory, 'phase-one', 'agent.patch');
+  await writeFile(agentPatchPath, artifact.patch, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+  await captureContinuationGit(checkpointRepository, ['apply', '--index', '--whitespace=nowarn', agentPatchPath]);
+  const changedPaths = (await captureContinuationGit(checkpointRepository, ['diff', '--cached', '--name-only', '-z']))
+    .split('\0')
+    .filter(Boolean)
+    .sort();
+  const allowedPaths = [...selection.taskPacket.phaseOneAllowedPaths].sort();
+  if (changedPaths.length !== allowedPaths.length || changedPaths.some((path, index) => path !== allowedPaths[index])) {
+    throw new Error('Continuation phase-one patch changes a path outside the sealed test-only boundary.');
+  }
+  const filesConfig = parseMatchedEvaluationCodexAdapterConfigV1(
+    await readJson(resolve(outputDirectory, 'phase-one', 'adapter-config.json')),
+  );
+  const focusedCommand = filesConfig.approvedCommands.find(command => command.taskId === corpusTask.taskId);
+  if (focusedCommand === undefined) throw new Error('Continuation phase-one task lacks a sealed focused command.');
+  const focusedCheck = await runMatchedEvaluationContinuationFocusedCheckV1({
+    commandTokens: focusedCommand.tokens,
+    repositoryDirectory: checkpointRepository,
+    safeExecutablePath: filesConfig.safeExecutablePath,
+    temporaryDirectory: resolve(outputDirectory, 'phase-one-check-tmp'),
+  });
+  if (focusedCheck.exitCode !== 1) {
+    throw new Error(
+      `Continuation phase-one focused check must fail with exit code 1, received ${focusedCheck.exitCode}.`,
+    );
+  }
+  await captureContinuationGit(checkpointRepository, [
+    '-c',
+    'user.name=Threadnote Evaluation',
+    '-c',
+    'user.email=evaluation@threadnote.invalid',
+    'commit',
+    '-m',
+    `test: add ${selection.taskPacket.taskKey} regression checkpoint`,
+  ]);
+  const checkpoint = await observeMatchedEvaluationRepositoryV1(checkpointRepository);
+  if (checkpoint.dirty || checkpoint.identityHash !== cluster.repositoryIdentityHash) {
+    throw new Error('Continuation checkpoint repository is dirty or has a different identity.');
+  }
+  const phaseOnePatchSha256 = sha256Bytes(Buffer.from(artifact.patch));
+  await assertMatchedEvaluationContinuationCheckpointV2({
+    agentPatch: artifact.patch,
+    baseFixtureHash: selection.sourceTask.repositoryFixtureHash,
+    baseRevision: selection.sourceTask.repositoryRevision,
+    checkpoint,
+    patchSha256: phaseOnePatchSha256,
+    repositoryDirectory: checkpointRepository,
+  });
+
+  const graphArm = runtime.arms.find(arm => arm.arm === 'threadnote-graph');
+  const compactArm = runtime.arms.find(arm => arm.arm === 'threadnote-compact');
+  const graphDefinition = manifest.arms.find(arm => arm.arm === 'threadnote-graph');
+  const compactDefinition = manifest.arms.find(arm => arm.arm === 'threadnote-compact');
+  if (
+    graphArm?.toolExecutable === null ||
+    graphArm?.toolExecutable === undefined ||
+    compactArm?.toolExecutable !== graphArm.toolExecutable ||
+    graphDefinition?.tool.artifactHash === null ||
+    graphDefinition === undefined ||
+    compactDefinition === undefined
+  ) {
+    throw new Error('Continuation checkpoint runtime lacks one shared pinned Threadnote candidate.');
+  }
+  const sourceGraphConfig = parseMatchedEvaluationCodexAdapterConfigV1(await readJson(graphArm.adapterConfigFile));
+  const sourceCompactConfig = parseMatchedEvaluationCodexAdapterConfigV1(await readJson(compactArm.adapterConfigFile));
+  const sourceGraphHome = sourceGraphConfig.contextHomes.find(home => home.taskId === corpusTask.taskId);
+  const sourceCompactHome = sourceCompactConfig.contextHomes.find(home => home.taskId === corpusTask.taskId);
+  if (
+    sourceGraphHome === undefined ||
+    sourceCompactHome === undefined ||
+    sourceGraphHome.project !== sourceCompactHome.project ||
+    JSON.stringify(sourceGraphHome.identity) !== JSON.stringify(sourceCompactHome.identity)
+  ) {
+    throw new Error('Continuation checkpoint source homes do not share one task identity.');
+  }
+  const graphHome = resolve(outputDirectory, 'checkpoint-homes', 'graph');
+  const compactHome = resolve(outputDirectory, 'checkpoint-homes', 'compact');
+  await mkdir(resolve(outputDirectory, 'checkpoint-homes'), {mode: 0o700});
+  const threadnoteEnvironment = {
+    HOME: '/nonexistent',
+    LANG: 'C.UTF-8',
+    LC_ALL: 'C.UTF-8',
+    PATH: sourceGraphConfig.safeExecutablePath,
+    THREADNOTE_ACCOUNT: sourceGraphHome.identity.account,
+    THREADNOTE_TELEMETRY: '0',
+    THREADNOTE_USER: sourceGraphHome.identity.user,
+  } as const;
+  await captureCodeMemoryLinkProcessGroup({
+    arguments: [
+      'project',
+      'create',
+      sourceGraphHome.project,
+      '--home',
+      graphHome,
+      '--path',
+      checkpointRepository,
+      '--json',
+    ],
+    command: graphArm.toolExecutable,
+    cwd: checkpointRepository,
+    environment: threadnoteEnvironment,
+    label: 'Continuation checkpoint project registration',
+    maxOutputBytes: 512 * 1_024,
+    timeoutMilliseconds: 120_000,
+  });
+  const graphIndex = await captureCodeMemoryLinkProcessGroup({
+    arguments: [
+      'graph',
+      'index',
+      '--home',
+      graphHome,
+      '--cwd',
+      checkpointRepository,
+      '--project',
+      sourceGraphHome.project,
+      '--full',
+      '--no-vectors',
+      '--json',
+    ],
+    command: graphArm.toolExecutable,
+    cwd: checkpointRepository,
+    environment: threadnoteEnvironment,
+    label: 'Continuation checkpoint graph index',
+    maxOutputBytes: 2 * 1_024 * 1_024,
+    timeoutMilliseconds: 30 * 60_000,
+  });
+  const graphIndexResult = parseLastJsonLine(graphIndex.stdout, 'continuation checkpoint graph index');
+  const indexSnapshot = object(graphIndexResult.snapshot, 'continuation checkpoint graph snapshot');
+  if (graphIndexResult.type !== 'code-graph-index' || indexSnapshot.commit !== checkpoint.revision) {
+    throw new Error('Continuation checkpoint graph index differs from the checkpoint revision.');
+  }
+  const graphStatus = await captureCodeMemoryLinkProcessGroup({
+    arguments: [
+      'graph',
+      'status',
+      '--home',
+      graphHome,
+      '--cwd',
+      checkpointRepository,
+      '--project',
+      sourceGraphHome.project,
+      '--json',
+    ],
+    command: graphArm.toolExecutable,
+    cwd: checkpointRepository,
+    environment: threadnoteEnvironment,
+    label: 'Continuation checkpoint graph status',
+    maxOutputBytes: 512 * 1_024,
+    timeoutMilliseconds: 120_000,
+  });
+  const graphStatusResult = object(JSON.parse(graphStatus.stdout) as unknown, 'continuation checkpoint graph status');
+  const statusSnapshot = object(graphStatusResult.readySnapshot, 'continuation checkpoint graph status snapshot');
+  if (statusSnapshot.commit !== checkpoint.revision || statusSnapshot.state !== 'ready') {
+    throw new Error('Continuation checkpoint graph is not exact-current and ready.');
+  }
+  const graphContentHash = matchedTokenEfficiencyGraphContentHashV1(
+    boundedString(statusSnapshot.graphContentId, 1, 256, 'checkpoint graph content id'),
+  );
+  const graphSnapshotHash = matchedTokenEfficiencyGraphSnapshotHashV1(
+    boundedString(statusSnapshot.id, 1, 256, 'checkpoint graph snapshot id'),
+  );
+  if (graphSnapshotHash === taskContext.graphSnapshotHash) {
+    throw new Error('Continuation checkpoint graph snapshot unexpectedly equals the source snapshot.');
+  }
+  await cp(graphHome, compactHome, {errorOnExist: true, force: false, recursive: true});
+  const resumeEvidenceMarker = `threadnote-resume-${phaseOnePatchSha256.slice(0, 20)}`;
+  const handoff = [
+    `Task: ${selection.taskPacket.phaseTwoPrompt}`,
+    `Decisions: Phase 1 added only the committed regression in ${changedPaths.join(', ')}; production code is unchanged. ${resumeEvidenceMarker}`,
+    'Constraints: Keep the committed regression unchanged, preserve public behavior, use no network access, and implement the smallest general production correction.',
+    'Rationale: The direct-child checkpoint isolates cross-session continuation from initial test discovery and makes every treatment start from the same failing regression.',
+    `Verification: ${focusedCommand.tokens.join(' ')} fails with exit code 1 at this checkpoint, as required before the production fix.`,
+    'Blockers: none.',
+    'Risks: Adjacent compatibility behavior may encode the old implementation and must remain covered by the sealed Phase 2 checks.',
+    `Next step: ${selection.taskPacket.phaseTwoPrompt}`,
+  ].join('\n');
+  const memory = await captureCodeMemoryLinkProcessGroup({
+    arguments: [
+      'remember',
+      '--home',
+      compactHome,
+      '--kind',
+      'handoff',
+      '--status',
+      'active',
+      '--project',
+      sourceCompactHome.project,
+      '--topic',
+      `continuation-${corpusTask.taskId}`,
+      ...changedPaths.flatMap(path => ['--code-ref', path]),
+      '--require-current-code-refs',
+      '--text',
+      handoff,
+    ],
+    command: graphArm.toolExecutable,
+    cwd: checkpointRepository,
+    environment: threadnoteEnvironment,
+    label: 'Continuation checkpoint automatic handoff',
+    maxOutputBytes: 64 * 1_024,
+    timeoutMilliseconds: 120_000,
+  });
+  const automaticHandoffUri = matchingString(
+    memory.stdout.trim().replace(/^Stored memory:\s*/u, ''),
+    /^threadnote:\/\/[^\s]+$/u,
+    'continuation automatic handoff URI',
+  );
+  const automaticHandoffRead = await captureCodeMemoryLinkProcessGroup({
+    arguments: ['read', '--home', compactHome, automaticHandoffUri],
+    command: graphArm.toolExecutable,
+    cwd: checkpointRepository,
+    environment: threadnoteEnvironment,
+    label: 'Continuation checkpoint automatic handoff read',
+    maxOutputBytes: 1 * 1_024 * 1_024,
+    timeoutMilliseconds: 120_000,
+  });
+  if (!automaticHandoffRead.stdout.includes(handoff) || !automaticHandoffRead.stdout.includes(resumeEvidenceMarker)) {
+    throw new Error('Continuation checkpoint automatic handoff cannot be read back exactly.');
+  }
+  const managedMemoryId = matchingString(
+    uniquePrefixedLine(automaticHandoffRead.stdout, 'memory_id: ', 'continuation automatic handoff memory id'),
+    /^tn_[A-Za-z0-9_-]{1,128}$/u,
+    'continuation automatic handoff memory id',
+  );
+  const citationInput = object(
+    JSON.parse(
+      uniquePrefixedLine(automaticHandoffRead.stdout, 'code_citation: ', 'continuation automatic handoff citation'),
+    ) as unknown,
+    'continuation automatic handoff citation',
+  );
+  const citationTarget = object(citationInput.target, 'continuation automatic handoff citation target');
+  const citationId = matchingString(
+    citationInput.id,
+    /^tncc_[0-9a-f]{40}$/u,
+    'continuation automatic handoff citation id',
+  );
+  if (
+    citationInput.sourceCommit !== checkpoint.revision ||
+    citationInput.sourceDirty !== false ||
+    citationInput.sourceSnapshotId !== statusSnapshot.id ||
+    citationInput.sourceGraphContentId !== statusSnapshot.graphContentId ||
+    citationInput.path !== changedPaths[0] ||
+    citationTarget.kind !== 'file'
+  ) {
+    throw new Error('Continuation checkpoint automatic handoff citation is not exact-current for the regression.');
+  }
+  const fixtureMemoryId = `mem_${sha256Bytes(
+    Buffer.from(`matched-continuation-automatic-handoff-v1\0${corpusTask.taskId}`),
+  ).slice(0, 32)}`;
+  const linkReceipts = [
+    {
+      citationHash: matchedTokenEfficiencyCitationHashV1({citationId, fixtureMemoryId, managedMemoryId}),
+      memoryId: fixtureMemoryId,
+      status: 'exact' as const,
+    },
+  ];
+  const resumeBrief = await captureMatchedEvaluationContinuationAgentBriefV1({
+    budgetTokens: sourceCompactConfig.contextBudgetTokens,
+    executable: graphArm.toolExecutable,
+    home: compactHome,
+    project: sourceCompactHome.project,
+    repositoryDirectory: checkpointRepository,
+    task: selection.taskPacket.phaseTwoPrompt,
+    threadnoteEnvironment,
+  });
+  const activeHandoffs = array(resumeBrief.parsed.activeHandoffs, 'continuation checkpoint active handoffs');
+  const automaticHandoffDelivered = activeHandoffs.some(candidate => {
+    const handoffEvidence = object(candidate, 'continuation checkpoint active handoff');
+    return handoffEvidence.uri === automaticHandoffUri;
+  });
+  if (
+    resumeBrief.parsed.evidenceState !== 'sufficient' ||
+    !automaticHandoffDelivered ||
+    !resumeBrief.text.includes(resumeEvidenceMarker)
+  ) {
+    throw new Error('Continuation checkpoint agent resume brief does not surface the exact automatic handoff.');
+  }
+  const checkpointContext = createMatchedTokenEfficiencyTaskContextV1({
+    asIssuedContext: taskContext.asIssuedContext,
+    clusterId: taskContext.clusterId,
+    graphContentHash,
+    graphSnapshotHash,
+    linkReceipts,
+    memoryFixtureHash: sha256Bytes(
+      Buffer.from(
+        `matched-continuation-memory-fixture-v1\0${automaticHandoffUri}\0${managedMemoryId}\0${citationId}\0${sha256Bytes(Buffer.from(handoff))}`,
+      ),
+    ),
+    repositoryFixtureHash: checkpoint.fixtureHash,
+    taskId: taskContext.taskId,
+  });
+  const [graphHomeFixtureHash, compactHomeFixtureHash] = await Promise.all([
+    matchedEvaluationPreparedHomeFixtureHashV1(graphHome),
+    matchedEvaluationPreparedHomeFixtureHashV1(compactHome),
+  ]);
+  const preparedGraphHome = {
+    expectedContext: {
+      graphContentHash,
+      graphSnapshotHash,
+      linkReceiptsHash: null,
+      memoryAccess: 'disabled' as const,
+      taskContextHash: null,
+    },
+    homeDirectory: graphHome,
+    homeFixtureHash: graphHomeFixtureHash,
+    identity: sourceGraphHome.identity,
+    project: sourceGraphHome.project,
+    taskId: corpusTask.taskId,
+  };
+  const preparedCompactHome = {
+    expectedContext: {
+      graphContentHash,
+      graphSnapshotHash,
+      linkReceiptsHash: checkpointContext.linkReceiptsHash,
+      memoryAccess: 'linked' as const,
+      taskContextHash: checkpointContext.taskContextHash,
+    },
+    homeDirectory: compactHome,
+    homeFixtureHash: compactHomeFixtureHash,
+    identity: sourceCompactHome.identity,
+    project: sourceCompactHome.project,
+    taskId: corpusTask.taskId,
+  };
+  const adapterConfigDirectory = resolve(outputDirectory, 'checkpoint-adapter-config');
+  await mkdir(adapterConfigDirectory, {mode: 0o700});
+  const graphConfigPath = resolve(adapterConfigDirectory, 'threadnote-graph.json');
+  const compactConfigPath = resolve(adapterConfigDirectory, 'threadnote-compact.json');
+  const graphConfigBytes = Buffer.from(
+    `${JSON.stringify({...sourceGraphConfig, contextHomes: [preparedGraphHome]}, undefined, 2)}\n`,
+  );
+  const compactConfigBytes = Buffer.from(
+    `${JSON.stringify({...sourceCompactConfig, contextHomes: [preparedCompactHome]}, undefined, 2)}\n`,
+  );
+  await Promise.all([
+    writeFile(graphConfigPath, graphConfigBytes, {flag: 'wx', mode: 0o600}),
+    writeFile(compactConfigPath, compactConfigBytes, {flag: 'wx', mode: 0o600}),
+  ]);
+  const metrics = object(response.metrics, 'continuation phase-one response metrics');
+  const timing = object(metrics.timing, 'continuation phase-one response timing');
+  const usage = object(metrics.usage, 'continuation phase-one response usage');
+  const providerTokens = object(usage.providerTokens, 'continuation phase-one provider tokens');
+  const phaseOneConfig = object(
+    await readJson(resolve(outputDirectory, 'phase-one', 'adapter-config.json')),
+    'continuation phase-one config',
+  );
+  const phaseOneAppServer = object(phaseOneConfig.appServer, 'continuation phase-one app server');
+  const phaseOneModel = object(phaseOneConfig.model, 'continuation phase-one model');
+  const phaseOneResponseTranscriptHash = matchingString(response.transcriptHash, HASH, 'phase-one transcript hash');
+  const plan = parseMatchedEvaluationContinuationPilotPlanV1({
+    attempts: selection.continuationAttempts,
+    candidate: {
+      toolArtifactHash: compactDefinition.tool.artifactHash,
+      toolVersion: compactDefinition.tool.version,
+    },
+    checkpoint: {
+      adapterConfigurations: {
+        threadnoteCompactSha256: sha256Bytes(compactConfigBytes),
+        threadnoteGraphSha256: sha256Bytes(graphConfigBytes),
+      },
+      automaticHandoffReadSha256: sha256Bytes(Buffer.from(automaticHandoffRead.stdout)),
+      automaticHandoffUri,
+      handoff,
+      handoffSha256: sha256Bytes(Buffer.from(handoff)),
+      phaseOneAccounting: {
+        elapsedMilliseconds: timing.endToEndMilliseconds,
+        providerTokens,
+        providerTokensMeasured: true,
+      },
+      phaseOneExecution: {
+        adapterArtifactHash: await boundedRegularFileHash(
+          resolve(outputDirectory, 'phase-one', 'adapter'),
+          128 * 1_024 * 1_024,
+          'phase-one adapter',
+        ),
+        adapterConfigurationFileSha256: await boundedRegularFileHash(
+          resolve(outputDirectory, 'phase-one', 'adapter-config.json'),
+          MAXIMUM_JSON_BYTES,
+          'phase-one adapter config',
+        ),
+        adapterConfigurationHash: request.adapterConfigurationHash,
+        adapterProtocol: request.adapterProtocol,
+        appServerExecutableSha256: phaseOneAppServer.executableSha256,
+        appServerVersion: phaseOneAppServer.version,
+        artifactSha256: await boundedRegularFileHash(
+          resolve(outputDirectory, 'phase-one', 'artifact.json'),
+          MAXIMUM_JSON_BYTES,
+          'phase-one artifact',
+        ),
+        environmentPolicyHash: request.environmentPolicyHash,
+        model: {
+          id: phaseOneModel.id,
+          parametersHash: phaseOneModel.parametersHash,
+          provider: phaseOneModel.provider,
+          reasoningEffort: phaseOneModel.reasoningEffort,
+        },
+        requestSha256: await boundedRegularFileHash(
+          resolve(outputDirectory, 'phase-one', 'request.json'),
+          MAXIMUM_JSON_BYTES,
+          'phase-one request',
+        ),
+        responseSha256: await boundedRegularFileHash(
+          resolve(outputDirectory, 'phase-one', 'response.json'),
+          MAXIMUM_JSON_BYTES,
+          'phase-one response',
+        ),
+        runNonce: selection.phaseOneRunNonce,
+        transcriptHash: phaseOneResponseTranscriptHash,
+        transcriptSha256: await boundedRegularFileHash(
+          resolve(outputDirectory, 'phase-one', 'transcript.jsonl'),
+          MAXIMUM_TRANSCRIPT_BYTES,
+          'phase-one transcript',
+        ),
+      },
+      phaseOnePatchSha256,
+      phaseOnePrompt: selection.phaseOnePrompt,
+      phaseOnePromptSha256: selection.phaseOnePromptSha256,
+      preparedContext: {
+        graphContentHash,
+        graphSnapshotHash,
+        linkReceiptsHash: checkpointContext.linkReceiptsHash,
+        taskContextHash: checkpointContext.taskContextHash,
+      },
+      preparedGraphHome: {
+        fixtureHash: graphHomeFixtureHash,
+        identitySha256: matchedEvaluationContinuationPreparedHomeIdentityHashV2(preparedGraphHome),
+      },
+      preparedHome: {
+        fixtureHash: compactHomeFixtureHash,
+        identitySha256: matchedEvaluationContinuationPreparedHomeIdentityHashV2(preparedCompactHome),
+      },
+      repositoryFixtureHash: checkpoint.fixtureHash,
+      repositoryRevision: checkpoint.revision,
+      resumeEvidenceMarker,
+    },
+    phaseTwoPrompt: selection.taskPacket.phaseTwoPrompt,
+    phaseTwoPromptSha256: sha256Bytes(Buffer.from(selection.taskPacket.phaseTwoPrompt)),
+    retries: 0,
+    sourceTask: selection.sourceTask,
+    taskId: corpusTask.taskId,
+    version: 2,
+  });
+  if (plan.version !== 2) throw new Error('Continuation checkpoint finalizer produced a legacy plan.');
+  const planPath = resolve(outputDirectory, 'continuation-plan.json');
+  await writeFile(planPath, `${JSON.stringify(plan, undefined, 2)}\n`, {flag: 'wx', mode: 0o600});
+  const continuationRuntime = {
+    ...runtime,
+    artifactDirectory: resolve(outputDirectory, 'pilot'),
+    repositories: runtime.repositories.map(repository =>
+      repository.clusterId === cluster.clusterId
+        ? {...repository, repositoryDirectory: checkpointRepository}
+        : repository,
+    ),
+  };
+  const continuationRuntimePath = resolve(outputDirectory, 'continuation-runtime.json');
+  await writeFile(continuationRuntimePath, `${JSON.stringify(continuationRuntime, undefined, 2)}\n`, {
+    flag: 'wx',
+    mode: 0o600,
+  });
+  await Promise.all([
+    assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath}),
+    assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+      manifest,
+      plan,
+      planPath,
+      runtime,
+    }),
+  ]);
+  const receipt = {
+    checkpoint,
+    focusedCheck: {
+      diagnosticSha256: sha256Bytes(Buffer.from(`${focusedCheck.stdout}\0${focusedCheck.stderr}`)),
+      exitCode: focusedCheck.exitCode,
+    },
+    graphContentHash,
+    graphSnapshotHash,
+    phaseOneReceiptSha256: await boundedRegularFileHash(
+      resolve(outputDirectory, 'phase-one-receipt.json'),
+      MAXIMUM_JSON_BYTES,
+      'continuation phase-one receipt',
+    ),
+    planSha256: await boundedRegularFileHash(planPath, MAXIMUM_JSON_BYTES, 'continuation plan'),
+    runtimeSha256: await boundedRegularFileHash(continuationRuntimePath, MAXIMUM_JSON_BYTES, 'continuation runtime'),
+    taskId: corpusTask.taskId,
+    version: 1,
+  } as const;
+  await atomicWrite(
+    resolve(outputDirectory, 'continuation-checkpoint-receipt.json'),
+    `${JSON.stringify(receipt, undefined, 2)}\n`,
+  );
+  process.stdout.write(`${JSON.stringify({checkpoint, outputDirectory, taskId: corpusTask.taskId, version: 1})}\n`);
 }
 
 /** Execute one sealed fresh phase-two attempt for each continuation treatment. */
@@ -2023,6 +3186,141 @@ async function captureContinuationGit(
     timeoutMilliseconds: 30_000,
   });
   return result.stdout;
+}
+
+async function runMatchedEvaluationContinuationFocusedCheckV1(input: {
+  readonly commandTokens: readonly string[];
+  readonly repositoryDirectory: string;
+  readonly safeExecutablePath: string;
+  readonly temporaryDirectory: string;
+}) {
+  let executableIndex = 0;
+  const environmentAssignments: Record<string, string> = {};
+  while (
+    executableIndex < input.commandTokens.length &&
+    /^[A-Z][A-Z0-9_]*=/u.test(input.commandTokens[executableIndex])
+  ) {
+    const token = input.commandTokens[executableIndex];
+    const separator = token.indexOf('=');
+    environmentAssignments[token.slice(0, separator)] = token.slice(separator + 1);
+    executableIndex += 1;
+  }
+  const command = input.commandTokens[executableIndex];
+  if (command === undefined) throw new Error('Continuation focused check lacks an executable.');
+  await mkdir(input.temporaryDirectory, {recursive: true, mode: 0o700});
+  return captureCodeMemoryLinkProcessGroup({
+    allowFailure: true,
+    arguments: input.commandTokens.slice(executableIndex + 1),
+    command,
+    cwd: input.repositoryDirectory,
+    environment: {
+      ...environmentAssignments,
+      HOME: input.temporaryDirectory,
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      PATH: input.safeExecutablePath,
+      PYTHONDONTWRITEBYTECODE: '1',
+      PYTHONNOUSERSITE: '1',
+      TMPDIR: input.temporaryDirectory,
+    },
+    label: 'Continuation phase-one focused check',
+    maxOutputBytes: 1 * 1_024 * 1_024,
+    timeoutMilliseconds: 15 * 60_000,
+  });
+}
+
+async function captureMatchedEvaluationContinuationAgentBriefV1(input: {
+  readonly budgetTokens: number;
+  readonly executable: string;
+  readonly home: string;
+  readonly project: string;
+  readonly repositoryDirectory: string;
+  readonly task: string;
+  readonly threadnoteEnvironment: Readonly<Record<string, string>>;
+}): Promise<{readonly parsed: Record<string, unknown>; readonly text: string}> {
+  const client = new Client({name: 'matched-evaluation-checkpoint-finalizer', version: '1'});
+  const transport = new StdioClientTransport({
+    args: ['mcp-server'],
+    command: input.executable,
+    cwd: input.repositoryDirectory,
+    env: {
+      ...input.threadnoteEnvironment,
+      CI: '1',
+      HOME: input.home,
+      LOGNAME: input.threadnoteEnvironment.THREADNOTE_USER ?? 'evaluation-user',
+      SHELL: '/bin/sh',
+      TERM: 'dumb',
+      THREADNOTE_HOME: input.home,
+      THREADNOTE_NO_SPINNER: '1',
+      THREADNOTE_NO_UPDATE_CHECK: '1',
+      USER: input.threadnoteEnvironment.THREADNOTE_USER ?? 'evaluation-user',
+    },
+    maxBufferSize: 2 * 1_024 * 1_024,
+    stderr: 'pipe',
+  });
+  transport.stderr?.on('data', () => undefined);
+  await client.connect(transport, {timeout: 30_000});
+  try {
+    const result = await client.callTool(
+      {
+        arguments: {
+          budgetTokens: input.budgetTokens,
+          callerCwd: input.repositoryDirectory,
+          detail: 'compact',
+          mode: 'resume',
+          project: input.project,
+          responseFormat: 'agent',
+          task: input.task,
+        },
+        name: 'context_brief',
+      },
+      undefined,
+      {timeout: 120_000},
+    );
+    const resultRecord = object(result, 'continuation checkpoint agent Context Brief result');
+    if (resultRecord.isError === true) {
+      throw new Error('Continuation checkpoint agent Context Brief returned an error.');
+    }
+    const texts = array(resultRecord.content, 'continuation checkpoint agent Context Brief content').flatMap(
+      (candidate, index) => {
+        const content = object(candidate, `continuation checkpoint agent Context Brief content ${index}`);
+        return content.type === 'text' && typeof content.text === 'string' ? [content.text] : [];
+      },
+    );
+    if (texts.length !== 1) {
+      throw new Error('Continuation checkpoint agent Context Brief must return exactly one text payload.');
+    }
+    try {
+      return {parsed: object(JSON.parse(texts[0]) as unknown, 'continuation checkpoint agent brief'), text: texts[0]};
+    } catch (cause) {
+      throw new Error('Continuation checkpoint agent Context Brief returned invalid JSON.', {cause});
+    }
+  } finally {
+    await client.close();
+    await transport.close();
+  }
+}
+
+function uniquePrefixedLine(value: string, prefix: string, label: string): string {
+  const matches = value
+    .split(/\r?\n/u)
+    .filter(line => line.startsWith(prefix))
+    .map(line => line.slice(prefix.length));
+  if (matches.length !== 1 || matches[0].length === 0) throw new Error(`${label} is missing or ambiguous.`);
+  return matches[0];
+}
+
+function parseLastJsonLine(value: string, label: string): Record<string, unknown> {
+  const lines = value
+    .split(/\r?\n/u)
+    .map(line => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) throw new Error(`${label} returned no JSON output.`);
+  try {
+    return object(JSON.parse(lines.at(-1)!) as unknown, label);
+  } catch (cause) {
+    throw new Error(`${label} returned invalid terminal JSON.`, {cause});
+  }
 }
 
 function requiredRuntimeRepository(
@@ -2615,6 +3913,9 @@ function parseRuntimeRepository(value: unknown, index: number): MatchedEvaluatio
 }
 
 function parseArguments(args: readonly string[]): {
+  readonly continuationFinalizeDirectory: string | null;
+  readonly continuationPhaseOneDirectory: string | null;
+  readonly continuationPhaseOneTaskPacketPath: string | null;
   readonly continuationPilotPlanPath: string | null;
   readonly continuationParentPilotDirectory: string | null;
   readonly corpusPath: string;
@@ -2629,6 +3930,9 @@ function parseArguments(args: readonly string[]): {
     const option = args[index];
     if (
       ![
+        '--continuation-finalize-directory',
+        '--continuation-phase-one-directory',
+        '--continuation-phase-one-packet',
         '--continuation-pilot-plan',
         '--continuation-parent-pilot-directory',
         '--corpus',
@@ -2646,10 +3950,20 @@ function parseArguments(args: readonly string[]): {
   }
   const pilotTaskId = values.get('--pilot-task') ?? null;
   const pilotDirectory = values.get('--pilot-directory') ?? null;
+  const continuationFinalizeDirectory = values.get('--continuation-finalize-directory') ?? null;
+  const continuationPhaseOneTaskPacket = values.get('--continuation-phase-one-packet') ?? null;
+  const continuationPhaseOneDirectory = values.get('--continuation-phase-one-directory') ?? null;
   const continuationPilotPlan = values.get('--continuation-pilot-plan') ?? null;
   const continuationParentPilotDirectory = values.get('--continuation-parent-pilot-directory') ?? null;
-  if (pilotTaskId !== null && continuationPilotPlan !== null) {
-    throw ScriptError.make({message: '--pilot-task and --continuation-pilot-plan are mutually exclusive'});
+  if (
+    [
+      pilotTaskId !== null,
+      continuationPilotPlan !== null,
+      continuationPhaseOneTaskPacket !== null,
+      continuationFinalizeDirectory !== null,
+    ].filter(Boolean).length > 1
+  ) {
+    throw ScriptError.make({message: 'Matched evaluation pilot selectors are mutually exclusive'});
   }
   if ((pilotTaskId !== null || continuationPilotPlan !== null) !== (pilotDirectory !== null)) {
     throw ScriptError.make({
@@ -2659,9 +3973,33 @@ function parseArguments(args: readonly string[]): {
   if (continuationParentPilotDirectory !== null && continuationPilotPlan === null) {
     throw ScriptError.make({message: '--continuation-parent-pilot-directory requires --continuation-pilot-plan'});
   }
-  if ((pilotTaskId !== null || continuationPilotPlan !== null) && values.get('--study') === undefined)
+  if ((continuationPhaseOneTaskPacket !== null) !== (continuationPhaseOneDirectory !== null)) {
+    throw ScriptError.make({
+      message:
+        'Continuation Phase 1 requires both --continuation-phase-one-packet and --continuation-phase-one-directory',
+    });
+  }
+  if (
+    (pilotTaskId !== null ||
+      continuationPilotPlan !== null ||
+      continuationPhaseOneTaskPacket !== null ||
+      continuationFinalizeDirectory !== null) &&
+    values.get('--study') === undefined
+  )
     throw ScriptError.make({message: 'Pilot mode requires --study'});
   return {
+    continuationFinalizeDirectory:
+      continuationFinalizeDirectory === null
+        ? null
+        : absolutePath(continuationFinalizeDirectory, '--continuation-finalize-directory'),
+    continuationPhaseOneDirectory:
+      continuationPhaseOneDirectory === null
+        ? null
+        : absolutePath(continuationPhaseOneDirectory, '--continuation-phase-one-directory'),
+    continuationPhaseOneTaskPacketPath:
+      continuationPhaseOneTaskPacket === null
+        ? null
+        : absolutePath(continuationPhaseOneTaskPacket, '--continuation-phase-one-packet'),
     continuationPilotPlanPath:
       continuationPilotPlan === null ? null : absolutePath(continuationPilotPlan, '--continuation-pilot-plan'),
     continuationParentPilotDirectory:

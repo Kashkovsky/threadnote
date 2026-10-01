@@ -246,25 +246,39 @@ export async function handleMatchedEvaluationContextRequest(
   if (
     packet.mode === 'resume' &&
     packet.expectedResume !== null &&
-    !hasExpectedResumeDelivery(structuredContent, packet.expectedResume.automaticHandoffUri)
+    !hasExpectedResumeDelivery(
+      structuredContent,
+      packet.expectedResume.automaticHandoffUri,
+      packet.expectedResume.resumeEvidenceMarker,
+    )
   ) {
-    throw new Error('Resume Context Brief omitted the sealed automatic handoff URI or continuation card.');
+    throw new Error('Resume Context Brief omitted the sealed automatic handoff URI, continuation evidence, or marker.');
   }
   return receipt(packet, 'context_brief', requestInput, responseText, true);
 }
 
-function hasExpectedResumeDelivery(structuredContent: Record<string, unknown>, automaticHandoffUri: string): boolean {
+function hasExpectedResumeDelivery(
+  structuredContent: Record<string, unknown>,
+  automaticHandoffUri: string,
+  resumeEvidenceMarker: string,
+): boolean {
   if (!Array.isArray(structuredContent.activeHandoffs)) return false;
   return structuredContent.activeHandoffs.some(candidate => {
     if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return false;
     const handoff = candidate as Record<string, unknown>;
     const card = handoff.continuationCard;
+    const cardText =
+      typeof card === 'object' && card !== null && !Array.isArray(card)
+        ? Object.values(card)
+            .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+            .join('\n')
+        : '';
+    const answer = typeof structuredContent.answer === 'string' ? structuredContent.answer : '';
+    const continuationEvidence = `${answer}\n${cardText}`;
     return (
       handoff.uri === automaticHandoffUri &&
-      typeof card === 'object' &&
-      card !== null &&
-      !Array.isArray(card) &&
-      Object.values(card).some(value => typeof value === 'string' && value.trim().length > 0)
+      continuationEvidence.trim().length > 0 &&
+      continuationEvidence.includes(resumeEvidenceMarker)
     );
   });
 }

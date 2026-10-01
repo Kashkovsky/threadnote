@@ -14,13 +14,18 @@ import {
 } from '../../../../scripts/matched-evaluation-runtime-integrity.js';
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
 import {
+  assertMatchedEvaluationContinuationPhaseOneReceiptV1,
   assertMatchedEvaluationContinuationAdapterConfigurationsV2,
   assertMatchedEvaluationContinuationSupplementV1,
   assertMatchedEvaluationContinuationCheckpointV2,
   assertMatchedEvaluationContinuationPhaseOneEvidenceV2,
   continuationCheckpointStudyV2,
+  createMatchedEvaluationContinuationPhaseOneSelectionV1,
   matchedEvaluationContinuationPreparedHomeIdentityHashV2,
   parseMatchedEvaluationRuntimeV1,
+  parseMatchedEvaluationContinuationPhaseOneTaskPacketV1,
+  parseMatchedEvaluationContinuationPhaseOneSelectionV1,
+  parseMatchedEvaluationContinuationPhaseOneReceiptV1,
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
   projectMatchedEvaluationContinuationAdapterTaskV2,
@@ -32,6 +37,7 @@ import {
   type MatchedEvaluationContinuationPilotPlanV2,
   type MatchedEvaluationRuntimeV1,
 } from '../../../../scripts/run-matched-evaluation.js';
+import {parseMatchedEvaluationObservationV1} from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
 import {
   matchedEvaluationCodexEnvironmentPolicyHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
@@ -419,6 +425,148 @@ describe('matched evaluation runtime integrity', () => {
         plan: supplementPlan,
       }),
     ).toThrow('differs from its sealed completed row');
+  });
+
+  it('seals a deterministic four-treatment order before continuation phase one runs', () => {
+    const sourceTaskPrompt = 'Implement the frozen source task.';
+    const packet = parseMatchedEvaluationContinuationPhaseOneTaskPacketV1({
+      phaseOneAllowedPaths: ['tests/test_regression.py'],
+      phaseOneDirective: 'Add only the failing regression and stop.',
+      phaseOneFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
+      phaseTwoFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
+      phaseTwoPrompt: 'Continue from the checkpoint and implement the production correction.',
+      repositoryName: 'example',
+      sourceRevision: 'a'.repeat(40),
+      sourceTaskPrompt,
+      status: 'draft-unsealed',
+      taskKey: 'example-regression',
+      version: 1,
+    });
+    const input = {
+      packet,
+      repositoryRevision: packet.sourceRevision,
+      task: {
+        promptHash: sha256HexSync(Buffer.from(sourceTaskPrompt)),
+        repositoryFixtureHash: 'b'.repeat(64),
+        taskId: 'tsk_1234567890abcdef',
+      } as MatchedEvaluationManifestV1['tasks'][number],
+      taskPacketSha256: 'c'.repeat(64),
+      taskPrompt: sourceTaskPrompt,
+    };
+
+    const first = createMatchedEvaluationContinuationPhaseOneSelectionV1(input);
+    const second = createMatchedEvaluationContinuationPhaseOneSelectionV1(input);
+    expect(second).toEqual(first);
+    expect(parseMatchedEvaluationContinuationPhaseOneSelectionV1(JSON.parse(JSON.stringify(first)))).toEqual(first);
+    expect(first.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3, 4]);
+    expect(new Set(first.continuationAttempts.map(attempt => attempt.variant))).toEqual(
+      new Set(['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume']),
+    );
+    expect(new Set(first.continuationAttempts.map(attempt => attempt.runNonce))).toHaveProperty('size', 4);
+    expect(first.phaseOnePrompt).toBe(`${sourceTaskPrompt}\n\n${packet.phaseOneDirective}`);
+    expect(() =>
+      parseMatchedEvaluationContinuationPhaseOneSelectionV1({
+        ...first,
+        phaseOnePrompt: `${first.phaseOnePrompt}\nchanged after sealing`,
+      }),
+    ).toThrow('differs from its packet');
+    fc.assert(
+      fc.property(fc.stringMatching(/^[0-9a-f]{64}$/u), taskPacketSha256 => {
+        const selection = createMatchedEvaluationContinuationPhaseOneSelectionV1({...input, taskPacketSha256});
+        expect(selection.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3, 4]);
+        expect(new Set(selection.continuationAttempts.map(attempt => attempt.variant))).toHaveProperty('size', 4);
+        expect(new Set(selection.continuationAttempts.map(attempt => attempt.runNonce))).toHaveProperty('size', 4);
+        expect(createMatchedEvaluationContinuationPhaseOneSelectionV1({...input, taskPacketSha256})).toEqual(selection);
+      }),
+      {numRuns: 8},
+    );
+
+    const evidenceSha256 = {
+      adapterArtifactHash: '1'.repeat(64),
+      adapterConfigurationFileSha256: '2'.repeat(64),
+      artifactSha256: '3'.repeat(64),
+      requestSha256: '4'.repeat(64),
+      responseSha256: '5'.repeat(64),
+      transcriptSha256: '6'.repeat(64),
+    };
+    const metrics = {
+      auditability: {citations: 0, resolvableCitations: 0},
+      completion: {completed: true},
+      context: null,
+      correctness: {judge: 'blinded-rubric-v1', judgeCompleted: true, scoreMilli: 1_000},
+      drift: {falseCurrentOutcomes: 0},
+      providerCostMicros: null,
+      retrieval: {recalledEvidence: 0, requiredEvidence: 0},
+      safety: {authorizationLeaks: 0, blockedActions: 0, harmfulActions: 0},
+      sourceSupport: {requiredClaims: 0, supportedClaims: 0},
+      timing: {
+        agentTaskMilliseconds: 10,
+        deterministicVerifierMilliseconds: 0,
+        endToEndMilliseconds: 15,
+        firstSufficientEvidenceMilliseconds: null,
+        judgeSetupMilliseconds: 1,
+        judgeTurnMilliseconds: 2,
+        preparationMilliseconds: 2,
+      },
+      usage: {
+        modelVisibleBytes: 100,
+        modelVisibleTokens: 25,
+        providerTokens: {
+          cachedInputTokens: 0,
+          inputTokens: 20,
+          outputTokens: 5,
+          reasoningOutputTokens: 0,
+          totalTokens: 25,
+        },
+        redundantFileReads: 0,
+        toolTurns: 1,
+      },
+      validity: {failureCount: 0, valid: true},
+      verification: null,
+    };
+    const selectionSha256 = '7'.repeat(64);
+    const receipt = parseMatchedEvaluationContinuationPhaseOneReceiptV1({
+      continuationAttempts: first.continuationAttempts,
+      evidenceSha256,
+      metrics,
+      phaseOnePromptSha256: first.phaseOnePromptSha256,
+      phaseOneRunNonce: first.phaseOneRunNonce,
+      selectionSha256,
+      taskId: first.sourceTask.taskId,
+      taskPacketSha256: first.taskPacketSha256,
+      transcriptHash: evidenceSha256.transcriptSha256,
+      version: 1,
+    });
+    const responseObservation = parseMatchedEvaluationObservationV1({
+      artifactHash: evidenceSha256.artifactSha256,
+      metrics,
+      transcriptHash: evidenceSha256.transcriptSha256,
+      version: 5,
+    });
+    expect(() =>
+      assertMatchedEvaluationContinuationPhaseOneReceiptV1({
+        evidenceSha256,
+        receipt,
+        responseObservation,
+        selection: first,
+        selectionSha256,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedEvaluationContinuationPhaseOneReceiptV1({
+        evidenceSha256: {...evidenceSha256, responseSha256: '8'.repeat(64)},
+        receipt,
+        responseObservation,
+        selection: first,
+        selectionSha256,
+      }),
+    ).toThrow('differs from the sealed selection or preserved evidence');
+    expect(() =>
+      parseMatchedEvaluationContinuationPhaseOneReceiptV1({
+        ...receipt,
+        evidenceSha256: {...receipt.evidenceSha256, artifactSha256: 'invalid'},
+      }),
+    ).toThrow('receipt artifact hash');
   });
 
   it('binds v2 phase-one provenance claims to the preserved adapter evidence files', async () => {

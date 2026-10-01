@@ -234,24 +234,23 @@ describe('matched evaluation context proxy', () => {
       callerCwd: fixture.repository,
       mode: 'resume',
     });
-    const differentlySealed = await handleMatchedEvaluationContextRequest(
-      {...packet, expectedResume: {...packet.expectedResume, resumeEvidenceMarker: 'different sealed marker'}},
-      {callerCwd: fixture.repository, mode: 'resume'},
-    );
     const differentlySealedResume = {...packet.expectedResume, resumeEvidenceMarker: 'different sealed marker'};
     expect(delivered.meta).toMatchObject({
       matchedEvaluation: {expectedResumeHash: hashExpectedResume(packet.expectedResume)},
     });
-    expect(differentlySealed.meta).toMatchObject({
-      matchedEvaluation: {expectedResumeHash: hashExpectedResume(differentlySealedResume)},
-    });
     expect(hashExpectedResume(packet.expectedResume)).not.toBe(hashExpectedResume(differentlySealedResume));
+    await expect(
+      handleMatchedEvaluationContextRequest(
+        {...packet, expectedResume: differentlySealedResume},
+        {callerCwd: fixture.repository, mode: 'resume'},
+      ),
+    ).rejects.toThrow('omitted the sealed automatic handoff URI, continuation evidence, or marker');
     await expect(
       handleMatchedEvaluationContextRequest(
         {...packet, expectedResume: {automaticHandoffUri: 'absent', resumeEvidenceMarker: 'implementation contract'}},
         {callerCwd: fixture.repository, mode: 'resume'},
       ),
-    ).rejects.toThrow('omitted the sealed automatic handoff URI or continuation card');
+    ).rejects.toThrow('omitted the sealed automatic handoff URI, continuation evidence, or marker');
 
     const incomplete = await contextFixture(roots, 'resume prompt', 'graph-only', 'disabled', 'resume', {
       ...preparedEvidence,
@@ -262,7 +261,7 @@ describe('matched evaluation context proxy', () => {
         callerCwd: incomplete.repository,
         mode: 'resume',
       }),
-    ).rejects.toThrow('omitted the sealed automatic handoff URI or continuation card');
+    ).rejects.toThrow('omitted the sealed automatic handoff URI, continuation evidence, or marker');
 
     const empty = await contextFixture(roots, 'resume prompt', 'graph-only', 'disabled', 'resume', {
       ...preparedEvidence,
@@ -273,7 +272,18 @@ describe('matched evaluation context proxy', () => {
         callerCwd: empty.repository,
         mode: 'resume',
       }),
-    ).rejects.toThrow('omitted the sealed automatic handoff URI or continuation card');
+    ).rejects.toThrow('omitted the sealed automatic handoff URI, continuation evidence, or marker');
+
+    const dense = await contextFixture(roots, 'resume prompt', 'graph-only', 'disabled', 'resume', {
+      answer: 'Resume from the exact handoff and preserve the implementation contract.',
+      activeHandoffs: [{uri: 'prepared context'}],
+    });
+    await expect(
+      handleMatchedEvaluationContextRequest(dense.packet, {
+        callerCwd: dense.repository,
+        mode: 'resume',
+      }),
+    ).resolves.toMatchObject({isError: false});
   });
 
   it('rejects tampered, rebound, and escaped runtime manifests', async () => {
@@ -418,7 +428,9 @@ describe('matched evaluation context proxy', () => {
 
 const preparedEvidence = {
   answer: 'prepared context',
-  activeHandoffs: [{continuationCard: {nextStep: 'continue the prepared implementation'}, uri: 'prepared context'}],
+  activeHandoffs: [
+    {continuationCard: {nextStep: 'continue the prepared implementation contract'}, uri: 'prepared context'},
+  ],
   graph: {cards: [{path: 'service.ts', summary: 'current implementation evidence'}]},
   durableDecisions: [{summary: 'linked memory contract'}],
   coverage: {gaps: []},
