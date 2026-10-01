@@ -1175,7 +1175,7 @@ async function assertPinnedLinkedExecutable(path: string, expectedHash: string, 
   if ((await sha256File(target)) !== expectedHash) throw new Error(`${label} differs from its pinned hash.`);
 }
 
-function renderVerifierSeatbeltProfile(input: {
+export function renderVerifierSeatbeltProfile(input: {
   readonly environmentDirectory: string;
   readonly repositoryRoot: string;
   readonly root: string;
@@ -1191,8 +1191,8 @@ function renderVerifierSeatbeltProfile(input: {
     '(allow mach-lookup)',
     '(allow ipc-posix*)',
     '(allow file-read-metadata)',
-    `(allow file-read* (literal ${literal('/')}) (subpath ${literal('/System')}) (subpath ${literal('/usr')}) (subpath ${literal('/Library')}) (subpath ${literal('/opt/homebrew')}) (subpath ${literal('/dev')}) (subpath ${literal('/private/etc')}) (subpath ${literal(input.environmentDirectory)}) (subpath ${literal(input.repositoryRoot)}) (literal ${literal(input.runner)}) (subpath ${literal(input.root)}))`,
-    `(allow file-write* (subpath ${literal(input.root)}) (literal ${literal('/dev/null')}))`,
+    `(allow file-read* (literal ${literal('/')}) (subpath ${literal('/System')}) (subpath ${literal('/usr')}) (subpath ${literal('/Library')}) (subpath ${literal('/opt/homebrew')}) (subpath ${literal('/dev')}) (subpath ${literal('/private/etc')}) (literal ${literal(input.environmentDirectory)}) (subpath ${literal(input.environmentDirectory)}) (literal ${literal(input.repositoryRoot)}) (subpath ${literal(input.repositoryRoot)}) (literal ${literal(input.runner)}) (literal ${literal(input.root)}) (subpath ${literal(input.root)}))`,
+    `(allow file-write* (literal ${literal(input.root)}) (subpath ${literal(input.root)}) (literal ${literal('/dev/null')}))`,
     '(deny network*)',
     '',
   ].join('\n');

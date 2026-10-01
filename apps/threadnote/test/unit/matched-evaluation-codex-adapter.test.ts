@@ -30,6 +30,7 @@ import {
   renderMatchedEvaluationJudgePromptV1,
   renderMatchedEvaluationCommandReviewRulesV1,
   renderMatchedEvaluationAgentInstructionsV1,
+  renderVerifierSeatbeltProfile,
   runMatchedEvaluationActionPreflightV1,
   runMatchedEvaluationCodexAdapter,
   runMatchedEvaluationDeterministicVerifierV1,
@@ -1081,6 +1082,19 @@ describe('matched evaluation Codex adapter', () => {
     const baseline = await matchedEvaluationVerifierEnvironmentHashV1(environment);
     await writeFile(target, '#!/bin/sh\nexit 1\n');
     expect(await matchedEvaluationVerifierEnvironmentHashV1(environment)).not.toBe(baseline);
+  });
+
+  it('admits exact verifier directory roots as well as their descendants', () => {
+    const profile = renderVerifierSeatbeltProfile({
+      environmentDirectory: '/fixture/environment',
+      repositoryRoot: '/fixture/repository',
+      root: '/fixture/runtime',
+      runner: '/fixture/verify.py',
+    });
+
+    for (const directory of ['/fixture/environment', '/fixture/repository', '/fixture/runtime']) {
+      expect(profile).toContain(`(literal "${directory}") (subpath "${directory}")`);
+    }
   });
 
   it('separates verifier task failures from invalid sandbox diagnostics', async () => {
