@@ -13,6 +13,7 @@ import {Effect} from 'effect';
 import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
   matchedEvaluationReferenceEnvironmentPolicyV1,
+  matchedEvaluationPromptHashV1,
   parseMatchedEvaluationCorpusV1,
   parseMatchedEvaluationManifestV1,
   type MatchedEvaluationManifestV1,
@@ -621,7 +622,7 @@ export function parseMatchedEvaluationContinuationPhaseOneSelectionV1(
   };
   if (
     parsedSourceTask.prompt !== taskPacket.sourceTaskPrompt ||
-    parsedSourceTask.promptSha256 !== sha256Bytes(Buffer.from(parsedSourceTask.prompt)) ||
+    parsedSourceTask.promptSha256 !== matchedEvaluationPromptHashV1(parsedSourceTask.prompt) ||
     parsedSourceTask.repositoryRevision !== taskPacket.sourceRevision
   ) {
     invalid('continuation phase-one source task differs from its packet');
@@ -1876,7 +1877,7 @@ export async function runMatchedEvaluationContinuationPhaseOneFromFilesV1(option
   if (
     cluster.revision !== packet.sourceRevision ||
     cluster.repositoryFixtureHash !== corpusTask.repositoryFixtureHash ||
-    manifestTask.promptHash !== sha256Bytes(Buffer.from(packet.sourceTaskPrompt))
+    manifestTask.promptHash !== matchedEvaluationPromptHashV1(packet.sourceTaskPrompt)
   ) {
     throw new Error('Continuation phase-one packet differs from the frozen task identity.');
   }

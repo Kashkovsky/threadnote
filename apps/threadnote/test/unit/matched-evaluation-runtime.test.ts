@@ -39,11 +39,14 @@ import {
 } from '../../../../scripts/run-matched-evaluation.js';
 import {parseMatchedEvaluationObservationV1} from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
 import {
+  matchedEvaluationPromptHashV1,
+  type MatchedEvaluationManifestV1,
+} from '@threadnote/threadnote/evaluation/matched-evaluation';
+import {
   matchedEvaluationCodexEnvironmentPolicyHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
 } from '../../../../scripts/matched-evaluation-codex-adapter.js';
 import type {MatchedTokenEfficiencyStudyV1} from '@threadnote/threadnote/evaluation/matched-token-efficiency';
-import type {MatchedEvaluationManifestV1} from '@threadnote/threadnote/evaluation/matched-evaluation';
 
 describe('matched evaluation runtime integrity', () => {
   const roots: string[] = [];
@@ -446,7 +449,7 @@ describe('matched evaluation runtime integrity', () => {
       packet,
       repositoryRevision: packet.sourceRevision,
       task: {
-        promptHash: sha256HexSync(Buffer.from(sourceTaskPrompt)),
+        promptHash: matchedEvaluationPromptHashV1(sourceTaskPrompt),
         repositoryFixtureHash: 'b'.repeat(64),
         taskId: 'tsk_1234567890abcdef',
       } as MatchedEvaluationManifestV1['tasks'][number],
@@ -1005,9 +1008,12 @@ describe('matched evaluation runtime integrity', () => {
 
     await fc.assert(
       fc.asyncProperty(
-        fc.constantFrom('contextBudgetTokens', 'steps', 'tokens'),
-        fc.integer({min: 1, max: 10_000}),
-        async (field, delta) => {
+        fc.oneof(
+          fc.record({delta: fc.integer({min: 1, max: 700}), field: fc.constant('contextBudgetTokens' as const)}),
+          fc.record({delta: fc.integer({min: 1, max: 744}), field: fc.constant('steps' as const)}),
+          fc.record({delta: fc.integer({min: 1, max: 9_000_000}), field: fc.constant('tokens' as const)}),
+        ),
+        async ({field, delta}) => {
           const mutated =
             field === 'contextBudgetTokens'
               ? {...checkpointCompact, contextBudgetTokens: checkpointCompact.contextBudgetTokens + delta}
@@ -1380,7 +1386,7 @@ function continuationAdapterConfig(
     pricingMicrosPerMillionTokens: null,
     safeBinaries: [],
     safeExecutablePath: '/usr/bin:/bin',
-    taskBudget: {steps: 256, tokens: 10_000_000},
+    taskBudget: {steps: 256, tokens: 1_000_000},
     temporaryRoot: '/tmp',
     verificationPlan: null,
     version: 4,

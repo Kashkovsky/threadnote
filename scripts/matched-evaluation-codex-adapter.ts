@@ -861,7 +861,7 @@ export function parseMatchedEvaluationCodexAdapterConfigV1(
   if (environmentPolicyHash !== expectedEnvironmentPolicyHash) {
     invalid('adapter environment policy hash differs from the enforced isolation policy');
   }
-  if ((arm === 'files' || arm === 'reference-scope') !== (contextHomes.length === 0)) {
+  if ((arm === 'files' || arm === 'reference-scope') && contextHomes.length !== 0) {
     invalid('only Threadnote arms may configure prepared context homes');
   }
   const approvedCommandInputs =

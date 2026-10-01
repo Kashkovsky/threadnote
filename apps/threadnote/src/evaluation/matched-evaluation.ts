@@ -169,6 +169,10 @@ export function matchedEvaluationReferenceEnvironmentPolicyHashV1(): string {
   return digest('matched-evaluation-environment-policy-v1', matchedEvaluationReferenceEnvironmentPolicyV1());
 }
 
+export function matchedEvaluationPromptHashV1(prompt: string): string {
+  return digest('matched-evaluation-prompt-v1', prompt);
+}
+
 export function parseMatchedEvaluationCorpusV1(value: unknown): MatchedEvaluationCorpusV1 {
   const corpus = object(value, 'corpus');
   exactKeys(corpus, ['corpusId', 'tasks', 'version'], 'corpus');
@@ -400,7 +404,7 @@ function projectManifestTask(task: MatchedEvaluationCorpusTaskV1): MatchedEvalua
     memoryFixtureHash: digest('matched-evaluation-memory-fixtures-v1', task.memoryFixtures),
     negativeControlHash: digest('matched-evaluation-negative-controls-v1', task.negativeControls),
     pairId: task.pairId,
-    promptHash: digest('matched-evaluation-prompt-v1', task.prompt),
+    promptHash: matchedEvaluationPromptHashV1(task.prompt),
     repositoryFixtureHash: task.repositoryFixtureHash,
     rubricHash: digest('matched-evaluation-rubric-v1', task.rubric),
     sourceGoldHash: digest('matched-evaluation-source-gold-v1', task.sourceGold),
