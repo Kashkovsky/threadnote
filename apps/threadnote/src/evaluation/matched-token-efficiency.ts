@@ -1145,7 +1145,7 @@ function parseTaskContext(value: unknown, index: number): MatchedTokenEfficiency
   const linkReceipts = array(context.linkReceipts, `study task context ${index} link receipts`).map(
     (receipt, receiptIndex) => parseLinkReceipt(receipt, index, receiptIndex),
   );
-  if (linkReceipts.length === 0 || linkReceipts.length > 32) invalid(`study task context ${index} links are unbounded`);
+  if (linkReceipts.length > 32) invalid(`study task context ${index} links are unbounded`);
   unique(
     linkReceipts.map(receipt => receipt.memoryId),
     `study task context ${index} linked memories`,

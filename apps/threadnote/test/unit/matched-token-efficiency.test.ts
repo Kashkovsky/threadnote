@@ -91,6 +91,27 @@ describe('matched token-efficiency claim evaluation', () => {
     );
   });
 
+  it('admits a memory-free prepared source context for continuation studies', () => {
+    const context = createMatchedTokenEfficiencyTaskContextV1({
+      asIssuedContext: {
+        assessmentHash: '1'.repeat(64),
+        contentHash: null,
+        sufficiency: 'none',
+        suppliedBytes: 0,
+      },
+      clusterId: 'cluster_1234567890abcdef',
+      graphContentHash: '2'.repeat(64),
+      graphSnapshotHash: '3'.repeat(64),
+      linkReceipts: [],
+      memoryFixtureHash: '4'.repeat(64),
+      repositoryFixtureHash: '5'.repeat(64),
+      taskId: 'tsk_1234567890abcdef',
+    });
+
+    expect(context.linkReceipts).toEqual([]);
+    expect(context.linkReceiptsHash).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
   it('passes only with failure-inclusive provider usage, ready graph receipts, and clustered intervals', async () => {
     const corpus = await fixture();
     const manifest = createManifest(corpus);
