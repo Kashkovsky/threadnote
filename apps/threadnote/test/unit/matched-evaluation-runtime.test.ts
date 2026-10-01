@@ -19,6 +19,7 @@ import {
   assertMatchedEvaluationContinuationSupplementV1,
   assertMatchedEvaluationContinuationCheckpointV2,
   assertMatchedEvaluationContinuationPhaseOneEvidenceV2,
+  assertMatchedEvaluationContinuationPhaseOneResultV1,
   continuationCheckpointStudyV2,
   createMatchedEvaluationContinuationPhaseOneSelectionV1,
   matchedEvaluationContinuationPreparedHomeIdentityHashV2,
@@ -38,6 +39,7 @@ import {
   type MatchedEvaluationRuntimeV1,
 } from '../../../../scripts/run-matched-evaluation.js';
 import {parseMatchedEvaluationObservationV1} from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
+import {createMatchedEvaluationVerificationReceiptV1} from '@threadnote/threadnote/evaluation/matched-verification';
 import {
   matchedEvaluationPromptHashV1,
   type MatchedEvaluationManifestV1,
@@ -242,7 +244,7 @@ describe('matched evaluation runtime integrity', () => {
       retries: 0,
       sourceTask: {
         prompt: sourcePrompt,
-        promptSha256: sha256HexSync(Buffer.from(sourcePrompt)),
+        promptSha256: matchedEvaluationPromptHashV1(sourcePrompt),
         repositoryFixtureHash: '8'.repeat(64),
         repositoryRevision: base.checkpoint.repositoryRevision,
         taskId: base.taskId,
@@ -332,7 +334,7 @@ describe('matched evaluation runtime integrity', () => {
           sourceTask: {
             ...versionTwo.sourceTask,
             prompt: source,
-            promptSha256: sha256HexSync(Buffer.from(source)),
+            promptSha256: matchedEvaluationPromptHashV1(source),
           },
         };
         expect(parseMatchedEvaluationContinuationPilotPlanV1(generated)).toMatchObject({
@@ -570,6 +572,46 @@ describe('matched evaluation runtime integrity', () => {
         evidenceSha256: {...receipt.evidenceSha256, artifactSha256: 'invalid'},
       }),
     ).toThrow('receipt artifact hash');
+
+    const verification = createMatchedEvaluationVerificationReceiptV1({
+      artifactHash: evidenceSha256.artifactSha256,
+      diagnosticHash: '8'.repeat(64),
+      durationMilliseconds: 1,
+      environmentHash: '9'.repeat(64),
+      exitCode: 1,
+      interpreterHash: 'a'.repeat(64),
+      planHash: 'b'.repeat(64),
+      runnerHash: 'c'.repeat(64),
+      sandboxExecutableHash: 'd'.repeat(64),
+      status: 'task-failed',
+      taskId: first.sourceTask.taskId,
+      verificationId: 'e'.repeat(64),
+    });
+    const expectedFailureObservation = {
+      artifactHash: evidenceSha256.artifactSha256,
+      metrics: {
+        ...metrics,
+        completion: {completed: false},
+        timing: {...metrics.timing, deterministicVerifierMilliseconds: 1, endToEndMilliseconds: 16},
+        verification,
+      },
+      transcriptHash: evidenceSha256.transcriptSha256,
+      version: 5,
+    };
+    expect(() =>
+      assertMatchedEvaluationContinuationPhaseOneResultV1(
+        {agentResult: {completed: false}, patch: 'diff --git a/test.py b/test.py\n'},
+        expectedFailureObservation,
+        first.sourceTask.taskId,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedEvaluationContinuationPhaseOneResultV1(
+        {agentResult: {completed: false}, patch: ''},
+        expectedFailureObservation,
+        first.sourceTask.taskId,
+      ),
+    ).toThrow('nonempty test patch');
   });
 
   it('binds v2 phase-one provenance claims to the preserved adapter evidence files', async () => {
@@ -704,21 +746,6 @@ describe('matched evaluation runtime integrity', () => {
     await git(repository, ['add', 'service.ts']);
     await git(repository, ['commit', '-qm', 'phase one']);
     const checkpoint = await observeMatchedEvaluationRepositoryV1(repository);
-    const patch = await gitOutput(repository, [
-      'diff',
-      '--binary',
-      '--full-index',
-      '--no-color',
-      '--no-ext-diff',
-      '--src-prefix=a/',
-      '--dst-prefix=b/',
-      base.revision,
-      checkpoint.revision,
-      '--',
-      '.',
-      ':(exclude).context/**',
-      ':(exclude)**/.context/**',
-    ]);
     const agentPatch = await gitOutput(repository, [
       'diff',
       '--binary',
@@ -733,7 +760,7 @@ describe('matched evaluation runtime integrity', () => {
       baseFixtureHash: base.fixtureHash,
       baseRevision: base.revision,
       checkpoint,
-      patchSha256: sha256HexSync(Buffer.from(patch)),
+      patchSha256: sha256HexSync(Buffer.from(agentPatch)),
       repositoryDirectory: repository,
     };
 

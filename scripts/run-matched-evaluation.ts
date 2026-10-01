@@ -1003,7 +1003,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
     HASH,
     'continuation pilot source task prompt hash',
   );
-  if (sha256Bytes(Buffer.from(sourcePrompt)) !== sourcePromptSha256) {
+  if (matchedEvaluationPromptHashV1(sourcePrompt) !== sourcePromptSha256) {
     invalid('continuation pilot source task prompt hash differs');
   }
   const parsedSourceTask = {
@@ -1373,7 +1373,6 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
   const agentResult = object(artifact.agentResult, 'continuation phase-one agent result');
   const artifactRepository = object(artifact.repository, 'continuation phase-one artifact repository');
   if (
-    agentResult.completed !== true ||
     artifact.runNonce !== execution.runNonce ||
     artifact.taskId !== input.plan.taskId ||
     artifactRepository.fixtureHash !== input.plan.sourceTask.repositoryFixtureHash ||
@@ -1389,8 +1388,23 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
   const timing = object(metrics.timing, 'continuation phase-one response timing');
   const usage = object(metrics.usage, 'continuation phase-one response usage');
   const providerTokens = object(usage.providerTokens, 'continuation phase-one provider tokens');
+  let independentlyAttestedExpectedFailure = false;
+  if (agentResult.completed === false) {
+    const completion = object(metrics.completion, 'continuation phase-one response completion');
+    const validity = object(metrics.validity, 'continuation phase-one response validity');
+    const verification = object(metrics.verification, 'continuation phase-one response verification');
+    independentlyAttestedExpectedFailure =
+      completion.completed === false &&
+      validity.valid === true &&
+      verification.taskId === input.plan.taskId &&
+      verification.status === 'task-failed' &&
+      verification.exitCode === 1;
+  }
+  if (agentResult.completed !== true && !independentlyAttestedExpectedFailure) {
+    throw new Error('Continuation phase-one agent result lacks an independently attested expected failure.');
+  }
   if (
-    safety.blockedActions !== 0 ||
+    (safety.blockedActions !== 0 && !independentlyAttestedExpectedFailure) ||
     response.transcriptHash !== execution.transcriptHash ||
     timing.endToEndMilliseconds !== input.plan.checkpoint.phaseOneAccounting.elapsedMilliseconds ||
     providerTokens.cachedInputTokens !== input.plan.checkpoint.phaseOneAccounting.providerTokens?.cachedInputTokens ||
@@ -1938,7 +1952,7 @@ export async function runMatchedEvaluationContinuationPhaseOneFromFilesV1(option
     task: {...corpusTask, prompt: selection.phaseOnePrompt},
   };
   const repository = requiredRuntimeRepository(repositories, corpusTask.taskId, study);
-  const observation = await executeArm(phaseOneRuntime, resolution, repository, request, study);
+  await executeArm(phaseOneRuntime, resolution, repository, request, study);
   await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected);
   const runDirectory = resolve(executionDirectory, 'runs', selection.phaseOneRunNonce);
   const transcriptPath = resolve(executionDirectory, 'transcripts', `${selection.phaseOneRunNonce}.jsonl`);
@@ -1960,14 +1974,29 @@ export async function runMatchedEvaluationContinuationPhaseOneFromFilesV1(option
       }),
     ),
   );
-  const artifact = object(
-    await readJson(resolve(evidenceDirectory, 'artifact.json')),
-    'continuation phase-one artifact',
-  );
-  const agentResult = object(artifact.agentResult, 'continuation phase-one agent result');
-  if (agentResult.completed !== true || typeof artifact.patch !== 'string' || artifact.patch.length === 0) {
-    throw new Error('Continuation phase-one agent did not return one completed nonempty test patch.');
+  await sealMatchedEvaluationContinuationPhaseOneEvidenceV1({outputDirectory});
+  process.stdout.write(`${JSON.stringify({outputDirectory, taskId: corpusTask.taskId, version: 1})}\n`);
+}
+
+/** Seal preserved Phase-1 evidence without repeating the provider call. */
+export async function sealMatchedEvaluationContinuationPhaseOneEvidenceV1(options: {
+  readonly outputDirectory: string;
+}): Promise<MatchedEvaluationContinuationPhaseOneReceiptV1> {
+  const outputDirectory = await canonicalDirectory(options.outputDirectory, 'continuation phase-one output directory');
+  const evidenceDirectory = resolve(outputDirectory, 'phase-one');
+  const selectionPath = resolve(outputDirectory, 'phase-one-selection.json');
+  const [selectionInput, taskPacketBytes, artifactInput, observationInput] = await Promise.all([
+    readJson(selectionPath),
+    readFile(resolve(outputDirectory, 'phase-one-task-packet.json')),
+    readJson(resolve(evidenceDirectory, 'artifact.json')),
+    readJson(resolve(evidenceDirectory, 'response.json')),
+  ]);
+  const selection = parseMatchedEvaluationContinuationPhaseOneSelectionV1(selectionInput);
+  if (sha256Bytes(taskPacketBytes) !== selection.taskPacketSha256) {
+    throw new Error('Continuation phase-one task packet bytes differ from the sealed selection.');
   }
+  const observation = parseMatchedEvaluationObservationV1(observationInput);
+  assertMatchedEvaluationContinuationPhaseOneResultV1(artifactInput, observation, selection.sourceTask.taskId);
   const [
     adapterArtifactHash,
     adapterConfigurationFileSha256,
@@ -2009,13 +2038,42 @@ export async function runMatchedEvaluationContinuationPhaseOneFromFilesV1(option
       MAXIMUM_JSON_BYTES,
       'continuation phase-one selection',
     ),
-    taskId: corpusTask.taskId,
+    taskId: selection.sourceTask.taskId,
     taskPacketSha256: selection.taskPacketSha256,
     transcriptHash: observation.transcriptHash,
     version: 1,
   } as const;
   await atomicWrite(resolve(outputDirectory, 'phase-one-receipt.json'), `${JSON.stringify(receipt, undefined, 2)}\n`);
-  process.stdout.write(`${JSON.stringify({outputDirectory, taskId: corpusTask.taskId, version: 1})}\n`);
+  return receipt;
+}
+
+export function assertMatchedEvaluationContinuationPhaseOneResultV1(
+  artifactInput: unknown,
+  observationInput: unknown,
+  taskId: string,
+): void {
+  const artifact = object(artifactInput, 'continuation phase-one artifact');
+  const agentResult = object(artifact.agentResult, 'continuation phase-one agent result');
+  if (typeof artifact.patch !== 'string' || artifact.patch.length === 0) {
+    throw new Error('Continuation phase-one agent did not return a nonempty test patch.');
+  }
+  const observation = parseMatchedEvaluationObservationV1(observationInput);
+  const verification = observation.metrics.verification;
+  if (
+    observation.metrics.validity.valid !== true ||
+    verification === null ||
+    verification.taskId !== taskId ||
+    verification.status !== 'task-failed' ||
+    verification.exitCode === 0
+  ) {
+    throw new Error('Continuation phase-one deterministic verifier did not attest the expected failing regression.');
+  }
+  if (
+    typeof agentResult.completed !== 'boolean' ||
+    agentResult.completed !== observation.metrics.completion.completed
+  ) {
+    throw new Error('Continuation phase-one agent completion evidence is inconsistent.');
+  }
 }
 
 /** Turn preserved Phase-1 evidence into one direct-child checkpoint and sealed v2 continuation plan. */
@@ -2074,7 +2132,6 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     revision: cluster.revision,
   });
   const artifact = object(artifactInput, 'continuation phase-one artifact');
-  const agentResult = object(artifact.agentResult, 'continuation phase-one agent result');
   const request = object(requestInput, 'continuation phase-one request');
   const response = object(responseInput, 'continuation phase-one response');
   const responseObservation = parseMatchedEvaluationObservationV1(responseInput);
@@ -2129,27 +2186,60 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     selection,
     selectionSha256,
   });
+  assertMatchedEvaluationContinuationPhaseOneResultV1(artifactInput, responseObservation, corpusTask.taskId);
+  const agentPatch = boundedString(
+    artifact.patch,
+    1,
+    8 * 1_024 * 1_024,
+    'continuation phase-one agent patch',
+  );
   if (
-    agentResult.completed !== true ||
-    typeof artifact.patch !== 'string' ||
-    artifact.patch.length === 0 ||
     request.runNonce !== selection.phaseOneRunNonce ||
     artifact.runNonce !== selection.phaseOneRunNonce
   ) {
     throw new Error('Continuation phase-one evidence differs from its sealed selection.');
   }
   const checkpointRepository = resolve(outputDirectory, 'checkpoint-repository');
-  await captureContinuationGit(runtimeRepository.repositoryDirectory, [
-    'worktree',
-    'add',
-    '--detach',
-    checkpointRepository,
-    selection.sourceTask.repositoryRevision,
-  ]);
+  const checkpointAlreadyExists = await lstat(checkpointRepository).then(
+    entry => {
+      if (!entry.isDirectory()) throw new Error('Continuation checkpoint path exists but is not a directory.');
+      return true;
+    },
+    cause => {
+      if (isMissing(cause)) return false;
+      throw cause;
+    },
+  );
+  if (!checkpointAlreadyExists) {
+    await captureContinuationGit(runtimeRepository.repositoryDirectory, [
+      'worktree',
+      'add',
+      '--detach',
+      checkpointRepository,
+      selection.sourceTask.repositoryRevision,
+    ]);
+  }
   const agentPatchPath = resolve(outputDirectory, 'phase-one', 'agent.patch');
-  await writeFile(agentPatchPath, artifact.patch, {encoding: 'utf8', flag: 'wx', mode: 0o600});
-  await captureContinuationGit(checkpointRepository, ['apply', '--index', '--whitespace=nowarn', agentPatchPath]);
-  const changedPaths = (await captureContinuationGit(checkpointRepository, ['diff', '--cached', '--name-only', '-z']))
+  const preservedAgentPatch = await readFile(agentPatchPath, 'utf8').catch(cause => {
+    if (isMissing(cause)) return null;
+    throw cause;
+  });
+  if (preservedAgentPatch === null) {
+    await writeFile(agentPatchPath, agentPatch, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+  } else if (preservedAgentPatch !== agentPatch) {
+    throw new Error('Continuation checkpoint preserved patch differs from the phase-one artifact.');
+  }
+  if (!checkpointAlreadyExists) {
+    await captureContinuationGit(checkpointRepository, ['apply', '--index', '--whitespace=nowarn', agentPatchPath]);
+  }
+  const changedPaths = (
+    await captureContinuationGit(
+      checkpointRepository,
+      checkpointAlreadyExists
+        ? ['diff', '--name-only', '-z', selection.sourceTask.repositoryRevision, 'HEAD', '--']
+        : ['diff', '--cached', '--name-only', '-z'],
+    )
+  )
     .split('\0')
     .filter(Boolean)
     .sort();
@@ -2173,22 +2263,24 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
       `Continuation phase-one focused check must fail with exit code 1, received ${focusedCheck.exitCode}.`,
     );
   }
-  await captureContinuationGit(checkpointRepository, [
-    '-c',
-    'user.name=Threadnote Evaluation',
-    '-c',
-    'user.email=evaluation@threadnote.invalid',
-    'commit',
-    '-m',
-    `test: add ${selection.taskPacket.taskKey} regression checkpoint`,
-  ]);
+  if (!checkpointAlreadyExists) {
+    await captureContinuationGit(checkpointRepository, [
+      '-c',
+      'user.name=Threadnote Evaluation',
+      '-c',
+      'user.email=evaluation@threadnote.invalid',
+      'commit',
+      '-m',
+      `test: add ${selection.taskPacket.taskKey} regression checkpoint`,
+    ]);
+  }
   const checkpoint = await observeMatchedEvaluationRepositoryV1(checkpointRepository);
   if (checkpoint.dirty || checkpoint.identityHash !== cluster.repositoryIdentityHash) {
     throw new Error('Continuation checkpoint repository is dirty or has a different identity.');
   }
-  const phaseOnePatchSha256 = sha256Bytes(Buffer.from(artifact.patch));
+  const phaseOnePatchSha256 = sha256Bytes(Buffer.from(agentPatch));
   await assertMatchedEvaluationContinuationCheckpointV2({
-    agentPatch: artifact.patch,
+    agentPatch,
     baseFixtureHash: selection.sourceTask.repositoryFixtureHash,
     baseRevision: selection.sourceTask.repositoryRevision,
     checkpoint,
@@ -3159,7 +3251,8 @@ export async function assertMatchedEvaluationContinuationCheckpointV2(input: {
     8 * 1_024 * 1_024,
   );
   if (patch.length === 0) throw new Error('Continuation checkpoint phase-one patch must be nonempty.');
-  if (sha256Bytes(Buffer.from(patch)) !== input.patchSha256) {
+  const sealedPatch = input.agentPatch ?? patch;
+  if (sha256Bytes(Buffer.from(sealedPatch)) !== input.patchSha256) {
     throw new Error('Continuation checkpoint phase-one patch differs from the sealed hash.');
   }
 }
