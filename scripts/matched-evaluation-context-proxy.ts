@@ -14,13 +14,15 @@ import {EffectSchemaSdkTools} from '@threadnote/threadnote/mcp/effect_schema_sdk
 
 export const MATCHED_EVALUATION_CONTEXT_PACKET_ENV = 'MATCHED_EVALUATION_CONTEXT_PACKET' as const;
 export const MATCHED_EVALUATION_CONTEXT_SERVER_NAME = 'matched_evaluation_context' as const;
-export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 5 as const;
+export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 6 as const;
 
 type MatchedEvaluationContextBriefMode = 'brief' | 'resume';
 
 export interface MatchedEvaluationContextProxyPacketV1 {
   readonly budgetTokens: number;
   readonly detail: 'compact' | 'graph-only' | 'source';
+  /** Whether the first brief is model-requested or injected before the first model turn. */
+  readonly initialBriefDelivery: 'mcp' | 'preloaded';
   /** The Context Brief mode is sealed by the runner, not selected by the agent. */
   readonly mode: MatchedEvaluationContextBriefMode;
   readonly expectedContext: {
@@ -87,9 +89,14 @@ export function hashMatchedEvaluationContextRequest(toolName: string, requestInp
 
 export function matchedEvaluationContextTools(
   detail: MatchedEvaluationContextProxyPacketV1['detail'],
+  initialBriefDelivery: MatchedEvaluationContextProxyPacketV1['initialBriefDelivery'] = 'mcp',
 ): readonly string[] {
   if (detail === 'source') return ['context_brief'];
-  const graph = ['context_brief', 'inspect_code_graph', 'analyze_code_graph'];
+  const graph = [
+    ...(initialBriefDelivery === 'mcp' ? ['context_brief'] : []),
+    'inspect_code_graph',
+    'analyze_code_graph',
+  ];
   return detail === 'compact' ? [...graph, 'recall_context', 'read_context'] : graph;
 }
 
@@ -399,6 +406,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'mode',
     'expectedContext',
     'expectedResume',
+    'initialBriefDelivery',
     'maximumFollowupCalls',
     'project',
     'prompt',
@@ -413,7 +421,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'threadnoteUser',
     'version',
   ]);
-  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 5');
+  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 6');
   const expected = object(packet.expectedContext, 'expected context');
   exactKeys(expected, [
     'graphContentHash',
@@ -431,6 +439,11 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   const linkReceiptsHash = nullableHash(expected.linkReceiptsHash, 'link receipts hash');
   const taskContextHash = nullableHash(expected.taskContextHash, 'task context hash');
   const mode = literal(packet.mode, ['brief', 'resume'] as const, 'Context Brief mode');
+  const initialBriefDelivery = literal(
+    packet.initialBriefDelivery,
+    ['mcp', 'preloaded'] as const,
+    'initial brief delivery',
+  );
   const maximumFollowupCalls = integer(packet.maximumFollowupCalls, 0, 4, 'maximum follow-up calls');
   const expectedResume =
     packet.expectedResume === null
@@ -446,6 +459,9 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   if ((mode === 'resume') !== (expectedResume !== null)) {
     invalid('resume mode and expected resume evidence disagree');
   }
+  if (initialBriefDelivery === 'preloaded' && (mode !== 'resume' || detail !== 'compact')) {
+    invalid('preloaded initial context is supported only for compact resume');
+  }
   if ((detail === 'source' && maximumFollowupCalls !== 0) || (mode === 'resume' && maximumFollowupCalls > 1)) {
     invalid('context detail or resume mode disagrees with the follow-up call budget');
   }
@@ -458,6 +474,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   return {
     budgetTokens: integer(packet.budgetTokens, 800, 1_500, 'context budget'),
     detail,
+    initialBriefDelivery,
     mode,
     expectedContext: {
       graphContentHash: matching(expected.graphContentHash, HASH, 'graph content hash'),
@@ -617,24 +634,26 @@ export async function runMatchedEvaluationContextProxy(): Promise<void> {
     {capabilities: {tools: {listChanged: false}}},
   );
   const tools = new EffectSchemaSdkTools();
-  let briefStarted = false;
-  let briefReady = false;
+  let briefStarted = packet.initialBriefDelivery === 'preloaded';
+  let briefReady = packet.initialBriefDelivery === 'preloaded';
   let followupCalls = 0;
-  tools.register(
-    'context_brief',
-    {
-      annotations: {destructiveHint: false, idempotentHint: true, readOnlyHint: true},
-      description: 'Read the preregistered Threadnote graph and linked-memory context for this evaluation task.',
-      inputSchema: MATCHED_EVALUATION_CONTEXT_INPUT_SCHEMA,
-    },
-    async request => {
-      if (briefStarted) throw new Error('The initial context brief may only be requested once.');
-      briefStarted = true;
-      const result = await handleMatchedEvaluationContextRequest(packet, request);
-      briefReady = true;
-      return {content: [...result.content], _meta: result.meta};
-    },
-  );
+  if (packet.initialBriefDelivery === 'mcp') {
+    tools.register(
+      'context_brief',
+      {
+        annotations: {destructiveHint: false, idempotentHint: true, readOnlyHint: true},
+        description: 'Read the preregistered Threadnote graph and linked-memory context for this evaluation task.',
+        inputSchema: MATCHED_EVALUATION_CONTEXT_INPUT_SCHEMA,
+      },
+      async request => {
+        if (briefStarted) throw new Error('The initial context brief may only be requested once.');
+        briefStarted = true;
+        const result = await handleMatchedEvaluationContextRequest(packet, request);
+        briefReady = true;
+        return {content: [...result.content], _meta: result.meta};
+      },
+    );
+  }
   const followups = [
     [
       'inspect_code_graph',
@@ -658,7 +677,7 @@ export async function runMatchedEvaluationContextProxy(): Promise<void> {
     ],
   ] as const;
   for (const [name, inputSchema, description] of followups) {
-    if (!matchedEvaluationContextTools(packet.detail).includes(name)) continue;
+    if (!matchedEvaluationContextTools(packet.detail, packet.initialBriefDelivery).includes(name)) continue;
     tools.register(
       name,
       {

@@ -106,6 +106,19 @@ describe('matched evaluation runtime integrity', () => {
       'threadnote-graph',
       'threadnote-resume',
     ]);
+    const withPreloadedResume = parseMatchedEvaluationContinuationPilotPlanV1({
+      ...base,
+      attempts: [
+        ...base.attempts,
+        {
+          blindLabel: 'E',
+          runNonce: 'run_00000000000000000000000000000005',
+          runOrder: 5,
+          variant: 'threadnote-preloaded-resume',
+        },
+      ],
+    });
+    expect(withPreloadedResume.attempts.map(attempt => attempt.variant)).toContain('threadnote-preloaded-resume');
     expect(() =>
       parseMatchedEvaluationContinuationPilotPlanV1({
         ...base,

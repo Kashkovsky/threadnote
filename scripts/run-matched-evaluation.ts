@@ -207,7 +207,8 @@ export function selectMatchedEvaluationPilotRowsV1(
   return [...selected].sort((left, right) => left.runOrder - right.runOrder);
 }
 
-const CONTINUATION_VARIANTS = ['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume'] as const;
+const BASE_CONTINUATION_VARIANTS = ['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume'] as const;
+const CONTINUATION_VARIANTS = [...BASE_CONTINUATION_VARIANTS, 'threadnote-preloaded-resume'] as const;
 
 type MatchedEvaluationContinuationVariantV1 = (typeof CONTINUATION_VARIANTS)[number];
 
@@ -431,13 +432,20 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
         `continuation pilot attempt ${index} blind label`,
       ),
       runNonce: matchingString(attempt.runNonce, /^run_[0-9a-f]{32}$/u, `continuation pilot attempt ${index} nonce`),
-      runOrder: boundedPositiveInteger(attempt.runOrder, 1, 4, `continuation pilot attempt ${index} order`),
+      runOrder: boundedPositiveInteger(attempt.runOrder, 1, 5, `continuation pilot attempt ${index} order`),
       variant: literal(attempt.variant, CONTINUATION_VARIANTS, `continuation pilot attempt ${index} variant`),
     };
   });
+  const expectedVariants =
+    attempts.length === BASE_CONTINUATION_VARIANTS.length
+      ? BASE_CONTINUATION_VARIANTS
+      : attempts.length === CONTINUATION_VARIANTS.length
+        ? CONTINUATION_VARIANTS
+        : null;
   if (
-    attempts.length !== CONTINUATION_VARIANTS.length ||
-    new Set(attempts.map(attempt => attempt.variant)).size !== CONTINUATION_VARIANTS.length ||
+    expectedVariants === null ||
+    new Set(attempts.map(attempt => attempt.variant)).size !== expectedVariants.length ||
+    expectedVariants.some(variant => !attempts.some(attempt => attempt.variant === variant)) ||
     new Set(attempts.map(attempt => attempt.runNonce)).size !== attempts.length ||
     new Set(attempts.map(attempt => attempt.blindLabel)).size !== attempts.length ||
     new Set(attempts.map(attempt => attempt.runOrder)).size !== attempts.length
@@ -859,6 +867,18 @@ function continuationTreatment(
           variant,
         },
       };
+    case 'threadnote-preloaded-resume':
+      return {
+        arm: 'threadnote-compact',
+        treatment: {
+          automaticHandoffUri: checkpoint.automaticHandoffUri,
+          contextMode: 'resume',
+          manualHandoff: null,
+          manualHandoffSha256: null,
+          resumeEvidenceMarker: checkpoint.resumeEvidenceMarker,
+          variant,
+        },
+      };
   }
 }
 
@@ -885,7 +905,7 @@ export function projectMatchedEvaluationContinuationSelectionCheckpointV1(
   };
 }
 
-function continuationPosition(index: number): 1 | 2 | 3 | 4 {
+function continuationPosition(index: number): 1 | 2 | 3 | 4 | 5 {
   switch (index) {
     case 0:
       return 1;
@@ -895,6 +915,8 @@ function continuationPosition(index: number): 1 | 2 | 3 | 4 {
       return 3;
     case 3:
       return 4;
+    case 4:
+      return 5;
     default:
       throw new Error('Continuation pilot has an impossible attempt position.');
   }
@@ -1290,8 +1312,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   const selection = {
     candidate: plan.candidate,
     checkpoint: projectMatchedEvaluationContinuationSelectionCheckpointV1(plan),
-    completionMeaning:
-      'completed is true only when all four fresh phase-two adapter attempts completed; verified completion is verifier-authoritative per attempt.',
+    completionMeaning: `completed is true only when all ${selected.length} fresh phase-two adapter attempts completed; verified completion is verifier-authoritative per attempt.`,
     comparativeClaimsEligible: false,
     identities: {
       manifestHash: manifest.manifestHash,

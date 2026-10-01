@@ -17,6 +17,7 @@ import {afterEach, describe, expect, it} from 'vitest';
 import {
   assertMatchedEvaluationContextDeliveryV1,
   assertMatchedEvaluationMcpInventoryV1,
+  assertMatchedEvaluationPreloadedContextV1,
   analyzeMatchedEvaluationAttributionV1,
   countMatchedEvaluationBlockedActionsV1,
   extractMatchedEvaluationProviderUsageV1,
@@ -115,6 +116,17 @@ describe('matched evaluation Codex adapter', () => {
           resumeEvidenceMarker: 'resume-marker-123',
         },
       },
+      {
+        arm: 'threadnote-compact',
+        continuationTreatment: {
+          variant: 'threadnote-preloaded-resume',
+          contextMode: 'resume',
+          manualHandoff: null,
+          manualHandoffSha256: null,
+          automaticHandoffUri: 'threadnote://handoff/phase-one',
+          resumeEvidenceMarker: 'resume-marker-123',
+        },
+      },
     ] as const;
     for (const treatment of treatments) {
       expect(
@@ -167,6 +179,28 @@ describe('matched evaluation Codex adapter', () => {
     expect(agentPrompt).toContain('Keep discovery output bounded');
     expect(agentPrompt).toContain('separate commands');
     expect(renderMatchedEvaluationAgentPromptV1(resume, 'threadnote', 1_200)).toContain('mode "resume"');
+    const preloaded = parseMatchedEvaluationCodexAdapterRequestV1(
+      adapterRequest('threadnote-compact', {
+        variant: 'threadnote-preloaded-resume',
+        contextMode: 'resume',
+        manualHandoff: null,
+        manualHandoffSha256: null,
+        automaticHandoffUri: 'threadnote://handoff/phase-one',
+        resumeEvidenceMarker: 'resume-marker-123',
+      }),
+    );
+    const preloadedPrompt = renderMatchedEvaluationAgentPromptV1(
+      preloaded,
+      'threadnote',
+      1_200,
+      '{"evidenceState":"sufficient"}',
+    );
+    expect(preloadedPrompt).toContain('already been loaded');
+    expect(preloadedPrompt).toContain('{"evidenceState":"sufficient"}');
+    expect(preloadedPrompt).not.toContain('call context_brief exactly once');
+    expect(renderMatchedEvaluationAgentInstructionsV1('compact', 1, 'preloaded')).toContain(
+      'Do not call context_brief',
+    );
     const judgePrompt = renderMatchedEvaluationJudgePromptV1(manual, {
       agentResult: {completed: true},
       patch: '',
@@ -220,6 +254,59 @@ describe('matched evaluation Codex adapter', () => {
         ),
       ).toThrow('receipt mismatch');
     }
+  });
+
+  it('validates a pre-turn resume payload and forbids a duplicate context brief', () => {
+    const base = contextDelivery('{"evidenceState":"sufficient"}');
+    const expected = {
+      ...base.expected,
+      expectedResumeHash: '7'.repeat(64),
+      initialBriefDelivery: 'preloaded' as const,
+      maximumFollowupCalls: 1,
+      mode: 'resume' as const,
+    };
+    const request = {
+      budgetTokens: 1_500,
+      callerCwd: '/isolated/repository',
+      mode: 'resume',
+      project: 'threadnote',
+    };
+    const receipt = {
+      ...base.receipt,
+      expectedResumeHash: expected.expectedResumeHash,
+      mode: expected.mode,
+      requestSha256: hashMatchedEvaluationContextRequest('context_brief', request),
+    };
+    const preloaded = assertMatchedEvaluationPreloadedContextV1(
+      {content: base.result.content, meta: {matchedEvaluation: receipt}},
+      expected,
+      17,
+      request,
+    );
+    expect(preloaded).toMatchObject({
+      receipt: {elapsedMilliseconds: 17, source: 'adapter-pre-turn'},
+      text: '{"evidenceState":"sufficient"}',
+    });
+    expect(() =>
+      assertMatchedEvaluationPreloadedContextV1(
+        {content: base.result.content, meta: {matchedEvaluation: {...receipt, requestSha256: '0'.repeat(64)}}},
+        expected,
+        17,
+        request,
+      ),
+    ).toThrow('requestSha256');
+    expect(() =>
+      assertMatchedEvaluationPreloadedContextV1(
+        {content: [...base.result.content, ...base.result.content], meta: {matchedEvaluation: receipt}},
+        expected,
+        17,
+        request,
+      ),
+    ).toThrow('exactly one text body');
+    expect(() => assertMatchedEvaluationContextDeliveryV1([], expected)).not.toThrow();
+    expect(() => assertMatchedEvaluationContextDeliveryV1([base.event], expected)).toThrow(
+      'unexpected MCP server or tool',
+    );
   });
 
   it('detects any changed delivered content while accepting deterministic receipt bindings', () => {
@@ -1355,6 +1442,7 @@ function contextDelivery(text = '{"answer":"Relevant evidence","graph":{"cards":
     detail: 'compact',
     mode: 'brief',
     frozenPromptSha256: sha256HexSync('Task with `formatting` and trailing space. '),
+    initialBriefDelivery: 'mcp',
     maximumFollowupCalls: 4,
     runNonce: 'run_0123456789abcdef0123456789abcdef',
     runtimeManifestSha256: '6'.repeat(64),

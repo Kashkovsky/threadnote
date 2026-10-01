@@ -14,6 +14,7 @@ import {
   hashMatchedEvaluationContextContent,
   hashMatchedEvaluationContextRequest,
   matchedEvaluationContextTools,
+  MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
   renderMatchedEvaluationRuntimeManifestV1,
   type MatchedEvaluationContextProxyPacketV1,
 } from '../../../../scripts/matched-evaluation-context-proxy.js';
@@ -44,7 +45,7 @@ describe('matched evaluation context proxy', () => {
         runtimeManifestSha256: fixture.packet.runtimeManifestSha256,
         contentResponseSha256: sha256HexSync(Buffer.from(result.content[0].text)),
         frozenPromptSha256: sha256HexSync(Buffer.from(fixture.packet.prompt)),
-        version: 5,
+        version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
       },
     });
   });
@@ -117,7 +118,7 @@ describe('matched evaluation context proxy', () => {
       expect('structuredContent' in result).toBe(false);
       expect(result._meta).toMatchObject({
         matchedEvaluation: {
-          version: 5,
+          version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
           runNonce: fixture.packet.runNonce,
           runtimeManifestSha256: fixture.packet.runtimeManifestSha256,
           contentResponseSha256: sha256HexSync(Buffer.from(content[0].text)),
@@ -130,6 +131,37 @@ describe('matched evaluation context proxy', () => {
         arguments: {callerCwd: fixture.repository, task: 'injected task'},
       });
       expect(injected.isError).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('starts preloaded resume with follow-ups ready and no context_brief tool', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = await contextFixture(roots, 'Resume the checkpoint.', 'compact', 'linked', 'resume');
+    const packet = {...fixture.packet, initialBriefDelivery: 'preloaded' as const};
+    const packetPath = join(fixture.root, 'preloaded-packet.json');
+    await writeFile(packetPath, JSON.stringify(packet));
+    const transport = new StdioClientTransport({
+      args: [join(process.cwd(), 'scripts/matched-evaluation-context-proxy.ts')],
+      command: process.execPath,
+      cwd: process.cwd(),
+      env: {...process.env, MATCHED_EVALUATION_CONTEXT_PACKET: packetPath},
+      stderr: 'pipe',
+    });
+    const client = new Client({name: 'matched-context-preload-test', version: '1'});
+    try {
+      await client.connect(transport);
+      const listed = await client.listTools();
+      expect(listed.tools.map(tool => tool.name).sort()).toEqual(
+        [...matchedEvaluationContextTools(packet.detail, 'preloaded')].sort(),
+      );
+      expect(listed.tools.some(tool => tool.name === 'context_brief')).toBe(false);
+      const followup = await client.callTool({
+        name: 'inspect_code_graph',
+        arguments: {callerCwd: fixture.repository, operation: 'query', query: 'fixture'},
+      });
+      expect(followup.isError).not.toBe(true);
     } finally {
       await client.close();
     }
@@ -462,6 +494,7 @@ async function contextFixture(
         mode === 'resume'
           ? {automaticHandoffUri: 'prepared context', resumeEvidenceMarker: 'implementation contract'}
           : null,
+      initialBriefDelivery: 'mcp',
       maximumFollowupCalls: mode === 'resume' ? 1 : detail === 'source' ? 0 : 4,
       project,
       prompt,
@@ -474,7 +507,7 @@ async function contextFixture(
       threadnoteExecutableSha256: sha256HexSync(await readFile(executable)),
       threadnoteHome,
       threadnoteUser: 'evaluation-user',
-      version: 5,
+      version: MATCHED_EVALUATION_CONTEXT_PROXY_VERSION,
     },
     repository,
     root,
@@ -547,8 +580,16 @@ function handle(message) {
     if (process.env.THREADNOTE_ACCOUNT !== 'local' || process.env.THREADNOTE_USER !== 'evaluation-user') {
       throw new Error('identity mismatch');
     }
-    if (message.params.name !== 'context_brief') throw new Error('tool mismatch');
     const arguments_ = message.params.arguments;
+    if (message.params.name === 'inspect_code_graph') {
+      send({
+        id: message.id,
+        jsonrpc: '2.0',
+        result: {content: [{text: JSON.stringify({nodes: [{path: 'service.ts'}]}), type: 'text'}]},
+      });
+      return;
+    }
+    if (message.params.name !== 'context_brief') throw new Error('tool mismatch');
     writeFileSync(expected.seenTaskPath, arguments_.task);
     writeFileSync(expected.seenModePath, arguments_.mode);
     writeFileSync(expected.seenResponseFormatPath, arguments_.responseFormat);
