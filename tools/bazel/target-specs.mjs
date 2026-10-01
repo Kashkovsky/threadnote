@@ -42,6 +42,7 @@ const recallQualityEntries = [
   'scripts/matched-evaluation-context-proxy.ts',
   'scripts/matched-continuation-runtime-integrity.ts',
   'scripts/prepare-matched-continuation-study.ts',
+  'scripts/finalize-matched-continuation-study.ts',
   'scripts/prepare-matched-token-efficiency-study.ts',
 ];
 const windowsSmokeEntries = [

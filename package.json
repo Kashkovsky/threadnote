@@ -103,6 +103,7 @@
     "eval:matched": "bun scripts/run-matched-evaluation.ts",
     "eval:matched:claim": "bun scripts/run-matched-evaluation.ts",
     "eval:matched:adapter:build": "bun build --compile scripts/matched-evaluation-codex-adapter.ts --outfile",
+    "eval:matched:continuation:finalize": "bun scripts/finalize-matched-continuation-study.ts",
     "eval:matched:continuation:prepare": "bun scripts/prepare-matched-continuation-study.ts",
     "eval:matched:prepare": "bun scripts/prepare-matched-token-efficiency-study.ts",
     "eval:code-memory-link-codex-client": "bun scripts/run-code-memory-link-codex-client.ts",
