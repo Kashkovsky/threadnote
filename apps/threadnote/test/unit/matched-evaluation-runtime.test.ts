@@ -604,11 +604,18 @@ describe('matched evaluation runtime integrity', () => {
     };
     expect(() =>
       assertMatchedEvaluationContinuationPhaseOneResultV1(
-        {agentResult: {completed: false}, patch: 'diff --git a/test.py b/test.py\n'},
+        {agentResult: {completed: true}, patch: 'diff --git a/test.py b/test.py\n'},
         expectedFailureObservation,
         first.sourceTask.taskId,
       ),
     ).not.toThrow();
+    expect(() =>
+      assertMatchedEvaluationContinuationPhaseOneResultV1(
+        {agentResult: {completed: 'yes'}, patch: 'diff --git a/test.py b/test.py\n'},
+        expectedFailureObservation,
+        first.sourceTask.taskId,
+      ),
+    ).toThrow('agent completion evidence is invalid');
     expect(() =>
       assertMatchedEvaluationContinuationPhaseOneResultV1(
         {agentResult: {completed: false}, patch: ''},

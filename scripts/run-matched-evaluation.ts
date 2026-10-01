@@ -2108,11 +2108,11 @@ export function assertMatchedEvaluationContinuationPhaseOneResultV1(
   ) {
     throw new Error('Continuation phase-one deterministic verifier did not attest the expected failing regression.');
   }
-  if (
-    typeof agentResult.completed !== 'boolean' ||
-    agentResult.completed !== observation.metrics.completion.completed
-  ) {
-    throw new Error('Continuation phase-one agent completion evidence is inconsistent.');
+  // Phase 1 deliberately asks the agent to complete a regression-only assignment while
+  // the phase-two verifier must still fail. Those two completion signals describe
+  // different contracts and are therefore not expected to agree.
+  if (typeof agentResult.completed !== 'boolean') {
+    throw new Error('Continuation phase-one agent completion evidence is invalid.');
   }
 }
 
