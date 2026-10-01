@@ -174,7 +174,7 @@ export function parseMatchedEvaluationCorpusV1(value: unknown): MatchedEvaluatio
   exactKeys(corpus, ['corpusId', 'tasks', 'version'], 'corpus');
   if (corpus.version !== MATCHED_EVALUATION_VERSION) invalid('corpus version must be 1');
   const tasks = array(corpus.tasks, 'corpus tasks').map((task, index) => parseCorpusTask(task, index));
-  if (tasks.length < 6 || tasks.length > 64) invalid('corpus must contain between 6 and 64 tasks');
+  if (tasks.length < 5 || tasks.length > 64) invalid('corpus must contain between 5 and 64 tasks');
   unique(
     tasks.map(task => task.taskId),
     'corpus task ids',
@@ -270,7 +270,7 @@ export function parseMatchedEvaluationManifestV1(value: unknown): MatchedEvaluat
   const repetitions = repetitionsValue(manifest.repetitions);
   const scheduleSeed = matchingString(manifest.scheduleSeed, HASH, 'manifest schedule seed');
   const tasks = array(manifest.tasks, 'manifest tasks').map((task, index) => parseManifestTask(task, index));
-  if (tasks.length < 6 || tasks.length > 64) invalid('manifest must contain between 6 and 64 tasks');
+  if (tasks.length < 5 || tasks.length > 64) invalid('manifest must contain between 5 and 64 tasks');
   canonicalUnique(
     tasks.map(task => task.taskId),
     'manifest task ids',

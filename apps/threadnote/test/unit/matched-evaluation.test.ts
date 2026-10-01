@@ -119,6 +119,19 @@ describe('matched Threadnote, reference, and files evaluation', () => {
     ).toThrow('cannot mix with synthetic variants');
   });
 
+  it('admits one historical task for each required task category', async () => {
+    const corpus = await fixture();
+    const onePerCategory = {
+      ...corpus,
+      tasks: corpus.tasks
+        .filter(task => task.taskId !== 'tsk_2222222222222222')
+        .map(task => ({...task, pairId: null, variant: 'historical-as-issued' as const})),
+    };
+
+    expect(parseMatchedEvaluationCorpusV1(onePerCategory).tasks).toHaveLength(5);
+    expect(createManifest(onePerCategory).tasks).toHaveLength(5);
+  });
+
   it('admits the reviewed historical external corpus with unedited prompt and context provenance', async () => {
     const root = new URL('../evaluation/corpora/token-efficiency-historical-v1/', import.meta.url);
     const corpus = parseMatchedEvaluationCorpusV1(JSON.parse(await readFile(new URL('corpus.json', root), 'utf8')));
