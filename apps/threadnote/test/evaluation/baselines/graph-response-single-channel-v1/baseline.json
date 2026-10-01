@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "sourceCommit": "dd73e2d7aee74b1ff4147f2094a7161ef8d57a0c",
+  "sourceCommit": "30475f6899bf8512eef8ebdcf71541ba8f1e04f7",
   "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
   "measurement": "combined serialized text plus structuredContent UTF-8 bytes",
   "queries": [
-    {"id": "definition-exclusive-lock", "dualBytes": 19902, "textBytes": 15833},
+    {"id": "definition-exclusive-lock", "dualBytes": 2378, "textBytes": 2225},
     {"id": "path-app-to-lock", "dualBytes": 3392, "textBytes": 2713},
     {"id": "impact-lock", "dualBytes": 18419, "textBytes": 14203},
-    {"id": "documentation-recovery", "dualBytes": 24158, "textBytes": 19979},
+    {"id": "documentation-recovery", "dualBytes": 2395, "textBytes": 2225},
     {"id": "missing-payment-service", "dualBytes": 815, "textBytes": 676}
   ],
-  "totals": {"dualBytes": 66686, "textBytes": 53404},
+  "totals": {"dualBytes": 27399, "textBytes": 22042},
   "agentEnvelopeComparison": {
     "comparisonBaseCommit": "30475f6899bf8512eef8ebdcf71541ba8f1e04f7",
     "measurement": "serialized model-facing MCP text UTF-8 bytes; dual also includes structuredContent",
