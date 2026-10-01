@@ -86,7 +86,7 @@ describe('matched token-efficiency study preparation', () => {
     ).not.toThrow();
     expect(() =>
       assertMatchedTokenEfficiencyThreadnoteVersionOutputV1(
-        `threadnote v5.1.0-beta.1.local.g${commit}\n`,
+        `threadnote v5.1.0-beta.2.local.g${commit}\n`,
         commit,
         MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION,
       ),

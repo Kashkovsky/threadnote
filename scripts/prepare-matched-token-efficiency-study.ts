@@ -65,7 +65,7 @@ import {
 export const MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION = 3 as const;
 export const MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION = '5.0.6' as const;
 export const MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION = '5.0.7' as const;
-export const MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION = '5.1.0-beta.1' as const;
+export const MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION = '5.1.0-beta.2' as const;
 const PRODUCTION_SOURCE_COMMIT = '78eab789ba33e3b7e3abf44d73dd48f8bc58f8d7' as const;
 const PRODUCTION_RELEASE_URL = 'https://github.com/Kashkovsky/threadnote/releases/tag/v5.0.7' as const;
 const PRODUCTION_ARCHIVE_URL =
