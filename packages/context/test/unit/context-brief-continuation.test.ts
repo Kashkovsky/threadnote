@@ -1,5 +1,8 @@
 import fc from 'fast-check';
+import {Effect} from 'effect';
+import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
+import {compileContextBriefWith} from '../../src/compiler.js';
 import {parseContextBriefContinuationCard} from '../../src/memory-evidence.js';
 import {contextBriefResumeFocusUri} from '../../src/memory_projection.js';
 import {assembleContextBriefLogicalResult, planContextBrief} from '../../src/planner.js';
@@ -21,6 +24,54 @@ describe('Context Brief continuation contracts', () => {
     expect(parsed.mode).toBe('resume');
     expect(planContextBrief(parsed).mode).toBe('resume');
   });
+
+  effectIt.effect('derives resume graph anchors from the highest-ranked continuation handoff', () =>
+    Effect.gen(function* () {
+      const citedPath = 'packages/context/src/projector.ts';
+      const observedPlans: Array<readonly string[]> = [];
+      const memory = {
+        ...emptyMemory(),
+        candidates: [{...handoff(), codeCitations: [fileCitation(citedPath)]}],
+        consideredCandidates: 1,
+      };
+
+      yield* compileContextBriefWith(
+        {
+          graphEvidence: plan =>
+            Effect.sync(() => {
+              observedPlans.push(plan.codeRefs);
+              return graph(true);
+            }),
+          memoryEvidence: () => Effect.succeed(memory),
+        },
+        request('resume'),
+      );
+      yield* compileContextBriefWith(
+        {
+          graphEvidence: plan =>
+            Effect.sync(() => {
+              observedPlans.push(plan.codeRefs);
+              return graph(true);
+            }),
+          memoryEvidence: () => Effect.succeed(memory),
+        },
+        {...request('resume'), codeRefs: [REF]},
+      );
+      yield* compileContextBriefWith(
+        {
+          graphEvidence: plan =>
+            Effect.sync(() => {
+              observedPlans.push(plan.codeRefs);
+              return graph(true);
+            }),
+          memoryEvidence: () => Effect.succeed(memory),
+        },
+        request('brief'),
+      );
+
+      expect(observedPlans).toEqual([[citedPath], [REF], []]);
+    }),
+  );
 
   it('projects labeled handoff fields, ignores fenced labels, and omits absolute paths', () => {
     expect(
@@ -683,6 +734,22 @@ function realisticHandoff(sourceCommit = COMMIT) {
       verification:
         'Existing precedence-related tests and combined-marker tests are the focused verification targets; phase one made no edits.',
     },
+  };
+}
+
+function fileCitation(path: string) {
+  return {
+    extractorSet: 'native-code-graph-13',
+    fileContentHash: {algorithm: 'sha256' as const, value: 'd'.repeat(64)},
+    id: `citation-${path}`,
+    path,
+    repositoryId: REPOSITORY_ID,
+    repositoryIdentityKind: 'remote' as const,
+    sourceCommit: COMMIT,
+    sourceDirty: false,
+    sourceSnapshotId: 'cgsn_test',
+    target: {kind: 'file' as const},
+    version: 1 as const,
   };
 }
 

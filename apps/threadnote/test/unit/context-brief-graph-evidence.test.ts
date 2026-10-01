@@ -529,6 +529,38 @@ describe('Context Brief exact-anchor graph evidence', () => {
     );
   });
 
+  it('uses resume code anchors as semantic-free path seeds and ranks the cited module first', () => {
+    const plan = planContextBrief({
+      budgetTokens: 1_500,
+      codeRefs: [PATH_ANCHOR],
+      mode: 'resume',
+      scope: {callerCwd: '/workspace/effect', kind: 'repository'},
+      task: 'Continue the implementation from the current handoff.',
+    });
+    expect(contextBriefAnchoredRepositoryGraphRequests(plan.graph)[0]).toMatchObject({
+      operation: 'impact',
+      phase: 'path-resolution',
+      query: PATH_ANCHOR,
+      seedQueries: [PATH_ANCHOR],
+    });
+
+    const anchorId = stableId(1);
+    const evidence = fromRepositoryQuery(
+      mergeContextBriefAnchoredRepositoryGraphResults(plan.graph, [
+        queryResult({
+          edges: [],
+          nodes: [
+            sourceNode(stableId(2), 'resume', 'apps/runtime/commands.ts', 'variable'),
+            sourceNode(anchorId, PATH_ANCHOR, PATH_ANCHOR, 'module'),
+          ],
+          operation: 'query',
+        }),
+      ]),
+    );
+
+    expect(evidence.cards[0]).toMatchObject({ref: anchorId, symbol: {kind: 'module', path: PATH_ANCHOR}});
+  });
+
   it.each(['trace', 'impact'] as const)(
     'keeps the five-anchor Effect source neighborhood actionable in %s mode',
     mode => {

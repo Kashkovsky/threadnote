@@ -63,15 +63,20 @@ export const compileContextBriefWith = Effect.fn('contextBrief.compileWith')(fun
       : dependencies.codeLinkedMemoryEvidence === undefined
         ? Effect.succeed(unavailableContextBriefCodeLinkedMemoryEvidence(plan.codeAnchors.codeRefs.length))
         : dependencies.codeLinkedMemoryEvidence(plan.codeAnchors);
-  const [graph, lexicalMemory, linkedMemory, procedureEvidence] = yield* Effect.all(
+  const [eagerGraph, lexicalMemory, linkedMemory, procedureEvidence] = yield* Effect.all(
     [
-      dependencies.graphEvidence(plan.graph),
+      plan.mode === 'resume' ? succeedUndefined : dependencies.graphEvidence(plan.graph),
       dependencies.memoryEvidence(plan.memory),
       codeLinkedMemory,
       dependencies.procedureEvidence?.(plan) ?? Effect.succeed({gaps: [], procedures: []}),
     ],
     {concurrency: 4},
   );
+  const graph =
+    eagerGraph ??
+    (yield* dependencies.graphEvidence(
+      withResumeMemoryGraphAnchors(plan.graph, lexicalMemory, plan.codeAnchors.candidateLimit),
+    ));
   const memory = mergeContextBriefMemoryEvidence(
     lexicalMemory,
     linkedMemory,
@@ -93,3 +98,25 @@ export const compileContextBriefWith = Effect.fn('contextBrief.compileWith')(fun
     ? dependencies.projection(logical, plan.outputBudgetTokens, plan.responseFormat)
     : Effect.sync(() => projectContextBrief(logical, plan.outputBudgetTokens, plan.responseFormat));
 });
+
+function withResumeMemoryGraphAnchors(
+  graphPlan: ContextBriefPlanV1['graph'],
+  memory: ContextBriefMemoryRetrievalV1,
+  maximumRefs: number,
+): ContextBriefPlanV1['graph'] {
+  if (graphPlan.codeRefs.length > 0) return graphPlan;
+  const handoff = [...memory.candidates]
+    .filter(candidate => candidate.kind === 'handoff' && candidate.continuationCard !== undefined)
+    .sort((left, right) => left.rank - right.rank || (left.uri === right.uri ? 0 : left.uri < right.uri ? -1 : 1))[0];
+  if (handoff === undefined) return graphPlan;
+  const codeRefs = [
+    ...new Set(
+      handoff.codeCitations.map(citation =>
+        citation.target.kind === 'symbol' && /^cgs_[0-9a-f]{32}$/u.test(citation.target.nodeId)
+          ? citation.target.nodeId
+          : citation.path,
+      ),
+    ),
+  ].slice(0, maximumRefs);
+  return codeRefs.length === 0 ? graphPlan : {...graphPlan, codeRefs};
+}
