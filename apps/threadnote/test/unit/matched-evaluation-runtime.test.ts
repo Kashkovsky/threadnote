@@ -33,13 +33,17 @@ import {
   resolveRuntimeArm,
   resolveMatchedEvaluationRuntimeRepositoriesV1,
   stageResolvedRuntimeArmV1,
+  verifyMatchedEvaluationContinuationArtifactV1,
   hashMatchedEvaluationPayloadV1,
   selectMatchedEvaluationPilotRowsV1,
   type MatchedEvaluationContinuationPilotPlanV2,
   type MatchedEvaluationRuntimeV1,
 } from '../../../../scripts/run-matched-evaluation.js';
 import {parseMatchedEvaluationObservationV1} from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
-import {createMatchedEvaluationVerificationReceiptV1} from '@threadnote/threadnote/evaluation/matched-verification';
+import {
+  createMatchedContinuationPhaseTwoVerificationPlanV1,
+  createMatchedEvaluationVerificationReceiptV1,
+} from '@threadnote/threadnote/evaluation/matched-verification';
 import {
   matchedEvaluationPromptHashV1,
   type MatchedEvaluationManifestV1,
@@ -432,7 +436,7 @@ describe('matched evaluation runtime integrity', () => {
     ).toThrow('differs from its sealed completed row');
   });
 
-  it('seals a deterministic four-treatment order before continuation phase one runs', () => {
+  it('seals a deterministic five-treatment order before continuation phase one runs', () => {
     const sourceTaskPrompt = 'Implement the frozen source task.';
     const packet = parseMatchedEvaluationContinuationPhaseOneTaskPacketV1({
       phaseOneAllowedPaths: ['tests/test_regression.py'],
@@ -463,11 +467,11 @@ describe('matched evaluation runtime integrity', () => {
     const second = createMatchedEvaluationContinuationPhaseOneSelectionV1(input);
     expect(second).toEqual(first);
     expect(parseMatchedEvaluationContinuationPhaseOneSelectionV1(JSON.parse(JSON.stringify(first)))).toEqual(first);
-    expect(first.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3, 4]);
+    expect(first.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3, 4, 5]);
     expect(new Set(first.continuationAttempts.map(attempt => attempt.variant))).toEqual(
-      new Set(['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume']),
+      new Set(['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume', 'threadnote-preloaded-resume']),
     );
-    expect(new Set(first.continuationAttempts.map(attempt => attempt.runNonce))).toHaveProperty('size', 4);
+    expect(new Set(first.continuationAttempts.map(attempt => attempt.runNonce))).toHaveProperty('size', 5);
     expect(first.phaseOnePrompt).toBe(`${sourceTaskPrompt}\n\n${packet.phaseOneDirective}`);
     expect(() =>
       parseMatchedEvaluationContinuationPhaseOneSelectionV1({
@@ -478,9 +482,9 @@ describe('matched evaluation runtime integrity', () => {
     fc.assert(
       fc.property(fc.stringMatching(/^[0-9a-f]{64}$/u), taskPacketSha256 => {
         const selection = createMatchedEvaluationContinuationPhaseOneSelectionV1({...input, taskPacketSha256});
-        expect(selection.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3, 4]);
-        expect(new Set(selection.continuationAttempts.map(attempt => attempt.variant))).toHaveProperty('size', 4);
-        expect(new Set(selection.continuationAttempts.map(attempt => attempt.runNonce))).toHaveProperty('size', 4);
+        expect(selection.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3, 4, 5]);
+        expect(new Set(selection.continuationAttempts.map(attempt => attempt.variant))).toHaveProperty('size', 5);
+        expect(new Set(selection.continuationAttempts.map(attempt => attempt.runNonce))).toHaveProperty('size', 5);
         expect(createMatchedEvaluationContinuationPhaseOneSelectionV1({...input, taskPacketSha256})).toEqual(selection);
       }),
       {numRuns: 8},
@@ -782,6 +786,76 @@ describe('matched evaluation runtime integrity', () => {
     await expect(
       assertMatchedEvaluationContinuationCheckpointV2({...input, checkpoint: secondCheckpoint}),
     ).rejects.toThrow('one direct non-merge commit');
+  });
+
+  it('replays a phase-two artifact against target and baseline-aware compatibility checks', async () => {
+    if (process.platform === 'win32') return;
+    const root = await temporaryRoot(roots);
+    const repository = join(root, 'repository');
+    await repositoryFixture(repository, 'https://github.com/example/phase-two-verification.git', 'fixture');
+    await writeFile(join(repository, 'solution.txt'), 'bad\n');
+    await git(repository, ['add', 'solution.txt']);
+    await git(repository, ['commit', '-qm', 'checkpoint']);
+    const checkpointRevision = (await gitOutput(repository, ['rev-parse', 'HEAD'])).trim();
+    const verifier = join(root, 'verify.sh');
+    await writeFile(
+      verifier,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "target" ]; then',
+        '  if [ "$(cat solution.txt)" = "good" ]; then exit 0; fi',
+        '  echo "FAILED tests/test_target.py::test_target - AssertionError"',
+        '  exit 1',
+        'fi',
+        'echo "FAILED tests/test_full.py::test_baseline - AssertionError"',
+        'if [ "$(cat solution.txt)" != "good" ]; then',
+        '  echo "FAILED tests/test_full.py::test_new_regression - AssertionError"',
+        'fi',
+        'exit 1',
+        '',
+      ].join('\n'),
+    );
+    await chmod(verifier, 0o700);
+    const taskId = 'tsk_1234567890abcdef';
+    const plan = createMatchedContinuationPhaseTwoVerificationPlanV1({
+      checks: [
+        {
+          allowedBaselineFailureIds: [],
+          commandTokens: ['/bin/sh', verifier, 'target'],
+          diagnosticParser: 'pytest-summary-v1',
+          policy: 'must-pass',
+        },
+        {
+          allowedBaselineFailureIds: ['tests/test_full.py::test_baseline', 'tests/test_full.py::test_target'],
+          commandTokens: ['/bin/sh', verifier, 'suite'],
+          diagnosticParser: 'pytest-summary-v1',
+          policy: 'no-new-failures',
+        },
+      ],
+      protectedPaths: ['tests/test_regression.py'],
+      taskId,
+    });
+
+    await writeFile(join(repository, 'solution.txt'), 'good\n');
+    const patch = await gitOutput(repository, ['diff', '--binary', '--full-index', '--no-ext-diff', '--', '.']);
+    await writeFile(join(repository, 'solution.txt'), 'bad\n');
+    const artifactPath = join(root, 'artifact.json');
+    const artifact = Buffer.from(`${JSON.stringify({patch})}\n`);
+    await writeFile(artifactPath, artifact);
+
+    const receipt = await verifyMatchedEvaluationContinuationArtifactV1({
+      artifactHash: sha256HexSync(artifact),
+      artifactPath,
+      checkpointRepository: repository,
+      checkpointRevision,
+      plan,
+      safeExecutablePath: '/usr/bin:/bin',
+    });
+
+    expect(receipt.status).toBe('passed');
+    expect(receipt.checks).toHaveLength(2);
+    await expect(readFile(join(repository, 'solution.txt'), 'utf8')).resolves.toBe('bad\n');
+    expect(await gitOutput(repository, ['status', '--porcelain'])).toBe('');
   });
 
   it('projects only the phase-two prompt and checkpoint identity to fresh Agent B', () => {

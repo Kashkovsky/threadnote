@@ -24,14 +24,19 @@ import {
   type MatchedEvaluationMetricsV1,
   type MatchedEvaluationProviderTokensV1,
 } from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
+import {
+  parseMatchedContinuationPhaseTwoVerificationReceiptV1,
+  type MatchedContinuationPhaseTwoVerificationReceiptV1,
+} from '@threadnote/threadnote/evaluation/matched-verification';
 import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
 import {assertMatchedContinuationRuntimeFilesV1} from './matched-continuation-runtime-integrity.js';
 import {
+  MATCHED_EVALUATION_RUNTIME_VERSION,
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
-  type MatchedEvaluationContinuationPilotPlanV2,
+  type MatchedEvaluationContinuationPilotPlanV3,
 } from './run-matched-evaluation.js';
 
 export const MATCHED_CONTINUATION_FINALIZATION_VERSION = 1 as const;
@@ -52,6 +57,7 @@ export interface MatchedContinuationFinalizationArtifactsV1 {
 export interface ParsedCompletedAttempt {
   readonly artifactSha256: string;
   readonly metrics: MatchedEvaluationMetricsV1;
+  readonly phaseTwoVerification: MatchedContinuationPhaseTwoVerificationReceiptV1;
   readonly rawArtifactPath: string;
   readonly requestPath: string;
   readonly requestSha256: string;
@@ -122,7 +128,7 @@ export async function finalizeMatchedContinuationStudyFromFilesV1(options: Final
   for (const task of runtime.tasks) {
     const planBytes = await readBoundedRegularFile(task.planPath, MAXIMUM_JSON_BYTES, `plan ${task.taskId}`);
     const plan = parseMatchedEvaluationContinuationPilotPlanV1(parseJson(planBytes, `plan ${task.taskId}`));
-    if (plan.version !== 2) throw new Error(`Continuation plan ${task.taskId} must use version 2.`);
+    if (plan.version !== 3) throw new Error(`Continuation plan ${task.taskId} must use version 3.`);
     const reportPath = resolve(task.pilotDirectory, 'continuation-pilot-report.json');
     const reportBytes = await readBoundedRegularFile(reportPath, MAXIMUM_JSON_BYTES, `report ${task.taskId}`);
     reports.set(
@@ -198,7 +204,7 @@ export function projectMatchedContinuationOutcomesV1(input: {
               authorizationLeaks: attempt.metrics.safety.authorizationLeaks,
               blockedActions: attempt.metrics.safety.blockedActions,
               correctnessScoreMilli: attempt.metrics.correctness.scoreMilli,
-              deterministicVerified: attempt.metrics.verification?.status === 'passed',
+              deterministicVerified: attempt.phaseTwoVerification.status === 'passed',
               falseCurrentOutcomes: attempt.metrics.drift.falseCurrentOutcomes,
               harmfulActions: attempt.metrics.safety.harmfulActions,
               judgeCompleted: attempt.metrics.correctness.judgeCompleted,
@@ -219,7 +225,8 @@ export function projectMatchedContinuationOutcomesV1(input: {
         attempt.status === 'completed'
           ? {
               accountingSource: 'observation',
-              elapsedMilliseconds: attempt.metrics.timing.endToEndMilliseconds,
+              elapsedMilliseconds:
+                attempt.metrics.timing.endToEndMilliseconds + attempt.phaseTwoVerification.durationMilliseconds,
               providerTokens: attempt.metrics.usage.providerTokens,
             }
           : {
@@ -246,7 +253,7 @@ export function projectMatchedContinuationOutcomesV1(input: {
 }
 
 export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
-  readonly plan: MatchedEvaluationContinuationPilotPlanV2;
+  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
   readonly reportInput: unknown;
   readonly sourceReportSha256: string;
   readonly study: MatchedContinuationStudyV1;
@@ -262,13 +269,14 @@ export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
     'identities',
     'limitations',
     'phaseTwoPromptSha256',
+    'phaseTwoVerificationPlanHash',
     'planVersion',
     'rows',
     'sourceTask',
     'taskId',
     'version',
   ]);
-  if (report.version !== 1 || report.planVersion !== 2 || report.comparativeClaimsEligible !== false) {
+  if (report.version !== 2 || report.planVersion !== 3 || report.comparativeClaimsEligible !== false) {
     invalid('task report identity is invalid');
   }
   if (report.taskId !== input.plan.taskId) invalid('task report refers to a different task');
@@ -278,6 +286,9 @@ export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
   }
   if (report.phaseTwoPromptSha256 !== input.plan.phaseTwoPromptSha256) {
     invalid('task report phase-two prompt differs from its plan');
+  }
+  if (report.phaseTwoVerificationPlanHash !== input.plan.phaseTwoVerification.planHash) {
+    invalid('task report phase-two verification plan differs from its plan');
   }
   const expectedSourceTask = {
     promptSha256: input.plan.sourceTask.promptSha256,
@@ -297,7 +308,7 @@ export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
     identities.planFileHash !== sealedTask.planSha256 ||
     identities.studyHash !== input.study.sourceEvidence.matchedStudyHash ||
     identities.verificationPlanHash !== input.study.sourceEvidence.verificationPlanHash ||
-    !Number.isSafeInteger(identities.runtimeVersion)
+    identities.runtimeVersion !== MATCHED_EVALUATION_RUNTIME_VERSION
   ) {
     invalid('task report identities differ from the sealed study');
   }
@@ -316,8 +327,12 @@ export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
     variant: attempt.variant,
   }));
   if (!sameJson(report.rows, expectedRows)) invalid('task report rows differ from its plan');
-  const attempts = array(report.attempts, 'task report attempts').map((attempt, index) => parseAttempt(attempt, index));
-  if (attempts.length !== 5) invalid('task report is partial; exactly five terminal attempts are required');
+  const attempts = array(report.attempts, 'task report attempts').map((attempt, index) =>
+    parseAttempt(attempt, index, input.plan),
+  );
+  if (attempts.length !== input.plan.attempts.length) {
+    invalid('task report is partial; every planned terminal attempt is required');
+  }
   for (const planned of input.plan.attempts) {
     const attempt = attempts.find(candidate => candidate.runNonce === planned.runNonce);
     if (
@@ -332,7 +347,8 @@ export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
       attempt.status === 'completed' &&
       (attempt.metrics.verification?.taskId !== input.plan.taskId ||
         attempt.metrics.verification.artifactHash !== attempt.artifactSha256 ||
-        attempt.metrics.verification.planHash !== input.study.sourceEvidence.verificationPlanHash)
+        attempt.metrics.verification.planHash !== input.study.sourceEvidence.verificationPlanHash ||
+        attempt.phaseTwoVerification.planHash !== input.plan.phaseTwoVerification.planHash)
     ) {
       invalid(`task report attempt ${planned.runNonce} verification differs from sealed evidence`);
     }
@@ -359,7 +375,7 @@ export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
   };
 }
 
-function parseAttempt(value: unknown, index: number): ParsedAttempt {
+function parseAttempt(value: unknown, index: number, plan: MatchedEvaluationContinuationPilotPlanV3): ParsedAttempt {
   const attempt = object(value, `task report attempt ${index}`);
   const status = literal(attempt.status, ['completed', 'failed'] as const, `attempt ${index} status`);
   if (status === 'completed') {
@@ -368,6 +384,7 @@ function parseAttempt(value: unknown, index: number): ParsedAttempt {
       'artifactSha256',
       'checkpointPath',
       'metrics',
+      'phaseTwoVerification',
       'rawArtifactPath',
       'requestPath',
       'requestSha256',
@@ -390,15 +407,18 @@ function parseAttempt(value: unknown, index: number): ParsedAttempt {
       version: 5,
     });
     if (observation.metrics.verification === null) invalid(`attempt ${index} lacks deterministic verification`);
-    if (observation.metrics.completion.completed !== (observation.metrics.verification.status === 'passed')) {
-      invalid(`attempt ${index} completion differs from deterministic verification`);
-    }
+    const phaseTwoVerification = parseMatchedContinuationPhaseTwoVerificationReceiptV1({
+      artifactHash: artifactSha256,
+      plan: plan.phaseTwoVerification,
+      receipt: attempt.phaseTwoVerification,
+    });
     const variant = continuationVariant(attempt.variant, `attempt ${index} variant`);
     if (attempt.arm !== underlyingArm(variant)) invalid(`attempt ${index} arm differs from its variant`);
     absolutePath(attempt.checkpointPath, `attempt ${index} checkpoint path`);
     return {
       artifactSha256,
       metrics: observation.metrics,
+      phaseTwoVerification,
       rawArtifactPath: absolutePath(attempt.rawArtifactPath, `attempt ${index} artifact path`),
       requestPath: absolutePath(attempt.requestPath, `attempt ${index} request path`),
       requestSha256: matching(attempt.requestSha256, HASH, `attempt ${index} request hash`),

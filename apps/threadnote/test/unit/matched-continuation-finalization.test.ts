@@ -4,7 +4,13 @@ import {mkdtemp, readFile, readdir, realpath, rm, writeFile} from '@threadnote/t
 import {tmpdir} from '@threadnote/testing/node-os';
 import {join} from '@threadnote/testing/node-path';
 import {sha256HexSync} from '@threadnote/platform/sha256';
-import {createMatchedEvaluationVerificationReceiptV1} from '@threadnote/threadnote/evaluation/matched-verification';
+import {matchedEvaluationPromptHashV1} from '@threadnote/threadnote/evaluation/matched-evaluation';
+import {
+  createMatchedContinuationPhaseTwoVerificationCheckReceiptV1,
+  createMatchedContinuationPhaseTwoVerificationPlanV1,
+  createMatchedContinuationPhaseTwoVerificationReceiptV1,
+  createMatchedEvaluationVerificationReceiptV1,
+} from '@threadnote/threadnote/evaluation/matched-verification';
 import {
   createMatchedContinuationStudyV1,
   MATCHED_CONTINUATION_VARIANTS,
@@ -19,8 +25,9 @@ import {
   type ParsedTaskReport,
 } from '../../../../scripts/finalize-matched-continuation-study.js';
 import {
+  parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
-  type MatchedEvaluationContinuationPilotPlanV2,
+  type MatchedEvaluationContinuationPilotPlanV3,
 } from '../../../../scripts/run-matched-evaluation.js';
 
 describe('matched continuation finalization', () => {
@@ -36,6 +43,7 @@ describe('matched continuation finalization', () => {
     const study = createStudy();
     const task = study.tasks[0];
     const plan = continuationPlan(task, study.sourceEvidence.verificationPlanHash);
+    expect(parseMatchedEvaluationContinuationPilotPlanV1(JSON.parse(JSON.stringify(plan)))).toEqual(plan);
     const attempts = await Promise.all(
       plan.attempts.map(attempt =>
         completedReportAttempt(
@@ -60,11 +68,20 @@ describe('matched continuation finalization', () => {
     await expect(
       parseAndVerifyMatchedContinuationTaskReportV1({
         plan,
+        reportInput: {...report, identities: {...report.identities, runtimeVersion: 3}},
+        sourceReportSha256: hex(903),
+        study,
+      }),
+    ).rejects.toThrow('task report identities differ from the sealed study');
+
+    await expect(
+      parseAndVerifyMatchedContinuationTaskReportV1({
+        plan,
         reportInput: {...report, attempts: attempts.slice(0, 4), completed: false},
         sourceReportSha256: hex(901),
         study,
       }),
-    ).rejects.toThrow('exactly five terminal attempts');
+    ).rejects.toThrow('every planned terminal attempt');
 
     await writeFile(attempts[0].rawArtifactPath, '{"tampered":true}\n');
     await expect(
@@ -81,6 +98,7 @@ describe('matched continuation finalization', () => {
     const study = createStudy();
     const reports = new Map<string, ParsedTaskReport>();
     for (const task of study.tasks) {
+      const plan = continuationPlan(task, study.sourceEvidence.verificationPlanHash);
       const scheduled = study.schedule.filter(entry => entry.taskId === task.taskId);
       const attempts: ParsedAttempt[] = scheduled.map((entry, index) => {
         if (entry.globalRunOrder === 1) {
@@ -107,6 +125,10 @@ describe('matched continuation finalization', () => {
         return {
           artifactSha256,
           metrics: metrics(task.taskId, artifactSha256, study.sourceEvidence.verificationPlanHash),
+          phaseTwoVerification:
+            entry.globalRunOrder === 2
+              ? failingPhaseTwoVerification(plan, artifactSha256)
+              : passingPhaseTwoVerification(plan, artifactSha256),
           rawArtifactPath: `/tmp/${entry.runNonce}-artifact.json`,
           requestPath: `/tmp/${entry.runNonce}-request.json`,
           requestSha256: hex(1_100 + entry.globalRunOrder),
@@ -139,6 +161,11 @@ describe('matched continuation finalization', () => {
       status: 'failed',
     });
     expect(outcomes[1].previousOutcomeHash).toBe(outcomes[0].outcomeHash);
+    expect(outcomes[1]).toMatchObject({
+      assessment: {deterministicVerified: false},
+      phaseTwo: {accountingSource: 'observation', elapsedMilliseconds: 130, providerTokens: {totalTokens: 50}},
+      status: 'completed',
+    });
     fc.assert(
       fc.property(
         fc.shuffledSubarray(
@@ -196,8 +223,8 @@ function finalizationArtifacts(label: string) {
 
 async function completedReportAttempt(
   root: string,
-  plan: MatchedEvaluationContinuationPilotPlanV2,
-  attempt: MatchedEvaluationContinuationPilotPlanV2['attempts'][number],
+  plan: MatchedEvaluationContinuationPilotPlanV3,
+  attempt: MatchedEvaluationContinuationPilotPlanV3['attempts'][number],
   attemptMetrics: MatchedEvaluationMetricsV1,
 ) {
   const prefix = join(root, attempt.runNonce);
@@ -228,6 +255,7 @@ async function completedReportAttempt(
         artifactHash: sha256HexSync(artifactBytes),
       }),
     },
+    phaseTwoVerification: passingPhaseTwoVerification(plan, sha256HexSync(artifactBytes)),
     rawArtifactPath,
     requestPath,
     requestSha256: sha256HexSync(requestBytes),
@@ -244,7 +272,7 @@ async function completedReportAttempt(
 }
 
 function taskReport(
-  plan: MatchedEvaluationContinuationPilotPlanV2,
+  plan: MatchedEvaluationContinuationPilotPlanV3,
   study: ReturnType<typeof createStudy>,
   attempts: readonly Awaited<ReturnType<typeof completedReportAttempt>>[],
 ) {
@@ -264,7 +292,8 @@ function taskReport(
     },
     limitations: ['No retries are allowed.'],
     phaseTwoPromptSha256: plan.phaseTwoPromptSha256,
-    planVersion: 2,
+    phaseTwoVerificationPlanHash: plan.phaseTwoVerification.planHash,
+    planVersion: 3,
     rows: plan.attempts.map(attempt => ({
       arm: underlyingArm(attempt.variant),
       blindLabel: attempt.blindLabel,
@@ -282,15 +311,16 @@ function taskReport(
       taskId: plan.sourceTask.taskId,
     },
     taskId: plan.taskId,
-    version: 1,
+    version: 2,
   };
 }
 
 function continuationPlan(
   task: MatchedContinuationStudyTaskV1,
   verificationPlanHash: string,
-): MatchedEvaluationContinuationPilotPlanV2 {
-  const phaseOnePrompt = 'Implement phase one.';
+): MatchedEvaluationContinuationPilotPlanV3 {
+  const sourcePrompt = 'Implement the source task.';
+  const phaseOnePrompt = `${sourcePrompt}\n\nImplement phase one.`;
   const phaseTwoPrompt = 'Continue phase two.';
   const marker = 'resume-marker-1';
   const handoff = `Task: Continue\nDecisions: frozen\nConstraints: no retries\nRationale: matched\nVerification: ${verificationPlanHash}\nNext step: ${marker}\n`;
@@ -345,17 +375,73 @@ function continuationPlan(
     },
     phaseTwoPrompt,
     phaseTwoPromptSha256: sha256HexSync(phaseTwoPrompt),
+    phaseTwoVerification: createMatchedContinuationPhaseTwoVerificationPlanV1({
+      checks: [
+        {
+          allowedBaselineFailureIds: [],
+          commandTokens: ['python', '-m', 'pytest', '-q', 'tests/test_target.py'],
+          diagnosticParser: 'pytest-summary-v1',
+          policy: 'must-pass',
+        },
+        {
+          allowedBaselineFailureIds: ['tests/test_full.py::test_baseline'],
+          commandTokens: ['python', '-m', 'pytest', '-q', 'tests/test_full.py'],
+          diagnosticParser: 'pytest-summary-v1',
+          policy: 'no-new-failures',
+        },
+      ],
+      protectedPaths: ['tests/test_target.py'],
+      taskId: task.taskId,
+    }),
     retries: 0,
     sourceTask: {
-      prompt: 'Implement the source task.',
-      promptSha256: sha256HexSync('Implement the source task.'),
+      prompt: sourcePrompt,
+      promptSha256: matchedEvaluationPromptHashV1(sourcePrompt),
       repositoryFixtureHash: task.sourceRepositoryFixtureHash,
       repositoryRevision: task.sourceRevision,
       taskId: task.taskId,
     },
     taskId: task.taskId,
-    version: 2,
+    version: 3,
   };
+}
+
+function passingPhaseTwoVerification(plan: MatchedEvaluationContinuationPilotPlanV3, artifactHash: string) {
+  return createMatchedContinuationPhaseTwoVerificationReceiptV1({
+    artifactHash,
+    checks: plan.phaseTwoVerification.checks.map(check =>
+      createMatchedContinuationPhaseTwoVerificationCheckReceiptV1({
+        artifactHash,
+        check,
+        diagnosticHash: hex(207),
+        durationMilliseconds: 5,
+        exitCode: 0,
+        failureIds: [],
+        planHash: plan.phaseTwoVerification.planHash,
+      }),
+    ),
+    plan: plan.phaseTwoVerification,
+    protectedPathViolations: [],
+  });
+}
+
+function failingPhaseTwoVerification(plan: MatchedEvaluationContinuationPilotPlanV3, artifactHash: string) {
+  return createMatchedContinuationPhaseTwoVerificationReceiptV1({
+    artifactHash,
+    checks: plan.phaseTwoVerification.checks.map(check =>
+      createMatchedContinuationPhaseTwoVerificationCheckReceiptV1({
+        artifactHash,
+        check,
+        diagnosticHash: hex(208),
+        durationMilliseconds: 5,
+        exitCode: check.policy === 'must-pass' ? 0 : 1,
+        failureIds: check.policy === 'must-pass' ? [] : ['tests/test_full.py::test_new_regression'],
+        planHash: plan.phaseTwoVerification.planHash,
+      }),
+    ),
+    plan: plan.phaseTwoVerification,
+    protectedPathViolations: [],
+  });
 }
 
 function metrics(taskId: string, artifactHash: string, planHash: string): MatchedEvaluationMetricsV1 {

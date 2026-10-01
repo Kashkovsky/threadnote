@@ -157,7 +157,9 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
       const plan = parseMatchedEvaluationContinuationPilotPlanV1(
         parseJson(planBytes, `continuation plan ${taskIndex}`),
       );
-      if (plan.version !== 2) throw new Error(`Continuation plan ${taskIndex} must use the substantive v2 contract.`);
+      if (plan.version !== 3) {
+        throw new Error(`Continuation plan ${taskIndex} must use the full-verification v3 contract.`);
+      }
       await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
         manifest,
         plan,

@@ -1,10 +1,15 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  createMatchedContinuationPhaseTwoVerificationCheckReceiptV1,
+  createMatchedContinuationPhaseTwoVerificationPlanV1,
+  createMatchedContinuationPhaseTwoVerificationReceiptV1,
   createMatchedEvaluationVerificationCalibrationV1,
   createMatchedEvaluationVerificationPlanV1,
   createMatchedEvaluationVerificationReceiptV1,
   matchedEvaluationVerificationIdV1,
+  parseMatchedContinuationPhaseTwoVerificationReceiptV1,
+  parseMatchedContinuationPytestFailureIdsV1,
   parseMatchedEvaluationVerificationPlanV1,
   parseMatchedEvaluationVerificationReceiptV1,
 } from '@threadnote/threadnote/evaluation/matched-verification';
@@ -79,7 +84,206 @@ describe('matched evaluation deterministic verification', () => {
       }),
     ).toThrow('status and exit code disagree');
   });
+
+  it('requires the target to pass and rejects compatibility failures not present at baseline', () => {
+    const plan = continuationPlan();
+    const suite = plan.checks.find(check => check.policy === 'no-new-failures')!;
+    const target = plan.checks.find(check => check.policy === 'must-pass')!;
+    const artifactHash = '8'.repeat(64);
+    const resume = createMatchedContinuationPhaseTwoVerificationReceiptV1({
+      artifactHash,
+      checks: [
+        checkReceipt(plan.planHash, artifactHash, target, 0, []),
+        checkReceipt(plan.planHash, artifactHash, suite, 1, ['tests/test_text.py::test_assemble_meta']),
+      ],
+      durationMilliseconds: 35,
+      plan,
+      protectedPathViolations: [],
+    });
+    expect(resume.status).toBe('passed');
+    expect(resume.durationMilliseconds).toBe(35);
+    expect(parseMatchedContinuationPhaseTwoVerificationReceiptV1({artifactHash, plan, receipt: resume})).toEqual(
+      resume,
+    );
+    expect(
+      createMatchedContinuationPhaseTwoVerificationReceiptV1({
+        artifactHash,
+        checks: resume.checks,
+        plan,
+        protectedPathViolations: ['tests/test_text.py'],
+      }).status,
+    ).toBe('task-failed');
+
+    const compatibilityRegression = createMatchedContinuationPhaseTwoVerificationReceiptV1({
+      artifactHash,
+      checks: [
+        checkReceipt(plan.planHash, artifactHash, target, 0, []),
+        checkReceipt(plan.planHash, artifactHash, suite, 1, [
+          'tests/test_text.py::test_assemble_meta',
+          'tests/test_text.py::test_wrap_compatibility',
+        ]),
+      ],
+      plan,
+      protectedPathViolations: [],
+    });
+    expect(compatibilityRegression.status).toBe('task-failed');
+
+    const targetStillFails = createMatchedContinuationPhaseTwoVerificationReceiptV1({
+      artifactHash,
+      checks: [
+        checkReceipt(plan.planHash, artifactHash, target, 1, [
+          'tests/test_text.py::test_wrap_preserves_double_width_characters',
+        ]),
+        checkReceipt(plan.planHash, artifactHash, suite, 1, [
+          'tests/test_text.py::test_assemble_meta',
+          'tests/test_text.py::test_wrap_preserves_double_width_characters',
+        ]),
+      ],
+      plan,
+      protectedPathViolations: [],
+    });
+    expect(targetStillFails.status).toBe('task-failed');
+  });
+
+  it('rejects missing, extra, and duplicate checks instead of accepting focused-only evidence', () => {
+    const plan = continuationPlan();
+    const suite = plan.checks.find(check => check.policy === 'no-new-failures')!;
+    const target = plan.checks.find(check => check.policy === 'must-pass')!;
+    const artifactHash = '8'.repeat(64);
+    const focused = checkReceipt(plan.planHash, artifactHash, target, 0, []);
+    expect(() =>
+      createMatchedContinuationPhaseTwoVerificationReceiptV1({
+        artifactHash,
+        checks: [focused],
+        plan,
+        protectedPathViolations: [],
+      }),
+    ).toThrow('coverage is incomplete');
+    expect(() =>
+      createMatchedContinuationPhaseTwoVerificationReceiptV1({
+        artifactHash,
+        checks: [focused, focused],
+        plan,
+        protectedPathViolations: [],
+      }),
+    ).toThrow('duplicate checks');
+    const otherPlan = createMatchedContinuationPhaseTwoVerificationPlanV1({
+      checks: [
+        {
+          allowedBaselineFailureIds: [],
+          commandTokens: ['python', '-m', 'pytest', 'tests/test_other.py'],
+          diagnosticParser: 'pytest-summary-v1',
+          policy: 'must-pass',
+        },
+      ],
+      protectedPaths: ['tests/test_other.py'],
+      taskId: plan.taskId,
+    });
+    const extra = checkReceipt(otherPlan.planHash, artifactHash, otherPlan.checks[0], 0, []);
+    expect(() =>
+      createMatchedContinuationPhaseTwoVerificationReceiptV1({
+        artifactHash,
+        checks: [focused, checkReceipt(plan.planHash, artifactHash, suite, 0, []), extra],
+        plan,
+        protectedPathViolations: [],
+      }),
+    ).toThrow('coverage is incomplete');
+  });
+
+  it('canonicalizes check receipts independently of execution order', () => {
+    const plan = continuationPlan();
+    const artifactHash = '8'.repeat(64);
+    const receipts = plan.checks.map(check =>
+      checkReceipt(
+        plan.planHash,
+        artifactHash,
+        check,
+        check.policy === 'must-pass' ? 0 : 1,
+        check.policy === 'must-pass' ? [] : ['tests/test_text.py::test_assemble_meta'],
+      ),
+    );
+    fc.assert(
+      fc.property(fc.shuffledSubarray(receipts, {minLength: receipts.length, maxLength: receipts.length}), shuffled => {
+        expect(
+          createMatchedContinuationPhaseTwoVerificationReceiptV1({
+            artifactHash,
+            checks: shuffled,
+            plan,
+            protectedPathViolations: [],
+          }).receiptHash,
+        ).toBe(
+          createMatchedContinuationPhaseTwoVerificationReceiptV1({
+            artifactHash,
+            checks: receipts,
+            plan,
+            protectedPathViolations: [],
+          }).receiptHash,
+        );
+      }),
+      {numRuns: 20},
+    );
+  });
+
+  it('extracts canonical pytest failure and error ids', () => {
+    expect(
+      parseMatchedContinuationPytestFailureIdsV1(
+        'FAILED tests/test_text.py::test_b - AssertionError\nFAILED tests/test_text.py::test_a - AssertionError\n',
+        'ERROR tests/test_text.py::test_c - RuntimeError\n',
+      ),
+    ).toEqual(['tests/test_text.py::test_a', 'tests/test_text.py::test_b', 'tests/test_text.py::test_c']);
+  });
 });
+
+function continuationPlan() {
+  return createMatchedContinuationPhaseTwoVerificationPlanV1({
+    checks: [
+      {
+        allowedBaselineFailureIds: [],
+        commandTokens: [
+          'PYTHONPATH=src',
+          'python',
+          '-m',
+          'pytest',
+          '-q',
+          'tests/test_text.py',
+          '-k',
+          'test_wrap_preserves_double_width_characters',
+        ],
+        diagnosticParser: 'pytest-summary-v1',
+        policy: 'must-pass',
+      },
+      {
+        allowedBaselineFailureIds: [
+          'tests/test_text.py::test_assemble_meta',
+          'tests/test_text.py::test_wrap_preserves_double_width_characters',
+        ],
+        commandTokens: ['PYTHONPATH=src', 'python', '-m', 'pytest', '-q', 'tests/test_text.py'],
+        diagnosticParser: 'pytest-summary-v1',
+        policy: 'no-new-failures',
+      },
+    ],
+    protectedPaths: ['tests/test_text.py'],
+    taskId: 'tsk_1111111111111111',
+  });
+}
+
+function checkReceipt(
+  planHash: string,
+  artifactHash: string,
+  check: ReturnType<typeof continuationPlan>['checks'][number],
+  exitCode: 0 | 1,
+  failureIds: readonly string[],
+) {
+  return createMatchedContinuationPhaseTwoVerificationCheckReceiptV1({
+    artifactHash,
+    check,
+    diagnosticHash: '9'.repeat(64),
+    durationMilliseconds: 10,
+    exitCode,
+    failureIds,
+    planHash,
+  });
+}
 
 function task(taskId: string, selector: string) {
   return {

@@ -30,6 +30,16 @@ import {
   type MatchedEvaluationUnavailableReason,
 } from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
 import {
+  createMatchedContinuationPhaseTwoVerificationCheckReceiptV1,
+  createMatchedContinuationPhaseTwoVerificationPlanV1,
+  createMatchedContinuationPhaseTwoVerificationReceiptV1,
+  parseMatchedContinuationPhaseTwoVerificationPlanV1,
+  parseMatchedContinuationPytestFailureIdsV1,
+  type MatchedContinuationPhaseTwoVerificationCheckReceiptV1,
+  type MatchedContinuationPhaseTwoVerificationPlanV1,
+  type MatchedContinuationPhaseTwoVerificationReceiptV1,
+} from '@threadnote/threadnote/evaluation/matched-verification';
+import {
   assertMatchedTokenEfficiencyObservationContextV1,
   assertMatchedTokenEfficiencyStudyMatchesV1,
   createMatchedTokenEfficiencyTaskContextV1,
@@ -128,7 +138,7 @@ export function projectMatchedEvaluationAdapterTaskV1(
 export function projectMatchedEvaluationContinuationAdapterTaskV2(
   request: Pick<MatchedEvaluationRunRequestV1, 'arm' | 'task'>,
   study: MatchedTokenEfficiencyStudyV1,
-  plan: MatchedEvaluationContinuationPilotPlanV2,
+  plan: MatchedEvaluationContinuationPilotPlanCurrent,
 ) {
   const sourceContext = study.taskContexts.find(context => context.taskId === request.task.taskId);
   if (sourceContext === undefined) {
@@ -244,7 +254,7 @@ export function matchedEvaluationContinuationAdapterConfigurationPathsV2(planPat
 
 export async function assertMatchedEvaluationContinuationAdapterConfigurationsV2(input: {
   readonly manifest: MatchedEvaluationManifestV1;
-  readonly plan: MatchedEvaluationContinuationPilotPlanV2;
+  readonly plan: MatchedEvaluationContinuationPilotPlanCurrent;
   readonly planPath: string;
   readonly runtime: MatchedEvaluationRuntimeV1;
 }): Promise<
@@ -469,8 +479,19 @@ export interface MatchedEvaluationContinuationPilotPlanV2 {
   readonly version: 2;
 }
 
+export interface MatchedEvaluationContinuationPilotPlanV3 extends Omit<
+  MatchedEvaluationContinuationPilotPlanV2,
+  'version'
+> {
+  readonly phaseTwoVerification: MatchedContinuationPhaseTwoVerificationPlanV1;
+  readonly version: 3;
+}
+
+export type MatchedEvaluationContinuationPilotPlanCurrent =
+  MatchedEvaluationContinuationPilotPlanV2 | MatchedEvaluationContinuationPilotPlanV3;
+
 export type MatchedEvaluationContinuationPilotPlan =
-  MatchedEvaluationContinuationPilotPlanV1 | MatchedEvaluationContinuationPilotPlanV2;
+  MatchedEvaluationContinuationPilotPlanV1 | MatchedEvaluationContinuationPilotPlanCurrent;
 
 export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
   value: unknown,
@@ -533,13 +554,13 @@ export function createMatchedEvaluationContinuationPhaseOneSelectionV1(input: {
   }
   const packetHash = matchingString(input.taskPacketSha256, HASH, 'phase-one task packet hash');
   const phaseOnePrompt = `${input.packet.sourceTaskPrompt}\n\n${input.packet.phaseOneDirective}`;
-  const variants = BASE_CONTINUATION_VARIANTS.map(variant => ({
+  const variants = CONTINUATION_VARIANTS.map(variant => ({
     score: sha256Bytes(
       Buffer.from(`matched-continuation-treatment-order-v1\0${packetHash}\0${input.task.taskId}\0${variant}`),
     ),
     variant,
   })).sort((left, right) => left.score.localeCompare(right.score));
-  const labels = ['A', 'B', 'C', 'D'] as const;
+  const labels = ['A', 'B', 'C', 'D', 'E'] as const;
   return {
     continuationAttempts: variants.map(({variant}, index) => ({
       blindLabel: labels[index],
@@ -749,20 +770,27 @@ function parseContinuationPhaseOneAttemptsV1(
     const attempt = object(entry, `${label} entry ${index}`);
     exactKeys(attempt, ['blindLabel', 'runNonce', 'runOrder', 'variant'], `${label} entry ${index}`);
     return {
-      blindLabel: literal(attempt.blindLabel, ['A', 'B', 'C', 'D'] as const, `${label} entry ${index} label`),
+      blindLabel: literal(attempt.blindLabel, ['A', 'B', 'C', 'D', 'E'] as const, `${label} entry ${index} label`),
       runNonce: matchingString(attempt.runNonce, /^run_[0-9a-f]{32}$/u, `${label} entry ${index} nonce`),
-      runOrder: boundedPositiveInteger(attempt.runOrder, 1, 4, `${label} entry ${index} order`),
-      variant: literal(attempt.variant, BASE_CONTINUATION_VARIANTS, `${label} entry ${index} variant`),
+      runOrder: boundedPositiveInteger(attempt.runOrder, 1, 5, `${label} entry ${index} order`),
+      variant: literal(attempt.variant, CONTINUATION_VARIANTS, `${label} entry ${index} variant`),
     };
   });
+  const expectedVariants =
+    attempts.length === BASE_CONTINUATION_VARIANTS.length
+      ? BASE_CONTINUATION_VARIANTS
+      : attempts.length === CONTINUATION_VARIANTS.length
+        ? CONTINUATION_VARIANTS
+        : null;
   if (
-    attempts.length !== 4 ||
-    new Set(attempts.map(attempt => attempt.blindLabel)).size !== 4 ||
-    new Set(attempts.map(attempt => attempt.runNonce)).size !== 4 ||
-    new Set(attempts.map(attempt => attempt.runOrder)).size !== 4 ||
-    new Set(attempts.map(attempt => attempt.variant)).size !== 4
+    expectedVariants === null ||
+    new Set(attempts.map(attempt => attempt.blindLabel)).size !== expectedVariants.length ||
+    new Set(attempts.map(attempt => attempt.runNonce)).size !== expectedVariants.length ||
+    new Set(attempts.map(attempt => attempt.runOrder)).size !== expectedVariants.length ||
+    new Set(attempts.map(attempt => attempt.variant)).size !== expectedVariants.length ||
+    expectedVariants.some(variant => !attempts.some(attempt => attempt.variant === variant))
   ) {
-    invalid(`${label} must contain four unique treatments`);
+    invalid(`${label} must contain the complete four- or five-treatment set`);
   }
   return [...attempts].sort((left, right) => left.runOrder - right.runOrder);
 }
@@ -779,7 +807,7 @@ export interface MatchedEvaluationContinuationSupplementV1 {
 export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): MatchedEvaluationContinuationPilotPlan {
   const plan = object(value, 'continuation pilot plan');
   const version = plan.version;
-  if (version !== 1 && version !== 2) invalid('continuation pilot plan version is invalid');
+  if (version !== 1 && version !== 2 && version !== 3) invalid('continuation pilot plan version is invalid');
   exactKeys(
     plan,
     version === 1
@@ -790,6 +818,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
           'checkpoint',
           'phaseTwoPrompt',
           'phaseTwoPromptSha256',
+          ...(version === 3 ? ['phaseTwoVerification'] : []),
           'retries',
           'sourceTask',
           'taskId',
@@ -809,7 +838,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
       'handoff',
       'handoffSha256',
       'phaseOneAccounting',
-      ...(version === 2
+      ...(version !== 1
         ? [
             'adapterConfigurations',
             'phaseOneExecution',
@@ -1034,7 +1063,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
   if (!phaseOnePrompt.includes(parsedSourceTask.prompt)) {
     invalid('continuation pilot phase-one prompt must include the exact source task prompt');
   }
-  return {
+  const current = {
     ...common,
     checkpoint: {
       ...common.checkpoint,
@@ -1057,6 +1086,17 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
     phaseTwoPrompt,
     phaseTwoPromptSha256,
     sourceTask: parsedSourceTask,
+  };
+  if (version === 2) {
+    return {...current, version};
+  }
+  const phaseTwoVerification = parseMatchedContinuationPhaseTwoVerificationPlanV1(plan.phaseTwoVerification);
+  if (phaseTwoVerification.taskId !== common.taskId) {
+    invalid('continuation pilot phase-two verification task id differs');
+  }
+  return {
+    ...current,
+    phaseTwoVerification,
     version,
   };
 }
@@ -1287,7 +1327,7 @@ function parseContinuationPreparedHomeV2(
 
 /** Bind the v2 phase-one claims to immutable sibling evidence before any phase-two attempt starts. */
 export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(input: {
-  readonly plan: MatchedEvaluationContinuationPilotPlanV2;
+  readonly plan: MatchedEvaluationContinuationPilotPlanCurrent;
   readonly planPath: string;
 }): Promise<{readonly agentPatch: string}> {
   const evidenceDirectory = join(dirname(input.planPath), 'phase-one');
@@ -1496,7 +1536,7 @@ export function projectMatchedEvaluationContinuationSelectionCheckpointV1(
   return {
     automaticHandoffUri: plan.checkpoint.automaticHandoffUri,
     handoffSha256: plan.checkpoint.handoffSha256,
-    ...(plan.version === 2
+    ...(plan.version !== 1
       ? {
           adapterConfigurations: plan.checkpoint.adapterConfigurations,
           phaseOneExecution: plan.checkpoint.phaseOneExecution,
@@ -2242,8 +2282,12 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
   const filesConfig = parseMatchedEvaluationCodexAdapterConfigV1(
     await readJson(resolve(outputDirectory, 'phase-one', 'adapter-config.json')),
   );
-  const focusedCommand = filesConfig.approvedCommands.find(command => command.taskId === corpusTask.taskId);
-  if (focusedCommand === undefined) throw new Error('Continuation phase-one task lacks a sealed focused command.');
+  const phaseTwoCommands = matchContinuationPhaseTwoCommandsV1({
+    approvedCommands: filesConfig.approvedCommands,
+    commandTexts: selection.taskPacket.phaseTwoFocusedChecks,
+    taskId: corpusTask.taskId,
+  });
+  const focusedCommand = phaseTwoCommands[0];
   const focusedCheck = await runMatchedEvaluationContinuationFocusedCheckV1({
     commandTokens: focusedCommand.tokens,
     repositoryDirectory: checkpointRepository,
@@ -2278,6 +2322,14 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     checkpoint,
     patchSha256: phaseOnePatchSha256,
     repositoryDirectory: checkpointRepository,
+  });
+  const phaseTwoVerification = await prepareMatchedEvaluationContinuationPhaseTwoVerificationPlanV1({
+    commands: phaseTwoCommands,
+    protectedPaths: selection.taskPacket.phaseOneAllowedPaths,
+    repositoryDirectory: checkpointRepository,
+    safeExecutablePath: filesConfig.safeExecutablePath,
+    taskId: corpusTask.taskId,
+    temporaryRoot: resolve(outputDirectory, 'phase-two-verification-baseline-tmp'),
   });
 
   const graphArm = runtime.arms.find(arm => arm.arm === 'threadnote-graph');
@@ -2669,9 +2721,10 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     retries: 0,
     sourceTask: selection.sourceTask,
     taskId: corpusTask.taskId,
-    version: 2,
+    phaseTwoVerification,
+    version: 3,
   });
-  if (plan.version !== 2) throw new Error('Continuation checkpoint finalizer produced a legacy plan.');
+  if (plan.version !== 3) throw new Error('Continuation checkpoint finalizer produced a legacy plan.');
   const planPath = resolve(outputDirectory, 'continuation-plan.json');
   await writeFile(planPath, `${JSON.stringify(plan, undefined, 2)}\n`, {flag: 'wx', mode: 0o600});
   const continuationRuntime = {
@@ -2740,11 +2793,14 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     throw new Error(`${options.planPath} is not valid JSON.`, {cause});
   }
   const plan = parseMatchedEvaluationContinuationPilotPlanV1(planInput);
+  if (plan.version !== 3) {
+    throw new Error('Continuation pilot execution requires a version 3 plan with full Phase-2 verification.');
+  }
   const planFileHash = sha256Bytes(Buffer.from(planText));
-  const phaseOneEvidence =
-    plan.version === 2
-      ? await assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: options.planPath})
-      : null;
+  const phaseOneEvidence = await assertMatchedEvaluationContinuationPhaseOneEvidenceV2({
+    plan,
+    planPath: options.planPath,
+  });
   const [corpus, manifest, runtime, study] = await Promise.all([
     readJson(options.corpusPath).then(parseMatchedEvaluationCorpusV1),
     readJson(options.manifestPath).then(parseMatchedEvaluationManifestV1),
@@ -2763,33 +2819,22 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   if (runtime.verificationPlanHash !== study.verificationPlanHash) {
     throw new Error('Runtime and study disagree on the sealed verification plan.');
   }
-  const adapterConfigOverrides =
-    plan.version === 2
-      ? await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
-          manifest,
-          plan,
-          planPath: options.planPath,
-          runtime,
-        })
-      : new Map<'threadnote-compact' | 'threadnote-graph', MatchedEvaluationContinuationAdapterConfigOverrideV2>();
+  const adapterConfigOverrides = await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+    manifest,
+    plan,
+    planPath: options.planPath,
+    runtime,
+  });
   const task = corpus.tasks.find(candidate => candidate.taskId === plan.taskId);
   if (task === undefined) throw new Error(`Continuation pilot task ${plan.taskId} is not in the corpus.`);
-  if (plan.version === 1 && sha256Bytes(Buffer.from(task.prompt)) !== plan.baseTaskPromptSha256) {
-    throw new Error('Continuation pilot task prompt differs from the sealed plan.');
-  }
   if (
-    plan.version === 2 &&
-    (task.prompt !== plan.sourceTask.prompt ||
-      matchedEvaluationPromptHashV1(task.prompt) !== plan.sourceTask.promptSha256 ||
-      task.repositoryFixtureHash !== plan.sourceTask.repositoryFixtureHash)
+    task.prompt !== plan.sourceTask.prompt ||
+    matchedEvaluationPromptHashV1(task.prompt) !== plan.sourceTask.promptSha256 ||
+    task.repositoryFixtureHash !== plan.sourceTask.repositoryFixtureHash
   ) {
     throw new Error('Continuation pilot source task differs from the frozen corpus.');
   }
-  if (plan.version === 1 && task.repositoryFixtureHash !== plan.checkpoint.repositoryFixtureHash) {
-    throw new Error('Continuation pilot checkpoint differs from the frozen repository fixture.');
-  }
-  const repositoryStudy =
-    plan.version === 1 ? study : continuationCheckpointStudyV2(study, plan.sourceTask, plan.checkpoint);
+  const repositoryStudy = continuationCheckpointStudyV2(study, plan.sourceTask, plan.checkpoint);
   for (const arm of ['threadnote-graph', 'threadnote-compact'] as const) {
     const definition = manifest.arms.find(candidate => candidate.arm === arm);
     if (
@@ -2853,22 +2898,19 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
             'This is a non-blinded supplementary fifth treatment selected after the four-arm parent pilot; it estimates the preloading mechanism only and is not a randomized five-way comparison.',
           ]),
     ],
-    ...(plan.version === 2
-      ? {
-          planVersion: plan.version,
-          phaseTwoPromptSha256: plan.phaseTwoPromptSha256,
-          sourceTask: {
-            promptSha256: plan.sourceTask.promptSha256,
-            repositoryFixtureHash: plan.sourceTask.repositoryFixtureHash,
-            repositoryRevision: plan.sourceTask.repositoryRevision,
-            taskId: plan.sourceTask.taskId,
-          },
-        }
-      : {}),
+    phaseTwoPromptSha256: plan.phaseTwoPromptSha256,
+    phaseTwoVerificationPlanHash: plan.phaseTwoVerification.planHash,
+    planVersion: plan.version,
+    sourceTask: {
+      promptSha256: plan.sourceTask.promptSha256,
+      repositoryFixtureHash: plan.sourceTask.repositoryFixtureHash,
+      repositoryRevision: plan.sourceTask.repositoryRevision,
+      taskId: plan.sourceTask.taskId,
+    },
     rows: selected.map(({arm, row, variant}) => ({...row, arm, variant})),
     ...(supplement === null ? {} : {supplementaryTo: supplement}),
     taskId: plan.taskId,
-    version: 1,
+    version: 2,
   };
   const markerPath = resolve(pilotDirectory, 'continuation-pilot-selection.json');
   try {
@@ -2897,17 +2939,15 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   ) {
     throw new Error('Continuation pilot runtime repository differs from the frozen checkpoint.');
   }
-  if (plan.version === 2) {
-    await assertMatchedEvaluationContinuationCheckpointV2({
-      baseFixtureHash: plan.sourceTask.repositoryFixtureHash,
-      baseRevision: plan.sourceTask.repositoryRevision,
-      checkpoint: checkpointRepository.expected,
-      agentPatch: phaseOneEvidence!.agentPatch,
-      patchSha256: plan.checkpoint.phaseOnePatchSha256,
-      repositoryDirectory: checkpointRepository.repositoryDirectory,
-    });
-  }
-  const requiredArms = [...new Set(selected.map(attempt => attempt.arm))];
+  await assertMatchedEvaluationContinuationCheckpointV2({
+    baseFixtureHash: plan.sourceTask.repositoryFixtureHash,
+    baseRevision: plan.sourceTask.repositoryRevision,
+    checkpoint: checkpointRepository.expected,
+    agentPatch: phaseOneEvidence.agentPatch,
+    patchSha256: plan.checkpoint.phaseOnePatchSha256,
+    repositoryDirectory: checkpointRepository.repositoryDirectory,
+  });
+  const requiredArms = [...new Set([...selected.map(attempt => attempt.arm), 'files' as const])];
   const preflight = await Promise.all(
     requiredArms.map(async arm => {
       const definition = manifest.arms.find(candidate => candidate.arm === arm);
@@ -2925,6 +2965,18 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     }),
   );
   const resolved = new Map(preflight);
+  const verificationAdapterConfig = parseMatchedEvaluationCodexAdapterConfigV1(
+    await readJson(requiredResolvedArm(resolved, 'files').config.adapterConfigFile),
+  );
+  for (const check of plan.phaseTwoVerification.checks) {
+    if (
+      !verificationAdapterConfig.approvedCommands.some(
+        command => command.taskId === plan.taskId && sameJson(command.tokens, check.commandTokens),
+      )
+    ) {
+      throw new Error('Continuation phase-two verification plan contains a command outside the approved policy.');
+    }
+  }
   await assertContinuationAutomaticHandoffV1({
     plan,
     resolvedCompactArm: requiredResolvedArm(resolved, 'threadnote-compact'),
@@ -2945,8 +2997,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     const checkpointPath = `${transcriptPath}.agent.jsonl`;
     const request: MatchedEvaluationRunRequestV1 = {arm, armDefinition: definition, manifest, schedule: row, task};
     const repository = requiredRuntimeRepository(repositories, plan.taskId, study);
-    const projectedTaskOverride =
-      plan.version === 2 ? projectMatchedEvaluationContinuationAdapterTaskV2(request, study, plan) : null;
+    const projectedTaskOverride = projectMatchedEvaluationContinuationAdapterTaskV2(request, study, plan);
     await assertMatchedEvaluationRepositoryV1(repository.repositoryDirectory, repository.expected);
     try {
       const observation = await executeArm(
@@ -2966,11 +3017,20 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
       if (artifactSha256 !== observation.artifactHash) {
         throw new Error('Continuation pilot report artifact hash differs from the adapter observation.');
       }
+      const phaseTwoVerification = await verifyMatchedEvaluationContinuationArtifactV1({
+        artifactHash: artifactSha256,
+        artifactPath: rawArtifactPath,
+        checkpointRepository: repository.repositoryDirectory,
+        checkpointRevision: plan.checkpoint.repositoryRevision,
+        plan: plan.phaseTwoVerification,
+        safeExecutablePath: verificationAdapterConfig.safeExecutablePath,
+      });
       attempts.push({
         arm,
         artifactSha256,
         checkpointPath,
         metrics: observation.metrics,
+        phaseTwoVerification,
         rawArtifactPath,
         requestPath,
         responsePath,
@@ -3022,7 +3082,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   const allCompleted = attempts.every(attempt => attempt.status === 'completed');
   await writeReport(allCompleted);
   process.stdout.write(
-    `${JSON.stringify({artifactDirectory: pilotDirectory, attemptCount: attempts.length, comparativeClaimsEligible: false, completed: allCompleted, finished: true, version: 1})}\n`,
+    `${JSON.stringify({artifactDirectory: pilotDirectory, attemptCount: attempts.length, comparativeClaimsEligible: false, completed: allCompleted, finished: true, version: 2})}\n`,
   );
 }
 
@@ -3120,8 +3180,8 @@ export async function resolveMatchedEvaluationRuntimeRepositoriesV1(
 
 export function continuationCheckpointStudyV2(
   study: MatchedTokenEfficiencyStudyV1,
-  sourceTask: MatchedEvaluationContinuationPilotPlanV2['sourceTask'],
-  checkpoint: MatchedEvaluationContinuationPilotPlanV2['checkpoint'],
+  sourceTask: MatchedEvaluationContinuationPilotPlanCurrent['sourceTask'],
+  checkpoint: MatchedEvaluationContinuationPilotPlanCurrent['checkpoint'],
 ): MatchedTokenEfficiencyStudyV1 {
   const taskContext = study.taskContexts.find(candidate => candidate.taskId === sourceTask.taskId);
   if (taskContext === undefined) throw new Error('Continuation source task lacks a study context.');
@@ -3315,6 +3375,169 @@ async function runMatchedEvaluationContinuationFocusedCheckV1(input: {
   });
 }
 
+function matchContinuationPhaseTwoCommandsV1(input: {
+  readonly approvedCommands: ReturnType<typeof parseMatchedEvaluationCodexAdapterConfigV1>['approvedCommands'];
+  readonly commandTexts: readonly string[];
+  readonly taskId: string;
+}) {
+  if (input.commandTexts.length === 0 || input.commandTexts.length > 8) {
+    throw new Error('Continuation phase-two verification must contain 1-8 commands.');
+  }
+  const matched = input.commandTexts.map((commandText, index) => {
+    const canonicalText = commandText.replaceAll('{python}', 'python').trim();
+    const candidates = input.approvedCommands.filter(
+      command => command.taskId === input.taskId && command.tokens.join(' ') === canonicalText,
+    );
+    if (candidates.length !== 1) {
+      throw new Error(`Continuation phase-two command ${index} is not one unique sealed approved command.`);
+    }
+    return candidates[0];
+  });
+  if (new Set(matched.map(command => JSON.stringify(command.tokens))).size !== matched.length) {
+    throw new Error('Continuation phase-two verification commands must be unique.');
+  }
+  return matched;
+}
+
+async function prepareMatchedEvaluationContinuationPhaseTwoVerificationPlanV1(input: {
+  readonly commands: ReturnType<typeof matchContinuationPhaseTwoCommandsV1>;
+  readonly protectedPaths: readonly string[];
+  readonly repositoryDirectory: string;
+  readonly safeExecutablePath: string;
+  readonly taskId: string;
+  readonly temporaryRoot: string;
+}): Promise<MatchedContinuationPhaseTwoVerificationPlanV1> {
+  const checks: Array<{
+    readonly allowedBaselineFailureIds: readonly string[];
+    readonly commandTokens: readonly string[];
+    readonly diagnosticParser: 'pytest-summary-v1';
+    readonly policy: 'must-pass' | 'no-new-failures';
+  }> = [];
+  try {
+    for (const [index, command] of input.commands.entries()) {
+      const result = await runMatchedEvaluationContinuationFocusedCheckV1({
+        commandTokens: command.tokens,
+        repositoryDirectory: input.repositoryDirectory,
+        safeExecutablePath: input.safeExecutablePath,
+        temporaryDirectory: resolve(input.temporaryRoot, `check-${index + 1}`),
+      });
+      if (result.exitCode !== 0 && result.exitCode !== 1) {
+        throw new Error(`Continuation phase-two baseline command ${index} failed as infrastructure.`);
+      }
+      const failureIds = parseMatchedContinuationPytestFailureIdsV1(result.stdout, result.stderr);
+      if (index === 0) {
+        if (result.exitCode !== 1 || failureIds.length === 0) {
+          throw new Error('Continuation phase-two target check must fail at the Phase-1 checkpoint.');
+        }
+        checks.push({
+          allowedBaselineFailureIds: [],
+          commandTokens: command.tokens,
+          diagnosticParser: 'pytest-summary-v1',
+          policy: 'must-pass',
+        });
+      } else {
+        if (result.exitCode === 1 && failureIds.length === 0) {
+          throw new Error(`Continuation phase-two baseline command ${index} has unparseable failures.`);
+        }
+        checks.push({
+          allowedBaselineFailureIds: failureIds,
+          commandTokens: command.tokens,
+          diagnosticParser: 'pytest-summary-v1',
+          policy: 'no-new-failures',
+        });
+      }
+    }
+  } finally {
+    await rm(input.temporaryRoot, {force: true, recursive: true});
+  }
+  return createMatchedContinuationPhaseTwoVerificationPlanV1({
+    checks,
+    protectedPaths: input.protectedPaths,
+    taskId: input.taskId,
+  });
+}
+
+export async function verifyMatchedEvaluationContinuationArtifactV1(input: {
+  readonly artifactHash: string;
+  readonly artifactPath: string;
+  readonly checkpointRepository: string;
+  readonly checkpointRevision: string;
+  readonly plan: MatchedContinuationPhaseTwoVerificationPlanV1;
+  readonly safeExecutablePath: string;
+}): Promise<MatchedContinuationPhaseTwoVerificationReceiptV1> {
+  const artifact = object(await readJson(input.artifactPath), 'continuation phase-two artifact');
+  const patch = boundedString(artifact.patch, 1, 8 * 1_024 * 1_024, 'continuation phase-two patch');
+  const startedAt = Date.now();
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-continuation-phase-two-verification-')));
+  const repositoryDirectory = resolve(root, 'repository');
+  const patchPath = resolve(root, 'agent.patch');
+  let worktreeCreated = false;
+  let protectedPathViolations: readonly string[] = [];
+  const receipts: MatchedContinuationPhaseTwoVerificationCheckReceiptV1[] = [];
+  try {
+    await captureContinuationGit(input.checkpointRepository, [
+      'worktree',
+      'add',
+      '--detach',
+      repositoryDirectory,
+      input.checkpointRevision,
+    ]);
+    worktreeCreated = true;
+    await writeFile(patchPath, patch, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+    await captureContinuationGit(repositoryDirectory, ['apply', '--index', '--whitespace=nowarn', patchPath]);
+    const changedPaths = (
+      await captureContinuationGit(repositoryDirectory, ['diff', '--cached', '--name-only', '-z', '--'])
+    )
+      .split('\0')
+      .filter(Boolean);
+    protectedPathViolations = changedPaths.filter(path => input.plan.protectedPaths.includes(path));
+    for (const [index, check] of input.plan.checks.entries()) {
+      const startedAt = Date.now();
+      const result = await runMatchedEvaluationContinuationFocusedCheckV1({
+        commandTokens: check.commandTokens,
+        repositoryDirectory,
+        safeExecutablePath: input.safeExecutablePath,
+        temporaryDirectory: resolve(root, `check-${index + 1}`),
+      });
+      if (result.exitCode !== 0 && result.exitCode !== 1) {
+        throw new Error(`Continuation phase-two verification command ${index} failed as infrastructure.`);
+      }
+      const failureIds = parseMatchedContinuationPytestFailureIdsV1(result.stdout, result.stderr);
+      receipts.push(
+        createMatchedContinuationPhaseTwoVerificationCheckReceiptV1({
+          artifactHash: input.artifactHash,
+          check,
+          diagnosticHash: sha256Bytes(
+            Buffer.from(
+              `matched-continuation-phase-two-diagnostic-v1\0${JSON.stringify({
+                exitCode: result.exitCode,
+                stderr: result.stderr,
+                stdout: result.stdout,
+              })}`,
+            ),
+          ),
+          durationMilliseconds: Math.max(0, Date.now() - startedAt),
+          exitCode: result.exitCode,
+          failureIds,
+          planHash: input.plan.planHash,
+        }),
+      );
+    }
+  } finally {
+    if (worktreeCreated) {
+      await captureContinuationGit(input.checkpointRepository, ['worktree', 'remove', '--force', repositoryDirectory]);
+    }
+    await rm(root, {force: true, recursive: true});
+  }
+  return createMatchedContinuationPhaseTwoVerificationReceiptV1({
+    artifactHash: input.artifactHash,
+    checks: receipts,
+    durationMilliseconds: Math.max(0, Date.now() - startedAt),
+    plan: input.plan,
+    protectedPathViolations,
+  });
+}
+
 async function captureMatchedEvaluationContinuationAgentBriefV1(input: {
   readonly budgetTokens: number;
   readonly executable: string;
@@ -3431,7 +3654,7 @@ async function assertContinuationAutomaticHandoffV1(input: {
   const prepared = config.contextHomes.find(home => home.taskId === input.plan.taskId);
   if (prepared === undefined) throw new Error('Continuation pilot compact arm lacks the task prepared home.');
   if (
-    input.plan.version === 2 &&
+    input.plan.version !== 1 &&
     (prepared.homeFixtureHash !== input.plan.checkpoint.preparedHome.fixtureHash ||
       matchedEvaluationContinuationPreparedHomeIdentityHashV2(prepared) !==
         input.plan.checkpoint.preparedHome.identitySha256)
