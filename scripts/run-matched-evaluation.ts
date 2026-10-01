@@ -1385,7 +1385,7 @@ function parseContinuationPreparedHomeV2(
 export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(input: {
   readonly plan: MatchedEvaluationContinuationPilotPlanCurrent;
   readonly planPath: string;
-}): Promise<{readonly agentPatch: string}> {
+}): Promise<{readonly checkpointPatch: string}> {
   const evidenceDirectory = join(dirname(input.planPath), 'phase-one');
   const paths = {
     adapter: join(evidenceDirectory, 'adapter'),
@@ -1393,6 +1393,7 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
     artifact: join(evidenceDirectory, 'artifact.json'),
     request: join(evidenceDirectory, 'request.json'),
     response: join(evidenceDirectory, 'response.json'),
+    checkpointPatch: join(evidenceDirectory, 'checkpoint.patch'),
     transcript: join(evidenceDirectory, 'transcript.jsonl'),
   };
   const execution = input.plan.checkpoint.phaseOneExecution;
@@ -1402,6 +1403,7 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
     artifactSha256,
     requestSha256,
     responseSha256,
+    checkpointPatchSha256,
     transcriptSha256,
     configInput,
     artifactInput,
@@ -1413,6 +1415,7 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
     boundedRegularFileHash(paths.artifact, MAXIMUM_JSON_BYTES, 'continuation phase-one artifact'),
     boundedRegularFileHash(paths.request, MAXIMUM_JSON_BYTES, 'continuation phase-one request'),
     boundedRegularFileHash(paths.response, MAXIMUM_JSON_BYTES, 'continuation phase-one response'),
+    boundedRegularFileHash(paths.checkpointPatch, 8 * 1_024 * 1_024, 'continuation phase-one checkpoint patch'),
     boundedRegularFileHash(paths.transcript, MAXIMUM_TRANSCRIPT_BYTES, 'continuation phase-one transcript'),
     readJson(paths.adapterConfig),
     readJson(paths.artifact),
@@ -1513,7 +1516,10 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
   ) {
     throw new Error('Continuation phase-one accounting differs from the sealed response.');
   }
-  return {agentPatch: artifact.patch};
+  if (checkpointPatchSha256 !== input.plan.checkpoint.phaseOnePatchSha256) {
+    throw new Error('Continuation checkpoint patch differs from the sealed plan.');
+  }
+  return {checkpointPatch: await readFile(paths.checkpointPatch, 'utf8')};
 }
 
 function continuationTreatment(
@@ -2323,24 +2329,14 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
   } else if (preservedAgentPatch !== agentPatch) {
     throw new Error('Continuation checkpoint preserved patch differs from the phase-one artifact.');
   }
-  if (!checkpointAlreadyExists) {
-    await captureContinuationGit(checkpointRepository, ['apply', '--index', '--whitespace=nowarn', agentPatchPath]);
-  }
-  const changedPaths = (
-    await captureContinuationGit(
-      checkpointRepository,
-      checkpointAlreadyExists
-        ? ['diff', '--name-only', '-z', selection.sourceTask.repositoryRevision, 'HEAD', '--']
-        : ['diff', '--cached', '--name-only', '-z'],
-    )
-  )
-    .split('\0')
-    .filter(Boolean)
-    .sort();
-  const allowedPaths = [...selection.taskPacket.phaseOneAllowedPaths].sort();
-  if (changedPaths.length !== allowedPaths.length || changedPaths.some((path, index) => path !== allowedPaths[index])) {
-    throw new Error('Continuation phase-one patch changes a path outside the sealed test-only boundary.');
-  }
+  const checkpointPatchPath = resolve(outputDirectory, 'phase-one', 'checkpoint.patch');
+  const {changedPaths, checkpointPatch, needsCommit} = await prepareMatchedEvaluationContinuationPhaseOnePatchV1({
+    agentPatchPath,
+    allowedPaths: selection.taskPacket.phaseOneAllowedPaths,
+    baseRevision: selection.sourceTask.repositoryRevision,
+    checkpointPatchPath,
+    repositoryDirectory: checkpointRepository,
+  });
   const filesConfig = parseMatchedEvaluationCodexAdapterConfigV1(
     await readJson(resolve(outputDirectory, 'phase-one', 'adapter-config.json')),
   );
@@ -2366,7 +2362,7 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
       `Continuation phase-one focused check must fail with exit code 1, received ${focusedCheck.exitCode}.`,
     );
   }
-  if (!checkpointAlreadyExists) {
+  if (needsCommit) {
     await captureContinuationGit(checkpointRepository, [
       '-c',
       'user.name=Threadnote Evaluation',
@@ -2381,9 +2377,9 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
   if (checkpoint.dirty || checkpoint.identityHash !== cluster.repositoryIdentityHash) {
     throw new Error('Continuation checkpoint repository is dirty or has a different identity.');
   }
-  const phaseOnePatchSha256 = sha256Bytes(Buffer.from(agentPatch));
+  const phaseOnePatchSha256 = sha256Bytes(Buffer.from(checkpointPatch));
   await assertMatchedEvaluationContinuationCheckpointV2({
-    agentPatch,
+    agentPatch: checkpointPatch,
     baseFixtureHash: selection.sourceTask.repositoryFixtureHash,
     baseRevision: selection.sourceTask.repositoryRevision,
     checkpoint,
@@ -2616,18 +2612,11 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     task: selection.taskPacket.phaseTwoPrompt,
     threadnoteEnvironment,
   });
-  const activeHandoffs = array(resumeBrief.parsed.activeHandoffs, 'continuation checkpoint active handoffs');
-  const automaticHandoffDelivered = activeHandoffs.some(candidate => {
-    const handoffEvidence = object(candidate, 'continuation checkpoint active handoff');
-    return handoffEvidence.uri === automaticHandoffUri;
+  assertMatchedEvaluationContinuationAgentBriefV1({
+    automaticHandoffUri,
+    resumeEvidenceMarker,
+    text: resumeBrief,
   });
-  if (
-    resumeBrief.parsed.evidenceState !== 'sufficient' ||
-    !automaticHandoffDelivered ||
-    !resumeBrief.text.includes(resumeEvidenceMarker)
-  ) {
-    throw new Error('Continuation checkpoint agent resume brief does not surface the exact automatic handoff.');
-  }
   const checkpointContext = createMatchedTokenEfficiencyTaskContextV1({
     asIssuedContext: taskContext.asIssuedContext,
     clusterId: taskContext.clusterId,
@@ -3025,7 +3014,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     baseFixtureHash: plan.sourceTask.repositoryFixtureHash,
     baseRevision: plan.sourceTask.repositoryRevision,
     checkpoint: checkpointRepository.expected,
-    agentPatch: phaseOneEvidence.agentPatch,
+    agentPatch: phaseOneEvidence.checkpointPatch,
     patchSha256: plan.checkpoint.phaseOnePatchSha256,
     repositoryDirectory: checkpointRepository.repositoryDirectory,
   });
@@ -3845,6 +3834,7 @@ async function captureContinuationGit(
   repositoryDirectory: string,
   arguments_: readonly string[],
   maxOutputBytes = 64 * 1_024,
+  environmentOverrides: Readonly<Record<string, string>> = {},
 ): Promise<string> {
   const result = await captureCodeMemoryLinkProcessGroup({
     arguments: ['-C', repositoryDirectory, ...arguments_],
@@ -3858,12 +3848,149 @@ async function captureContinuationGit(
       LANG: 'C.UTF-8',
       LC_ALL: 'C.UTF-8',
       PATH: process.env.PATH ?? '/usr/bin:/bin',
+      ...environmentOverrides,
     },
     label: 'Continuation checkpoint provenance',
     maxOutputBytes,
     timeoutMilliseconds: 30_000,
   });
   return result.stdout;
+}
+
+export async function applyMatchedEvaluationContinuationPhaseOnePatchV1(input: {
+  readonly agentPatchPath: string;
+  readonly allowedPaths: readonly string[];
+  readonly repositoryDirectory: string;
+}): Promise<void> {
+  await captureContinuationGit(input.repositoryDirectory, [
+    'apply',
+    '--index',
+    '--whitespace=nowarn',
+    ...input.allowedPaths.map(path => `--include=${path}`),
+    input.agentPatchPath,
+  ]);
+}
+
+export async function prepareMatchedEvaluationContinuationPhaseOnePatchV1(input: {
+  readonly agentPatchPath: string;
+  readonly allowedPaths: readonly string[];
+  readonly baseRevision: string;
+  readonly checkpointPatchPath: string;
+  readonly repositoryDirectory: string;
+}): Promise<{
+  readonly changedPaths: readonly string[];
+  readonly checkpointPatch: string;
+  readonly needsCommit: boolean;
+}> {
+  const expectedProjectionRoot = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-continuation-patch-')));
+  let expectedPatch: string;
+  let expectedChangedPaths: readonly string[];
+  try {
+    const expectedIndex = join(expectedProjectionRoot, 'index');
+    const indexEnvironment = {GIT_INDEX_FILE: expectedIndex};
+    await captureContinuationGit(
+      input.repositoryDirectory,
+      ['read-tree', input.baseRevision],
+      64 * 1_024,
+      indexEnvironment,
+    );
+    await captureContinuationGit(
+      input.repositoryDirectory,
+      [
+        'apply',
+        '--cached',
+        '--whitespace=nowarn',
+        ...input.allowedPaths.map(path => `--include=${path}`),
+        input.agentPatchPath,
+      ],
+      64 * 1_024,
+      indexEnvironment,
+    );
+    expectedChangedPaths = continuationGitPaths(
+      await captureContinuationGit(
+        input.repositoryDirectory,
+        ['diff', '--cached', '--name-only', '-z', input.baseRevision, '--'],
+        64 * 1_024,
+        indexEnvironment,
+      ),
+    );
+    expectedPatch = await captureContinuationGit(
+      input.repositoryDirectory,
+      continuationCheckpointPatchDiffArguments(input.baseRevision, true),
+      8 * 1_024 * 1_024,
+      indexEnvironment,
+    );
+  } finally {
+    await rm(expectedProjectionRoot, {force: true, recursive: true});
+  }
+  const allowedPaths = [...input.allowedPaths].sort();
+  if (
+    expectedChangedPaths.length !== allowedPaths.length ||
+    expectedChangedPaths.some((path, index) => path !== allowedPaths[index])
+  ) {
+    throw new Error('Continuation phase-one patch changes a path outside the sealed test-only boundary.');
+  }
+
+  const headRevision = (await captureContinuationGit(input.repositoryDirectory, ['rev-parse', 'HEAD'])).trim();
+  const needsCommit = headRevision === input.baseRevision;
+  if (needsCommit) {
+    const unstagedPaths = continuationGitPaths(
+      await captureContinuationGit(input.repositoryDirectory, ['diff', '--name-only', '-z', '--']),
+    );
+    if (unstagedPaths.length > 0) {
+      throw new Error('Continuation checkpoint has unstaged tracked changes and cannot be resumed safely.');
+    }
+    const stagedPaths = continuationGitPaths(
+      await captureContinuationGit(input.repositoryDirectory, ['diff', '--cached', '--name-only', '-z', '--']),
+    );
+    if (stagedPaths.length === 0) {
+      await applyMatchedEvaluationContinuationPhaseOnePatchV1(input);
+    }
+  }
+  const actualDiffArguments = continuationCheckpointPatchDiffArguments(input.baseRevision, needsCommit);
+  const [actualChangedPaths, actualPatch] = await Promise.all([
+    captureContinuationGit(
+      input.repositoryDirectory,
+      needsCommit
+        ? ['diff', '--cached', '--name-only', '-z', input.baseRevision, '--']
+        : ['diff', '--name-only', '-z', input.baseRevision, 'HEAD', '--'],
+    ).then(continuationGitPaths),
+    captureContinuationGit(input.repositoryDirectory, actualDiffArguments, 8 * 1_024 * 1_024),
+  ]);
+  if (actualPatch !== expectedPatch || JSON.stringify(actualChangedPaths) !== JSON.stringify(expectedChangedPaths)) {
+    throw new Error('Continuation checkpoint differs from the sealed filtered phase-one patch.');
+  }
+  const preservedCheckpointPatch = await readFile(input.checkpointPatchPath, 'utf8').catch(cause => {
+    if (isMissing(cause)) return null;
+    throw cause;
+  });
+  if (preservedCheckpointPatch === null) {
+    await writeFile(input.checkpointPatchPath, expectedPatch, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+  } else if (preservedCheckpointPatch !== expectedPatch) {
+    throw new Error('Continuation checkpoint patch differs from the sealed filtered phase-one patch.');
+  }
+  return {changedPaths: expectedChangedPaths, checkpointPatch: expectedPatch, needsCommit};
+}
+
+function continuationCheckpointPatchDiffArguments(baseRevision: string, cached: boolean): readonly string[] {
+  return [
+    'diff',
+    ...(cached ? ['--cached'] : []),
+    '--binary',
+    '--full-index',
+    '--no-color',
+    '--no-ext-diff',
+    '--src-prefix=a/',
+    '--dst-prefix=b/',
+    baseRevision,
+    ...(cached ? [] : ['HEAD']),
+    '--',
+    '.',
+  ];
+}
+
+function continuationGitPaths(output: string): readonly string[] {
+  return output.split('\0').filter(Boolean).sort();
 }
 
 async function runMatchedEvaluationContinuationFocusedCheckV1(input: {
@@ -4184,7 +4311,7 @@ async function captureMatchedEvaluationContinuationAgentBriefV1(input: {
   readonly repositoryDirectory: string;
   readonly task: string;
   readonly threadnoteEnvironment: Readonly<Record<string, string>>;
-}): Promise<{readonly parsed: Record<string, unknown>; readonly text: string}> {
+}): Promise<string> {
   const client = new Client({name: 'matched-evaluation-checkpoint-finalizer', version: '1'});
   const transport = new StdioClientTransport({
     args: ['mcp-server'],
@@ -4224,27 +4351,60 @@ async function captureMatchedEvaluationContinuationAgentBriefV1(input: {
       undefined,
       {timeout: 120_000},
     );
-    const resultRecord = object(result, 'continuation checkpoint agent Context Brief result');
-    if (resultRecord.isError === true) {
-      throw new Error('Continuation checkpoint agent Context Brief returned an error.');
-    }
-    const texts = array(resultRecord.content, 'continuation checkpoint agent Context Brief content').flatMap(
-      (candidate, index) => {
-        const content = object(candidate, `continuation checkpoint agent Context Brief content ${index}`);
-        return content.type === 'text' && typeof content.text === 'string' ? [content.text] : [];
-      },
-    );
-    if (texts.length !== 1) {
-      throw new Error('Continuation checkpoint agent Context Brief must return exactly one text payload.');
-    }
-    try {
-      return {parsed: object(JSON.parse(texts[0]) as unknown, 'continuation checkpoint agent brief'), text: texts[0]};
-    } catch (cause) {
-      throw new Error('Continuation checkpoint agent Context Brief returned invalid JSON.', {cause});
-    }
+    return parseMatchedEvaluationContinuationAgentBriefResultV1(result);
   } finally {
     await client.close();
     await transport.close();
+  }
+}
+
+export function parseMatchedEvaluationContinuationAgentBriefResultV1(value: unknown): string {
+  const result = object(value, 'continuation checkpoint agent Context Brief result');
+  if (result.isError === true) throw new Error('Continuation checkpoint agent Context Brief returned an error.');
+  if (result.structuredContent !== undefined) {
+    throw new Error('Continuation checkpoint agent Context Brief must not include dual structured content.');
+  }
+  const texts = array(result.content, 'continuation checkpoint agent Context Brief content').flatMap(
+    (candidate, index) => {
+      const content = object(candidate, `continuation checkpoint agent Context Brief content ${index}`);
+      return content.type === 'text' && typeof content.text === 'string' ? [content.text] : [];
+    },
+  );
+  if (texts.length !== 1) {
+    throw new Error('Continuation checkpoint agent Context Brief must return exactly one text payload.');
+  }
+  return texts[0];
+}
+
+export function assertMatchedEvaluationContinuationAgentBriefV1(input: {
+  readonly automaticHandoffUri: string;
+  readonly resumeEvidenceMarker: string;
+  readonly text: string;
+}): void {
+  const markerCount = input.text.split(input.resumeEvidenceMarker).length - 1;
+  const memoriesIndex = input.automaticHandoffUri.indexOf('/memories/');
+  const compactHandoffUri = memoriesIndex === -1 ? null : input.automaticHandoffUri.slice(memoriesIndex + 1);
+  const referencesHandoff =
+    input.text.includes(input.automaticHandoffUri) ||
+    (compactHandoffUri !== null && input.text.includes(compactHandoffUri));
+  const trimmed = input.text.trimStart();
+  let isSufficient = /^State: sufficient(?:\s|\|)/mu.test(input.text);
+  let jsonReferencesHandoff = false;
+  if (trimmed.startsWith('{')) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = object(JSON.parse(input.text) as unknown, 'continuation checkpoint agent brief');
+    } catch (cause) {
+      throw new Error('Continuation checkpoint agent Context Brief returned invalid JSON.', {cause});
+    }
+    isSufficient = parsed.evidenceState === 'sufficient';
+    jsonReferencesHandoff = array(parsed.activeHandoffs, 'continuation checkpoint active handoffs').some(candidate => {
+      const handoffEvidence = object(candidate, 'continuation checkpoint active handoff');
+      return handoffEvidence.uri === input.automaticHandoffUri || handoffEvidence.uri === compactHandoffUri;
+    });
+  }
+  if (!isSufficient || (!referencesHandoff && !jsonReferencesHandoff) || markerCount !== 1) {
+    throw new Error('Continuation checkpoint agent resume brief does not surface the exact automatic handoff.');
   }
 }
 

@@ -14,6 +14,7 @@ import {
 } from '../../../../scripts/matched-evaluation-runtime-integrity.js';
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
 import {
+  assertMatchedEvaluationContinuationAgentBriefV1,
   assertMatchedEvaluationContinuationPhaseOneReceiptV1,
   assertMatchedEvaluationContinuationPhaseOnePreregistrationV1,
   assertMatchedEvaluationContinuationAdapterConfigurationsV2,
@@ -29,9 +30,11 @@ import {
   parseMatchedEvaluationContinuationPhaseOneTaskPacketV1,
   parseMatchedEvaluationContinuationPhaseOneSelectionV1,
   parseMatchedEvaluationContinuationPhaseOneReceiptV1,
+  parseMatchedEvaluationContinuationAgentBriefResultV1,
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
   projectMatchedEvaluationContinuationAdapterTaskV2,
+  prepareMatchedEvaluationContinuationPhaseOnePatchV1,
   resolveRuntimeArm,
   resolveMatchedEvaluationRuntimeRepositoriesV1,
   stageResolvedRuntimeArmV1,
@@ -799,6 +802,7 @@ describe('matched evaluation runtime integrity', () => {
         taskId,
       })}\n`,
     );
+    const checkpointPatch = Buffer.from('diff --git a/tests/test_marker.py b/tests/test_marker.py\n');
     const providerTokens = {
       cachedInputTokens: 4,
       inputTokens: 10,
@@ -821,6 +825,7 @@ describe('matched evaluation runtime integrity', () => {
     await Promise.all([
       writeFile(join(phaseOne, 'adapter'), adapter),
       writeFile(join(phaseOne, 'adapter-config.json'), config),
+      writeFile(join(phaseOne, 'checkpoint.patch'), checkpointPatch),
       writeFile(join(phaseOne, 'artifact.json'), artifact),
       writeFile(join(phaseOne, 'request.json'), request),
       writeFile(join(phaseOne, 'response.json'), response),
@@ -845,6 +850,7 @@ describe('matched evaluation runtime integrity', () => {
           transcriptHash,
           transcriptSha256: sha256HexSync(transcript),
         },
+        phaseOnePatchSha256: sha256HexSync(checkpointPatch),
         phaseOnePrompt: prompt,
       },
       sourceTask: {repositoryFixtureHash: sourceFixtureHash, repositoryRevision: sourceRevision},
@@ -853,7 +859,7 @@ describe('matched evaluation runtime integrity', () => {
 
     await expect(
       assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: join(root, 'continuation-plan.json')}),
-    ).resolves.toEqual({agentPatch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n'});
+    ).resolves.toEqual({checkpointPatch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n'});
     const blockedResponse = Buffer.from(
       `${JSON.stringify({
         metrics: {
@@ -879,7 +885,7 @@ describe('matched evaluation runtime integrity', () => {
         },
         planPath: join(root, 'continuation-plan.json'),
       }),
-    ).resolves.toEqual({agentPatch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n'});
+    ).resolves.toEqual({checkpointPatch: 'diff --git a/tests/test_marker.py b/tests/test_marker.py\n'});
     for (const safety of [
       {authorizationLeaks: 1, blockedActions: 1, harmfulActions: 0},
       {authorizationLeaks: 0, blockedActions: 1, harmfulActions: 1},
@@ -912,10 +918,122 @@ describe('matched evaluation runtime integrity', () => {
       ).rejects.toThrow('accounting differs');
     }
     await writeFile(join(phaseOne, 'response.json'), response);
+    await writeFile(join(phaseOne, 'checkpoint.patch'), `${checkpointPatch.toString('utf8')} `);
+    await expect(
+      assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: join(root, 'continuation-plan.json')}),
+    ).rejects.toThrow('checkpoint patch differs');
+    await writeFile(join(phaseOne, 'checkpoint.patch'), checkpointPatch);
     await writeFile(join(phaseOne, 'response.json'), `${response.toString('utf8')} `);
     await expect(
       assertMatchedEvaluationContinuationPhaseOneEvidenceV2({plan, planPath: join(root, 'continuation-plan.json')}),
     ).rejects.toThrow('responseSha256');
+  });
+
+  it('validates the exact compact agent resume brief without requiring a dual response', () => {
+    const marker = 'threadnote-resume-0123456789abcdef';
+    const segment = fc
+      .array(fc.constantFrom('a', 'b', 'c', '0', '1', '-'), {minLength: 1, maxLength: 12})
+      .map(characters => characters.join(''));
+    fc.assert(
+      fc.property(segment, segment, (user, topic) => {
+        const automaticHandoffUri = `threadnote://user/${user}/memories/handoffs/active/project/${topic}.md`;
+        const text = [
+          'THREADNOTE BRIEF',
+          `Answer: Resume from the exact current handoff. ${marker}`,
+          'State: sufficient | mode resume | scope fresh | ready 1/1',
+          'Handoffs',
+          `- memories/handoffs/active/project/${topic}.md [fresh; code-citations; exact]`,
+        ].join('\n');
+        expect(() =>
+          assertMatchedEvaluationContinuationAgentBriefV1({automaticHandoffUri, resumeEvidenceMarker: marker, text}),
+        ).not.toThrow();
+      }),
+      {numRuns: 32},
+    );
+    const automaticHandoffUri = 'threadnote://user/test/memories/handoffs/active/project/pilot.md';
+    const valid = [
+      'THREADNOTE BRIEF',
+      `Answer: ${marker}`,
+      'State: sufficient | mode resume | scope fresh | ready 1/1',
+      '- memories/handoffs/active/project/pilot.md [fresh]',
+    ].join('\n');
+    expect(parseMatchedEvaluationContinuationAgentBriefResultV1({content: [{type: 'text', text: valid}]})).toBe(valid);
+    expect(() =>
+      parseMatchedEvaluationContinuationAgentBriefResultV1({
+        content: [{type: 'text', text: valid}],
+        structuredContent: {activeHandoffs: [], evidenceState: 'partial', type: 'context-brief', version: 2},
+      }),
+    ).toThrow('must not include dual structured content');
+    expect(() =>
+      assertMatchedEvaluationContinuationAgentBriefV1({
+        automaticHandoffUri,
+        resumeEvidenceMarker: marker,
+        text: valid.replace('State: sufficient', 'State: partial'),
+      }),
+    ).toThrow('does not surface the exact automatic handoff');
+    expect(() =>
+      assertMatchedEvaluationContinuationAgentBriefV1({
+        automaticHandoffUri,
+        resumeEvidenceMarker: marker,
+        text: `${valid}\n${marker}`,
+      }),
+    ).toThrow('does not surface the exact automatic handoff');
+  });
+
+  it('replays an interrupted filtered checkpoint without admitting noisy raw patch paths', async () => {
+    if (process.platform === 'win32') return;
+    const root = await temporaryRoot(roots);
+    const source = join(root, 'source');
+    const checkpoint = join(root, 'checkpoint');
+    await repositoryFixture(source, 'https://github.com/example/noisy-phase-one.git', 'base');
+    await mkdir(join(source, 'tests'));
+    await writeFile(join(source, 'tests', 'test_marker.py'), 'def test_marker():\n    assert False\n');
+    await git(source, ['add', 'tests/test_marker.py']);
+    await git(source, ['commit', '-qm', 'add regression fixture']);
+    const baseRevision = (await gitOutput(source, ['rev-parse', 'HEAD'])).trim();
+    await git(source, ['worktree', 'add', '--detach', checkpoint, baseRevision]);
+    await writeFile(join(source, 'tests', 'test_marker.py'), 'def test_marker():\n    assert True\n');
+    await mkdir(join(source, 'pytest-of-root'));
+    await writeFile(join(source, 'pytest-of-root', 'generated.txt'), 'generated test output\n');
+    await git(source, ['add', 'tests/test_marker.py', 'pytest-of-root/generated.txt']);
+    const rawPatch = await gitOutput(source, [
+      'diff',
+      '--cached',
+      '--binary',
+      '--full-index',
+      '--no-color',
+      '--no-ext-diff',
+      '--src-prefix=a/',
+      '--dst-prefix=b/',
+      '--',
+      '.',
+    ]);
+    const rawPatchPath = join(root, 'agent.patch');
+    const checkpointPatchPath = join(root, 'checkpoint.patch');
+    await writeFile(rawPatchPath, rawPatch);
+
+    const first = await prepareMatchedEvaluationContinuationPhaseOnePatchV1({
+      agentPatchPath: rawPatchPath,
+      allowedPaths: ['tests/test_marker.py'],
+      baseRevision,
+      checkpointPatchPath,
+      repositoryDirectory: checkpoint,
+    });
+    expect(first).toMatchObject({changedPaths: ['tests/test_marker.py'], needsCommit: true});
+    await rm(checkpointPatchPath);
+    const resumed = await prepareMatchedEvaluationContinuationPhaseOnePatchV1({
+      agentPatchPath: rawPatchPath,
+      allowedPaths: ['tests/test_marker.py'],
+      baseRevision,
+      checkpointPatchPath,
+      repositoryDirectory: checkpoint,
+    });
+
+    expect(resumed).toEqual(first);
+    expect(await gitOutput(checkpoint, ['diff', '--cached', '--name-only'])).toBe('tests/test_marker.py\n');
+    await expect(readFile(checkpointPatchPath, 'utf8')).resolves.toBe(first.checkpointPatch);
+    await expect(readFile(join(checkpoint, 'tests', 'test_marker.py'), 'utf8')).resolves.toContain('assert True');
+    await expect(readFile(join(checkpoint, 'pytest-of-root', 'generated.txt'), 'utf8')).rejects.toThrow();
   });
 
   it('attests a nonempty direct-child phase-one checkpoint and its exact binary patch', async () => {
