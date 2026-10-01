@@ -628,6 +628,7 @@ export function assertMatchedTokenEfficiencyStudyMatchesV1(
       invalid(`study task ${context.taskId} links memory without a source citation`);
     }
     if (
+      corpusTask.memoryFixtures.length > 0 &&
       !corpusTask.memoryFixtures.some(
         memory =>
           memory.status === 'active' &&

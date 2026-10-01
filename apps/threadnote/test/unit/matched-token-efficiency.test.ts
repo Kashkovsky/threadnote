@@ -18,6 +18,7 @@ import {
   type MatchedEvaluationOutcomeV1,
 } from '@threadnote/threadnote/evaluation/matched-evaluation-runner';
 import {
+  assertMatchedTokenEfficiencyStudyMatchesV1,
   createMatchedTokenEfficiencyStudyV1,
   createMatchedTokenEfficiencyTaskContextV1,
   evaluateMatchedTokenEfficiencyV1,
@@ -91,7 +92,7 @@ describe('matched token-efficiency claim evaluation', () => {
     );
   });
 
-  it('admits a memory-free prepared source context for continuation studies', () => {
+  it('admits a memory-free prepared source context for continuation studies', async () => {
     const context = createMatchedTokenEfficiencyTaskContextV1({
       asIssuedContext: {
         assessmentHash: '1'.repeat(64),
@@ -110,6 +111,15 @@ describe('matched token-efficiency claim evaluation', () => {
 
     expect(context.linkReceipts).toEqual([]);
     expect(context.linkReceiptsHash).toMatch(/^[0-9a-f]{64}$/u);
+
+    const sourceCorpus = await fixture();
+    const corpus = parseMatchedEvaluationCorpusV1({
+      ...sourceCorpus,
+      tasks: sourceCorpus.tasks.map(task => ({...task, memoryFixtures: []})),
+    });
+    const manifest = createManifest(corpus);
+    const study = createStudy(corpus, manifest);
+    expect(() => assertMatchedTokenEfficiencyStudyMatchesV1(study, corpus, manifest)).not.toThrow();
   });
 
   it('passes only with failure-inclusive provider usage, ready graph receipts, and clustered intervals', async () => {
@@ -372,8 +382,8 @@ function studyInput(
     targetArms: ['threadnote-compact', 'threadnote-source'],
     taskContexts: manifest.tasks.map((manifestTask, index) => {
       const corpusTask = required(corpus.tasks.find(task => task.taskId === manifestTask.taskId));
-      const memory = required(
-        corpusTask.memoryFixtures.find(candidate => candidate.status === 'active' && candidate.source !== null),
+      const memory = corpusTask.memoryFixtures.find(
+        candidate => candidate.status === 'active' && candidate.source !== null,
       );
       const sufficiency = (['none', 'lacking', 'sufficient', 'excessive', 'lacking', 'sufficient'] as const)[index];
       return createMatchedTokenEfficiencyTaskContextV1({
@@ -386,7 +396,10 @@ function studyInput(
         clusterId: `cluster_${(index + 1).toString(16).repeat(16)}`,
         graphContentHash: (index + 1).toString(16).repeat(64),
         graphSnapshotHash: (index + 7).toString(16).repeat(64),
-        linkReceipts: [{citationHash: (index + 9).toString(16).repeat(64), memoryId: memory.memoryId, status: 'exact'}],
+        linkReceipts:
+          memory === undefined
+            ? []
+            : [{citationHash: (index + 9).toString(16).repeat(64), memoryId: memory.memoryId, status: 'exact'}],
         memoryFixtureHash: manifestTask.memoryFixtureHash,
         repositoryFixtureHash: manifestTask.repositoryFixtureHash,
         taskId: manifestTask.taskId,
