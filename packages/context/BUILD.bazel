@@ -14,6 +14,7 @@ bun_test(
     srcs = [
         "//:package.json",
         "//packages/context:package.json",
+        "//packages/context:src/agent_view_text.ts",
         "//packages/context:src/compiler.ts",
         "//packages/context:src/graph/source_evidence.ts",
         "//packages/context:src/health.ts",

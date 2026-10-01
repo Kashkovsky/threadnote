@@ -3462,11 +3462,16 @@ describe('Threadnote MCP toolsets', () => {
         expect(boundedRecoveryBrief.coverage.omissions.graphCards).toBeGreaterThan(0);
         expect(boundedRecoveryBrief.graph.continuation?.state).toBe('rerun-required');
         const structuredRecovery = boundedRecoveryBrief.recommendedFollowUps[0];
-        expect(structuredRecovery).toMatchObject({
-          operation: 'inspect-node',
-          rank: 0,
-          ref: expect.stringMatching(/^cgs_/u),
-        });
+        const canProjectCallerCwd = Buffer.byteLength(repository) <= 128;
+        expect(structuredRecovery).toMatchObject(
+          canProjectCallerCwd
+            ? {operation: 'inspect-node', rank: 0, ref: expect.stringMatching(/^cgs_/u)}
+            : {
+                operation: 'read-memory',
+                rank: 0,
+                uri: expect.stringMatching(/^threadnote:\/\/(?:memory\/tn_|user\/)/u),
+              },
+        );
         const boundedRecoveryText = (
           (Array.isArray(boundedRecovery.content) ? boundedRecovery.content[0] : undefined) as TextContent | undefined
         )?.text;
@@ -3503,11 +3508,15 @@ describe('Threadnote MCP toolsets', () => {
         const compactFloorRecovery = compactFloorView.recommendedFollowUps?.[0];
         expect(compactFloorView.answer).toBeTruthy();
         expect(compactFloorCard).toMatchObject({ref: expect.stringMatching(/^cgs_/u)});
-        expect(compactFloorRecovery).toMatchObject({
-          operation: 'inspect-node',
-          rank: 0,
-          ref: compactFloorCard?.ref,
-        });
+        expect(compactFloorRecovery).toMatchObject(
+          canProjectCallerCwd
+            ? {operation: 'inspect-node', rank: 0, ref: compactFloorCard?.ref}
+            : {
+                operation: 'read-memory',
+                rank: 0,
+                uri: expect.stringMatching(/^threadnote:\/\/(?:memory\/tn_|user\/)/u),
+              },
+        );
         expect(Buffer.byteLength(compactFloorText ?? '')).toBeLessThanOrEqual(800 * 3);
         const evaluationFloor = await client.callTool(
           {
@@ -3534,10 +3543,14 @@ describe('Threadnote MCP toolsets', () => {
         expect(evaluationFloorView.graph?.cards).toHaveLength(2);
         expect(evaluationFloorView.answer).toContain(evaluationFloorView.graph?.cards?.[0]?.path);
         expect(evaluationFloorView.answer).toContain(evaluationFloorView.graph?.cards?.[1]?.path);
-        expect(evaluationFloorView.recommendedFollowUps?.[0]).toMatchObject({
-          operation: 'inspect-node',
-          ref: evaluationFloorView.graph?.cards?.[0]?.ref,
-        });
+        if (canProjectCallerCwd) {
+          expect(evaluationFloorView.recommendedFollowUps?.[0]).toMatchObject({
+            operation: 'inspect-node',
+            ref: evaluationFloorView.graph?.cards?.[0]?.ref,
+          });
+        } else {
+          expect(evaluationFloorView.recommendedFollowUps).toBeUndefined();
+        }
         expect(evaluationFloorView.graph?.contracts).toBeUndefined();
         expect(Buffer.byteLength(evaluationFloorText ?? '')).toBeLessThanOrEqual(800 * 3);
         const idempotent = await client.callTool(

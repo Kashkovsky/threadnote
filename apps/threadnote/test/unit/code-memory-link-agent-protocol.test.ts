@@ -491,8 +491,10 @@ describe('Code Memory Link real-agent protocol', () => {
         }
 
         const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(structured, {requireAgentView: true});
+        const projected = JSON.parse(canonical.content[0].text) as Record<string, unknown>;
 
         expect(parseContextBriefAgentViewText(canonical.content[0].text).briefVersion).toBe(version);
+        expect(Object.hasOwn(projected, 'briefVersion')).toBe(version !== 3 || !includeCodeAnchors);
       }),
       {numRuns: 20},
     );
