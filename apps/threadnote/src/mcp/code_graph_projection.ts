@@ -18,6 +18,7 @@ const MCP_CODE_GRAPH_STRUCTURED_CONTENT_RESERVE_BYTES = 768;
 /** Fixed receipt floor for every public graph channel (dual, text, agent). */
 export const MCP_CODE_GRAPH_MINIMUM_ESTIMATED_TOKENS = 800;
 const MCP_CODE_GRAPH_MAXIMUM_ESTIMATED_TOKENS = 1_500;
+const MCP_CODE_GRAPH_AGENT_IMPACT_DEFAULT_ESTIMATED_TOKENS = 1_250;
 
 export type CodeGraphMcpResponseFormat = 'dual' | 'text' | 'agent';
 
@@ -345,6 +346,89 @@ function defaultCodeGraphMcpResponse(result: CodeGraphQueryResult, refresh?: Cod
   );
 }
 
+function impactAgentProjectionOrder(result: CodeGraphQueryResult): CodeGraphQueryResult {
+  if (result.operation !== 'impact') return result;
+  const nodeIds = new Set(result.nodes.map(node => node.id));
+  const edges = result.edges
+    .map((edge, index) => ({edge, index}))
+    .sort(
+      (left, right) =>
+        Number(impactEdgeIsConnected(right.edge, nodeIds)) - Number(impactEdgeIsConnected(left.edge, nodeIds)) ||
+        impactRelationPriority(left.edge.relation) - impactRelationPriority(right.edge.relation) ||
+        left.index - right.index,
+    )
+    .map(({edge}) => edge);
+  const nodesById = new Map(result.nodes.map(node => [node.id, node]));
+  const seen = new Set<string>();
+  const nodes: CodeGraphQueryResult['nodes'][number][] = [];
+  const append = (id: string | undefined) => {
+    if (id === undefined || seen.has(id)) return;
+    const node = nodesById.get(id);
+    if (node === undefined) return;
+    seen.add(id);
+    nodes.push(node);
+  };
+  for (const edge of edges) {
+    append(edge.sourceId);
+    append(edge.targetId);
+  }
+  for (const node of result.nodes) append(node.id);
+  return {...result, edges, nodes};
+}
+
+function impactRelationPriority(relation: string): number {
+  if (['calls', 'constructs', 'extends', 'implements', 'overrides'].includes(relation)) return 0;
+  if (relation === 'depends_on') return 1;
+  if (relation === 'imports') return 2;
+  if (relation === 'reexports') return 3;
+  if (relation === 'contains') return 4;
+  return 5;
+}
+
+function impactEdgeIsConnected(edge: CodeGraphQueryResult['edges'][number], nodeIds: ReadonlySet<string>): boolean {
+  return (
+    edge.sourceId !== undefined &&
+    edge.targetId !== undefined &&
+    nodeIds.has(edge.sourceId) &&
+    nodeIds.has(edge.targetId)
+  );
+}
+
+function impactAgentCoreResponse(
+  result: CodeGraphQueryResult,
+  maximumBytes: number,
+  refresh?: CodeGraphRefreshContinuity,
+) {
+  const ordered = impactAgentProjectionOrder(result);
+  const nodeIds = new Set(ordered.nodes.map(node => node.id));
+  const firstPriority = ordered.edges[0] === undefined ? undefined : impactRelationPriority(ordered.edges[0].relation);
+  const primaryEdgeCount =
+    firstPriority === undefined
+      ? 0
+      : ordered.edges.findIndex(
+          edge => !impactEdgeIsConnected(edge, nodeIds) || impactRelationPriority(edge.relation) !== firstPriority,
+        );
+  const maximumPrimaryEdges = primaryEdgeCount === -1 ? ordered.edges.length : primaryEdgeCount;
+  for (let edgeCount = maximumPrimaryEdges; edgeCount >= 0; edgeCount -= 1) {
+    const endpointIds = new Set<string>();
+    for (const edge of ordered.edges.slice(0, edgeCount)) {
+      if (edge.sourceId !== undefined && nodeIds.has(edge.sourceId)) endpointIds.add(edge.sourceId);
+      if (edge.targetId !== undefined && nodeIds.has(edge.targetId)) endpointIds.add(edge.targetId);
+    }
+    const nodeCount = edgeCount === 0 ? Math.min(2, ordered.nodes.length) : endpointIds.size;
+    const candidate = responseForPrefix(
+      ordered,
+      nodeCount,
+      edgeCount,
+      Math.min(5, ordered.warnings.length),
+      true,
+      refresh,
+    );
+    if (measureFormattedCodeGraphMcpResponse(candidate, 'agent').totalBytes <= maximumBytes) return candidate;
+  }
+  return fixedCodeGraphMcpReceipt(ordered, refresh);
+}
+
 /**
  * Last-resort receipt for a valid public budget. It intentionally contains no
  * optional metadata bodies: their bounded omission counts retain recovery
@@ -430,17 +514,25 @@ export function codeGraphMcpResponse(
   refresh?: CodeGraphRefreshContinuity,
   responseFormat: CodeGraphMcpResponseFormat = 'dual',
 ) {
-  if (maximumEstimatedTokens === undefined) return defaultCodeGraphMcpResponse(result, refresh);
+  const effectiveMaximumEstimatedTokens =
+    maximumEstimatedTokens ??
+    (responseFormat === 'agent' && result.operation === 'impact'
+      ? MCP_CODE_GRAPH_AGENT_IMPACT_DEFAULT_ESTIMATED_TOKENS
+      : undefined);
+  if (effectiveMaximumEstimatedTokens === undefined) return defaultCodeGraphMcpResponse(result, refresh);
   if (
-    !Number.isSafeInteger(maximumEstimatedTokens) ||
-    maximumEstimatedTokens < MCP_CODE_GRAPH_MINIMUM_ESTIMATED_TOKENS ||
-    maximumEstimatedTokens > MCP_CODE_GRAPH_MAXIMUM_ESTIMATED_TOKENS
+    !Number.isSafeInteger(effectiveMaximumEstimatedTokens) ||
+    effectiveMaximumEstimatedTokens < MCP_CODE_GRAPH_MINIMUM_ESTIMATED_TOKENS ||
+    effectiveMaximumEstimatedTokens > MCP_CODE_GRAPH_MAXIMUM_ESTIMATED_TOKENS
   ) {
     throw new Error(
       `Code graph response token budget must be an integer from ${MCP_CODE_GRAPH_MINIMUM_ESTIMATED_TOKENS} to ${MCP_CODE_GRAPH_MAXIMUM_ESTIMATED_TOKENS}.`,
     );
   }
-  const maximumBytes = maximumEstimatedTokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;
+  const maximumBytes = effectiveMaximumEstimatedTokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;
+  if (responseFormat === 'agent' && result.operation === 'impact') {
+    return impactAgentCoreResponse(result, maximumBytes, refresh);
+  }
   const minimum = responseForPrefix(result, 0, 0, 0, true, refresh);
   const minimumBytes = measureFormattedCodeGraphMcpResponse(minimum, responseFormat).totalBytes;
   if (minimumBytes <= maximumBytes) {

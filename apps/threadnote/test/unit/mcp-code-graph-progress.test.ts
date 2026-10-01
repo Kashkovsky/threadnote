@@ -803,6 +803,86 @@ describe('MCP code graph indexing progress', () => {
     expect(measureAgentToolResponse({text}).totalBytes).toBeLessThanOrEqual(1_500 * 3);
   });
 
+  it('stops impact projection after a connected behavioral core instead of filling the budget', () => {
+    const verbose = verboseCodeGraphResult();
+    const nodes = verbose.nodes.slice(0, 6).map((node, index) => ({
+      ...node,
+      name: `node-${index}`,
+      path: `src/node-${index}.ts`,
+      qualifiedName: `Fixture.node${index}`,
+      signature: `function node${index}(): void`,
+    }));
+    const edge = (
+      index: number,
+      sourceIndex: number,
+      targetIndex: number,
+      relation: CodeGraphQueryResult['edges'][number]['relation'],
+    ) => {
+      const source = nodes[sourceIndex];
+      const target = nodes[targetIndex];
+      return {
+        ...verbose.edges[index],
+        evidencePath: `src/node-${sourceIndex}.ts`,
+        id: `cge_core_${index}`,
+        relation,
+        sourceId: source.id,
+        sourceName: source.name,
+        targetId: target.id,
+        targetName: target.name,
+      };
+    };
+    const result: CodeGraphQueryResult = {
+      ...verbose,
+      edges: [edge(0, 3, 0, 'imports'), edge(1, 1, 0, 'calls'), edge(2, 2, 1, 'calls'), edge(3, 4, 2, 'contains')],
+      nodes,
+      operation: 'impact',
+      warnings: [],
+    };
+    const before = JSON.stringify(result);
+    const defaultResponse = codeGraphMcpResponse(result, undefined, undefined, 'agent');
+    const explicitCore = codeGraphMcpResponse(result, 1_250, undefined, 'agent');
+    const largerCeiling = codeGraphMcpResponse(result, 1_500, undefined, 'agent');
+
+    expect(defaultResponse).toEqual(explicitCore);
+    expect(largerCeiling).toEqual(explicitCore);
+    expect(defaultResponse.structuredContent.nodes.map(node => node.id)).toEqual([
+      nodes[1].id,
+      nodes[0].id,
+      nodes[2].id,
+    ]);
+    expect(defaultResponse.structuredContent.edges.map(item => item.id)).toEqual(['cge_core_1', 'cge_core_2']);
+    expect(defaultResponse.structuredContent.output).toMatchObject({
+      returnedEdges: 2,
+      returnedNodes: 3,
+      totalEdges: 4,
+      totalNodes: 6,
+      truncated: true,
+    });
+    const visibleNodeIds = new Set(defaultResponse.structuredContent.nodes.map(node => node.id));
+    for (const item of defaultResponse.structuredContent.edges) {
+      expect(visibleNodeIds.has(item.sourceId!)).toBe(true);
+      expect(visibleNodeIds.has(item.targetId!)).toBe(true);
+    }
+    const formatted = formatCodeGraphMcpResponse(defaultResponse, 'agent');
+    expect(measureAgentToolResponse({text: formatted.content[0].text}).totalBytes).toBeLessThan(1_250 * 3);
+    expect(JSON.stringify(result)).toBe(before);
+
+    const dual = codeGraphMcpResponse(result, undefined, undefined, 'dual');
+    expect(dual.structuredContent.nodes.map(node => node.id)).toEqual(nodes.map(node => node.id));
+    expect(dual.structuredContent.edges.map(item => item.id)).toEqual(result.edges.map(item => item.id));
+
+    const danglingCall = {...edge(0, 1, 0, 'calls'), targetId: 'cgs_missing'};
+    const connectedImport = edge(1, 3, 0, 'imports');
+    const connectedFallback = codeGraphMcpResponse(
+      {...result, edges: [danglingCall, connectedImport]},
+      undefined,
+      undefined,
+      'agent',
+    );
+    expect(connectedFallback.structuredContent.edges.map(item => item.id)).toEqual([connectedImport.id]);
+    expect(connectedFallback.structuredContent.nodes.map(node => node.id)).toEqual([nodes[3].id, nodes[0].id]);
+  });
+
   it('keeps only actionable stale, dirty, project, and refresh provenance in the agent receipt', () => {
     const source = verboseCodeGraphResult();
     const response = codeGraphMcpResponse(
@@ -1101,10 +1181,17 @@ describe('MCP code graph indexing progress', () => {
       budgetTokens: FC.integer({max: 1_500, min: 800}),
       edgeCount: FC.integer({max: 20, min: 0}),
       nodeCount: FC.integer({max: 20, min: 0}),
+      operation: FC.constantFrom('query' as const, 'impact' as const),
     },
-    ({budgetTokens, edgeCount, nodeCount}) => {
+    ({budgetTokens, edgeCount, nodeCount, operation}) => {
       const verbose = verboseCodeGraphResult();
-      const result = {...verbose, edges: verbose.edges.slice(0, edgeCount), nodes: verbose.nodes.slice(0, nodeCount)};
+      const result = {
+        ...verbose,
+        edges: verbose.edges.slice(0, edgeCount),
+        nodes: verbose.nodes.slice(0, nodeCount),
+        operation,
+      };
+      const before = JSON.stringify(result);
       const first = formatCodeGraphMcpResponse(codeGraphMcpResponse(result, budgetTokens, undefined, 'agent'), 'agent');
       const second = formatCodeGraphMcpResponse(
         codeGraphMcpResponse(result, budgetTokens, undefined, 'agent'),
@@ -1112,6 +1199,15 @@ describe('MCP code graph indexing progress', () => {
       );
       expect(first).toEqual(second);
       expect(measureAgentToolResponse({text: first.content[0].text}).totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
+      expect(JSON.stringify(result)).toBe(before);
+      if (operation === 'impact') {
+        const projected = codeGraphMcpResponse(result, budgetTokens, undefined, 'agent').structuredContent;
+        const visibleNodeIds = new Set(projected.nodes.map(node => node.id));
+        for (const edge of projected.edges) {
+          expect(edge.sourceId === undefined || visibleNodeIds.has(edge.sourceId)).toBe(true);
+          expect(edge.targetId === undefined || visibleNodeIds.has(edge.targetId)).toBe(true);
+        }
+      }
     },
     {fastCheck: {numRuns: 50}},
   );

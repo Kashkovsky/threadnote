@@ -97,6 +97,7 @@ describe('MCP code graph response format', () => {
       await client.connect(transport);
       const tool = (await client.listTools()).tools.find(candidate => candidate.name === 'inspect_code_graph');
       expect(JSON.stringify(tool?.inputSchema)).toContain('responseFormat');
+      expect(JSON.stringify(tool?.inputSchema)).toContain('local agent-format impact defaults to 1250');
 
       let agentBytes = 0;
       let dualBytes = 0;
@@ -159,6 +160,18 @@ describe('MCP code graph response format', () => {
         expect(agentOnly).not.toContain('\nsnapshot\t');
         expect(agentOnly).not.toContain('\ntrust\t');
         expect(agentOnly).not.toContain('\nsourceVersion\t');
+        if (query.operation === 'impact') {
+          for (const symbol of query.relevantSymbols ?? []) {
+            expect(agentOnly).toContain(`"name":"${symbol}"`);
+          }
+          expect(agentGraphHasOnlyVisibleEdgeAliases(agentOnly)).toBe(true);
+          const largerCeiling = await client.callTool({
+            name: 'inspect_code_graph',
+            arguments: {...args, budgetTokens: 1_500},
+          });
+          expect(largerCeiling.isError).not.toBe(true);
+          expect(firstText(largerCeiling.content)).toBe(agentOnly);
+        }
         const measuredDualBytes = measureAgentToolResponse({
           text: dualText,
           structuredContent: dual.structuredContent,
@@ -300,6 +313,17 @@ function firstText(content: unknown): string {
   }
   if (!('text' in first) || typeof first.text !== 'string') throw new Error('Graph response text was invalid');
   return first.text;
+}
+
+function agentGraphHasOnlyVisibleEdgeAliases(text: string): boolean {
+  const rows = text
+    .trimEnd()
+    .split('\n')
+    .map(line => line.split('\t'));
+  const aliases = new Set(rows.filter(([kind]) => kind === 'node').map(([, alias]) => alias));
+  return rows
+    .filter(([kind]) => kind === 'edge')
+    .every(([, source, target]) => aliases.has(String(JSON.parse(source))) && aliases.has(String(JSON.parse(target))));
 }
 
 function withoutWorksetCursor(value: unknown): unknown {

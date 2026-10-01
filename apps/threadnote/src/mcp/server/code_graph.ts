@@ -213,7 +213,7 @@ export function registerCodeGraphTool(
       inputSchema: {
         base: McpInput.string('Impact base if query omitted; default HEAD~1'),
         budgetTokens: McpInput.integer(
-          'Budget: Worksets 1-1500; local query defaults to 800; other local operations 800-1500.',
+          'Budget: Worksets 1-1500; local query defaults to 800; local agent-format impact defaults to 1250; other local operations 800-1500.',
           {
             minimum: 1,
             maximum: 1_500,
