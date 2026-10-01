@@ -85,6 +85,7 @@ import {
   codeGraphRefreshBlocksCompletedInspection,
   completeCodeGraphReadyReadRefresh,
 } from './code_graph/ready_read.js';
+import {compactPersonalMemoryReferences} from './common.js';
 import {argumentError, mcpErrorResult, requiredText, type RuntimeConfig} from './common.js';
 import {
   anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure,
@@ -192,13 +193,12 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
           task: checkedTask.value,
         }).pipe(Effect.provideService(CodeGraphQueryService, isolatedReads));
         return selectedResponseFormat === 'agent'
-          ? {content: [{type: 'text' as const, text: response.text}]}
+          ? {content: [{type: 'text' as const, text: compactPersonalMemoryReferences(response.text, config.user)}]}
           : {content: [{type: 'text' as const, text: response.text}], structuredContent: response.structuredContent};
       }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
     },
   );
 }
-
 export function registerCodeGraphTool(
   server: EffectMcpServerAdapter,
   config: RuntimeConfig,

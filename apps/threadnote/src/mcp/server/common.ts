@@ -257,6 +257,7 @@ export function requiredResourceUriList(
   value: readonly string[] | string | undefined,
   toolName: string,
   exampleUri: string,
+  options: {readonly personalMemoryUser?: string} = {},
 ): CheckedTextArray {
   const rawValues = Array.isArray(value) ? value : value === undefined ? [] : [value];
   const uris = rawValues.map(uri => uri.trim()).filter(Boolean);
@@ -275,15 +276,25 @@ export function requiredResourceUriList(
   const canonicalUris: string[] = [];
   for (const uri of uris) {
     try {
-      canonicalUris.push(parseResourceId(uri).canonicalUri);
+      canonicalUris.push(parseResourceId(expandPersonalMemoryReference(uri, options.personalMemoryUser)).canonicalUri);
     } catch {
       return {
-        error: argumentError(`Threadnote MCP tool "${toolName}" needs threadnote:// URI values. Received: ${uri}`),
+        error: argumentError(
+          `Threadnote MCP tool "${toolName}" needs threadnote:// URI values${options.personalMemoryUser === undefined ? '' : ' or compact memories/ paths returned by Threadnote'}. Received: ${uri}`,
+        ),
         ok: false,
       };
     }
   }
   return {ok: true, value: [...new Set(canonicalUris)]};
+}
+
+export function compactPersonalMemoryReferences(text: string, user: string, enabled = true): string {
+  return enabled ? text.replaceAll(`threadnote://user/${uriSegment(user)}/`, '') : text;
+}
+
+function expandPersonalMemoryReference(value: string, user: string | undefined): string {
+  return user !== undefined && value.startsWith('memories/') ? `threadnote://user/${uriSegment(user)}/${value}` : value;
 }
 
 export function argumentError(text: string): CallToolResult {

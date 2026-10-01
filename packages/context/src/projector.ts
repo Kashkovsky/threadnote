@@ -32,7 +32,7 @@ import {
   type ProjectedContextBriefV1,
 } from './types.js';
 import {isMemoryId, memoryIdentityAlias} from '@threadnote/memory/identity-alias';
-import {legacyEvidenceState, renderContextBriefText} from './agent_view_text.js';
+import {legacyEvidenceState, renderContextBriefAgentViewText, renderContextBriefText} from './agent_view_text.js';
 import {parseVerifiedProcedureEvidenceList} from './procedure/selection.js';
 import {
   contextBriefResumeFocusUri,
@@ -83,7 +83,7 @@ export {
 
 export {isContextBriefExactCurrentContinuation, isContextBriefGraphOnlyGap} from './memory_projection.js';
 
-export {renderContextBriefText} from './agent_view_text.js';
+export {renderContextBriefAgentViewText, renderContextBriefText} from './agent_view_text.js';
 
 export {CONTEXT_BRIEF_AGENT_VIEW_SOURCE_EXCERPT_FIELD_POLICY} from './source_projection.js';
 
@@ -212,15 +212,16 @@ function projectContextBriefCore(
     logical.coverage.memory.codeAnchors === undefined &&
     (logical.graph.sourceExcerpts?.length ?? 0) === 0;
   const requiredKeys = new Set(requiredItems.map(projectionItemKey));
+  const eligibleOptionalItems = items.filter(item => {
+    const key = projectionItemKey(item);
+    return !requiredKeys.has(key) && !excludedKeys.has(key);
+  });
   const optionalItems =
     suppressOptional || suppressOptionalAgentLocate
       ? []
-      : laneStableOptionalProjectionItems(
-          items.filter(item => {
-            const key = projectionItemKey(item);
-            return !requiredKeys.has(key) && !excludedKeys.has(key);
-          }),
-        );
+      : responseFormat === 'agent'
+        ? agentSemanticOptionalProjectionItems(eligibleOptionalItems, requiredItems)
+        : laneStableOptionalProjectionItems(eligibleOptionalItems);
   const selectItems = (count: number): readonly ProjectionItem[] => [
     ...requiredItems,
     ...optionalItems.slice(0, count),
@@ -331,7 +332,7 @@ function fitRequiredSourceProjection(input: {
 
 function renderContextBriefForFormat(brief: ContextBriefV1, responseFormat: ContextBriefResponseFormat): string {
   return responseFormat === 'agent'
-    ? JSON.stringify(projectContextBriefAgentView(brief, true))
+    ? renderContextBriefAgentViewText(projectContextBriefAgentView(brief, true))
     : renderContextBriefText(brief);
 }
 
@@ -340,7 +341,7 @@ function measureContextBriefResponse(brief: ContextBriefV1, responseFormat: Cont
   return measureAgentToolResponse(responseFormat === 'agent' ? {text} : {structuredContent: brief, text});
 }
 
-export function parseContextBriefAgentViewText(text: string): ContextBriefAgentViewV1 {
+export function parseContextBriefJsonText(text: string): ContextBriefAgentViewV1 {
   let value: unknown;
   try {
     value = JSON.parse(text) as unknown;
@@ -1738,6 +1739,25 @@ function laneStableOptionalProjectionItems(items: readonly ProjectionItem[]): re
     offsets[selectedLane] = (offsets[selectedLane] ?? 0) + 1;
   }
   return ordered;
+}
+/** Keep a fixed useful lane bundle; larger agent budgets are ceilings, not refill targets. */
+function agentSemanticOptionalProjectionItems(
+  items: readonly ProjectionItem[],
+  requiredItems: readonly ProjectionItem[],
+): readonly ProjectionItem[] {
+  const selectedCounts = new Map<ProjectionLane, number>();
+  for (const item of requiredItems) selectedCounts.set(item.lane, (selectedCounts.get(item.lane) ?? 0) + 1);
+  return laneStableOptionalProjectionItems(items).filter(item => {
+    const limit = agentSemanticLaneLimit(item.lane);
+    const selected = selectedCounts.get(item.lane) ?? 0;
+    if (limit === 0 || selected >= limit) return false;
+    selectedCounts.set(item.lane, selected + 1);
+    return true;
+  });
+}
+function agentSemanticLaneLimit(lane: ProjectionLane): number {
+  if (lane === 'durable-decision' || lane === 'graph-card') return 2;
+  return ['handoff', 'graph-contract', 'issue', 'follow-up', 'verified-procedure'].includes(lane) ? 1 : 0;
 }
 
 function primaryRelationshipMemoryItem(

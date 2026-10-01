@@ -15,7 +15,7 @@ import {
   fromRepositoryQuery,
   mergeContextBriefAnchoredRepositoryGraphResults,
   planContextBrief,
-  parseContextBriefAgentViewText,
+  parseContextBriefJsonText,
   projectContextBrief,
   retrieveContextBriefGraphEvidence,
 } from '@threadnote/threadnote/context_brief/index';
@@ -68,7 +68,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
       1_500,
     );
     expect(projected.structuredContent.scope.projectCoverage).toEqual(projectCoverage);
-    expect(parseContextBriefAgentViewText(projected.text).scope.projectCoverage).toEqual(projectCoverage);
+    expect(parseContextBriefJsonText(projected.text).scope.projectCoverage).toEqual(projectCoverage);
   });
   effectIt.effect('borrows compatible shared graph evidence before reporting a fresh-worktree gap', () =>
     Effect.gen(function* () {
@@ -281,7 +281,7 @@ describe('Context Brief exact-anchor graph evidence', () => {
       expect(evidence.cards.every(card => card.symbol.kind === 'module')).toBe(true);
       expect(evidence.contracts).toEqual([]);
       expect(recovery).toMatchObject({operation: 'inspect-node', ref: stableId(1)});
-      expect(parseContextBriefAgentViewText(projected.text).recommendedFollowUps?.[0]).toEqual(recovery);
+      expect(parseContextBriefJsonText(projected.text).recommendedFollowUps?.[0]).toEqual(recovery);
       expect(projected.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
     }),
   );

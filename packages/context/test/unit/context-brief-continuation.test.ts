@@ -6,7 +6,7 @@ import {compileContextBriefWith} from '../../src/compiler.js';
 import {parseContextBriefContinuationCard} from '../../src/memory-evidence.js';
 import {contextBriefResumeFocusUri} from '../../src/memory_projection.js';
 import {assembleContextBriefLogicalResult, planContextBrief} from '../../src/planner.js';
-import {parseContextBriefAgentViewText, projectContextBrief} from '../../src/projector.js';
+import {parseContextBriefJsonText, projectContextBrief, projectContextBriefAgentView} from '../../src/projector.js';
 import {
   parseContextBriefRequestV1,
   type ContextBriefGraphEvidenceV1,
@@ -166,7 +166,7 @@ describe('Context Brief continuation contracts', () => {
       },
     });
     expect(projected.measurement.totalBytes).toBeLessThanOrEqual(projected.maximumBytes);
-    expect(parseContextBriefAgentViewText(projected.text).evidenceState).toBe('sufficient');
+    expect(projectContextBriefAgentView(projected.structuredContent, true).evidenceState).toBe('sufficient');
   });
 
   it('keeps continuation cards out of non-resume projections without dropping their excerpt', () => {
@@ -259,7 +259,7 @@ describe('Context Brief continuation contracts', () => {
   it('projects an exact current resume with one compact implementation anchor instead of optional graph breadth', () => {
     const projected = projectValidatedResume(1_500);
     const brief = projected.structuredContent;
-    const agentView = parseContextBriefAgentViewText(projected.text);
+    const agentView = projectContextBriefAgentView(projected.structuredContent, true);
 
     expect(brief.activeHandoffs[0]).toMatchObject({
       continuationCard: {
@@ -320,7 +320,7 @@ describe('Context Brief continuation contracts', () => {
     expect(projected.structuredContent.graph.cards[0]?.id).toBe('card-1');
     expect(projected.text).toContain('"continuationCard"');
     expect(projected.text).toContain('h11/_abnf.py');
-    expect(parseContextBriefAgentViewText(projected.text).graph?.cards?.[0]?.ref).toBe(REF);
+    expect(parseContextBriefJsonText(projected.text).graph?.cards?.[0]?.ref).toBe(REF);
   });
 
   it('keeps graph evidence when resume citations are not exact and current-complete', () => {
@@ -394,8 +394,10 @@ describe('Context Brief continuation contracts', () => {
     expect(projected.coverage.gaps).toEqual(['memory-citation-limited']);
     expect(projected.evidenceState).toBe('partial');
     expect(projected.graph.cards[0]?.id).toBe('card-1');
-    expect(parseContextBriefAgentViewText(result.text).answer).toContain('Start at graph.cards[0]');
-    expect(parseContextBriefAgentViewText(result.text).answer).not.toContain('orientation is sufficient');
+    expect(projectContextBriefAgentView(result.structuredContent, true).answer).toContain('Start at graph.cards[0]');
+    expect(projectContextBriefAgentView(result.structuredContent, true).answer).not.toContain(
+      'orientation is sufficient',
+    );
   });
 
   it('retains the continuation core for arbitrary supported token budgets', () => {
@@ -414,7 +416,7 @@ describe('Context Brief continuation contracts', () => {
     fc.assert(
       fc.property(fc.integer({min: 800, max: 1_500}), budgetTokens => {
         const projected = projectValidatedResume(budgetTokens);
-        const agentView = parseContextBriefAgentViewText(projected.text);
+        const agentView = projectContextBriefAgentView(projected.structuredContent, true);
         expect(projected.structuredContent.activeHandoffs[0]?.continuationCard?.nextStep).toContain(
           'h11/tests/test_io.py',
         );

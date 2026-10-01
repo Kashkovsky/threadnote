@@ -116,6 +116,7 @@ import {
   type RecallProgressTiming,
   type RuntimeConfig,
   argumentError,
+  compactPersonalMemoryReferences,
   mcpErrorResult,
   normalizeOptionalMetadata,
   optionalResourceUri,
@@ -1304,8 +1305,9 @@ function runRecallTool(
           ? error
           : McpServerOperationError.make({message: 'Recall response projection failed.', cause: error}),
     });
+    const text = compactPersonalMemoryReferences(projected.text, config.user, projected.responseFormat === 'agent');
     return {
-      content: [{type: 'text' as const, text: projected.text}],
+      content: [{type: 'text' as const, text}],
       ...(projected.responseFormat === 'dual' ? {structuredContent: projected.structuredContent} : {}),
     };
   });
@@ -1351,7 +1353,6 @@ const referencedContextSection = Effect.fn('mcpServer.referencedContext')(functi
   const existingRecords = yield* readMemoryRecordsByUri(config, candidates);
   return formatReferencedContextPointers(existingReferencedUris(candidates, existingRecords), MAX_REFERENCED_CONTEXT);
 });
-
 export function registerReadTool(
   server: EffectMcpServerAdapter,
   config: RuntimeConfig,
@@ -1370,8 +1371,8 @@ export function registerReadTool(
         responseFormat: McpInput.literals(['dual', 'text'], 'Default text; dual repeats body in structuredContent.'),
         section: McpInput.string(),
         sourceHash: McpInput.string('SHA-256 from the first page; required when offsetBytes > 0'),
-        uri: McpInput.string(),
-        uris: McpInput.stringOrStrings(),
+        uri: McpInput.string('Canonical threadnote:// URI or compact memories/ path returned by Threadnote'),
+        uris: McpInput.stringOrStrings('Canonical threadnote:// URI(s) or compact memories/ path(s)'),
       },
     },
     ({mode, offsetBytes, responseFormat, section, sourceHash, uri, uris}) => {
@@ -1379,6 +1380,7 @@ export function registerReadTool(
         uris ?? uri,
         name,
         'threadnote://user/you/memories/.abstract.md',
+        {personalMemoryUser: config.user},
       );
       if (!requestedUrisResult.ok) return requestedUrisResult.error;
       const requestedUris = requestedUrisResult.value;

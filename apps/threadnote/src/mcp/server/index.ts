@@ -295,7 +295,7 @@ function registerTools(
       server,
       config,
       'read_context',
-      'Turn a recalled or listed threadnote:// pointer into evidence.',
+      'Turn a recalled/listed canonical threadnote:// pointer or compact memories/ path into evidence.',
       memoryScope,
     );
   }

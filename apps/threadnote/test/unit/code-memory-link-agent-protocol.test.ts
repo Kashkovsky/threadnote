@@ -37,11 +37,7 @@ import {
   type CodeMemoryLinkTaskPacketV1,
 } from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 import {measureAgentToolResponse} from '@threadnote/protocol/agent-response';
-import {
-  parseContextBriefAgentViewText,
-  parseContextBriefV1,
-  renderContextBriefText,
-} from '@threadnote/context/projector';
+import {parseContextBriefJsonText, parseContextBriefV1, renderContextBriefText} from '@threadnote/context/projector';
 
 const HASH_A = 'a'.repeat(64);
 const GOLD_CITATION_ID = `tncc_${'1'.repeat(40)}`;
@@ -453,7 +449,7 @@ describe('Code Memory Link real-agent protocol', () => {
       const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(structured, {requireAgentView: true});
       const expectedText = renderContextBriefText(parseContextBriefV1(canonical.structuredContent));
       expect(canonical.content).toEqual([{text: expectedText, type: 'text'}]);
-      expect(parseContextBriefAgentViewText(expectedText)).toMatchObject({
+      expect(parseContextBriefJsonText(expectedText)).toMatchObject({
         briefVersion: version,
         durableDecisions: [expect.objectContaining({excerpt: memory.excerpt})],
         type: 'context-brief-agent-view',
@@ -493,7 +489,7 @@ describe('Code Memory Link real-agent protocol', () => {
         const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(structured, {requireAgentView: true});
         const projected = JSON.parse(canonical.content[0].text) as Record<string, unknown>;
 
-        expect(parseContextBriefAgentViewText(canonical.content[0].text).briefVersion).toBe(version);
+        expect(parseContextBriefJsonText(canonical.content[0].text).briefVersion).toBe(version);
         expect(Object.hasOwn(projected, 'briefVersion')).toBe(version !== 3 || !includeCodeAnchors);
       }),
       {numRuns: 20},
