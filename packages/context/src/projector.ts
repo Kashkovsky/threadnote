@@ -78,8 +78,11 @@ export {
   CONTEXT_BRIEF_AGENT_VIEW_OUTPUT_FIELD_POLICY,
   CONTEXT_BRIEF_AGENT_VIEW_ROOT_FIELD_POLICY,
   CONTEXT_BRIEF_AGENT_VIEW_SCOPE_FIELD_POLICY,
+  compactContinuationCard,
   projectContextBriefAgentView,
 } from './projection_view.js';
+
+export {isContextBriefExactCurrentContinuation, isContextBriefGraphOnlyGap} from './memory_projection.js';
 
 export {CONTEXT_BRIEF_AGENT_VIEW_SOURCE_EXCERPT_FIELD_POLICY} from './source_projection.js';
 

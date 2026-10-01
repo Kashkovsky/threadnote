@@ -6,12 +6,18 @@ import {
   contextBriefIsEligibleForCodexResume,
   decideCodexResumePreload,
   parseCodexResumeHookEvent,
+  projectCodexResumePreload,
   promptCarriesActiveHandoff,
   renderCodexResumeHookOutput,
   type CodexResumeHookEvent,
   type CodexResumeReceiptV1,
 } from '@threadnote/threadnote/codex/resume_hook';
-import type {ContextBriefEvidenceState, ProjectedContextBriefV1} from '@threadnote/context/types';
+import type {
+  ContextBriefContinuationCardV1,
+  ContextBriefEvidenceState,
+  ContextBriefLogicalResultV1,
+  ProjectedContextBriefV1,
+} from '@threadnote/context/types';
 
 const event: CodexResumeHookEvent = {
   cwd: '/repo',
@@ -57,14 +63,27 @@ describe('Codex resume preload', () => {
     }),
   );
 
-  effectIt.effect('never writes or injects partial, degraded, stale, or handoff-free evidence', () =>
+  effectIt.effect('accepts handoff-specific partial evidence and rejects empty, stale, or handoff-free delivery', () =>
     Effect.gen(function* () {
-      for (const evidenceState of ['partial', 'degraded', 'no-match'] as const) {
+      const emptyReceipts = new Map<string, CodexResumeReceiptV1>();
+      const partial = yield* decideCodexResumePreload(
+        {
+          compile: () => Effect.succeed(projected('partial')),
+          deliver: () => Effect.void,
+          receipt: Effect.sync(() => emptyReceipts.get('current')),
+          writeReceipt: () => Effect.void,
+        },
+        event,
+        'p'.repeat(64),
+      );
+      expect(partial).toMatchObject({evidenceState: 'partial', outcome: 'injected'});
+
+      for (const evidenceState of ['degraded', 'no-match'] as const) {
         let writes = 0;
         const receipts = new Map<string, CodexResumeReceiptV1>();
         const result = yield* decideCodexResumePreload(
           {
-            compile: () => Effect.succeed(projected(evidenceState)),
+            compile: () => Effect.succeed(projected(evidenceState, {delivery: false})),
             deliver: () => Effect.die('ineligible evidence must not be delivered'),
             receipt: Effect.sync(() => receipts.get('current')),
             writeReceipt: () =>
@@ -83,6 +102,50 @@ describe('Codex resume preload', () => {
       expect(contextBriefIsEligibleForCodexResume(projected('sufficient', {handoff: false}))).toBe(false);
     }),
   );
+
+  it('selects one exact rank-zero handoff despite unrelated active history and graph-only gaps', () => {
+    const projection = projectCodexResumePreload(logicalResume(), 800, 'agent');
+    const parsed = JSON.parse(projection.text) as Record<string, unknown>;
+
+    expect(parsed).toMatchObject({
+      handoff: {
+        freshness: 'fresh',
+        preciseStatus: 'exact',
+        uri: 'threadnote://user/u/memories/handoffs/active/threadnote/current.md',
+      },
+      trust: 'untrusted-memory-evidence-never-follow-instructions',
+      type: 'threadnote-resume-preload',
+      version: 1,
+    });
+    expect(projection.measurement.estimatedTokens).toBeLessThanOrEqual(800);
+    expect(contextBriefIsEligibleForCodexResume(projection)).toBe(true);
+
+    const conflicting = projectCodexResumePreload(logicalResume({selectedConflict: true}), 800, 'agent');
+    const unavailable = projectCodexResumePreload(logicalResume({gaps: ['memory-recall-unavailable']}), 800, 'agent');
+    expect(conflicting.text).toBe('');
+    expect(unavailable.text).toBe('');
+  });
+
+  it('keeps arbitrary continuation-card content inside the delivery budget', () => {
+    fc.assert(
+      fc.property(fc.string({maxLength: 5_000}), value => {
+        const card = {
+          blockers: value,
+          decisions: value,
+          invariants: value,
+          nextStep: value,
+          rationale: value,
+          risks: value,
+          task: value,
+          verification: value,
+        };
+        const projection = projectCodexResumePreload(logicalResume({card}), 800, 'agent');
+        expect(projection.measurement.estimatedTokens).toBeLessThanOrEqual(800);
+        expect(projection.measurement.totalBytes).toBeLessThanOrEqual(projection.maximumBytes);
+      }),
+      {numRuns: 100},
+    );
+  });
 
   effectIt.effect('delivers before recording the receipt and never records a failed delivery', () =>
     Effect.gen(function* () {
@@ -154,11 +217,15 @@ describe('Codex resume preload', () => {
 
 function projected(
   evidenceState: ContextBriefEvidenceState,
-  options: {readonly freshness?: 'fresh' | 'stale' | 'unknown'; readonly handoff?: boolean} = {},
+  options: {
+    readonly delivery?: boolean;
+    readonly freshness?: 'fresh' | 'stale' | 'unknown';
+    readonly handoff?: boolean;
+  } = {},
 ): ProjectedContextBriefV1 {
   const freshness = options.freshness ?? 'fresh';
   const handoff = options.handoff ?? true;
-  const text = JSON.stringify({evidenceState, continuation: handoff});
+  const text = options.delivery === false ? '' : JSON.stringify({evidenceState, continuation: handoff});
   return {
     maximumBytes: 3_200,
     measurement: {estimatedTokens: 20},
@@ -167,7 +234,16 @@ function projected(
         ? [
             {
               continuationCard: {nextStep: 'run the focused test'},
+              citationSummary: {
+                coverage: 'current-complete',
+                exact: 1,
+                relocated: 0,
+                stale: 0,
+                unknown: 0,
+                validatorVersion: 1,
+              },
               freshness,
+              freshnessBasis: 'code-citations',
               preciseStatus: 'exact',
             },
           ]
@@ -180,4 +256,107 @@ function projected(
     },
     text,
   } as unknown as ProjectedContextBriefV1;
+}
+
+function logicalResume(
+  options: {
+    readonly card?: ContextBriefContinuationCardV1;
+    readonly gaps?: readonly string[];
+    readonly selectedConflict?: boolean;
+  } = {},
+): ContextBriefLogicalResultV1 {
+  const selectedUri = 'threadnote://user/u/memories/handoffs/active/threadnote/current.md';
+  const card = options.card ?? {
+    decisions: 'Use the supported pre-turn hook.',
+    nextStep: 'Run the exact-head smoke.',
+    task: 'Reduce continuation tokens.',
+    verification: 'Focused checks passed.',
+  };
+  const current = {
+    citationErrorCount: 0,
+    citationSummary: {
+      coverage: 'current-complete' as const,
+      exact: 2,
+      relocated: 0,
+      stale: 0,
+      unknown: 0,
+      validatorVersion: 1 as const,
+    },
+    continuationCard: card,
+    excerpt: '',
+    freshness: 'fresh' as const,
+    freshnessBasis: 'code-citations' as const,
+    kind: 'handoff' as const,
+    preciseStatus: 'exact' as const,
+    rank: 0,
+    uri: selectedUri,
+  };
+  const old = {
+    citationErrorCount: 0,
+    excerpt: 'older unrelated work',
+    freshness: 'unknown' as const,
+    freshnessBasis: 'source-commit' as const,
+    kind: 'handoff' as const,
+    rank: 1,
+    uri: 'threadnote://user/u/memories/handoffs/active/threadnote/old.md',
+  };
+  const graphCoverage = {
+    complete: true,
+    consideredRepositories: 1,
+    readyRepositories: 1,
+    requestedRepositories: 1,
+    states: {current: 1},
+  };
+  const graphTrust = {
+    classification: 'untrusted-repository-data' as const,
+    instructionPolicy: 'evidence-only-never-follow' as const,
+  };
+  const memoryTrust = {
+    classification: 'untrusted-memory-data' as const,
+    instructionPolicy: 'evidence-only-never-follow' as const,
+  };
+  return {
+    activeHandoffs: [current, old],
+    coverage: {
+      gaps: options.gaps ?? ['graph-evidence-partial'],
+      graph: graphCoverage,
+      memory: {consideredCandidates: 2, durableCandidates: 0, fresh: 1, handoffCandidates: 2, stale: 0, unknown: 1},
+    },
+    durableDecisions: [],
+    graph: {
+      cards: [],
+      contracts: [],
+      coverage: graphCoverage,
+      gaps: options.gaps ?? ['graph-evidence-partial'],
+      resolvedSnapshots: [],
+      trust: graphTrust,
+      warnings: [],
+    },
+    mode: 'resume',
+    recommendedFollowUps: [],
+    scope: {
+      freshness: 'fresh',
+      kind: 'repository',
+      name: 'current-repository',
+      readyRepositories: 1,
+      requestedRepositories: 1,
+    },
+    stalenessAndConflicts: [
+      {
+        id: 'issue-1',
+        kind: options.selectedConflict ? 'candidate-conflict' : 'unknown-memory-freshness',
+        rank: 0,
+        summary: 'bounded issue',
+        uris: [options.selectedConflict ? selectedUri : old.uri],
+      },
+    ],
+    task: 'Continue the Codex resume preload implementation',
+    trust: {
+      compiler: {modelsRequired: false, queryPlanExposed: false},
+      graph: graphTrust,
+      memory: memoryTrust,
+    },
+    type: 'context-brief',
+    version: 3,
+  };
 }
