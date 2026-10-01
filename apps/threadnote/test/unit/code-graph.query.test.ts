@@ -423,6 +423,9 @@ describe('code graph query budgets', () => {
           );
           expect(observationFromCodeGraphStatus(deferredColdStatus)?.overlay).toBeUndefined();
           expect(observationFromCodeGraphStatus(exactColdAttach)?.overlay).toEqual({dirty: false});
+          expect(observationFromCodeGraphStatus(exactColdAttach)?.readySnapshotId).toBe(
+            exactColdAttach.readySnapshot?.id,
+          );
           expect(telemetryEvents.splice(0)).toEqual([
             {
               disposition: 'fallback',
