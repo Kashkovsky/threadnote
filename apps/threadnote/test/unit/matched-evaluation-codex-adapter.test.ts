@@ -21,12 +21,14 @@ import {
   assertMatchedEvaluationProductionCodexResumeHookV1,
   analyzeMatchedEvaluationAttributionV1,
   countMatchedEvaluationBlockedActionsV1,
+  createMatchedEvaluationAppServerFailureEvidenceV1,
   extractMatchedEvaluationProviderUsageV1,
   matchedEvaluationCodexEnvironmentPolicyHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
   matchedEvaluationVerifierEnvironmentHashV1,
   parseMatchedEvaluationCodexAdapterRequestV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
+  persistMatchedEvaluationFailureTranscriptsV1,
   renderMatchedEvaluationAgentPromptV1,
   renderMatchedEvaluationApprovedCommandV1,
   renderMatchedEvaluationJudgePromptV1,
@@ -802,7 +804,7 @@ describe('matched evaluation Codex adapter', () => {
     const rules = renderMatchedEvaluationCommandReviewRulesV1();
     const lines = rules.trim().split('\n');
 
-    expect(lines).toHaveLength(17);
+    expect(lines).toHaveLength(18);
     expect(new Set(lines).size).toBe(lines.length);
     for (const executable of [
       '/bin/zsh',
@@ -811,6 +813,7 @@ describe('matched evaluation Codex adapter', () => {
       'file',
       'find',
       'git',
+      'grep',
       'head',
       'ls',
       'nl',
@@ -867,6 +870,56 @@ describe('matched evaluation Codex adapter', () => {
         usageEvent({cachedInputTokens: 1, inputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1, totalTokens: 6}),
       ]),
     ).toThrow('provider token components are inconsistent');
+  });
+
+  it('retains the latest available provider usage and partial events for infrastructure failures', () => {
+    const events = [
+      usageEvent({
+        cachedInputTokens: 80,
+        inputTokens: 100,
+        outputTokens: 10,
+        reasoningOutputTokens: 3,
+        totalTokens: 110,
+      }),
+      {method: 'item/started', params: {item: {id: 'grep', type: 'commandExecution'}}},
+    ];
+    expect(
+      createMatchedEvaluationAppServerFailureEvidenceV1({
+        cause: new Error('completed action was outside the reviewed policy'),
+        events,
+        stderr: 'bounded stderr',
+      }),
+    ).toEqual({
+      events,
+      failureMessage: 'completed action was outside the reviewed policy',
+      stderr: 'bounded stderr',
+      usage: {
+        cachedInputTokens: 80,
+        inputTokens: 100,
+        outputTokens: 10,
+        reasoningOutputTokens: 3,
+        totalTokens: 110,
+      },
+      usageUnavailableReason: null,
+      version: 1,
+    });
+    expect(
+      createMatchedEvaluationAppServerFailureEvidenceV1({cause: 'early failure', events: [], stderr: ''}),
+    ).toMatchObject({usage: null, usageUnavailableReason: 'Completed Codex turn did not report provider usage.'});
+  });
+
+  it('persists failure transcripts independently without replacing existing evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-failure-transcript-'));
+    roots.push(root);
+    const transcriptPath = join(root, 'run.jsonl');
+    const agentTranscriptPath = `${transcriptPath}.agent.jsonl`;
+    await writeFile(agentTranscriptPath, 'preserved evidence\n');
+
+    await expect(
+      persistMatchedEvaluationFailureTranscriptsV1({transcript: 'new failure evidence\n', transcriptPath}),
+    ).resolves.toEqual({failedWrites: 1, successfulWrites: 1, version: 1});
+    await expect(readFile(agentTranscriptPath, 'utf8')).resolves.toBe('preserved evidence\n');
+    await expect(readFile(transcriptPath, 'utf8')).resolves.toBe('new failure evidence\n');
   });
 
   it('attributes cumulative usage and safe completed-item metadata without retaining item bodies', () => {

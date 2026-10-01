@@ -8669,6 +8669,7 @@ bun_workspace_test(
         "//packages/testing:src/node-child-process.ts",
         "//packages/testing:src/node-crypto.ts",
         "//packages/testing:src/node-fs-promises.ts",
+        "//packages/testing:src/node-fs.ts",
         "//packages/testing:src/node-os.ts",
         "//packages/testing:src/node-path.ts",
         "//packages/testing:src/node-util.ts",

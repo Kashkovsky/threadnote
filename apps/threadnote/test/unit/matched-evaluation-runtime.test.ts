@@ -15,6 +15,7 @@ import {
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
 import {
   assertMatchedEvaluationContinuationPhaseOneReceiptV1,
+  assertMatchedEvaluationContinuationPhaseOnePreregistrationV1,
   assertMatchedEvaluationContinuationAdapterConfigurationsV2,
   assertMatchedEvaluationContinuationSupplementV1,
   assertMatchedEvaluationContinuationCheckpointV2,
@@ -468,6 +469,21 @@ describe('matched evaluation runtime integrity', () => {
     const second = createMatchedEvaluationContinuationPhaseOneSelectionV1(input);
     expect(second).toEqual(first);
     expect(parseMatchedEvaluationContinuationPhaseOneSelectionV1(JSON.parse(JSON.stringify(first)))).toEqual(first);
+    const reorderedPacket = Object.fromEntries(Object.entries(first.taskPacket).reverse());
+    expect(() =>
+      assertMatchedEvaluationContinuationPhaseOnePreregistrationV1({...first, taskPacket: reorderedPacket}, first),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedEvaluationContinuationPhaseOnePreregistrationV1(
+        {
+          ...first,
+          continuationAttempts: first.continuationAttempts.map((attempt, index) =>
+            index === 0 ? {...attempt, runNonce: `run_${'f'.repeat(32)}`} : attempt,
+          ),
+        },
+        first,
+      ),
+    ).toThrow('differs from the sealed preregistration');
     expect(first.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2, 3, 4, 5]);
     expect(new Set(first.continuationAttempts.map(attempt => attempt.variant))).toEqual(
       new Set(['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume', 'threadnote-preloaded-resume']),

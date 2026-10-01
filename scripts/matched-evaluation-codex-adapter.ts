@@ -90,6 +90,7 @@ const MATCHED_EVALUATION_PROMPT_RULE_PREFIXES = [
   'file',
   'find',
   'git',
+  'grep',
   'head',
   'ls',
   'nl',
@@ -244,6 +245,45 @@ interface AppServerTurnEvidence {
   readonly usage: ProviderTokens;
 }
 
+export interface MatchedEvaluationAppServerFailureEvidenceV1 {
+  readonly events: readonly Record<string, unknown>[];
+  readonly failureMessage: string;
+  readonly stderr: string;
+  readonly usage: ProviderTokens | null;
+  readonly usageUnavailableReason: string | null;
+  readonly version: 1;
+}
+
+export interface MatchedEvaluationFailureTranscriptPersistenceV1 {
+  readonly failedWrites: number;
+  readonly successfulWrites: number;
+  readonly version: 1;
+}
+
+const MATCHED_EVALUATION_APP_SERVER_FAILURE = Symbol('MatchedEvaluationAppServerTurnFailure');
+
+type MatchedEvaluationAppServerTurnFailure = Error & {
+  readonly [MATCHED_EVALUATION_APP_SERVER_FAILURE]: true;
+  readonly evidence: MatchedEvaluationAppServerFailureEvidenceV1;
+};
+
+function matchedEvaluationAppServerTurnFailure(
+  evidence: MatchedEvaluationAppServerFailureEvidenceV1,
+  cause: unknown,
+): MatchedEvaluationAppServerTurnFailure {
+  return Object.assign(new Error(`Codex app-server turn failed after startup: ${evidence.failureMessage}`, {cause}), {
+    [MATCHED_EVALUATION_APP_SERVER_FAILURE]: true as const,
+    evidence,
+  });
+}
+
+function isMatchedEvaluationAppServerTurnFailure(value: unknown): value is MatchedEvaluationAppServerTurnFailure {
+  return (
+    value instanceof Error &&
+    (value as Partial<MatchedEvaluationAppServerTurnFailure>)[MATCHED_EVALUATION_APP_SERVER_FAILURE] === true
+  );
+}
+
 export interface MatchedEvaluationActionPreflightReceiptV1 {
   readonly appliedAndReverted: true;
   readonly approvedActions: number;
@@ -395,22 +435,49 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       initialBriefDelivery,
       agentIsolation.preloadedContext?.text ?? null,
     );
-    const agentTurn = await runAppServerTurn({
-      approvedCommandTokens,
-      command: agentIsolation.command,
-      cwd: repositoryRoot,
-      developerInstructions: agentInstructions,
-      environment: agentIsolation.environment,
-      expectedMcpServer: context === null ? null : MATCHED_EVALUATION_CONTEXT_SERVER_NAME,
-      expectedContextDetail: context === null ? null : (request.tool.detail ?? 'compact'),
-      expectedInitialBriefDelivery: initialBriefDelivery,
-      model: config.model,
-      outputSchema: AGENT_OUTPUT_SCHEMA,
-      prompt: agentPrompt,
-      recordBudgetTerminal: true,
-      taskBudget: config.taskBudget,
-      timeoutMilliseconds: 60 * 60_000,
-    });
+    let agentTurn: AppServerTurnResult;
+    try {
+      agentTurn = await runAppServerTurn({
+        approvedCommandTokens,
+        command: agentIsolation.command,
+        cwd: repositoryRoot,
+        developerInstructions: agentInstructions,
+        environment: agentIsolation.environment,
+        expectedMcpServer: context === null ? null : MATCHED_EVALUATION_CONTEXT_SERVER_NAME,
+        expectedContextDetail: context === null ? null : (request.tool.detail ?? 'compact'),
+        expectedInitialBriefDelivery: initialBriefDelivery,
+        model: config.model,
+        outputSchema: AGENT_OUTPUT_SCHEMA,
+        prompt: agentPrompt,
+        recordBudgetTerminal: true,
+        taskBudget: config.taskBudget,
+        timeoutMilliseconds: 60 * 60_000,
+      });
+    } catch (cause) {
+      if (isMatchedEvaluationAppServerTurnFailure(cause)) {
+        const failedAt = monotonicMilliseconds();
+        const failureTranscript = {
+          actionPreflight,
+          contextDelivery: null,
+          contextPreload: agentIsolation.preloadedContext?.receipt ?? null,
+          events: cause.evidence.events,
+          failure: {message: cause.evidence.failureMessage},
+          kind: 'agent-turn-failure',
+          stderr: cause.evidence.stderr,
+          terminal: 'infrastructure-failure',
+          timing: {
+            agentTaskMilliseconds: failedAt - preparationFinishedAt,
+            preparationMilliseconds: preparationFinishedAt - lifecycleStartedAt,
+          },
+          usage: cause.evidence.usage,
+          usageUnavailableReason: cause.evidence.usageUnavailableReason,
+          version: 1,
+        } as const;
+        const transcript = `${JSON.stringify(failureTranscript)}\n`;
+        await persistMatchedEvaluationFailureTranscriptsV1({transcript, transcriptPath: request.transcriptPath});
+      }
+      throw cause;
+    }
     const attribution = analyzeMatchedEvaluationAttributionV1(
       agentTurn.events,
       Buffer.byteLength(agentPrompt) + Buffer.byteLength(agentInstructions),
@@ -1256,6 +1323,49 @@ export function extractMatchedEvaluationProviderUsageV1(events: readonly Record<
   return usage;
 }
 
+export function createMatchedEvaluationAppServerFailureEvidenceV1(input: {
+  readonly cause: unknown;
+  readonly events: readonly Record<string, unknown>[];
+  readonly stderr: string;
+}): MatchedEvaluationAppServerFailureEvidenceV1 {
+  let usage: ProviderTokens | null = null;
+  let usageUnavailableReason: string | null = null;
+  try {
+    usage = extractMatchedEvaluationProviderUsageV1(input.events);
+  } catch (cause) {
+    usageUnavailableReason = (cause instanceof Error ? cause.message : String(cause)).slice(0, 2_048);
+  }
+  return {
+    events: [...input.events],
+    failureMessage: (input.cause instanceof Error ? input.cause.message : String(input.cause)).slice(0, 2_048),
+    stderr: input.stderr.slice(-64 * 1_024),
+    usage,
+    usageUnavailableReason,
+    version: 1,
+  };
+}
+
+/**
+ * Failure evidence is best-effort: preserve any existing sealed artifact, try
+ * both destinations independently, and never replace the provider failure with
+ * a local persistence error.
+ */
+export async function persistMatchedEvaluationFailureTranscriptsV1(input: {
+  readonly transcript: string;
+  readonly transcriptPath: string;
+}): Promise<MatchedEvaluationFailureTranscriptPersistenceV1> {
+  const results = await Promise.allSettled([
+    writeBoundedText(`${input.transcriptPath}.agent.jsonl`, input.transcript, MAXIMUM_TRANSCRIPT_BYTES),
+    writeBoundedText(input.transcriptPath, input.transcript, MAXIMUM_TRANSCRIPT_BYTES),
+  ]);
+  const successfulWrites = results.filter(result => result.status === 'fulfilled').length;
+  return {
+    failedWrites: results.length - successfulWrites,
+    successfulWrites,
+    version: 1,
+  };
+}
+
 /** Counts only safe metadata from retained app-server events; event bodies never leave the local transcript. */
 export function analyzeMatchedEvaluationAttributionV1(events: readonly Record<string, unknown>[], promptBytes = 0) {
   const updates = cumulativeProviderUsage(events);
@@ -2025,6 +2135,16 @@ async function runAppServerTurn(input: {
     return budgetTerminal === null
       ? {...evidence, final: extractFinalAnswer(client.events), terminal: null}
       : {...evidence, final: null, terminal: budgetTerminal};
+  } catch (cause) {
+    if (isMatchedEvaluationAppServerTurnFailure(cause)) throw cause;
+    throw matchedEvaluationAppServerTurnFailure(
+      createMatchedEvaluationAppServerFailureEvidenceV1({
+        cause,
+        events: client.events,
+        stderr: client.stderr,
+      }),
+      cause,
+    );
   } finally {
     await client.close();
   }

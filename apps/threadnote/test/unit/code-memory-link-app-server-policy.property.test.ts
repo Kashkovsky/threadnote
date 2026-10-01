@@ -1,3 +1,6 @@
+import {mkdtempSync, rmSync, symlinkSync, writeFileSync} from '@threadnote/testing/node-fs';
+import {tmpdir} from '@threadnote/testing/node-os';
+import {join} from '@threadnote/testing/node-path';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {approveCodeMemoryLinkAppServerRequest} from '../../../../scripts/code-memory-link-app-server-policy.js';
@@ -59,6 +62,32 @@ describe('Code Memory Link pre-execution app-server policy', () => {
       }),
     ).toMatchObject({itemType: 'commandExecution'});
 
+    const grep = commandApproval("grep -n -F 'thread identity' src/service.ts", 'src/service.ts');
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: grep.params,
+        scope: SCOPE,
+        startedItem: grep.item,
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
+
+    for (const command of [
+      'grep -R identity .',
+      'grep -f patterns.txt src/service.ts',
+      'grep -n identity ../outside',
+    ]) {
+      const unsafeGrep = commandApproval(command, 'src/service.ts');
+      expect(() =>
+        approveCodeMemoryLinkAppServerRequest({
+          method: 'item/commandExecution/requestApproval',
+          params: unsafeGrep.params,
+          scope: SCOPE,
+          startedItem: unsafeGrep.item,
+        }),
+      ).toThrow();
+    }
+
     for (const command of [
       "find . -maxdepth 3 -type f -name '*.ts' -print",
       'git status --short',
@@ -104,6 +133,61 @@ describe('Code Memory Link pre-execution app-server policy', () => {
         startedItem: control.item,
       }),
     ).toThrow('forbidden parent or control segment');
+  });
+
+  it('keeps generated bounded grep reads inside the selected repository', () => {
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^[A-Za-z0-9_]{1,24}$/u),
+        fc.stringMatching(/^[A-Za-z0-9_-]{1,24}$/u),
+        (pattern, stem) => {
+          const path = `src/${stem}.ts`;
+          const safe = commandApproval(`grep -n -F ${pattern} ${path}`, path);
+          expect(
+            approveCodeMemoryLinkAppServerRequest({
+              method: 'item/commandExecution/requestApproval',
+              params: safe.params,
+              scope: SCOPE,
+              startedItem: safe.item,
+            }),
+          ).toMatchObject({itemType: 'commandExecution'});
+
+          const escaped = commandApproval(`grep -n -F ${pattern} ../${stem}.ts`, path);
+          expect(() =>
+            approveCodeMemoryLinkAppServerRequest({
+              method: 'item/commandExecution/requestApproval',
+              params: escaped.params,
+              scope: SCOPE,
+              startedItem: escaped.item,
+            }),
+          ).toThrow('forbidden parent or control segment');
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('rejects grep operands whose repository symlink resolves outside the selected repository', () => {
+    const repositoryRoot = mkdtempSync(join(tmpdir(), 'threadnote-grep-policy-repository-'));
+    const externalRoot = mkdtempSync(join(tmpdir(), 'threadnote-grep-policy-external-'));
+    try {
+      const externalFile = join(externalRoot, 'private.txt');
+      writeFileSync(externalFile, 'private evidence\n');
+      symlinkSync(externalFile, join(repositoryRoot, 'linked.txt'));
+      const linked = commandApproval('grep -n evidence linked.txt', 'linked.txt', repositoryRoot);
+
+      expect(() =>
+        approveCodeMemoryLinkAppServerRequest({
+          method: 'item/commandExecution/requestApproval',
+          params: linked.params,
+          scope: {...SCOPE, repositoryRoot},
+          startedItem: linked.item,
+        }),
+      ).toThrow('symlink target outside');
+    } finally {
+      rmSync(repositoryRoot, {force: true, recursive: true});
+      rmSync(externalRoot, {force: true, recursive: true});
+    }
   });
 
   it('accepts the pinned code-mode shell wrapper only when every projected command is a bounded read', () => {

@@ -596,6 +596,16 @@ export function createMatchedEvaluationContinuationPhaseOneSelectionV1(input: {
   };
 }
 
+export function assertMatchedEvaluationContinuationPhaseOnePreregistrationV1(
+  expectedInput: unknown,
+  actual: MatchedEvaluationContinuationPhaseOneSelectionV1,
+): void {
+  const expected = parseMatchedEvaluationContinuationPhaseOneSelectionV1(expectedInput);
+  if (JSON.stringify(expected) !== JSON.stringify(actual)) {
+    throw new Error('Continuation phase-one selection differs from the sealed preregistration.');
+  }
+}
+
 export function parseMatchedEvaluationContinuationPhaseOneSelectionV1(
   value: unknown,
 ): MatchedEvaluationContinuationPhaseOneSelectionV1 {
@@ -1620,6 +1630,7 @@ const program = Effect.gen(function* () {
       if (options.continuationPhaseOneTaskPacketPath !== null) {
         return runMatchedEvaluationContinuationPhaseOneFromFilesV1({
           corpusPath: options.corpusPath,
+          expectedSelectionPath: options.continuationPhaseOneExpectedSelectionPath!,
           manifestPath: options.manifestPath,
           outputDirectory: options.continuationPhaseOneDirectory!,
           runtimePath: options.runtimePath,
@@ -1909,14 +1920,16 @@ export async function runMatchedEvaluationPilotFromFilesV1(options: {
 /** Execute one common test-only Phase 1 after sealing its prompt and later treatment order. */
 export async function runMatchedEvaluationContinuationPhaseOneFromFilesV1(options: {
   readonly corpusPath: string;
+  readonly expectedSelectionPath: string;
   readonly manifestPath: string;
   readonly outputDirectory: string;
   readonly runtimePath: string;
   readonly studyPath: string;
   readonly taskPacketPath: string;
 }): Promise<void> {
-  const [corpus, manifest, runtime, study, taskPacketBytes] = await Promise.all([
+  const [corpus, expectedSelection, manifest, runtime, study, taskPacketBytes] = await Promise.all([
     readJson(options.corpusPath).then(parseMatchedEvaluationCorpusV1),
+    readJson(options.expectedSelectionPath),
     readJson(options.manifestPath).then(parseMatchedEvaluationManifestV1),
     readJson(options.runtimePath).then(parseMatchedEvaluationRuntimeV1),
     readJson(options.studyPath).then(parseMatchedTokenEfficiencyStudyV1),
@@ -1962,6 +1975,7 @@ export async function runMatchedEvaluationContinuationPhaseOneFromFilesV1(option
     taskPacketSha256: sha256Bytes(taskPacketBytes),
     taskPrompt: corpusTask.prompt,
   });
+  assertMatchedEvaluationContinuationPhaseOnePreregistrationV1(expectedSelection, selection);
   await writeFile(resolve(outputDirectory, 'phase-one-task-packet.json'), taskPacketBytes, {flag: 'wx', mode: 0o600});
   const selectionPath = resolve(outputDirectory, 'phase-one-selection.json');
   try {
@@ -4239,6 +4253,7 @@ function parseRuntimeRepository(value: unknown, index: number): MatchedEvaluatio
 function parseArguments(args: readonly string[]): {
   readonly continuationFinalizeDirectory: string | null;
   readonly continuationPhaseOneDirectory: string | null;
+  readonly continuationPhaseOneExpectedSelectionPath: string | null;
   readonly continuationPhaseOneTaskPacketPath: string | null;
   readonly continuationPilotPlanPath: string | null;
   readonly continuationParentPilotDirectory: string | null;
@@ -4256,6 +4271,7 @@ function parseArguments(args: readonly string[]): {
       ![
         '--continuation-finalize-directory',
         '--continuation-phase-one-directory',
+        '--continuation-phase-one-expected-selection',
         '--continuation-phase-one-packet',
         '--continuation-pilot-plan',
         '--continuation-parent-pilot-directory',
@@ -4277,6 +4293,7 @@ function parseArguments(args: readonly string[]): {
   const continuationFinalizeDirectory = values.get('--continuation-finalize-directory') ?? null;
   const continuationPhaseOneTaskPacket = values.get('--continuation-phase-one-packet') ?? null;
   const continuationPhaseOneDirectory = values.get('--continuation-phase-one-directory') ?? null;
+  const continuationPhaseOneExpectedSelection = values.get('--continuation-phase-one-expected-selection') ?? null;
   const continuationPilotPlan = values.get('--continuation-pilot-plan') ?? null;
   const continuationParentPilotDirectory = values.get('--continuation-parent-pilot-directory') ?? null;
   if (
@@ -4297,10 +4314,16 @@ function parseArguments(args: readonly string[]): {
   if (continuationParentPilotDirectory !== null && continuationPilotPlan === null) {
     throw ScriptError.make({message: '--continuation-parent-pilot-directory requires --continuation-pilot-plan'});
   }
-  if ((continuationPhaseOneTaskPacket !== null) !== (continuationPhaseOneDirectory !== null)) {
+  if (
+    new Set([
+      continuationPhaseOneTaskPacket !== null,
+      continuationPhaseOneDirectory !== null,
+      continuationPhaseOneExpectedSelection !== null,
+    ]).size !== 1
+  ) {
     throw ScriptError.make({
       message:
-        'Continuation Phase 1 requires both --continuation-phase-one-packet and --continuation-phase-one-directory',
+        'Continuation Phase 1 requires --continuation-phase-one-packet, --continuation-phase-one-directory, and --continuation-phase-one-expected-selection together',
     });
   }
   if (
@@ -4320,6 +4343,10 @@ function parseArguments(args: readonly string[]): {
       continuationPhaseOneDirectory === null
         ? null
         : absolutePath(continuationPhaseOneDirectory, '--continuation-phase-one-directory'),
+    continuationPhaseOneExpectedSelectionPath:
+      continuationPhaseOneExpectedSelection === null
+        ? null
+        : absolutePath(continuationPhaseOneExpectedSelection, '--continuation-phase-one-expected-selection'),
     continuationPhaseOneTaskPacketPath:
       continuationPhaseOneTaskPacket === null
         ? null

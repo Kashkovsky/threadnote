@@ -1,6 +1,7 @@
 import {Schema} from 'effect';
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed adapter validates app-server actions before execution. */
 import {createHash} from 'node:crypto';
+import {realpathSync} from 'node:fs';
 import {isAbsolute, relative, resolve, sep} from 'node:path';
 import {codeMemoryLinkAppServerOpaqueIdDigest} from '@threadnote/threadnote/evaluation/code-memory-link-agent-protocol';
 
@@ -245,6 +246,7 @@ function assertSingleReadCommand(
   } else if (executable === 'ls') assertLs(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'find') assertFind(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'git') assertGit(tokens.slice(1), repositoryRoot, cwd);
+  else if (executable === 'grep') assertGrep(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'rg') assertRipgrep(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'sed') assertSed(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'od') assertOd(tokens.slice(1), repositoryRoot, cwd);
@@ -607,6 +609,78 @@ function assertRipgrep(args: readonly string[], root: string, cwd: string): void
   for (const path of paths.length === 0 ? ['.'] : paths) containedPath(path, root, cwd);
 }
 
+/**
+ * Keep the reviewed grammar deliberately smaller than grep's full CLI: no
+ * recursive traversal, pattern files, binary modes, or filesystem-selection
+ * globs. Existing operands are canonicalized because grep follows explicitly
+ * named symlinks even without recursive flags.
+ */
+function assertGrep(args: readonly string[], root: string, cwd: string): void {
+  let explicitPatterns = 0;
+  const positionals: string[] = [];
+  const flags = new Set([
+    '-E',
+    '-F',
+    '-H',
+    '-L',
+    '-c',
+    '-h',
+    '-i',
+    '-l',
+    '-n',
+    '-s',
+    '-v',
+    '-w',
+    '-x',
+    '--count',
+    '--extended-regexp',
+    '--files-with-matches',
+    '--files-without-match',
+    '--fixed-strings',
+    '--ignore-case',
+    '--invert-match',
+    '--line-number',
+    '--line-regexp',
+    '--no-filename',
+    '--no-messages',
+    '--with-filename',
+    '--word-regexp',
+  ]);
+  const countOptions = new Set([
+    '-A',
+    '-B',
+    '-C',
+    '-m',
+    '--after-context',
+    '--before-context',
+    '--context',
+    '--max-count',
+  ]);
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === '--') {
+      positionals.push(...args.slice(index + 1));
+      break;
+    }
+    if (flags.has(value) || /^-[EFHLchilnsvwx]+$/u.test(value)) continue;
+    if (countOptions.has(value)) {
+      positiveCount(args[++index], `grep ${value}`);
+      continue;
+    }
+    if (value === '-e' || value === '--regexp') {
+      boundedLiteral(args[++index], `grep ${value}`);
+      explicitPatterns += 1;
+      continue;
+    }
+    if (value.startsWith('-')) throw new Error('grep option is outside the reviewed grammar.');
+    positionals.push(value);
+  }
+  const implicitPatternCount = explicitPatterns === 0 ? 1 : 0;
+  if (positionals.length < implicitPatternCount) throw new Error('grep requires an explicit bounded search pattern.');
+  const paths = positionals.slice(implicitPatternCount);
+  for (const path of paths.length === 0 ? ['.'] : paths) containedExistingPath(path, root, cwd);
+}
+
 function assertFileChanges(item: Record<string, unknown>, repositoryRoot: string): void {
   if (!Array.isArray(item.changes) || item.changes.length === 0) {
     throw new Error('Code Memory Link file change has no paths.');
@@ -710,6 +784,35 @@ function containedPath(value: string, rootInput: string, cwdInput = rootInput): 
     throw new Error('Repository path contains a forbidden parent or control segment.');
   }
   return candidate;
+}
+
+/**
+ * grep follows an explicitly named symlink even without recursive flags. Resolve
+ * existing operands so the reviewed read cannot escape through a repository
+ * symlink; nonexistent operands remain harmless grep errors.
+ */
+function containedExistingPath(value: string, rootInput: string, cwdInput = rootInput): string {
+  const candidate = containedPath(value, rootInput, cwdInput);
+  try {
+    const canonicalRoot = realpathSync(resolve(rootInput));
+    const canonicalCandidate = realpathSync(candidate);
+    if (canonicalCandidate !== canonicalRoot && !canonicalCandidate.startsWith(`${canonicalRoot}${sep}`)) {
+      throw new Error('App-server action referenced a symlink target outside the public task repository.');
+    }
+  } catch (cause) {
+    if (isMissingPath(cause)) return candidate;
+    throw cause;
+  }
+  return candidate;
+}
+
+function isMissingPath(cause: unknown): boolean {
+  return (
+    typeof cause === 'object' &&
+    cause !== null &&
+    'code' in cause &&
+    (cause.code === 'ENOENT' || cause.code === 'ENOTDIR')
+  );
 }
 
 function safeGlob(value: string): void {
