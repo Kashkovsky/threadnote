@@ -272,7 +272,7 @@ export function assertSharedWorktreeFileReady(
   } = {},
 ): Effect.Effect<string | undefined, unknown, CommandExecutor | FileSystem.FileSystem | Path.Path | SystemInfo> {
   return Effect.gen(function* () {
-    void dryRun;
+    if (dryRun) return;
     const safeRelativePath = assertSafeShareRelativePath(relativePath);
     const git = yield* requiredExecutable('git');
     const unmerged = yield* runCommand(git, ['-C', worktree, 'ls-files', '-u', '--', safeRelativePath], {
