@@ -2,6 +2,7 @@ import {TestError} from '@threadnote/testing/test-error';
 import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from '@threadnote/testing/node-fs-promises';
 import {tmpdir} from '@threadnote/testing/node-os';
 import {dirname, join} from '@threadnote/testing/node-path';
+import fc from 'fast-check';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '@threadnote/memory/code/citation';
 import {formatMemoryDocument} from '@threadnote/memory/document';
@@ -18,13 +19,16 @@ import {
   runShareSync as runShareSyncEffect,
   syncSharedReposBeforeAgentRead as syncSharedReposBeforeAgentReadEffect,
 } from '@threadnote/threadnote/effect/share';
+import {runForget as runForgetEffect} from '@threadnote/threadnote/memory/commands';
 import type {ShareRuntime, ShareTeamsFile} from '@threadnote/threadnote/types';
 import {runCommand} from '@threadnote/threadnote/utils';
+import type {RuntimeConfig} from '@threadnote/workspace/config';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const runShareInit = (...args: Parameters<typeof runShareInitEffect>) => runEffect(runShareInitEffect(...args));
 const runSharePublish = (...args: Parameters<typeof runSharePublishEffect>) =>
   runEffect(runSharePublishEffect(...args));
+const runForget = (...args: Parameters<typeof runForgetEffect>) => runEffect(runForgetEffect(...args));
 const runShareSync = (...args: Parameters<typeof runShareSyncEffect>) => runEffect(runShareSyncEffect(...args));
 const syncSharedReposBeforeAgentRead = (...args: Parameters<typeof syncSharedReposBeforeAgentReadEffect>) =>
   runEffect(syncSharedReposBeforeAgentReadEffect(...args));
@@ -34,7 +38,7 @@ const resolveShareConflict = (...args: Parameters<typeof resolveShareConflictEff
   runEffect(resolveShareConflictEffect(...args));
 
 interface TestShareRepo {
-  readonly config: ShareRuntime;
+  readonly config: RuntimeConfig;
   readonly home: string;
   readonly remote: string;
   readonly root: string;
@@ -122,7 +126,13 @@ async function makeShareRepo(): Promise<TestShareRepo> {
   await git(['config', 'user.email', 'threadnote-test@example.com'], worktree);
   await git(['config', 'user.name', 'Threadnote Test'], worktree);
 
-  const config: ShareRuntime = {account: 'local', agentContextHome: home, agentId: 'threadnote', user: 'denys'};
+  const config: RuntimeConfig = {
+    account: 'local',
+    agentContextHome: home,
+    agentId: 'threadnote',
+    manifestPath: join(home, 'seed-manifest.yaml'),
+    user: 'denys',
+  };
   const teams: ShareTeamsFile = {
     defaultTeam: 'default',
     teams: {
@@ -288,6 +298,151 @@ describe('share sync git handling', () => {
     await expect(readFile(canonicalResourceFile(home, targetUri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
     await expect(readFile(join(worktree, relativePath), 'utf8')).resolves.toBe(dirtyContent);
     await expect(gitOutput(['status', '--porcelain'], worktree)).resolves.toBe(statusBefore);
+  });
+
+  it('replaces a forgotten shared memory when its remaining tracked file is clean', async () => {
+    const {config, home, worktree} = await makeShareRepo();
+    const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/replacement-cycle.md';
+    const targetUri =
+      'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/replacement-cycle.md';
+    const relativePath = 'durable/projects/threadnote/replacement-cycle.md';
+    const previousContent =
+      'MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: threadnote\ntopic: replacement-cycle\nmemory_id: tn_replacement_cycle\n\nPrevious reviewed body.\n';
+    const replacementContent =
+      'MEMORY\nkind: durable\nstatus: active\nvisibility: personal\nproject: threadnote\ntopic: replacement-cycle\nmemory_id: tn_replacement_cycle\n\nReplacement reviewed body.\n';
+    await writeCanonicalResource(home, sourceUri, replacementContent);
+    await writeCanonicalResource(home, targetUri, previousContent);
+    await mkdir(dirname(join(worktree, relativePath)), {recursive: true});
+    await writeFile(join(worktree, relativePath), previousContent, 'utf8');
+    await git(['add', relativePath], worktree);
+    await git(['commit', '-m', 'add previous shared memory'], worktree);
+
+    await expect(runSharePublish(config, sourceUri, {push: false, team: 'default'})).rejects.toThrow(
+      /already exists with different content/,
+    );
+    await runForget(config, targetUri, {dryRun: true});
+    await expect(readFile(canonicalResourceFile(home, targetUri), 'utf8')).resolves.toBe(previousContent);
+    await runForget(config, targetUri, {});
+    await expect(gitOutput(['status', '--porcelain'], worktree)).resolves.toBe('');
+    await writeFile(join(worktree, 'unrelated.md'), 'Unrelated staged work.\n', 'utf8');
+    await git(['add', 'unrelated.md'], worktree);
+
+    await runSharePublish(config, sourceUri, {push: false, team: 'default'});
+
+    await expect(readFile(canonicalResourceFile(home, sourceUri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    const published = await readFile(canonicalResourceFile(home, targetUri), 'utf8');
+    expect(published).toContain('Replacement reviewed body.');
+    await expect(readFile(join(worktree, relativePath), 'utf8')).resolves.toBe(published);
+    await expect(gitOutput(['diff', '--cached', '--name-only'], worktree)).resolves.toBe('unrelated.md');
+    await expect(gitOutput(['ls-tree', '--name-only', 'HEAD', 'unrelated.md'], worktree)).resolves.toBe('');
+  });
+
+  it.each(['staged', 'unstaged'] as const)('preserves a %s deletion of a forgotten tracked target', async deletion => {
+    const {config, home, worktree} = await makeShareRepo();
+    const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/deleted-replacement.md';
+    const targetUri =
+      'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/deleted-replacement.md';
+    const relativePath = 'durable/projects/threadnote/deleted-replacement.md';
+    const worktreePath = join(worktree, relativePath);
+    const previousContent =
+      'MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: threadnote\ntopic: deleted-replacement\nmemory_id: tn_deleted_replacement\n\nPrevious body.\n';
+    const replacementContent = previousContent
+      .replace('visibility: shared', 'visibility: personal')
+      .replace('Previous body.', 'Replacement body.');
+    await writeCanonicalResource(home, sourceUri, replacementContent);
+    await writeCanonicalResource(home, targetUri, previousContent);
+    await mkdir(dirname(worktreePath), {recursive: true});
+    await writeFile(worktreePath, previousContent, 'utf8');
+    await git(['add', relativePath], worktree);
+    await git(['commit', '-m', 'add deletion target'], worktree);
+    await runForget(config, targetUri, {});
+    if (deletion === 'staged') {
+      await git(['rm', '--', relativePath], worktree);
+    } else {
+      await rm(worktreePath, {force: true});
+    }
+    const statusBefore = await gitOutput(['status', '--porcelain'], worktree);
+
+    await expect(runSharePublish(config, sourceUri, {push: false, team: 'default'})).rejects.toThrow(
+      /changed shared worktree file/,
+    );
+
+    await expect(readFile(canonicalResourceFile(home, sourceUri), 'utf8')).resolves.toBe(replacementContent);
+    await expect(readFile(canonicalResourceFile(home, targetUri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(readFile(worktreePath, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(gitOutput(['status', '--porcelain'], worktree)).resolves.toBe(statusBefore);
+  });
+
+  it('preserves a forgotten target while a Git operation is in progress', async () => {
+    const {config, home, worktree} = await makeShareRepo();
+    const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/operation-replacement.md';
+    const targetUri =
+      'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/operation-replacement.md';
+    const relativePath = 'durable/projects/threadnote/operation-replacement.md';
+    const worktreePath = join(worktree, relativePath);
+    const previousContent =
+      'MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: threadnote\ntopic: operation-replacement\nmemory_id: tn_operation_replacement\n\nPrevious body.\n';
+    const replacementContent = previousContent
+      .replace('visibility: shared', 'visibility: personal')
+      .replace('Previous body.', 'Replacement body.');
+    await writeCanonicalResource(home, sourceUri, replacementContent);
+    await writeCanonicalResource(home, targetUri, previousContent);
+    await mkdir(dirname(worktreePath), {recursive: true});
+    await writeFile(worktreePath, previousContent, 'utf8');
+    await git(['add', relativePath], worktree);
+    await git(['commit', '-m', 'add operation target'], worktree);
+    await runForget(config, targetUri, {});
+    const mergeHead = await gitOutput(['rev-parse', '--git-path', 'MERGE_HEAD'], worktree);
+    await writeFile(mergeHead, `${await gitOutput(['rev-parse', 'HEAD'], worktree)}\n`, 'utf8');
+    const headBefore = await gitOutput(['rev-parse', 'HEAD'], worktree);
+
+    await expect(runSharePublish(config, sourceUri, {push: false, team: 'default'})).rejects.toThrow(
+      /in-progress Git operation/,
+    );
+
+    await expect(readFile(canonicalResourceFile(home, sourceUri), 'utf8')).resolves.toBe(replacementContent);
+    await expect(readFile(canonicalResourceFile(home, targetUri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(readFile(worktreePath, 'utf8')).resolves.toBe(previousContent);
+    await expect(gitOutput(['rev-parse', 'HEAD'], worktree)).resolves.toBe(headBefore);
+  });
+
+  it('preserves arbitrary replacement bodies across a clean tracked forget and republish cycle', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc
+          .uniqueArray(fc.string({unit: fc.constantFrom(...'0123456789abcdef'), minLength: 1, maxLength: 32}), {
+            minLength: 2,
+            maxLength: 2,
+          })
+          .filter(([previous, replacement]) => previous !== replacement),
+        async ([previousBody, replacementBody]) => {
+          const {config, home, worktree} = await makeShareRepo();
+          const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/property-replacement.md';
+          const targetUri =
+            'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/property-replacement.md';
+          const relativePath = 'durable/projects/threadnote/property-replacement.md';
+          const previousContent = `MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: threadnote\ntopic: property-replacement\nmemory_id: tn_property_replacement\n\n${previousBody}\n`;
+          const replacementContent = `MEMORY\nkind: durable\nstatus: active\nvisibility: personal\nproject: threadnote\ntopic: property-replacement\nmemory_id: tn_property_replacement\n\n${replacementBody}\n`;
+          await writeCanonicalResource(home, sourceUri, replacementContent);
+          await writeCanonicalResource(home, targetUri, previousContent);
+          await mkdir(dirname(join(worktree, relativePath)), {recursive: true});
+          await writeFile(join(worktree, relativePath), previousContent, 'utf8');
+          await git(['add', relativePath], worktree);
+          await git(['commit', '-m', 'add property shared memory'], worktree);
+          await runForget(config, targetUri, {});
+
+          await runSharePublish(config, sourceUri, {push: false, team: 'default'});
+
+          const published = await readFile(canonicalResourceFile(home, targetUri), 'utf8');
+          expect(published).toContain(`\n${replacementBody}\n`);
+          await expect(readFile(join(worktree, relativePath), 'utf8')).resolves.toBe(published);
+          await expect(readFile(canonicalResourceFile(home, sourceUri), 'utf8')).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+        },
+      ),
+      {numRuns: 8},
+    );
   });
 
   it('syncs all configured teams when no team is provided', async () => {
