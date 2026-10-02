@@ -283,6 +283,24 @@ describe('code graph indexed query properties', () => {
 
   fcProp(
     it,
+    'preserves identity-bearing leaves from dotted qualified selectors',
+    {
+      leaf: FC.constantFrom('parse_html_dict', 'get_value', 'resolveTaskGraph'),
+      namespace: FC.array(FC.stringMatching(/^[a-z][a-z0-9]{1,12}$/), {minLength: 1, maxLength: 4}),
+    },
+    ({leaf, namespace}) => {
+      const qualified = [...namespace, leaf].join('.');
+      const selectors = codeGraphIdentitySelectors(`src/fields.py trace ${qualified} callers`);
+
+      expect(selectors).toContain(qualified);
+      expect(selectors).toContain(leaf);
+      expect(selectors).not.toContain('src/fields.py');
+    },
+    {fastCheck: {numRuns: 64}},
+  );
+
+  fcProp(
+    it,
     'boosts side-effect owners only in implementation paths and only for behavior-focused queries',
     {
       action: FC.constantFrom('clearAllTabs', 'dismissDrawer', 'purgeCache', 'resetSession', 'wipeCredentials'),
@@ -1009,7 +1027,7 @@ describe('code graph indexed query properties', () => {
         const results = yield* store.searchSymbols(
           databasePath,
           currentSnapshotId,
-          'rest_framework/fields.py Which callers depend on parse_html_dict() returning an empty mapping?',
+          'rest_framework/fields.py trace html.parse_html_dict callers and absence/empty-dictionary semantics',
           3,
         );
 

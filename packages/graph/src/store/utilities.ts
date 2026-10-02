@@ -63,17 +63,17 @@ export function codeGraphIdentitySelectors(value: string): readonly string[] {
       .normalize('NFKC')
       .replaceAll('\\', '/')
       .match(/[\p{L}\p{N}_$@./:-]{2,}/gu) ?? [];
-  return [
-    ...new Set(
-      candidates.filter(
-        candidate =>
-          !candidate.includes('/') &&
-          (/[\p{L}\p{N}_$][.:][\p{L}\p{N}_$]/u.test(candidate) ||
-            /[_$]/u.test(candidate) ||
-            /[\p{Ll}\p{N}][\p{Lu}]/u.test(candidate)),
-      ),
-    ),
-  ].slice(0, 8);
+  const selectors = candidates.flatMap(candidate => {
+    if (candidate.includes('/')) return [];
+    const identityBearing =
+      /[\p{L}\p{N}_$][.:][\p{L}\p{N}_$]/u.test(candidate) ||
+      /[_$]/u.test(candidate) ||
+      /[\p{Ll}\p{N}][\p{Lu}]/u.test(candidate);
+    if (!identityBearing) return [];
+    const leaf = candidate.split(/[.:]/u).at(-1);
+    return leaf && leaf !== candidate && /[_$]|[\p{Ll}\p{N}][\p{Lu}]/u.test(leaf) ? [candidate, leaf] : [candidate];
+  });
+  return [...new Set(selectors)].slice(0, 8);
 }
 
 function sqlTextOption(value: unknown): Option.Option<string> {
