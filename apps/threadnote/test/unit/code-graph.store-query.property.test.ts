@@ -264,18 +264,19 @@ describe('code graph indexed query properties', () => {
 
   fcProp(
     it,
-    'preserves an embedded qualified identity without treating repository paths as identity selectors',
+    'preserves embedded code identities without treating repository paths as identity selectors',
     {
+      identity: FC.constantFrom('Node.search', 'parse_html_dict', 'resolveTaskGraph'),
       prefix: FC.array(FC.constantFrom('find', 'queue', 'regex', 'transition'), {maxLength: 6}),
       suffix: FC.array(FC.constantFrom('child', 'count', 'static', 'target'), {maxLength: 6}),
     },
-    ({prefix, suffix}) => {
+    ({identity, prefix, suffix}) => {
       const selectors = codeGraphIdentitySelectors(
-        [...prefix, 'src/router/node.ts', 'Node.search', ...suffix].join(' '),
+        [...prefix, 'src/router/node.ts', `${identity}()`, ...suffix].join(' '),
       );
-      expect(selectors).toContain('Node.search');
+      expect(selectors).toContain(identity);
       expect(selectors).not.toContain('src/router/node.ts');
-      expect(selectors.filter(selector => selector === 'Node.search')).toHaveLength(1);
+      expect(selectors.filter(selector => selector === identity)).toHaveLength(1);
     },
     {fastCheck: {numRuns: 64}},
   );
@@ -994,6 +995,33 @@ describe('code graph indexed query properties', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  it.effect('reserves a snake-case symbol identity embedded in a verbose natural-language query', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-snake-query-'});
+        const databasePath = path.join(root, 'graph-v3.sqlite');
+        yield* store.initialize(databasePath);
+        yield* Effect.sync(() => insertRankingFixture(databasePath));
+
+        const results = yield* store.searchSymbols(
+          databasePath,
+          currentSnapshotId,
+          'rest_framework/fields.py Which callers depend on parse_html_dict() returning an empty mapping?',
+          3,
+        );
+
+        expect(results[0]).toMatchObject({
+          id: 'function-parse-html-dict',
+          name: 'parse_html_dict',
+          score: 1,
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('resolves an exact repository path without broad lexical candidate expansion', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1384,6 +1412,18 @@ function insertRankingFixture(databasePath: string): void {
         'src/router/node.ts',
         'typescript',
         'typescript',
+        spanJson,
+      );
+      insert.run(
+        currentSnapshotId,
+        'function-parse-html-dict',
+        'hash-function-parse-html-dict',
+        'function',
+        'parse_html_dict',
+        'parse_html_dict',
+        'rest_framework/utils/html.py',
+        'python',
+        'python',
         spanJson,
       );
       for (const [id, path] of [

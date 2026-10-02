@@ -56,7 +56,7 @@ export function normalizedTerms(value: string): readonly string[] {
   return [...new Set(expanded.match(/[\p{L}\p{N}_$.-]{2,}/gu) ?? [])].slice(0, 32);
 }
 
-/** Preserve explicit qualified identities embedded in a longer natural-language query. */
+/** Preserve explicit code identities embedded in a longer natural-language query. */
 export function codeGraphIdentitySelectors(value: string): readonly string[] {
   const candidates =
     value
@@ -65,7 +65,13 @@ export function codeGraphIdentitySelectors(value: string): readonly string[] {
       .match(/[\p{L}\p{N}_$@./:-]{2,}/gu) ?? [];
   return [
     ...new Set(
-      candidates.filter(candidate => !candidate.includes('/') && /[\p{L}\p{N}_$][.:][\p{L}\p{N}_$]/u.test(candidate)),
+      candidates.filter(
+        candidate =>
+          !candidate.includes('/') &&
+          (/[\p{L}\p{N}_$][.:][\p{L}\p{N}_$]/u.test(candidate) ||
+            /[_$]/u.test(candidate) ||
+            /[\p{Ll}\p{N}][\p{Lu}]/u.test(candidate)),
+      ),
     ),
   ].slice(0, 8);
 }

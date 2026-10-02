@@ -223,6 +223,7 @@ describe('matched evaluation Codex adapter', () => {
     );
     expect(preloadedPrompt).toContain('already been loaded');
     expect(preloadedPrompt).toContain('find the production caller that violates the verified invariant');
+    expect(preloadedPrompt).toContain('Omit budgetTokens');
     expect(preloadedPrompt).not.toContain('{"evidenceState":"sufficient"}');
     expect(preloadedPrompt).not.toContain('call context_brief exactly once');
     const preloadedInstructions = renderMatchedEvaluationAgentInstructionsV1(
@@ -233,6 +234,7 @@ describe('matched evaluation Codex adapter', () => {
       'find the production caller that violates the verified invariant',
     );
     expect(preloadedInstructions).toContain('Do not call context_brief');
+    expect(preloadedInstructions).toContain('Omit budgetTokens');
     expect(preloadedInstructions).toContain('{"evidenceState":"sufficient"}');
     const judgePrompt = renderMatchedEvaluationJudgePromptV1(manual, {
       agentResult: {completed: true},

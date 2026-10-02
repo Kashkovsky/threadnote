@@ -694,7 +694,7 @@ export async function runMatchedEvaluationContextProxy(): Promise<void> {
     [
       'inspect_code_graph',
       MATCHED_EVALUATION_INSPECT_INPUT_SCHEMA,
-      'Query or traverse the isolated prepared code graph. Verify returned paths against current files after edits.',
+      'Query or traverse the isolated prepared code graph. Omit budgetTokens unless requesting a smaller response; defaults are ceilings, not target sizes. Verify returned paths against current files after edits.',
     ],
     [
       'analyze_code_graph',
