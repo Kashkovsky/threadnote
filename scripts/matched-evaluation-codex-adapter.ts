@@ -509,6 +509,12 @@ export async function runMatchedEvaluationCodexAdapter(input: {
     const attribution = analyzeMatchedEvaluationAttributionV1(
       agentTurn.events,
       Buffer.byteLength(agentPrompt) + Buffer.byteLength(agentInstructions),
+      {
+        initialContinuationEvidenceState:
+          agentIsolation.preloadedContext?.receipt.source === 'production-codex-hook'
+            ? agentIsolation.preloadedContext.receipt.continuationEvidenceState
+            : undefined,
+      },
     );
     const patch = await capturePatch(config, repositoryRoot);
     const agentResult = agentTurn.final ?? {
@@ -1493,7 +1499,11 @@ export async function persistMatchedEvaluationFailureTranscriptsV1(input: {
 }
 
 /** Counts only safe metadata from retained app-server events; event bodies never leave the local transcript. */
-export function analyzeMatchedEvaluationAttributionV1(events: readonly Record<string, unknown>[], promptBytes = 0) {
+export function analyzeMatchedEvaluationAttributionV1(
+  events: readonly Record<string, unknown>[],
+  promptBytes = 0,
+  options: {readonly initialContinuationEvidenceState?: 'background' | 'evidence-bearing'} = {},
+) {
   const updates = cumulativeProviderUsage(events);
   if (updates.length === 0) throw new Error('Completed Codex turn did not report provider usage.');
   const cacheWritesKnown = updates.every(update => update.cacheWriteTokens !== null);
@@ -1513,8 +1523,8 @@ export function analyzeMatchedEvaluationAttributionV1(events: readonly Record<st
     nodeLimit: number | null;
     operation: string | null;
   }> = [];
-  const sufficientEvidenceTimes: number[] = [];
   const taskStartMilliseconds = taskStartMillis(events);
+  const sufficientEvidenceTimes: number[] = [];
   const completed = completedItems(events);
   let firstSufficientCompletedAtMilliseconds: number | null = null;
   for (const {item, params} of completed) {
@@ -1600,6 +1610,9 @@ export function analyzeMatchedEvaluationAttributionV1(events: readonly Record<st
     firstSufficientEvidenceMilliseconds:
       sufficientEvidenceTimes.length === 0 ? null : Math.min(...sufficientEvidenceTimes),
     graphRequests,
+    ...(options.initialContinuationEvidenceState === undefined
+      ? {}
+      : {initialContinuationEvidenceState: options.initialContinuationEvidenceState}),
     lastTwoModelCallTokens: sumTokenAccounting(modelCalls.slice(-2), cacheWritesKnown),
     modelCallCount: modelCalls.length,
     modelCalls,
@@ -2958,6 +2971,8 @@ interface MatchedEvaluationPreloadedContextV1 {
     | {
         readonly contentBytes: number;
         readonly contentResponseSha256: string;
+        readonly contextEvidenceState: 'degraded' | 'no-match' | 'partial' | 'sufficient';
+        readonly continuationEvidenceState: 'evidence-bearing';
         readonly elapsedMilliseconds: number;
         readonly hookReceiptSha256: string;
         readonly hookStdoutSha256: string;
@@ -3093,6 +3108,7 @@ export function assertMatchedEvaluationProductionCodexResumeHookV1(input: {
     'production Codex resume hook value event',
   );
   exactKeys(valueEvent, [
+    'continuationEvidenceState',
     'durationMilliseconds',
     'estimatedTokens',
     'evidenceState',
@@ -3106,7 +3122,8 @@ export function assertMatchedEvaluationProductionCodexResumeHookV1(input: {
     valueEvent.kind !== 'codex-resume-preload' ||
     valueEvent.outcome !== 'injected' ||
     valueEvent.version !== 1 ||
-    !['partial', 'sufficient'].includes(String(valueEvent.evidenceState)) ||
+    !['degraded', 'no-match', 'partial', 'sufficient'].includes(String(valueEvent.evidenceState)) ||
+    valueEvent.continuationEvidenceState !== 'evidence-bearing' ||
     integer(valueEvent.estimatedTokens, 1, 800, 'production hook estimated tokens') < 1 ||
     nonnegativeInteger(valueEvent.outputBytes, 'production hook output bytes') !== Buffer.byteLength(text) ||
     typeof valueEvent.timestamp !== 'string' ||
@@ -3120,6 +3137,8 @@ export function assertMatchedEvaluationProductionCodexResumeHookV1(input: {
     receipt: {
       contentBytes: Buffer.byteLength(text),
       contentResponseSha256: sha256(Buffer.from(text)),
+      contextEvidenceState: valueEvent.evidenceState as 'degraded' | 'no-match' | 'partial' | 'sufficient',
+      continuationEvidenceState: 'evidence-bearing',
       elapsedMilliseconds: nonnegativeInteger(input.elapsedMilliseconds, 'production hook elapsed milliseconds'),
       hookReceiptSha256: sha256(hookReceiptBytes),
       hookStdoutSha256: sha256(Buffer.from(input.hookStdout)),

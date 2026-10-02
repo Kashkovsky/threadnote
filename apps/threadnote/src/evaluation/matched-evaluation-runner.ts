@@ -65,6 +65,8 @@ export interface MatchedEvaluationAttributionV1 {
     readonly nodeLimit: number | null;
     readonly operation: string | null;
   }[];
+  /** Structural evidence-card presence at agent start; not a sufficiency claim. */
+  readonly initialContinuationEvidenceState?: 'background' | 'evidence-bearing';
   readonly lastTwoModelCallTokens: MatchedEvaluationTokenAccountingV1;
   readonly modelCallCount: number;
   readonly modelCalls: readonly MatchedEvaluationTokenAccountingV1[];
@@ -813,12 +815,17 @@ function parseMetrics(value: unknown): MatchedEvaluationMetricsV1 {
 function parseAttribution(value: unknown): MatchedEvaluationAttributionV1 {
   const attribution = object(value, 'usage attribution');
   const hasPostSufficientEvidence = Object.prototype.hasOwnProperty.call(attribution, 'postSufficientEvidence');
+  const hasInitialContinuationEvidenceState = Object.prototype.hasOwnProperty.call(
+    attribution,
+    'initialContinuationEvidenceState',
+  );
   exactKeys(
     attribution,
     [
       'completedItemBytes',
       'firstSufficientEvidenceMilliseconds',
       'graphRequests',
+      ...(hasInitialContinuationEvidenceState ? ['initialContinuationEvidenceState'] : []),
       'lastTwoModelCallTokens',
       'modelCallCount',
       'modelCalls',
@@ -893,6 +900,15 @@ function parseAttribution(value: unknown): MatchedEvaluationAttributionV1 {
     graphRequests: array(attribution.graphRequests, 'graph request receipts').map((request, index) =>
       parseGraphRequestReceipt(request, index),
     ),
+    ...(hasInitialContinuationEvidenceState
+      ? {
+          initialContinuationEvidenceState: literal(
+            attribution.initialContinuationEvidenceState,
+            ['background', 'evidence-bearing'] as const,
+            'initial continuation evidence state',
+          ),
+        }
+      : {}),
     lastTwoModelCallTokens,
     modelCallCount,
     modelCalls,

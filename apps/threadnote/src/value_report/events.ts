@@ -38,7 +38,10 @@ export type CodexResumePreloadOutcome =
   | 'manual-context'
   | 'over-limit';
 
+export type CodexResumeContinuationEvidenceState = 'background' | 'evidence-bearing';
+
 export interface CodexResumePreloadValueEventV1 {
+  readonly continuationEvidenceState?: CodexResumeContinuationEvidenceState;
   readonly durationMilliseconds: number;
   readonly estimatedTokens: number;
   readonly evidenceState?: 'degraded' | 'no-match' | 'partial' | 'sufficient';
@@ -454,6 +457,9 @@ function parseValueEvent(line: string): LocalValueEventV1 | undefined {
       'manual-context',
       'over-limit',
     ].includes(String(value.outcome)) &&
+    (value.continuationEvidenceState === undefined ||
+      value.continuationEvidenceState === 'background' ||
+      value.continuationEvidenceState === 'evidence-bearing') &&
     (value.evidenceState === undefined ||
       value.evidenceState === 'degraded' ||
       value.evidenceState === 'no-match' ||

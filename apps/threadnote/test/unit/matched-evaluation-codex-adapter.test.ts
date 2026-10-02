@@ -377,6 +377,7 @@ describe('matched evaluation Codex adapter', () => {
     );
     const hookValueEventBytes = Buffer.from(
       JSON.stringify({
+        continuationEvidenceState: 'evidence-bearing',
         durationMilliseconds: 12,
         estimatedTokens: 120,
         evidenceState: 'partial',
@@ -400,6 +401,8 @@ describe('matched evaluation Codex adapter', () => {
       receipt: {
         contentBytes: Buffer.byteLength(context),
         contentResponseSha256: sha256HexSync(context),
+        contextEvidenceState: 'partial',
+        continuationEvidenceState: 'evidence-bearing',
         elapsedMilliseconds: 17,
         source: 'production-codex-hook',
         version: 1,
@@ -444,6 +447,7 @@ describe('matched evaluation Codex adapter', () => {
         hookStdout,
         hookValueEventBytes: Buffer.from(
           JSON.stringify({
+            continuationEvidenceState: 'evidence-bearing',
             durationMilliseconds: 12,
             estimatedTokens: 801,
             evidenceState: 'partial',
@@ -456,6 +460,28 @@ describe('matched evaluation Codex adapter', () => {
         ),
       }),
     ).toThrow('estimated tokens');
+    expect(() =>
+      assertMatchedEvaluationProductionCodexResumeHookV1({
+        elapsedMilliseconds: 17,
+        expectedHandoffUri,
+        expectedResumeEvidenceMarker,
+        hookReceiptBytes,
+        hookStdout,
+        hookValueEventBytes: Buffer.from(
+          JSON.stringify({
+            continuationEvidenceState: 'background',
+            durationMilliseconds: 12,
+            estimatedTokens: 120,
+            evidenceState: 'degraded',
+            kind: 'codex-resume-preload',
+            outcome: 'injected',
+            outputBytes: Buffer.byteLength(context),
+            timestamp: '2026-10-01T12:00:00.000Z',
+            version: 1,
+          }),
+        ),
+      }),
+    ).toThrow('does not attest');
   });
 
   it('detects any changed delivered content while accepting deterministic receipt bindings', () => {
@@ -1323,6 +1349,41 @@ describe('matched evaluation Codex adapter', () => {
     });
     expect(attribution.postSufficientEvidence?.completedItemBytes).toBeGreaterThan(0);
     expect(JSON.stringify(attribution.postSufficientEvidence)).not.toContain('private');
+  });
+
+  it('records an evidence-bearing preload at agent start without upgrading its sufficiency', () => {
+    const usage = usageEvent({
+      cachedInputTokens: 2,
+      inputTokens: 4,
+      outputTokens: 1,
+      reasoningOutputTokens: 0,
+      totalTokens: 5,
+    });
+    const events = [
+      usage,
+      {method: 'item/started', params: {startedAtMs: 100}},
+      {
+        method: 'item/completed',
+        params: {
+          completedAtMs: 120,
+          item: {id: 'read', status: 'completed', type: 'commandExecution'},
+        },
+      },
+    ];
+
+    const evidenceBearing = analyzeMatchedEvaluationAttributionV1(events, 0, {
+      initialContinuationEvidenceState: 'evidence-bearing',
+    });
+    const background = analyzeMatchedEvaluationAttributionV1(events, 0, {
+      initialContinuationEvidenceState: 'background',
+    });
+
+    expect(evidenceBearing.initialContinuationEvidenceState).toBe('evidence-bearing');
+    expect(evidenceBearing.firstSufficientEvidenceMilliseconds).toBeNull();
+    expect(evidenceBearing.postSufficientEvidence).toBeNull();
+    expect(background.initialContinuationEvidenceState).toBe('background');
+    expect(background.firstSufficientEvidenceMilliseconds).toBeNull();
+    expect(background.postSufficientEvidence).toBeNull();
   });
 
   it('partitions arbitrary command outcomes at the sufficient-evidence boundary', () => {

@@ -3,6 +3,7 @@ import {Effect, Ref} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  codexResumeContinuationEvidenceState,
   codexResumeIneligibilityReason,
   codexResumeProjectionIneligibilityReason,
   contextBriefIsEligibleForCodexResume,
@@ -56,7 +57,11 @@ describe('Codex resume preload', () => {
       const second = yield* decideCodexResumePreload(dependencies, {...event, turnId: 'turn-2'}, 'a'.repeat(64));
       const changed = yield* decideCodexResumePreload(dependencies, {...event, turnId: 'turn-3'}, 'b'.repeat(64));
 
-      expect(first).toMatchObject({outcome: 'injected', evidenceState: 'sufficient'});
+      expect(first).toMatchObject({
+        continuationEvidenceState: 'background',
+        evidenceState: 'sufficient',
+        outcome: 'injected',
+      });
       expect(second).toEqual({estimatedTokens: 0, outcome: 'already-preloaded', outputBytes: 0});
       expect(changed).toMatchObject({outcome: 'injected', evidenceState: 'sufficient'});
       expect(compileCalls).toBe(2);
@@ -78,7 +83,11 @@ describe('Codex resume preload', () => {
         event,
         'p'.repeat(64),
       );
-      expect(partial).toMatchObject({evidenceState: 'partial', outcome: 'injected'});
+      expect(partial).toMatchObject({
+        continuationEvidenceState: 'background',
+        evidenceState: 'partial',
+        outcome: 'injected',
+      });
 
       for (const evidenceState of ['degraded', 'no-match'] as const) {
         let writes = 0;
@@ -191,6 +200,9 @@ describe('Codex resume preload', () => {
     expect(projection.text).not.toContain('CharField');
     expect(projection.text).not.toContain('SlugRelatedField');
     expect(projection.measurement.totalBytes).toBeLessThanOrEqual(projection.maximumBytes);
+    expect(codexResumeContinuationEvidenceState(projection.structuredContent.activeHandoffs[0]?.continuationCard)).toBe(
+      'evidence-bearing',
+    );
   });
 
   it('keeps arbitrary continuation-card content inside the delivery budget', () => {
@@ -212,7 +224,12 @@ describe('Codex resume preload', () => {
           verification: value,
         };
         const projection = projectCodexResumePreload(logicalResume({card}), 1_500, 'agent');
+        const evidenceBearing = value.trim().length > 0;
         expect(projectCodexResumePreload(logicalResume({card}), 1_500, 'agent').text).toBe(projection.text);
+        expect(codexResumeContinuationEvidenceState(card)).toBe(evidenceBearing ? 'evidence-bearing' : 'background');
+        expect(projection.text).toContain(
+          evidenceBearing ? 'Resume from recorded evidence.' : 'Discovery is incomplete;',
+        );
         expect(projection.text).not.toContain('\r');
         expect(projection.measurement.estimatedTokens).toBeLessThanOrEqual(800);
         expect(projection.maximumBytes).toBe(2_400);

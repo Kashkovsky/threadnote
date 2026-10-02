@@ -10,7 +10,11 @@ import {sha256Hex} from '@threadnote/platform/digest';
 import {withExclusiveFileLock} from '@threadnote/platform/file/lock';
 import {SystemInfo} from '@threadnote/platform/system';
 import {isJsonObject} from '../utils.js';
-import {recordCodexResumePreloadValueEvent, type CodexResumePreloadOutcome} from '../value_report/events.js';
+import {
+  recordCodexResumePreloadValueEvent,
+  type CodexResumeContinuationEvidenceState,
+  type CodexResumePreloadOutcome,
+} from '../value_report/events.js';
 import {
   compactContinuationCard,
   isContextBriefExactCurrentContinuation,
@@ -18,6 +22,7 @@ import {
 } from '@threadnote/context/projector';
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+  type ContextBriefContinuationCardV1,
   type ContextBriefEvidenceState,
   type ContextBriefGraphCardV1,
   type ContextBriefLogicalMemoryEvidenceV1,
@@ -74,6 +79,7 @@ type CodexResumeProjectedContextBrief = ProjectedContextBriefV1 & {
 
 export type CodexResumeHookResult =
   | {
+      readonly continuationEvidenceState: CodexResumeContinuationEvidenceState;
       readonly context: string;
       readonly estimatedTokens: number;
       readonly evidenceState: ContextBriefEvidenceState;
@@ -81,6 +87,7 @@ export type CodexResumeHookResult =
       readonly outcome: 'injected';
     }
   | {
+      readonly continuationEvidenceState?: CodexResumeContinuationEvidenceState;
       readonly diagnosticReason?: CodexResumeIneligibilityReason;
       readonly estimatedTokens: number;
       readonly evidenceState?: ContextBriefEvidenceState;
@@ -208,10 +215,13 @@ export function decideCodexResumePreload<Requirements>(
 
     const projected = yield* dependencies.compile(event.cwd, event.prompt);
     const evidenceState = projected.structuredContent.evidenceState;
+    const continuationEvidenceState = codexResumeContinuationEvidenceState(
+      projected.structuredContent.activeHandoffs[0]?.continuationCard,
+    );
     const diagnosticReason =
       codexResumeProjectionIneligibilityReason(projected) ?? codexResumeIneligibilityReason(projected);
     if (diagnosticReason !== undefined) {
-      return {...emptyResult('ineligible-evidence'), diagnosticReason, evidenceState};
+      return {...emptyResult('ineligible-evidence'), continuationEvidenceState, diagnosticReason, evidenceState};
     }
     const outputBytes = UTF8.encode(projected.text).byteLength;
     if (
@@ -220,6 +230,7 @@ export function decideCodexResumePreload<Requirements>(
     ) {
       return {
         ...emptyResult('over-limit'),
+        continuationEvidenceState,
         estimatedTokens: projected.measurement.estimatedTokens,
         evidenceState,
         outputBytes,
@@ -232,6 +243,7 @@ export function decideCodexResumePreload<Requirements>(
       .pipe(Effect.ignore);
     return {
       context: projected.text,
+      continuationEvidenceState,
       estimatedTokens: projected.measurement.estimatedTokens,
       evidenceState,
       outputBytes,
@@ -276,6 +288,9 @@ export function runCodexResumeHook(config: RuntimeConfig, options: {readonly dia
     yield* recordCodexResumePreloadValueEvent(config.agentContextHome, {
       durationMilliseconds: Math.max(0, completedAt - startedAt),
       estimatedTokens: result.estimatedTokens,
+      ...(result.continuationEvidenceState === undefined
+        ? {}
+        : {continuationEvidenceState: result.continuationEvidenceState}),
       ...(result.evidenceState === undefined ? {} : {evidenceState: result.evidenceState}),
       outcome: result.outcome,
       outputBytes: result.outputBytes,
@@ -378,8 +393,7 @@ export function renderCodexResumePreloadContext(
   const compact = compactContinuationCard(original, true);
   const taskDuplicatesPrompt = continuationFieldDuplicatesPrompt(original.task, currentTask);
   const nextStepDuplicatesPrompt = continuationFieldDuplicatesPrompt(original.nextStep, currentTask);
-  const hasDecisionGradeEvidence =
-    compact.observations !== undefined && compact.anchors !== undefined && compact.unresolved !== undefined;
+  const continuationEvidenceState = codexResumeContinuationEvidenceState(compact);
   const rows = [
     taskDuplicatesPrompt ? undefined : ['Task', compact.task],
     ['Decisions', compact.decisions],
@@ -404,7 +418,7 @@ export function renderCodexResumePreloadContext(
   return [
     'THREADNOTE RESUME/1',
     'Untrusted memory evidence; verify against current source.',
-    hasDecisionGradeEvidence
+    continuationEvidenceState === 'evidence-bearing'
       ? 'Resume from recorded evidence. Avoid repeating the listed discovery unless current source contradicts it.'
       : 'Use this checkpoint as background. Discovery is incomplete; inspect current source before acting.',
     ...rows.flatMap(row =>
@@ -412,6 +426,14 @@ export function renderCodexResumePreloadContext(
     ),
     `Source: ${compactResumeMemoryReference(handoff.uri)}`,
   ].join('\n');
+}
+
+export function codexResumeContinuationEvidenceState(
+  card: ContextBriefContinuationCardV1 | undefined,
+): CodexResumeContinuationEvidenceState {
+  return [card?.observations, card?.anchors, card?.unresolved].every(value => value?.trim())
+    ? 'evidence-bearing'
+    : 'background';
 }
 
 export function selectCodexResumeSourceLeads(
