@@ -1,4 +1,4 @@
-import {Console, Effect, Schema} from 'effect';
+import {Console, Effect, Logger, Schema} from 'effect';
 import {MCP_PROCESS_LIFECYCLE_PROBE_ENV} from '../../constants.js';
 import {
   DEFAULT_MCP_TOOLSET,
@@ -157,7 +157,14 @@ export const mcpServerEffect = withAnonymousTelemetry(
         return yield* server.run();
       }),
     );
-  }),
+  }).pipe(
+    // MCP stdio reserves stdout for JSON-RPC frames. Route every Effect log in
+    // this process to stderr. server.run() already does this for protocol
+    // handling, but background fibers forked above (share/graph monitors) run
+    // outside that scope, and a single pretty-logger warning on stdout
+    // interleaves with protocol output and fails the client transport.
+    Effect.provideService(Logger.LogToStderr, true),
+  ),
 );
 
 function registerResources(
