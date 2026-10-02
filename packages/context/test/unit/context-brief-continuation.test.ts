@@ -3,7 +3,7 @@ import {Effect} from 'effect';
 import {it as effectIt} from '@effect/vitest';
 import {describe, expect, it} from 'vitest';
 import {compileContextBriefWith} from '../../src/compiler.js';
-import {parseContextBriefContinuationCard} from '../../src/memory-evidence.js';
+import {contextBriefResumeTaskAlignmentScore, parseContextBriefContinuationCard} from '../../src/memory-evidence.js';
 import {contextBriefResumeFocusUri} from '../../src/memory_projection.js';
 import {assembleContextBriefLogicalResult, planContextBrief} from '../../src/planner.js';
 import {parseContextBriefJsonText, projectContextBrief, projectContextBriefAgentView} from '../../src/projector.js';
@@ -70,6 +70,170 @@ describe('Context Brief continuation contracts', () => {
       );
 
       expect(observedPlans).toEqual([[citedPath], [REF], []]);
+    }),
+  );
+
+  effectIt.effect('uses the task-aligned continuation for resume graph anchors and handoff priority', () =>
+    Effect.gen(function* () {
+      const obsoletePath = 'infra/telemetry-gateway/cmd/canary/main.go';
+      const currentPath = 'studies/automated-context-two-arm/evaluate.ts';
+      const obsolete = {
+        ...handoff(),
+        codeCitations: [fileCitation(obsoletePath)],
+        continuationCard: {
+          nextStep: 'seal the three-arm harness',
+          task: 'Continue the matched-continuation three-arm experiment harness.',
+        },
+        excerpt: 'task: Continue the matched-continuation three-arm experiment harness.',
+        rank: 0,
+        topic: 'matched-continuation-three-arm-experiment-harness-map',
+        uri: 'threadnote://user/test/memories/handoffs/active/threadnote/obsolete.md',
+      };
+      const current = {
+        ...handoff(),
+        codeCitations: [fileCitation(currentPath)],
+        continuationCard: {
+          nextStep: 'continue the two-arm automated-context canary',
+          task: 'Continue the automated-context two-arm study with exact-candidate methodology boundaries.',
+        },
+        excerpt: 'task: Continue the automated-context two-arm study with exact-candidate methodology boundaries.',
+        rank: 1,
+        topic: 'automated-context-two-arm-study',
+        uri: 'threadnote://user/test/memories/handoffs/active/threadnote/current.md',
+      };
+      const observedPlans: Array<readonly string[]> = [];
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: plan =>
+            Effect.sync(() => {
+              observedPlans.push(plan.codeRefs);
+              return graph(true);
+            }),
+          memoryEvidence: () =>
+            Effect.succeed({
+              ...emptyMemory(),
+              candidates: [obsolete, current],
+              consideredCandidates: 2,
+            }),
+        },
+        {
+          ...request('resume'),
+          task: 'Continue the automated-context experiment from the two-cluster canary while preserving exact-candidate and two-arm methodology boundaries.',
+        },
+      );
+
+      expect(observedPlans).toEqual([[currentPath]]);
+      expect(result.structuredContent.activeHandoffs[0]?.uri).toBe(current.uri);
+    }),
+  );
+
+  it('never reduces resume task alignment when matching continuation evidence is added', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom('legacy', 'harness', 'pilot', 'canary', 'methodology'), {maxLength: 20}),
+        filler => {
+          const task = 'Continue the automated-context two-arm canary';
+          const candidate = {
+            continuationCard: {task: filler.join(' ')},
+            topic: 'continuation-handoff',
+          };
+          expect(
+            contextBriefResumeTaskAlignmentScore(task, {
+              ...candidate,
+              continuationCard: {task: `${candidate.continuationCard.task} automated-context`},
+            }),
+          ).toBeGreaterThanOrEqual(contextBriefResumeTaskAlignmentScore(task, candidate));
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('does not treat generic resume boilerplate as task alignment', () => {
+    expect(
+      contextBriefResumeTaskAlignmentScore('Resume the current task from the active handoff and take the next step', {
+        continuationCard: {nextStep: 'Take the next step', task: 'Current resume task handoff status'},
+        topic: 'current-resume-handoff',
+      }),
+    ).toBe(0);
+    expect(
+      contextBriefResumeTaskAlignmentScore('Resume the current identity graph repair', {
+        continuationCard: {task: 'Repair the IDENTITY graph'},
+        topic: 'identity-graph',
+      }),
+    ).toBeGreaterThan(0);
+  });
+
+  effectIt.effect('does not let generic next-step overlap displace the recall-ranked continuation', () =>
+    Effect.gen(function* () {
+      const recallSelected = {
+        ...handoff(),
+        rank: 0,
+        uri: 'threadnote://user/test/memories/handoffs/active/threadnote/recall-selected.md',
+      };
+      const boilerplate = {
+        ...handoff(),
+        continuationCard: {nextStep: 'Take the next step', task: 'Resume the current task'},
+        rank: 1,
+        topic: 'current-resume-handoff',
+        uri: 'threadnote://user/test/memories/handoffs/active/threadnote/boilerplate.md',
+      };
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graph(true)),
+          memoryEvidence: () =>
+            Effect.succeed({
+              ...emptyMemory(),
+              candidates: [recallSelected, boilerplate],
+              consideredCandidates: 2,
+            }),
+        },
+        {...request('resume'), task: 'Resume the current task and take the next step'},
+      );
+
+      expect(result.structuredContent.activeHandoffs[0]?.uri).toBe(recallSelected.uri);
+    }),
+  );
+
+  effectIt.effect('keeps a fresh actionable continuation ahead of aligned stale and topic-only handoffs', () =>
+    Effect.gen(function* () {
+      const fresh = {
+        ...handoff(),
+        continuationCard: {nextStep: 'run the next check', task: 'Continue the verified repair.'},
+        rank: 2,
+        uri: 'threadnote://user/test/memories/handoffs/active/threadnote/fresh.md',
+      };
+      const staleAligned = {
+        ...handoff('d'.repeat(40)),
+        continuationCard: {
+          nextStep: 'continue automated-context two-arm validation',
+          task: 'Continue the automated-context two-arm canary.',
+        },
+        rank: 0,
+        topic: 'automated-context-two-arm-canary',
+        uri: 'threadnote://user/test/memories/handoffs/active/threadnote/stale.md',
+      };
+      const topicOnly = {
+        ...handoff(),
+        continuationCard: undefined,
+        rank: 1,
+        topic: 'automated-context-two-arm-canary',
+        uri: 'threadnote://user/test/memories/handoffs/active/threadnote/topic-only.md',
+      };
+      const result = yield* compileContextBriefWith(
+        {
+          graphEvidence: () => Effect.succeed(graph(true)),
+          memoryEvidence: () =>
+            Effect.succeed({
+              ...emptyMemory(),
+              candidates: [staleAligned, topicOnly, fresh],
+              consideredCandidates: 3,
+            }),
+        },
+        {...request('resume'), task: 'Continue the automated-context two-arm canary.'},
+      );
+
+      expect(result.structuredContent.activeHandoffs[0]?.uri).toBe(fresh.uri);
     }),
   );
 
