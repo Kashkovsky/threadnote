@@ -210,6 +210,7 @@ export interface MatchedEvaluationContinuationPhaseOneTaskPacketV2 extends Omit<
   MatchedEvaluationContinuationPhaseOneTaskPacketV1,
   'version'
 > {
+  readonly phaseTwoProtectedPaths: readonly string[];
   readonly treatmentSet: 'matched-context-v1';
   readonly version: 2;
 }
@@ -520,6 +521,7 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
     packet,
     [
       'phaseOneAllowedPaths',
+      ...(version === 2 ? ['phaseTwoProtectedPaths'] : []),
       'phaseOneDirective',
       'phaseOneFocusedChecks',
       'phaseTwoFocusedChecks',
@@ -538,11 +540,17 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
     invalid('continuation phase-one task packet version or status is invalid');
   }
   const paths = stringArray(packet.phaseOneAllowedPaths, 1, 16, 4_096, 'phase-one allowed paths');
-  if (
-    new Set(paths).size !== paths.length ||
-    paths.some(path => isAbsolute(path) || path.startsWith('.') || path.split('/').some(segment => segment === '..'))
-  ) {
+  if (new Set(paths).size !== paths.length || paths.some(path => !isSafeContinuationRepositoryPath(path))) {
     invalid('continuation phase-one allowed paths are invalid');
+  }
+  const phaseTwoProtectedPaths =
+    version === 2 ? stringArray(packet.phaseTwoProtectedPaths, 1, 64, 4_096, 'phase-two protected paths') : undefined;
+  if (
+    phaseTwoProtectedPaths &&
+    (new Set(phaseTwoProtectedPaths).size !== phaseTwoProtectedPaths.length ||
+      phaseTwoProtectedPaths.some(path => !isSafeContinuationRepositoryPath(path)))
+  ) {
+    invalid('continuation phase-two protected paths are invalid');
   }
   const common = {
     phaseOneAllowedPaths: paths,
@@ -560,9 +568,19 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
     ? {...common, version}
     : {
         ...common,
+        phaseTwoProtectedPaths: phaseTwoProtectedPaths!,
         treatmentSet: literal(packet.treatmentSet, ['matched-context-v1'] as const, 'continuation treatment set'),
         version,
       };
+}
+
+function isSafeContinuationRepositoryPath(path: string): boolean {
+  return (
+    !isAbsolute(path) &&
+    !path.startsWith('.') &&
+    !path.includes('\\') &&
+    path.split('/').every(segment => segment.length > 0 && segment !== '.' && segment !== '..')
+  );
 }
 
 function renderMatchedEvaluationContinuationPhaseOnePromptV1(
@@ -2390,7 +2408,12 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     checkpointRevision: checkpoint.revision,
     commands: phaseTwoCommands,
     dependencyProjection,
-    protectedPaths: selection.taskPacket.phaseOneAllowedPaths,
+    protectedPaths: [
+      ...new Set([
+        ...selection.taskPacket.phaseOneAllowedPaths,
+        ...(selection.taskPacket.version === 2 ? selection.taskPacket.phaseTwoProtectedPaths : []),
+      ]),
+    ].sort(),
     repositoryDirectory: checkpointRepository,
     safeExecutablePath: filesConfig.safeExecutablePath,
     taskId: corpusTask.taskId,
@@ -4255,7 +4278,9 @@ export async function verifyMatchedEvaluationContinuationArtifactV1(input: {
     )
       .split('\0')
       .filter(Boolean);
-    protectedPathViolations = changedPaths.filter(path => input.plan.protectedPaths.includes(path));
+    protectedPathViolations = changedPaths.filter(path =>
+      input.plan.protectedPaths.some(protectedPath => path === protectedPath || path.startsWith(`${protectedPath}/`)),
+    );
     for (const [index, check] of input.plan.checks.entries()) {
       const startedAt = Date.now();
       const result = await runMatchedEvaluationContinuationFocusedCheckV1({

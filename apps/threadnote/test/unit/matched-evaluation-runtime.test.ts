@@ -685,6 +685,7 @@ describe('matched evaluation runtime integrity', () => {
     const sourceTaskPrompt = 'Implement the frozen source task.';
     const packet = parseMatchedEvaluationContinuationPhaseOneTaskPacketV1({
       phaseOneAllowedPaths: ['tests/test_regression.py'],
+      phaseTwoProtectedPaths: ['tests/test_compat'],
       phaseOneDirective: 'Add only the failing regression and stop.',
       phaseOneFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
       phaseTwoFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
@@ -716,8 +717,35 @@ describe('matched evaluation runtime integrity', () => {
       new Set(['files-bare', 'manual-handoff', 'threadnote-preloaded-resume']),
     );
     expect(parseMatchedEvaluationContinuationPhaseOneSelectionV1(selection)).toEqual(selection);
+    expect(() =>
+      parseMatchedEvaluationContinuationPhaseOneTaskPacketV1({
+        ...packet,
+        phaseTwoProtectedPaths: ['../outside.py'],
+      }),
+    ).toThrow('phase-two protected paths are invalid');
+    expect(() =>
+      parseMatchedEvaluationContinuationPhaseOneTaskPacketV1({
+        ...packet,
+        phaseTwoProtectedPaths: ['tests/test.py', 'tests/test.py'],
+      }),
+    ).toThrow('phase-two protected paths are invalid');
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.stringMatching(/^[a-z][a-z0-9_-]{0,20}$/u), {minLength: 1, maxLength: 4}),
+        segments => {
+          const paths = segments.map(segment => `tests/${segment}`);
+          expect(
+            parseMatchedEvaluationContinuationPhaseOneTaskPacketV1({
+              ...packet,
+              phaseTwoProtectedPaths: paths,
+            }),
+          ).toMatchObject({phaseTwoProtectedPaths: paths});
+        },
+      ),
+      {numRuns: 12},
+    );
     if (packet.version !== 2) throw new Error('Expected the matched-context v2 packet.');
-    const {treatmentSet: _treatmentSet, ...v1Packet} = packet;
+    const {phaseTwoProtectedPaths: _phaseTwoProtectedPaths, treatmentSet: _treatmentSet, ...v1Packet} = packet;
     expect(() =>
       parseMatchedEvaluationContinuationPhaseOneSelectionV1({
         ...selection,
@@ -1088,8 +1116,11 @@ describe('matched evaluation runtime integrity', () => {
     const root = await temporaryRoot(roots);
     const repository = join(root, 'repository');
     await repositoryFixture(repository, 'https://github.com/example/phase-two-verification.git', 'fixture');
+    await mkdir(join(repository, 'tests', 'test_compat'), {recursive: true});
+    await writeFile(join(repository, 'tests', 'test_compat', 'nested.py'), 'baseline\n');
+    await writeFile(join(repository, 'tests', 'test_compatibility.py'), 'baseline\n');
     await writeFile(join(repository, 'solution.txt'), 'bad\n');
-    await git(repository, ['add', 'solution.txt']);
+    await git(repository, ['add', '.']);
     await git(repository, ['commit', '-qm', 'checkpoint']);
     const checkpointRevision = (await gitOutput(repository, ['rev-parse', 'HEAD'])).trim();
     const verifier = join(root, 'verify.sh');
@@ -1127,13 +1158,17 @@ describe('matched evaluation runtime integrity', () => {
           policy: 'no-new-failures',
         },
       ],
-      protectedPaths: ['tests/test_regression.py'],
+      protectedPaths: ['tests/test_compat'],
       taskId,
     });
 
     await writeFile(join(repository, 'solution.txt'), 'good\n');
+    await writeFile(join(repository, 'tests', 'test_compat', 'nested.py'), 'changed\n');
+    await writeFile(join(repository, 'tests', 'test_compatibility.py'), 'changed\n');
     const patch = await gitOutput(repository, ['diff', '--binary', '--full-index', '--no-ext-diff', '--', '.']);
     await writeFile(join(repository, 'solution.txt'), 'bad\n');
+    await writeFile(join(repository, 'tests', 'test_compat', 'nested.py'), 'baseline\n');
+    await writeFile(join(repository, 'tests', 'test_compatibility.py'), 'baseline\n');
     const artifactPath = join(root, 'artifact.json');
     const artifact = Buffer.from(`${JSON.stringify({patch})}\n`);
     await writeFile(artifactPath, artifact);
@@ -1148,7 +1183,8 @@ describe('matched evaluation runtime integrity', () => {
       safeExecutablePath: '/usr/bin:/bin',
     });
 
-    expect(receipt.status).toBe('passed');
+    expect(receipt.status).toBe('task-failed');
+    expect(receipt.protectedPathViolations).toEqual(['tests/test_compat/nested.py']);
     expect(receipt.checks).toHaveLength(2);
     await expect(readFile(join(repository, 'solution.txt'), 'utf8')).resolves.toBe('bad\n');
     expect(await gitOutput(repository, ['status', '--porcelain'])).toBe('');

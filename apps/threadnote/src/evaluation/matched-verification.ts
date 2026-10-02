@@ -236,7 +236,11 @@ export function createMatchedContinuationPhaseTwoVerificationReceiptV1(input: {
     'continuation verification protected path violations',
     true,
   );
-  if (protectedPathViolations.some(path => !plan.protectedPaths.includes(path))) {
+  if (
+    protectedPathViolations.some(
+      path => !plan.protectedPaths.some(protectedPath => isProtectedRepositoryPath(protectedPath, path)),
+    )
+  ) {
     invalid('continuation verification reports a path outside the sealed protected paths');
   }
   const checkDurationMilliseconds = checks.reduce((sum, check) => sum + check.durationMilliseconds, 0);
@@ -272,10 +276,18 @@ export function parseMatchedContinuationPhaseTwoVerificationReceiptV1(input: {
     invalid('continuation verification aggregate identity differs from its sealed plan or artifact');
   }
   assertContinuationReceiptCoverage(plan, receipt.checks, artifactHash);
-  if (receipt.protectedPathViolations.some(path => !plan.protectedPaths.includes(path))) {
+  if (
+    receipt.protectedPathViolations.some(
+      path => !plan.protectedPaths.some(protectedPath => isProtectedRepositoryPath(protectedPath, path)),
+    )
+  ) {
     invalid('continuation verification protected path violations differ from its sealed plan');
   }
   return receipt;
+}
+
+function isProtectedRepositoryPath(protectedPath: string, changedPath: string): boolean {
+  return changedPath === protectedPath || changedPath.startsWith(`${protectedPath}/`);
 }
 
 export function parseMatchedContinuationPytestFailureIdsV1(stdout: string, stderr: string): readonly string[] {
