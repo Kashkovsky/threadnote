@@ -197,7 +197,7 @@ describe('matched continuation finalization', () => {
     expect(extractMatchedEvaluationContinuationPhaseOneEvidenceV2(transcript, ['tests/regression.test.ts'])).toEqual({
       diagnosticEvidence: {
         diagnosticConclusion: 'The production normalizer drops the wrapper before the suggestion is rendered.',
-        graphQuery: 'src/normalizer.ts Which production caller passes the normalized node into the renderer?',
+        graphQuery: 'src/normalizer.ts find callers from normalizeNode to renderSuggestion',
         graphQuestion: 'Which production caller passes the normalized node into the renderer?',
         rejectedHypothesis: 'The parser still preserves the wrapper in its intermediate node.',
         sourceCitations: [{endLine: 88, path: 'src/normalizer.ts', startLine: 72}],
@@ -400,13 +400,14 @@ describe('matched continuation finalization', () => {
     expect(projected.handoff).not.toContain(invocation);
   });
 
-  it('grounds graph questions in their attested production source without exceeding the tool bound', () => {
+  it('grounds identifier-rich graph queries in their attested production source without replacing their terms', () => {
     const query = buildMatchedEvaluationContinuationAnchoredGraphQueryV1({
-      fallbackQuery: 'inspect_code_graph("find the transition")',
+      fallbackQuery: 'inspect_code_graph("Node.search find the transition to staticChild")',
       graphQuestion: `Which transition advances the queue? ${'detail '.repeat(80)}`,
       sourceCitations: [{path: 'src/router/node.ts'}],
     });
-    expect(query.startsWith('src/router/node.ts Which transition advances the queue?')).toBe(true);
+    expect(query).toBe('src/router/node.ts Node.search find the transition to staticChild');
+    expect(query).not.toContain('Which transition advances the queue?');
     expect(Buffer.byteLength(query, 'utf8')).toBeLessThanOrEqual(256);
     expect(
       Buffer.byteLength(
@@ -425,6 +426,21 @@ describe('matched continuation finalization', () => {
         sourceCitations: [{path: `src/${'nested/'.repeat(30)}node.ts`}],
       }),
     ).toBe('find the transition');
+  });
+
+  it('preserves the sealed code identities regardless of graph-question prose', () => {
+    fc.assert(
+      fc.property(fc.string({maxLength: 512}), graphQuestion => {
+        expect(
+          buildMatchedEvaluationContinuationAnchoredGraphQueryV1({
+            fallbackQuery: 'inspect_code_graph("html.parse_html_dict callers DictField.get_value")',
+            graphQuestion,
+            sourceCitations: [{path: 'rest_framework/fields.py'}],
+          }),
+        ).toBe('rest_framework/fields.py html.parse_html_dict callers DictField.get_value');
+      }),
+      {numRuns: 64},
+    );
   });
 
   it('requires structural relationship evidence on a cited source path', () => {

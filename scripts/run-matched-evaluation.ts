@@ -932,22 +932,21 @@ export function normalizeMatchedEvaluationContinuationGraphQueryV1(value: string
   }
 }
 
-/** Ground a continuation graph question in its first attested production-source citation. */
+/** Ground the model's identifier-rich graph query in its first attested production-source citation. */
 export function buildMatchedEvaluationContinuationAnchoredGraphQueryV1(input: {
   readonly fallbackQuery: string;
   readonly graphQuestion: string;
   readonly sourceCitations: readonly {readonly path: string}[];
 }): string {
   const fallback = normalizeMatchedEvaluationContinuationGraphQueryV1(input.fallbackQuery).replace(/\s+/gu, ' ').trim();
-  const question = input.graphQuestion.replace(/\s+/gu, ' ').trim();
   const sourcePath = input.sourceCitations[0]?.path;
   if (sourcePath === undefined || Buffer.byteLength(sourcePath, 'utf8') > 160) {
     return matchedEvaluationUtf8Prefix(fallback, 256).trim();
   }
-  const availableQuestionBytes = 256 - Buffer.byteLength(sourcePath, 'utf8') - 1;
-  if (availableQuestionBytes < 8) return matchedEvaluationUtf8Prefix(fallback, 256).trim();
-  const boundedQuestion = matchedEvaluationUtf8Prefix(question, availableQuestionBytes).trim();
-  return `${sourcePath} ${boundedQuestion}`;
+  const availableQueryBytes = 256 - Buffer.byteLength(sourcePath, 'utf8') - 1;
+  if (availableQueryBytes < 8) return matchedEvaluationUtf8Prefix(fallback, 256).trim();
+  const boundedQuery = matchedEvaluationUtf8Prefix(fallback, availableQueryBytes).trim();
+  return `${sourcePath} ${boundedQuery}`;
 }
 
 function matchedEvaluationUtf8Prefix(value: string, maximumBytes: number): string {
