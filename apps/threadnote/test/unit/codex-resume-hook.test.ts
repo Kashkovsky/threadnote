@@ -175,6 +175,8 @@ describe('Codex resume preload', () => {
           attempted: 'Added the regression and ran the focused check.',
           avoidRepeat: 'Do not reread the cited regression unless source changed.',
           decisions: 'Production remains unchanged.',
+          graphQuery:
+            'rest_framework/fields.py Which callers and sibling HTML collection fields depend on DictField.get_value returning parse_html_dict output for an absent prefix?',
           observations: 'The new regression receives an empty dictionary instead of its default.',
           unresolved: 'Root cause and broader invariants are not established.',
           verification: '391 existing checks pass and the new regression fails.',
@@ -196,6 +198,9 @@ describe('Codex resume preload', () => {
       'Observed: The new regression receives an empty dictionary instead of its default.',
     );
     expect(projection.text).toContain('Unknown: Root cause and broader invariants are not established.');
+    expect(projection.text).toContain(
+      'Graph query: rest_framework/fields.py Which callers and sibling HTML collection fields depend on DictField.get_value returning parse_html_dict output for an absent prefix?',
+    );
     expect(projection.text).toContain('Source leads: rest_framework/fields.py:1728 (DictField)');
     expect(projection.text).not.toContain('CharField');
     expect(projection.text).not.toContain('SlugRelatedField');
@@ -214,6 +219,8 @@ describe('Codex resume preload', () => {
           avoidRepeat: value,
           blockers: value,
           decisions: value,
+          graphQuery: value,
+          graphQuestion: value,
           invariants: value,
           nextStep: value,
           observations: value,

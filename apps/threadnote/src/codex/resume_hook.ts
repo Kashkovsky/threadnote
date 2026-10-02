@@ -404,6 +404,7 @@ export function renderCodexResumePreloadContext(
     ['Why', compact.rationale],
     ['Verified', compact.verification],
     ['Unknown', compact.unresolved],
+    ['Graph query', compact.graphQuery],
     ['Avoid', compact.avoidRepeat],
     sourceLeads.length === 0
       ? undefined
