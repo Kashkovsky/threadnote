@@ -593,6 +593,9 @@ describe('Threadnote MCP toolsets', () => {
         expect(JSON.stringify(recall?.inputSchema)).not.toContain('null');
         const read = tools.tools.find(tool => tool.name === 'read_context');
         expect(read?.inputSchema.properties).not.toHaveProperty('full');
+        expect(read?.inputSchema.properties).toMatchObject({
+          responseFormat: {enum: ['agent', 'dual', 'text']},
+        });
         for (const name of ['remember_context', 'review_session_context']) {
           const codeReferenceTool = tools.tools.find(tool => tool.name === name);
           expect(codeReferenceTool?.inputSchema).toMatchObject({
@@ -1309,11 +1312,37 @@ describe('Threadnote MCP toolsets', () => {
     );
   }, 40_000);
 
-  it('returns complete text once in the default read_context response format', async () => {
+  it('returns complete body and compact metadata once in the default read_context agent format', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/text-read.md';
-        const content = canonicalMemoryContent('text-read', `${'Evidence 🙂漢字\n'.repeat(500)}terminal`);
+        const body = `${'Evidence 🙂漢字\n'.repeat(500)}terminal`;
+        const citation = createMemoryCodeCitation({
+          extractorSet: 'mcp-read-agent-projection',
+          fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
+          path: 'packages/memory/src/read/projection.ts',
+          repositoryId: 'b'.repeat(64),
+          repositoryIdentityKind: 'remote',
+          sourceCommit: 'c'.repeat(40),
+          sourceDirty: false,
+          sourceSnapshotId: `cgsn_${'d'.repeat(40)}`,
+          target: {kind: 'file'},
+          version: 1,
+        });
+        const content = formatMemoryDocument(
+          'MEMORY',
+          {
+            codeCitations: [citation],
+            kind: 'durable',
+            project: 'threadnote',
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'integration-test',
+            status: 'active',
+            timestamp: '2026-08-01T00:00:00.000Z',
+            topic: 'text-read',
+          },
+          body,
+        );
         await writeCanonicalMemory(fixture.home, 'text-read.md', content);
 
         const result = await client.callTool(
@@ -1324,16 +1353,31 @@ describe('Threadnote MCP toolsets', () => {
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
         const output = Array.isArray(result.content) ? result.content : [];
         const structured = result.structuredContent as Record<string, unknown>;
-        expect((output[0] as TextContent | undefined)?.text).toBe(content);
+        const text = (output[0] as TextContent | undefined)?.text ?? '';
+        expect(text).toContain('TN-MEMORY/1');
+        expect(text).toContain('Memory: kind=durable; status=active; project=threadnote; topic=text-read');
+        expect(text).toContain(body);
+        expect(text).toContain(
+          `Code evidence [remote:${citation.repositoryId.slice(0, 12)} @ ${citation.sourceCommit}]: packages/memory/src/read/projection.ts`,
+        );
+        expect(text).not.toContain('source_agent_client:');
         expect(structured).toMatchObject({
           complete: true,
           contentBytes: Buffer.byteLength(content),
-          contentChannel: 'text',
+          contentChannel: 'agent',
           type: 'threadnote-read',
-          uri,
           version: 2,
         });
+        expect(structured).not.toHaveProperty('uri');
         expect(structured).not.toHaveProperty('content');
+
+        const canonical = await client.callTool(
+          {arguments: {responseFormat: 'text', uri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        const canonicalOutput = Array.isArray(canonical.content) ? canonical.content : [];
+        expect((canonicalOutput[0] as TextContent | undefined)?.text).toBe(content);
 
         for (const invalidUri of ['projects/threadnote/text-read.md', 'memories/../durable/text-read.md']) {
           const invalid = await client.callTool({arguments: {uri: invalidUri}, name: 'read_context'}, undefined, {
@@ -1776,9 +1820,11 @@ describe('Threadnote MCP toolsets', () => {
         const storedUri = (stored.structuredContent as {readonly memoryUri?: string}).memoryUri;
         expect(storedUri).toBe('threadnote://user/test-user/memories/durable/projects/threadnote/relation-source.md');
 
-        const read = await client.callTool({arguments: {uri: storedUri}, name: 'read_context'}, undefined, {
-          timeout: 30_000,
-        });
+        const read = await client.callTool(
+          {arguments: {responseFormat: 'text', uri: storedUri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
         const readContent = Array.isArray(read.content) ? read.content : [];
         expect((readContent[0] as TextContent | undefined)?.text).toContain(
           `relation: depends_on ${memoryIdentityAlias('tn_relation_target')}`,
@@ -2036,7 +2082,7 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(stored.isError, JSON.stringify(stored)).not.toBe(true);
         const storedUri = (stored.structuredContent as {readonly memoryUri?: string}).memoryUri;
-        const read = await callText(client, 'read_context', {uri: storedUri});
+        const read = await callText(client, 'read_context', {responseFormat: 'text', uri: storedUri});
         expect(read).toContain(`relation: related_to ${targetUri}`);
       },
       {toolset: 'core'},
@@ -2173,6 +2219,7 @@ describe('Threadnote MCP toolsets', () => {
         }
 
         const stored = await callText(client, 'read_context', {
+          responseFormat: 'text',
           uri: 'threadnote://user/test-user/memories/durable/projects/monorepo/search-implementation.md',
         });
         expect(stored).toContain('workspace_scope: apps/search');
@@ -2188,6 +2235,7 @@ describe('Threadnote MCP toolsets', () => {
           topic: 'search-implementation',
         });
         const replacedSearch = await callText(client, 'read_context', {
+          responseFormat: 'text',
           uri: 'threadnote://user/test-user/memories/durable/projects/monorepo/search-implementation.md',
         });
         expect(replacedSearch).toContain('workspace_scope: apps/search');
@@ -2212,7 +2260,7 @@ describe('Threadnote MCP toolsets', () => {
           text: 'Updated repository-wide contract.',
           topic: 'repo-wide',
         });
-        const replacedRepoWide = await callText(client, 'read_context', {uri: repoWideUri});
+        const replacedRepoWide = await callText(client, 'read_context', {responseFormat: 'text', uri: repoWideUri});
         expect(replacedRepoWide).not.toContain('workspace_scope:');
 
         const recalled = await client.callTool(

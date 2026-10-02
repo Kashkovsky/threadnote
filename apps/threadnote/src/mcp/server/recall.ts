@@ -45,6 +45,7 @@ import {
   MemoryReadProjectionError,
   MemoryReadTooLargeError,
   memoryReadMcpStructuredContent,
+  memoryReadMcpText,
   projectMemoryRead,
   type MemoryReadResource,
 } from '@threadnote/memory/read/projection';
@@ -1364,15 +1365,15 @@ export function registerReadTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Read up to ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Default text avoids duplicating the body; dual repeats it in structuredContent. Oversize: mode=outline or section, or page with offsetBytes=0.`,
+      description: `${description} Max ${MEMORY_READ_MAXIMUM_CONTENT_BYTES} bytes. Default agent; text=canonical; dual=structured. Oversize: mode=outline or section, or offsetBytes=0.`,
       inputSchema: {
         mode: McpInput.literals(['content', 'outline']),
         offsetBytes: McpInput.integer('UTF-8 byte offset for an explicit bounded page; start at 0', {minimum: 0}),
-        responseFormat: McpInput.literals(['dual', 'text'], 'Default text; dual repeats body in structuredContent.'),
+        responseFormat: McpInput.literals(['agent', 'dual', 'text'], 'Default agent; text=canonical; dual=structured.'),
         section: McpInput.string(),
         sourceHash: McpInput.string('SHA-256 from the first page; required when offsetBytes > 0'),
-        uri: McpInput.string('Canonical threadnote:// URI or compact memories/ path returned by Threadnote'),
-        uris: McpInput.stringOrStrings('Canonical threadnote:// URI(s) or compact memories/ path(s)'),
+        uri: McpInput.string('Memory pointer'),
+        uris: McpInput.stringOrStrings('Memory pointers'),
       },
     },
     ({mode, offsetBytes, responseFormat, section, sourceHash, uri, uris}) => {
@@ -1493,7 +1494,7 @@ export function registerReadTool(
             },
           },
           content: [
-            {type: 'text' as const, text: read.content},
+            {type: 'text' as const, text: memoryReadMcpText(read, responseFormat)},
             ...(read.continuation === undefined ? [] : [{type: 'text' as const, text: read.continuation}]),
             ...(read.receipt === undefined ? [] : [{type: 'text' as const, text: read.receipt}]),
             ...missingRecoveries.map(text => ({type: 'text' as const, text})),
