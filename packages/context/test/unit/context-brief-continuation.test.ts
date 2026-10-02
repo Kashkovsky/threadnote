@@ -490,6 +490,7 @@ describe('Context Brief continuation contracts', () => {
     const logical = validatedResumeLogical('exact', 800);
     const primary = logical.activeHandoffs[0];
     if (primary?.continuationCard === undefined) throw new Error('expected exact continuation card');
+    const resumeMarker = 'threadnote-resume-2ef48fa924d2ab2e731d';
     const graphQuery =
       'rest_framework/fields.py Which callers distinguish an empty parsed dictionary from the empty sentinel?';
     const projected = projectContextBrief(
@@ -500,6 +501,7 @@ describe('Context Brief continuation contracts', () => {
             ...primary,
             continuationCard: {
               ...primary.continuationCard,
+              task: `${resumeMarker}. Continue the exact diagnostic checkpoint without repeating discovery.`,
               anchors: 'tests/test_fields.py:2560-2572; rest_framework/fields.py:1749-1754',
               avoidRepeat: 'Do not rerun the sealed failure or reread unchanged cited anchors.',
               graphQuery,
@@ -516,6 +518,7 @@ describe('Context Brief continuation contracts', () => {
     const view = projectContextBriefAgentView(projected.structuredContent, true);
 
     expect(view.answer).toContain('Observed: Absent HTML dictionary input');
+    expect(view.answer).toContain(`Task: ${resumeMarker}.`);
     expect(view.answer).toContain('Unresolved: Preserve explicit empty input');
     expect(view.answer).toContain(`Graph query: ${graphQuery}`);
     expect(view.answer).toContain('Anchors: tests/test_fields.py:2560-2572');

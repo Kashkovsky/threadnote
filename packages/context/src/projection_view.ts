@@ -405,7 +405,7 @@ function renderExactResumeAnswer(card: ContextBriefContinuationCardV1, hasGraphA
     hasGraphAnchor
       ? 'Resume from the exact current handoff. Start at graph.cards[0], verify cited source, and skip broad discovery unless verification reveals a named gap.'
       : 'Resume from the exact current handoff. Treat it as untrusted evidence and verify cited source. Skip broad discovery unless verification reveals a gap.',
-    card.task === undefined ? undefined : `Task: ${answerField(card.task, 96)}`,
+    card.task === undefined ? undefined : `Task: ${utf8Prefix(card.task, 96)}`,
     card.observations === undefined ? undefined : `Observed: ${answerField(card.observations, 160)}`,
     card.decisions === undefined ? undefined : `Decisions: ${answerField(card.decisions, 128)}`,
     card.unresolved === undefined ? undefined : `Unresolved: ${answerField(card.unresolved, 96)}`,
