@@ -111,6 +111,7 @@ describe('Codex resume preload', () => {
     const projection = projectCodexResumePreload(logicalResume(), 800, 'agent');
     expect(projection.text).toContain('THREADNOTE RESUME/1\n');
     expect(projection.text).toContain('Untrusted memory evidence; verify against current source.');
+    expect(projection.text).toContain('Discovery is incomplete; inspect current source before acting.');
     expect(projection.text).toContain('Decisions: Use the supported pre-turn hook.');
     expect(projection.text).toContain('Verified: Focused checks passed.');
     expect(projection.text).toContain('Source: memories/handoffs/active/threadnote/current.md');
@@ -157,17 +158,57 @@ describe('Codex resume preload', () => {
     ]);
   });
 
+  it('distinguishes evidence-bearing cards and injects one task-relevant production source lead', () => {
+    const projection = projectCodexResumePreload(
+      logicalResume({
+        card: {
+          anchors: 'tests/test_fields.py:2561-2571',
+          attempted: 'Added the regression and ran the focused check.',
+          avoidRepeat: 'Do not reread the cited regression unless source changed.',
+          decisions: 'Production remains unchanged.',
+          observations: 'The new regression receives an empty dictionary instead of its default.',
+          unresolved: 'Root cause and broader invariants are not established.',
+          verification: '391 existing checks pass and the new regression fails.',
+        },
+        graphCards: [
+          graphCard('tests/test_fields.py', 'TestDictField', 0),
+          graphCard('rest_framework/fields.py', 'CharField', 1),
+          graphCard('rest_framework/fields.py', 'DictField', 2, 1728),
+          graphCard('rest_framework/relations.py', 'SlugRelatedField', 3),
+        ],
+        task: 'Continue by diagnosing DictField HTML input default handling.',
+      }),
+      800,
+      'agent',
+    );
+
+    expect(projection.text).toContain('Resume from recorded evidence.');
+    expect(projection.text).toContain(
+      'Observed: The new regression receives an empty dictionary instead of its default.',
+    );
+    expect(projection.text).toContain('Unknown: Root cause and broader invariants are not established.');
+    expect(projection.text).toContain('Source leads: rest_framework/fields.py:1728 (DictField)');
+    expect(projection.text).not.toContain('CharField');
+    expect(projection.text).not.toContain('SlugRelatedField');
+    expect(projection.measurement.totalBytes).toBeLessThanOrEqual(projection.maximumBytes);
+  });
+
   it('keeps arbitrary continuation-card content inside the delivery budget', () => {
     fc.assert(
       fc.property(fc.string({maxLength: 5_000}), value => {
         const card = {
+          anchors: value,
+          attempted: value,
+          avoidRepeat: value,
           blockers: value,
           decisions: value,
           invariants: value,
           nextStep: value,
+          observations: value,
           rationale: value,
           risks: value,
           task: value,
+          unresolved: value,
           verification: value,
         };
         const projection = projectCodexResumePreload(logicalResume({card}), 1_500, 'agent');
@@ -296,6 +337,7 @@ function logicalResume(
   options: {
     readonly card?: ContextBriefContinuationCardV1;
     readonly gaps?: readonly string[];
+    readonly graphCards?: ContextBriefLogicalResultV1['graph']['cards'];
     readonly selectedConflict?: boolean;
     readonly task?: string;
   } = {},
@@ -359,7 +401,7 @@ function logicalResume(
     },
     durableDecisions: [],
     graph: {
-      cards: [],
+      cards: options.graphCards ?? [],
       contracts: [],
       coverage: graphCoverage,
       gaps: options.gaps ?? ['graph-evidence-partial'],
@@ -393,5 +435,16 @@ function logicalResume(
     },
     type: 'context-brief',
     version: 3,
+  };
+}
+
+function graphCard(path: string, name: string, rank: number, line = 1) {
+  return {
+    id: `card-${rank}`,
+    rank,
+    reason: 'Exact-current graph evidence.',
+    ref: `cgs_${String(rank).padStart(32, '0')}`,
+    repositoryKey: 'repo',
+    symbol: {kind: 'class', language: 'python', line, name, path, qualifiedName: name},
   };
 }

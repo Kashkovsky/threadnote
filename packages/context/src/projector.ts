@@ -915,11 +915,9 @@ function normalizeAgentViewMemory(value: unknown): unknown {
 
 function validateContinuationCard(value: unknown, label: string): void {
   if (!Predicate.isObject(value)) throw invalid(`${label} must be an object`);
-  assertAgentViewKeys(
-    value,
-    ['blockers', 'decisions', 'invariants', 'nextStep', 'rationale', 'risks', 'task', 'verification'],
-    label,
-  );
+  const allowed =
+    'anchors attempted avoidRepeat blockers decisions invariants nextStep observations rationale risks task unresolved verification';
+  assertAgentViewKeys(value, allowed.split(' '), label);
   if (
     Object.keys(value).length === 0 ||
     Object.values(value).some(field => typeof field !== 'string' || field.length === 0)

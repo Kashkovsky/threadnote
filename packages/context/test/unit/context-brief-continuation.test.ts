@@ -79,6 +79,11 @@ describe('Context Brief continuation contracts', () => {
         [
           'task: implement the card',
           'decisions: keep stable selectors',
+          'observed: the focused check fails only in the new regression',
+          'anchors: packages/context/src/projector.ts:10-20',
+          'tried: inspected the regression and ran the focused check',
+          'unresolved: root cause is not established',
+          'avoid repeat: do not reread the cited regression unless source changed',
           'constraints: preserve source evidence',
           'rationale: bounded evidence is easier to resume',
           'verification: focused tests pass',
@@ -91,13 +96,18 @@ describe('Context Brief continuation contracts', () => {
         ].join('\n'),
       ),
     ).toEqual({
+      anchors: 'packages/context/src/projector.ts:10-20',
+      attempted: 'inspected the regression and ran the focused check',
+      avoidRepeat: 'do not reread the cited regression unless source changed',
       blockers: 'none',
       decisions: 'keep stable selectors',
       invariants: 'preserve source evidence',
       nextStep: 'update projector at [path omitted]',
+      observations: 'the focused check fails only in the new regression',
       rationale: 'bounded evidence is easier to resume',
       risks: 'stale graph',
       task: 'implement the card',
+      unresolved: 'root cause is not established',
       verification: 'focused tests pass',
     });
   });
@@ -468,6 +478,11 @@ describe('Context Brief continuation contracts', () => {
           [
             'task: 東京🙂',
             'decisions: preserve graph',
+            'observed: exact failure',
+            'anchors: packages/context/src/projector.ts',
+            'tried: focused inspection',
+            'unresolved: cause unknown',
+            'avoid_repeat: repeated broad search',
             'constraints: current source',
             'verification: tests pass',
             'next_step: inspect node',

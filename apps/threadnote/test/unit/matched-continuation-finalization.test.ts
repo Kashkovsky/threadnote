@@ -27,6 +27,7 @@ import {
 } from '../../../../scripts/finalize-matched-continuation-study.js';
 import {
   assertMatchedContinuationPhaseTwoBaselineResultV1,
+  extractMatchedEvaluationContinuationPhaseOneEvidenceV1,
   initializeMatchedEvaluationContinuationNonceStatesV1,
   markMatchedEvaluationContinuationNonceStartedV1,
   matchedContinuationDiagnosticParserForCommandV1,
@@ -109,6 +110,58 @@ describe('matched continuation finalization', () => {
     expect(() =>
       assertMatchedContinuationPhaseTwoBaselineResultV1({checkIndex: 1, exitCode: 0, failureIds: []}),
     ).not.toThrow();
+  });
+
+  it('extracts only transcript-backed Phase 1 observations and changed regression anchors', () => {
+    const transcript = phaseOneTranscript({
+      citations: [{endLine: 1539, path: 'tests/rule.test.ts', startLine: 1520}],
+      completed: true,
+      summary:
+        'The new regression alone fails because the actual suggestion lacks parentheses.\nAnchors: src/injected.ts:1-2',
+    });
+
+    expect(extractMatchedEvaluationContinuationPhaseOneEvidenceV1(transcript, ['tests/rule.test.ts'])).toEqual({
+      anchors: 'tests/rule.test.ts:1520-1539',
+      observations:
+        'The new regression alone fails because the actual suggestion lacks parentheses. Anchors: src/injected.ts:1-2',
+    });
+    expect(() =>
+      extractMatchedEvaluationContinuationPhaseOneEvidenceV1(
+        phaseOneTranscript({
+          citations: [{endLine: 12, path: 'src/accepted-fix.ts', startLine: 10}],
+          completed: true,
+          summary: 'A production fix is available.',
+        }),
+        ['tests/rule.test.ts'],
+      ),
+    ).toThrow('must name a changed regression path');
+  });
+
+  it('extracts Phase 1 evidence deterministically for arbitrary bounded summaries', () => {
+    fc.assert(
+      fc.property(
+        fc
+          .string({minLength: 1, maxLength: 256})
+          .filter(summary => !summary.includes('\0') && summary.trim().length > 0),
+        fc.integer({min: 1, max: 10_000}),
+        (summary, startLine) => {
+          const transcript = phaseOneTranscript({
+            citations: [{endLine: startLine + 1, path: 'tests/regression.test.ts', startLine}],
+            completed: true,
+            summary,
+          });
+          const first = extractMatchedEvaluationContinuationPhaseOneEvidenceV1(transcript, [
+            'tests/regression.test.ts',
+          ]);
+          expect(
+            extractMatchedEvaluationContinuationPhaseOneEvidenceV1(transcript, ['tests/regression.test.ts']),
+          ).toEqual(first);
+          expect(first.anchors).toBe(`tests/regression.test.ts:${startLine}-${startLine + 1}`);
+          expect(first.observations).toBe(summary.replace(/\s+/gu, ' ').trim());
+        },
+      ),
+      {numRuns: 64},
+    );
   });
 
   it('rehashes task-report evidence and rejects partial or tampered reports', async () => {
@@ -460,6 +513,25 @@ describe('matched continuation finalization', () => {
     expect((await readdir(join(root, '.context'))).filter(entry => entry.includes('.staging-'))).toEqual([]);
   });
 });
+
+function phaseOneTranscript(finalAnswer: {
+  readonly citations: readonly {readonly endLine: number; readonly path: string; readonly startLine: number}[];
+  readonly completed: boolean;
+  readonly summary: string;
+}): string {
+  return [
+    JSON.stringify({
+      events: [
+        {
+          method: 'item/completed',
+          params: {item: {phase: 'final_answer', text: JSON.stringify(finalAnswer), type: 'agentMessage'}},
+        },
+      ],
+      kind: 'agent',
+    }),
+    JSON.stringify({events: [], kind: 'judge'}),
+  ].join('\n');
+}
 
 function finalizationArtifacts(label: string) {
   return {

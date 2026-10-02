@@ -510,15 +510,46 @@ export function compactContinuationCard(
   preserveResumeDetails = false,
 ): ContextBriefContinuationCardV1 {
   const limits = preserveResumeDetails
-    ? {decisions: 192, invariants: 144, nextStep: 192, rationale: 256, risks: 80, task: 128, verification: 128}
-    : {decisions: 128, invariants: 96, nextStep: 96, rationale: 96, risks: 80, task: 96, verification: 96};
+    ? {
+        anchors: 128,
+        attempted: 96,
+        avoidRepeat: 96,
+        decisions: 192,
+        invariants: 144,
+        nextStep: 192,
+        observations: 192,
+        rationale: 256,
+        risks: 80,
+        task: 128,
+        unresolved: 128,
+        verification: 128,
+      }
+    : {
+        anchors: 80,
+        attempted: 64,
+        avoidRepeat: 64,
+        decisions: 128,
+        invariants: 96,
+        nextStep: 96,
+        observations: 96,
+        rationale: 96,
+        risks: 80,
+        task: 96,
+        unresolved: 80,
+        verification: 96,
+      };
   const compact = preserveResumeDetails ? utf8HeadTail : utf8Prefix;
   return {
     ...(card.task === undefined ? {} : {task: compact(card.task, limits.task)}),
     ...(card.decisions === undefined ? {} : {decisions: compact(card.decisions, limits.decisions)}),
+    ...(card.observations === undefined ? {} : {observations: compact(card.observations, limits.observations)}),
+    ...(card.anchors === undefined ? {} : {anchors: compact(card.anchors, limits.anchors)}),
+    ...(card.attempted === undefined ? {} : {attempted: compact(card.attempted, limits.attempted)}),
     ...(card.invariants === undefined ? {} : {invariants: compact(card.invariants, limits.invariants)}),
     ...(card.rationale === undefined ? {} : {rationale: compact(card.rationale, limits.rationale)}),
     ...(card.verification === undefined ? {} : {verification: compact(card.verification, limits.verification)}),
+    ...(card.unresolved === undefined ? {} : {unresolved: compact(card.unresolved, limits.unresolved)}),
+    ...(card.avoidRepeat === undefined ? {} : {avoidRepeat: compact(card.avoidRepeat, limits.avoidRepeat)}),
     ...(card.blockers === undefined ? {} : {blockers: compact(card.blockers, 64)}),
     ...(card.risks === undefined ? {} : {risks: compact(card.risks, limits.risks)}),
     ...(card.nextStep === undefined ? {} : {nextStep: compact(card.nextStep, limits.nextStep)}),

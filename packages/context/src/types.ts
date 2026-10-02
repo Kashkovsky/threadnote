@@ -300,13 +300,18 @@ export interface ContextBriefMemoryActionCardV1 {
 
 /** Bounded current-workflow state for a handoff, distinct from a reusable action card. */
 export interface ContextBriefContinuationCardV1 {
+  readonly anchors?: string;
+  readonly attempted?: string;
+  readonly avoidRepeat?: string;
   readonly blockers?: string;
   readonly decisions?: string;
+  readonly observations?: string;
   readonly invariants?: string;
   readonly nextStep?: string;
   readonly rationale?: string;
   readonly risks?: string;
   readonly task?: string;
+  readonly unresolved?: string;
   readonly verification?: string;
 }
 

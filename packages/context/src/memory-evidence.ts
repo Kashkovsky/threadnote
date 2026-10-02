@@ -16,13 +16,18 @@ import type {
 
 const MEMORY_EXCERPT_BYTES = 240;
 const CONTINUATION_FIELD_BYTES = {
+  anchors: 320,
+  attempted: 384,
+  avoidRepeat: 256,
   blockers: 192,
   decisions: 512,
+  observations: 512,
   invariants: 320,
   nextStep: 384,
   rationale: 384,
   risks: 192,
   task: 192,
+  unresolved: 384,
   verification: 512,
 } as const;
 
@@ -396,9 +401,14 @@ export function handoffEvidenceExcerpt(
     [
       card.task === undefined ? undefined : `task: ${card.task}`,
       card.decisions === undefined ? undefined : `decisions: ${card.decisions}`,
+      card.observations === undefined ? undefined : `observed: ${card.observations}`,
+      card.anchors === undefined ? undefined : `anchors: ${card.anchors}`,
+      card.attempted === undefined ? undefined : `attempted: ${card.attempted}`,
       card.invariants === undefined ? undefined : `invariants: ${card.invariants}`,
       card.rationale === undefined ? undefined : `rationale: ${card.rationale}`,
       card.verification === undefined ? undefined : `verification: ${card.verification}`,
+      card.unresolved === undefined ? undefined : `unresolved: ${card.unresolved}`,
+      card.avoidRepeat === undefined ? undefined : `avoid_repeat: ${card.avoidRepeat}`,
       card.blockers === undefined ? undefined : `blockers: ${card.blockers}`,
       card.risks === undefined ? undefined : `risks: ${card.risks}`,
       card.nextStep === undefined ? undefined : `next_step: ${card.nextStep}`,
@@ -425,7 +435,7 @@ export function parseContextBriefContinuationCard(body: string): ContextBriefCon
       continue;
     }
     const match = rawLine.match(
-      /^\s{0,3}(?:#{1,6}\s*)?(task|decisions|constraints|invariants|rationale|verification|blockers|risks|next_step|next step)\s*:\s*(.*)$/iu,
+      /^\s{0,3}(?:#{1,6}\s*)?(task|decisions|observed|observations|findings|anchors|attempted|tried|avoid_repeat|avoid repeat|constraints|invariants|rationale|verification|unresolved|unknowns|blockers|risks|next_step|next step)\s*:\s*(.*)$/iu,
     );
     if (match !== null) {
       const key = continuationKey(match[1]);
@@ -522,6 +532,18 @@ function continuationKey(value: string): keyof ContextBriefContinuationCardV1 {
     case 'constraints':
     case 'invariants':
       return 'invariants';
+    case 'observed':
+    case 'findings':
+    case 'observations':
+      return 'observations';
+    case 'tried':
+    case 'attempted':
+      return 'attempted';
+    case 'unknowns':
+    case 'unresolved':
+      return 'unresolved';
+    case 'avoid_repeat':
+      return 'avoidRepeat';
     case 'next_step':
       return 'nextStep';
     default:

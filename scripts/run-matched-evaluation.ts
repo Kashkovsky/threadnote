@@ -2295,6 +2295,68 @@ export function assertMatchedEvaluationContinuationPhaseOneResultV1(
   }
 }
 
+export function extractMatchedEvaluationContinuationPhaseOneEvidenceV1(
+  transcript: string,
+  changedPaths: readonly string[],
+): {readonly anchors: string; readonly observations: string} {
+  const envelopes = transcript
+    .split(/\r?\n/gu)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map((line, index) => object(JSON.parse(line) as unknown, `continuation phase-one transcript line ${index + 1}`));
+  const agentEnvelopes = envelopes.filter(envelope => envelope.kind === 'agent');
+  if (agentEnvelopes.length !== 1) {
+    throw new Error('Continuation phase-one transcript must contain exactly one agent envelope.');
+  }
+  const events = array(agentEnvelopes[0].events, 'continuation phase-one agent events');
+  const finalMessages = events.flatMap((event, index) => {
+    const envelope = object(event, `continuation phase-one agent event ${index}`);
+    if (envelope.method !== 'item/completed') return [];
+    const params = object(envelope.params, `continuation phase-one agent event ${index} params`);
+    const item = object(params.item, `continuation phase-one agent event ${index} item`);
+    return item.type === 'agentMessage' && item.phase === 'final_answer' ? [item] : [];
+  });
+  if (finalMessages.length !== 1) {
+    throw new Error('Continuation phase-one transcript must contain exactly one completed final answer.');
+  }
+  const finalText = boundedString(finalMessages[0].text, 1, 16 * 1_024, 'continuation phase-one final answer text');
+  const finalAnswer = object(JSON.parse(finalText) as unknown, 'continuation phase-one structured final answer');
+  exactKeys(finalAnswer, ['citations', 'completed', 'summary'], 'continuation phase-one structured final answer');
+  if (finalAnswer.completed !== true) {
+    throw new Error('Continuation phase-one structured final answer is not completed.');
+  }
+  const observations = boundedString(finalAnswer.summary, 1, 2_048, 'continuation phase-one observed summary')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (observations.length === 0) {
+    throw new Error('Continuation phase-one observed summary must contain non-whitespace evidence.');
+  }
+  const allowedPaths = new Set(changedPaths);
+  const anchors = array(finalAnswer.citations, 'continuation phase-one final citations').map((citation, index) => {
+    const value = object(citation, `continuation phase-one final citation ${index}`);
+    exactKeys(value, ['endLine', 'path', 'startLine'], `continuation phase-one final citation ${index}`);
+    const path = boundedString(value.path, 1, 1_024, `continuation phase-one final citation ${index} path`);
+    if (isAbsolute(path) || path.split('/').some(segment => segment === '..') || !allowedPaths.has(path)) {
+      throw new Error('Continuation phase-one final citation must name a changed regression path.');
+    }
+    const startLine = boundedPositiveInteger(
+      value.startLine,
+      1,
+      10_000_000,
+      `continuation phase-one final citation ${index} start line`,
+    );
+    const endLine = boundedPositiveInteger(
+      value.endLine,
+      startLine,
+      10_000_000,
+      `continuation phase-one final citation ${index} end line`,
+    );
+    return `${path}:${startLine}-${endLine}`;
+  });
+  if (anchors.length === 0) throw new Error('Continuation phase-one final answer lacks a changed regression citation.');
+  return {anchors: [...new Set(anchors)].join(', '), observations};
+}
+
 /** Turn preserved Phase-1 evidence into one direct-child checkpoint and sealed v2 continuation plan. */
 export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1(options: {
   readonly corpusPath: string;
@@ -2630,13 +2692,22 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
   }
   await cp(graphHome, compactHome, {errorOnExist: true, force: false, recursive: true});
   const resumeEvidenceMarker = `threadnote-resume-${phaseOnePatchSha256.slice(0, 20)}`;
+  const phaseOneEvidence = extractMatchedEvaluationContinuationPhaseOneEvidenceV1(
+    await readFile(resolve(outputDirectory, 'phase-one', 'transcript.jsonl'), 'utf8'),
+    changedPaths,
+  );
   const handoff = [
     `Task: ${selection.taskPacket.phaseTwoPrompt}`,
     `Decisions: Phase 1 added only the committed regression in ${changedPaths.join(', ')}; production code is unchanged. ${resumeEvidenceMarker}`,
+    `Observed: ${phaseOneEvidence.observations}`,
+    `Anchors: ${phaseOneEvidence.anchors}`,
+    'Attempted: Phase 1 changed only the cited regression and ran the required focused check.',
     'Constraints: Keep the committed regression unchanged, preserve public behavior, use no network access, and implement the smallest general production correction.',
     'Rationale: The direct-child checkpoint isolates cross-session continuation from initial test discovery and makes every treatment start from the same failing regression.',
     `Verification: ${focusedCommand.tokens.join(' ')} fails with exit code 1 at this checkpoint, as required before the production fix.`,
     'Blockers: none.',
+    'Unresolved: Root cause and broader production invariants were not established in Phase 1.',
+    'Avoid repeat: Do not reread the cited regression unless current source differs; trace the production path behind the observed failure.',
     'Risks: Adjacent compatibility behavior may encode the old implementation and must remain covered by the sealed Phase 2 checks.',
     `Next step: ${selection.taskPacket.phaseTwoPrompt}`,
   ].join('\n');

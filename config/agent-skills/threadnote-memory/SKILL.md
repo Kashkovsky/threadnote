@@ -16,6 +16,8 @@ Close out in order:
    `remember_context({"kind":"handoff","project":"threadnote","topic":"active-task","callerCwd":"/abs/repo","text":"Status, checks, blockers, and next steps."})`.
    Prefer labeled `task`, `decisions`/`invariants`, `verification`, `blockers`/`risks`, and `next_step` fields so a fresh
    agent can resume without rereading the full record.
+   When the session has direct evidence, add concise `observed`, `anchors`, `attempted`, `unresolved`, and `avoid_repeat`
+   fields; omit them rather than inferring them. Evidence-grade fields enable stronger resume guidance and bounded source leads.
    Use stable project/topic + `replaceUri`; omit `keywords` and `regenerateKeywords` for handoff writes. On replacement,
    `clearKeywords` is the only keyword control and removes preserved legacy keywords.
 2. Only when the session produced reusable durable knowledge, preview a five-field Knowledge Delta (`decisions` +

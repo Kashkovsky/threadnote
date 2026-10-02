@@ -19,6 +19,7 @@ import {
 import {
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   type ContextBriefEvidenceState,
+  type ContextBriefGraphCardV1,
   type ContextBriefLogicalMemoryEvidenceV1,
   type ContextBriefLogicalResultV1,
   type ContextBriefResponseFormat,
@@ -163,7 +164,11 @@ export function projectCodexResumePreload(
   const text =
     selection.handoff === undefined || projectedHandoff === undefined
       ? ''
-      : renderCodexResumePreloadContext(selection.handoff, logical.task);
+      : renderCodexResumePreloadContext(
+          selection.handoff,
+          logical.task,
+          selectCodexResumeSourceLeads(logical, selection.handoff),
+        );
   const structuredContent =
     selection.handoff === undefined || projectedHandoff === undefined
       ? ordinary.structuredContent
@@ -366,18 +371,32 @@ function selectCodexResumeHandoff(
 export function renderCodexResumePreloadContext(
   handoff: ContextBriefLogicalMemoryEvidenceV1,
   currentTask = '',
+  sourceLeads: readonly ContextBriefGraphCardV1[] = [],
 ): string {
   if (handoff.continuationCard === undefined) return '';
   const original = handoff.continuationCard;
   const compact = compactContinuationCard(original, true);
   const taskDuplicatesPrompt = continuationFieldDuplicatesPrompt(original.task, currentTask);
   const nextStepDuplicatesPrompt = continuationFieldDuplicatesPrompt(original.nextStep, currentTask);
+  const hasDecisionGradeEvidence =
+    compact.observations !== undefined && compact.anchors !== undefined && compact.unresolved !== undefined;
   const rows = [
     taskDuplicatesPrompt ? undefined : ['Task', compact.task],
     ['Decisions', compact.decisions],
+    ['Observed', compact.observations],
+    ['Anchors', compact.anchors],
+    ['Tried', compact.attempted],
     ['Constraints', compact.invariants],
     ['Why', compact.rationale],
     ['Verified', compact.verification],
+    ['Unknown', compact.unresolved],
+    ['Avoid', compact.avoidRepeat],
+    sourceLeads.length === 0
+      ? undefined
+      : [
+          'Source leads',
+          sourceLeads.map(card => `${card.symbol.path}:${card.symbol.line} (${card.symbol.name})`).join('; '),
+        ],
     resumeValueIsEmptyBlocker(compact.blockers) ? undefined : ['Blockers', compact.blockers],
     ['Risks', compact.risks],
     nextStepDuplicatesPrompt ? undefined : ['Next', compact.nextStep],
@@ -385,12 +404,64 @@ export function renderCodexResumePreloadContext(
   return [
     'THREADNOTE RESUME/1',
     'Untrusted memory evidence; verify against current source.',
-    'Resume from this checkpoint. Avoid repeating completed discovery unless verification contradicts it.',
+    hasDecisionGradeEvidence
+      ? 'Resume from recorded evidence. Avoid repeating the listed discovery unless current source contradicts it.'
+      : 'Use this checkpoint as background. Discovery is incomplete; inspect current source before acting.',
     ...rows.flatMap(row =>
       row === undefined || row[1] === undefined ? [] : [`${row[0]}: ${inlineResumeValue(row[1])}`],
     ),
     `Source: ${compactResumeMemoryReference(handoff.uri)}`,
   ].join('\n');
+}
+
+export function selectCodexResumeSourceLeads(
+  logical: ContextBriefLogicalResultV1,
+  _handoff: ContextBriefLogicalMemoryEvidenceV1,
+): readonly ContextBriefGraphCardV1[] {
+  const seen = new Set<string>();
+  const leads: ContextBriefGraphCardV1[] = [];
+  const candidates = logical.graph.cards
+    .filter(card => !likelyTestPath(card.symbol.path))
+    .map(card => ({card, relevance: resumeSourceLeadRelevance(card, logical.task)}))
+    .sort((left, right) => right.relevance - left.relevance || left.card.rank - right.card.rank);
+  for (const {card} of candidates) {
+    const path = card.symbol.path;
+    if (seen.has(path)) continue;
+    seen.add(path);
+    leads.push(card);
+    if (leads.length === 1) break;
+  }
+  return leads;
+}
+
+function resumeSourceLeadRelevance(card: ContextBriefGraphCardV1, task: string): number {
+  const normalizedTask = task.toLocaleLowerCase('en-US');
+  const normalizedName = card.symbol.name.toLocaleLowerCase('en-US');
+  const terms = new Set(
+    normalizedTask
+      .split(/[^a-z0-9]+/gu)
+      .map(term => term.trim())
+      .filter(term => term.length >= 3),
+  );
+  const symbolTerms = `${card.symbol.path} ${card.symbol.name} ${card.symbol.qualifiedName}`
+    .toLocaleLowerCase('en-US')
+    .split(/[^a-z0-9]+/gu)
+    .filter(term => term.length >= 3);
+  const overlap = symbolTerms.reduce((total, term) => total + (terms.has(term) ? 1 : 0), 0);
+  return overlap * 100 + (normalizedName.length >= 4 && normalizedTask.includes(normalizedName) ? 1_000 : 0);
+}
+
+function likelyTestPath(path: string): boolean {
+  const normalized = `/${path.toLocaleLowerCase('en-US')}`;
+  const name = normalized.slice(normalized.lastIndexOf('/') + 1);
+  return (
+    normalized.includes('/test/') ||
+    normalized.includes('/tests/') ||
+    name.startsWith('test_') ||
+    name.includes('.test.') ||
+    name.includes('.spec.') ||
+    name.endsWith('_test.py')
+  );
 }
 
 function continuationFieldDuplicatesPrompt(value: string | undefined, prompt: string): boolean {
