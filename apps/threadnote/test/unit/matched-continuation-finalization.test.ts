@@ -29,6 +29,7 @@ import {
 } from '../../../../scripts/finalize-matched-continuation-study.js';
 import {
   assertMatchedContinuationPhaseTwoBaselineResultV1,
+  assertMatchedEvaluationContinuationDiagnosticSourceCitationPathsV1,
   assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1,
   assertMatchedEvaluationContinuationGraphEvidenceResultV1,
   buildMatchedEvaluationContinuationAnchoredGraphQueryV1,
@@ -43,6 +44,7 @@ import {
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
   recoverMatchedEvaluationContinuationAttemptsV1,
+  selectMatchedEvaluationContinuationInBoundsSourceCitationsV1,
   type MatchedEvaluationContinuationPilotPlanV3,
 } from '../../../../scripts/run-matched-evaluation.js';
 
@@ -251,6 +253,79 @@ describe('matched continuation finalization', () => {
       'not production source',
     );
     expect(() => validate('src/normalizer.ts', {content: 'one\ntwo\n'})).not.toThrow();
+  });
+
+  it('discards an overlong extra citation without rewriting the valid source anchor or raw ranges', () => {
+    const sourceCitations = [
+      {endLine: 12, path: 'src/fields.py', startLine: 8},
+      {endLine: 103, path: 'src/html.py', startLine: 88},
+    ];
+    const selected = selectMatchedEvaluationContinuationInBoundsSourceCitationsV1({
+      sourceCitations,
+      trackedRegularFiles: new Map([
+        ['src/fields.py', `${Array.from({length: 20}, (_, index) => index).join('\n')}\n`],
+        ['src/html.py', `${Array.from({length: 95}, (_, index) => index).join('\n')}\n`],
+      ]),
+    });
+
+    expect(selected).toEqual([{endLine: 12, path: 'src/fields.py', startLine: 8}]);
+    expect(sourceCitations).toEqual([
+      {endLine: 12, path: 'src/fields.py', startLine: 8},
+      {endLine: 103, path: 'src/html.py', startLine: 88},
+    ]);
+  });
+
+  it('rejects an overlong forbidden citation before bounds selection can discard it', () => {
+    const trackedRegularFiles = new Map([
+      ['src/fields.py', 'one\ntwo\n'],
+      ['tests/regression.py', 'one\ntwo\n'],
+    ]);
+    const sourceCitations = [
+      {endLine: 2, path: 'src/fields.py', startLine: 1},
+      {endLine: 100, path: 'tests/regression.py', startLine: 1},
+    ];
+
+    expect(() =>
+      assertMatchedEvaluationContinuationDiagnosticSourceCitationPathsV1({
+        changedPaths: ['tests/regression.py'],
+        phaseOneAllowedPaths: ['tests/regression.py'],
+        sourceCitations,
+        trackedRegularFiles,
+      }),
+    ).toThrow('not production source');
+  });
+
+  it('selects in-bounds citations without changing retained ranges and is idempotent', () => {
+    fc.assert(
+      fc.property(
+        fc
+          .integer({min: 1, max: 200})
+          .chain(lineCount =>
+            fc
+              .integer({min: 1, max: lineCount})
+              .chain(startLine =>
+                fc.integer({min: startLine, max: lineCount + 200}).map(endLine => ({endLine, lineCount, startLine})),
+              ),
+          ),
+        ({endLine, lineCount, startLine}) => {
+          const trackedRegularFiles = new Map([
+            ['src/source.ts', `${Array.from({length: lineCount}, (_, index) => index).join('\n')}\n`],
+          ]);
+          const first = selectMatchedEvaluationContinuationInBoundsSourceCitationsV1({
+            sourceCitations: [{endLine, path: 'src/source.ts', startLine}],
+            trackedRegularFiles,
+          });
+          const second = selectMatchedEvaluationContinuationInBoundsSourceCitationsV1({
+            sourceCitations: first,
+            trackedRegularFiles,
+          });
+
+          expect(first).toEqual(endLine <= lineCount ? [{endLine, path: 'src/source.ts', startLine}] : []);
+          expect(second).toEqual(first);
+        },
+      ),
+      {numRuns: 64},
+    );
   });
 
   it('wires v4 diagnostic evidence into a source-grounded handoff while retaining the v3 projection', () => {

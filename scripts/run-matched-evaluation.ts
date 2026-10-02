@@ -797,6 +797,25 @@ export function assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1(i
   readonly sourceCitations: MatchedEvaluationContinuationDiagnosticEvidenceV1['sourceCitations'];
   readonly trackedRegularFiles: ReadonlyMap<string, string>;
 }): void {
+  assertMatchedEvaluationContinuationDiagnosticSourceCitationPathsV1(input);
+  for (const citation of input.sourceCitations) {
+    const content = input.trackedRegularFiles.get(citation.path)!;
+    const lineCount = matchedEvaluationContinuationLineCountV1(content);
+    if (citation.endLine > lineCount) {
+      throw new Error(
+        `Continuation diagnostic citation is out of bounds: ${citation.path}:${citation.startLine}-${citation.endLine}.`,
+      );
+    }
+  }
+}
+
+/** Reject forbidden or untracked paths before bounds-invalid extra citations can be discarded. */
+export function assertMatchedEvaluationContinuationDiagnosticSourceCitationPathsV1(input: {
+  readonly changedPaths: readonly string[];
+  readonly phaseOneAllowedPaths: readonly string[];
+  readonly sourceCitations: MatchedEvaluationContinuationDiagnosticEvidenceV1['sourceCitations'];
+  readonly trackedRegularFiles: ReadonlyMap<string, string>;
+}): void {
   const changed = new Set(input.changedPaths);
   const phaseOneAllowed = new Set(input.phaseOneAllowedPaths);
   for (const citation of input.sourceCitations) {
@@ -810,14 +829,24 @@ export function assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1(i
     ) {
       throw new Error(`Continuation diagnostic citation is not production source: ${citation.path}.`);
     }
-    const lineCount =
-      content.length === 0 ? 0 : content.split(/\r\n|\n|\r/u).length - (/(?:\r\n|\n|\r)$/u.test(content) ? 1 : 0);
-    if (citation.endLine > lineCount) {
-      throw new Error(
-        `Continuation diagnostic citation is out of bounds: ${citation.path}:${citation.startLine}-${citation.endLine}.`,
-      );
-    }
   }
+}
+
+/** Keep only in-bounds source ranges without rewriting the model's raw transcript evidence. */
+export function selectMatchedEvaluationContinuationInBoundsSourceCitationsV1(input: {
+  readonly sourceCitations: MatchedEvaluationContinuationDiagnosticEvidenceV1['sourceCitations'];
+  readonly trackedRegularFiles: ReadonlyMap<string, string>;
+}): MatchedEvaluationContinuationDiagnosticEvidenceV1['sourceCitations'] {
+  return input.sourceCitations.filter(citation => {
+    const content = input.trackedRegularFiles.get(citation.path);
+    if (content === undefined) return true;
+    const lineCount = matchedEvaluationContinuationLineCountV1(content);
+    return citation.endLine <= lineCount;
+  });
+}
+
+function matchedEvaluationContinuationLineCountV1(content: string): number {
+  return content.length === 0 ? 0 : content.split(/\r\n|\n|\r/u).length - (/(?:\r\n|\n|\r)$/u.test(content) ? 1 : 0);
 }
 
 /** Pure checkpoint/handoff projection shared by the v3 and diagnostic v4 finalizer paths. */
@@ -3240,7 +3269,7 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     diagnosticPhaseOneEvidence === null
       ? extractMatchedEvaluationContinuationPhaseOneEvidenceV1(phaseOneTranscript, changedPaths)
       : null;
-  const diagnostic = diagnosticPhaseOneEvidence?.diagnosticEvidence ?? null;
+  let diagnostic = diagnosticPhaseOneEvidence?.diagnosticEvidence ?? null;
   if (diagnostic !== null) {
     const trackedPaths = new Set(
       (await captureContinuationGit(checkpointRepository, ['ls-files', '-z'], 8 * 1_024 * 1_024))
@@ -3269,6 +3298,22 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
       ) {
         trackedRegularFiles.set(citation.path, await readFile(citationPath, 'utf8'));
       }
+    }
+    assertMatchedEvaluationContinuationDiagnosticSourceCitationPathsV1({
+      changedPaths,
+      phaseOneAllowedPaths: selection.taskPacket.phaseOneAllowedPaths,
+      sourceCitations: diagnostic.sourceCitations,
+      trackedRegularFiles,
+    });
+    diagnostic = {
+      ...diagnostic,
+      sourceCitations: selectMatchedEvaluationContinuationInBoundsSourceCitationsV1({
+        sourceCitations: diagnostic.sourceCitations,
+        trackedRegularFiles,
+      }),
+    };
+    if (diagnostic.sourceCitations.length === 0) {
+      throw new Error('Continuation diagnostic has no in-bounds production-source citation.');
     }
     assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1({
       changedPaths,
