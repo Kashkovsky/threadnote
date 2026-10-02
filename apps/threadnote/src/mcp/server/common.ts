@@ -290,7 +290,29 @@ export function requiredResourceUriList(
 }
 
 export function compactPersonalMemoryReferences(text: string, user: string, enabled = true): string {
-  return enabled ? text.replaceAll(`threadnote://user/${uriSegment(user)}/`, '') : text;
+  return enabled
+    ? text.replaceAll(/threadnote:\/\/[^\s`)\]}>"']+/gu, candidate => compactPersonalMemoryReference(candidate, user))
+    : text;
+}
+
+function compactPersonalMemoryReference(candidate: string, user: string): string {
+  const trailingPunctuation = candidate.match(/[.,;:]+$/u)?.[0] ?? '';
+  const uri = candidate.slice(0, candidate.length - trailingPunctuation.length);
+  try {
+    const parsed = parseResourceId(uri);
+    const currentUserSegment = uriSegment(user);
+    if (
+      parsed.namespace !== 'user' ||
+      (parsed.segments[0] !== user && parsed.segments[0] !== currentUserSegment) ||
+      parsed.segments[1] !== 'memories'
+    ) {
+      return candidate;
+    }
+    const prefix = `threadnote://user/${encodeURIComponent(parsed.segments[0])}/`;
+    return `${parsed.canonicalUri.slice(prefix.length)}${trailingPunctuation}`;
+  } catch {
+    return candidate;
+  }
 }
 
 function expandPersonalMemoryReference(value: string, user: string | undefined): string {

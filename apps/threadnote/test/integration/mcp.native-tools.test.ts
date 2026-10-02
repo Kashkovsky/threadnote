@@ -7,6 +7,7 @@ import {tmpdir} from '@threadnote/testing/node-os';
 import {basename, join} from '@threadnote/testing/node-path';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN} from '@threadnote/protocol/agent-response';
 import {renderSessionStartRecallQueue} from '@threadnote/threadnote/hooks';
@@ -32,7 +33,7 @@ import {
 } from '@threadnote/context/projector';
 import {MCP_RESOURCE_READ_MAX_BYTES} from '@threadnote/threadnote/effect/ai/mcp_resource';
 import {MEMORY_READ_PAGE_BYTES} from '@threadnote/memory/read/projection';
-import {compactPersonalMemoryReferences} from '../../src/mcp/server/common.js';
+import {compactPersonalMemoryReferences, requiredResourceUriList} from '../../src/mcp/server/common.js';
 
 interface TextContent {
   readonly text: string;
@@ -319,22 +320,83 @@ function expectRequestLocalRecallProgress(updates: readonly ThreadnoteProgress[]
 }
 
 describe('Threadnote MCP toolsets', () => {
-  it('compacts only exact personal memory references for the active user', () => {
+  it('compacts only exact raw and canonical personal memory references for the active user', () => {
     const currentUser = 'test user';
     const text = [
       'threadnote://user/test%20user/memories/durable/projects/threadnote/current.md',
+      'threadnote://user/test-user/memories/durable/projects/threadnote/canonical.md',
       'threadnote://user/other/memories/durable/projects/threadnote/other.md',
       'threadnote://memory/tn_stable',
+      'threadnote://user/test%20user/memories/durable/%2e%2e/secret.md',
+      'threadnote://user/test%20user/memories/durable/projects/threadnote/%zz.md',
     ].join('\n');
 
     expect(compactPersonalMemoryReferences(text, currentUser)).toBe(
       [
         'memories/durable/projects/threadnote/current.md',
+        'memories/durable/projects/threadnote/canonical.md',
         'threadnote://user/other/memories/durable/projects/threadnote/other.md',
         'threadnote://memory/tn_stable',
+        'threadnote://user/test%20user/memories/durable/%2e%2e/secret.md',
+        'threadnote://user/test%20user/memories/durable/projects/threadnote/%zz.md',
       ].join('\n'),
     );
     expect(compactPersonalMemoryReferences(text, currentUser, false)).toBe(text);
+    expect(
+      requiredResourceUriList(
+        'memories/durable/projects/threadnote/current.md',
+        'read_context',
+        'threadnote://user/test-user/memories/durable/projects/threadnote/current.md',
+        {personalMemoryUser: currentUser},
+      ),
+    ).toEqual({
+      ok: true,
+      value: ['threadnote://user/test-user/memories/durable/projects/threadnote/current.md'],
+    });
+  });
+
+  it('preserves Markdown delimiters around compacted personal memory references', () => {
+    const text = [
+      '`threadnote://user/test-user/memories/durable/projects/threadnote/inline.md`',
+      '```text',
+      'threadnote://user/test-user/memories/durable/projects/threadnote/fenced.md',
+      '```',
+    ].join('\n');
+
+    expect(compactPersonalMemoryReferences(text, 'test user')).toBe(
+      [
+        '`memories/durable/projects/threadnote/inline.md`',
+        '```text',
+        'memories/durable/projects/threadnote/fenced.md',
+        '```',
+      ].join('\n'),
+    );
+  });
+
+  it('compacts canonical current-user memory references deterministically', () => {
+    const word = fc.stringMatching(/^[a-z]{1,8}$/u);
+    const topic = fc.stringMatching(/^[a-z][a-z0-9-]{0,12}$/u);
+    fc.assert(
+      fc.property(word, word, word, topic, (first, last, foreign, memoryTopic) => {
+        const currentUser = `${first.toUpperCase()}.${last} ${first}`;
+        const canonicalUser = `${first}.${last}-${first}`;
+        const rawCurrentUri = `threadnote://user/${encodeURIComponent(currentUser)}/memories/durable/projects/threadnote/${memoryTopic}.md`;
+        const canonicalCurrentUri = `threadnote://user/${canonicalUser}/memories/durable/projects/threadnote/${memoryTopic}.md`;
+        const foreignUri = `threadnote://user/${encodeURIComponent(foreign)}/memories/durable/projects/threadnote/${memoryTopic}.md`;
+        const input = [rawCurrentUri, canonicalCurrentUri, foreignUri, 'threadnote://memory/tn_stable'].join('\n');
+        const expected = [
+          `memories/durable/projects/threadnote/${memoryTopic}.md`,
+          `memories/durable/projects/threadnote/${memoryTopic}.md`,
+          foreignUri,
+          'threadnote://memory/tn_stable',
+        ].join('\n');
+
+        const compacted = compactPersonalMemoryReferences(input, currentUser);
+        expect(compacted).toBe(expected);
+        expect(compactPersonalMemoryReferences(compacted, currentUser)).toBe(expected);
+      }),
+      {numRuns: 50},
+    );
   });
 
   it('keeps the core server instructions compact and self-contained', async () => {

@@ -31210,6 +31210,7 @@ bun_workspace_test(
         "@npm//:@tree-sitter-grammars/tree-sitter-zig",
         "@npm//:@vscode/tree-sitter-wasm",
         "@npm//:effect",
+        "@npm//:fast-check",
         "@npm//:fflate",
         "@npm//:jose",
         "@npm//:js-yaml",
