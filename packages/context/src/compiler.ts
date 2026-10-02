@@ -1,7 +1,11 @@
 import {DateTime, Effect} from 'effect';
 import {succeedUndefined} from '@threadnote/platform/optional';
 import type {VerifiedProcedureSelection} from './procedure/selection.js';
-import {unavailableContextBriefCodeLinkedMemoryEvidence, mergeContextBriefMemoryEvidence} from './memory-evidence.js';
+import {
+  contextBriefResumeTaskAlignmentScore,
+  unavailableContextBriefCodeLinkedMemoryEvidence,
+  mergeContextBriefMemoryEvidence,
+} from './memory-evidence.js';
 import {assembleContextBriefLogicalResult, planContextBrief} from './planner.js';
 import {projectContextBrief} from './projector.js';
 import type {
@@ -107,7 +111,13 @@ function withResumeMemoryGraphAnchors(
   if (graphPlan.codeRefs.length > 0) return graphPlan;
   const handoff = [...memory.candidates]
     .filter(candidate => candidate.kind === 'handoff' && candidate.continuationCard !== undefined)
-    .sort((left, right) => left.rank - right.rank || (left.uri === right.uri ? 0 : left.uri < right.uri ? -1 : 1))[0];
+    .sort(
+      (left, right) =>
+        contextBriefResumeTaskAlignmentScore(graphPlan.query, right) -
+          contextBriefResumeTaskAlignmentScore(graphPlan.query, left) ||
+        left.rank - right.rank ||
+        (left.uri === right.uri ? 0 : left.uri < right.uri ? -1 : 1),
+    )[0];
   if (handoff === undefined) return graphPlan;
   const codeRefs = [
     ...new Set(

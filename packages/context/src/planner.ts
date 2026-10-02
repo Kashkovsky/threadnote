@@ -31,7 +31,11 @@ import {
   type ContextBriefRequestV1,
 } from './types.js';
 import type {VerifiedProcedureEvidence} from './procedure/selection.js';
-import {classifyMemoryFreshness, reconcileContextBriefMemoryFreshness} from '@threadnote/context/memory-evidence';
+import {
+  classifyMemoryFreshness,
+  contextBriefResumeTaskAlignmentScore,
+  reconcileContextBriefMemoryFreshness,
+} from '@threadnote/context/memory-evidence';
 
 const MAXIMUM_ISSUES = 24;
 const MAXIMUM_FOLLOW_UPS = 24;
@@ -151,6 +155,7 @@ export function assembleContextBriefLogicalResult(input: {
   const handoffs = prioritizeHandoffs(
     memories.filter(memory => memory.kind === 'handoff'),
     input.plan.mode,
+    input.plan.task,
   );
   const issues = contextIssues(memories);
   const procedureGaps = stableUnique(input.verifiedProcedureGaps ?? []);
@@ -260,12 +265,19 @@ function stableMemories(memories: readonly ContextBriefMemoryEvidenceV1[]): read
 function prioritizeHandoffs(
   memories: readonly ContextBriefMemoryEvidenceV1[],
   mode: ContextBriefPlanV1['mode'],
+  task: string,
 ): readonly ContextBriefMemoryEvidenceV1[] {
   const priority = (memory: ContextBriefMemoryEvidenceV1): number =>
     mode === 'resume' && memory.freshness === 'fresh' && memory.continuationCard !== undefined ? 0 : 1;
   return [...memories]
     .sort(
-      (left, right) => priority(left) - priority(right) || left.rank - right.rank || compareText(left.uri, right.uri),
+      (left, right) =>
+        priority(left) - priority(right) ||
+        (mode === 'resume'
+          ? contextBriefResumeTaskAlignmentScore(task, right) - contextBriefResumeTaskAlignmentScore(task, left)
+          : 0) ||
+        left.rank - right.rank ||
+        compareText(left.uri, right.uri),
     )
     .map((memory, rank) => ({...memory, rank}));
 }

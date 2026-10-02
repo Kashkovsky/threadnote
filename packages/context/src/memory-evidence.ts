@@ -35,6 +35,35 @@ const CONTINUATION_ELLIPSIS = '…';
 
 const CONTINUATION_ELLIPSIS_BYTES = 3;
 
+const RESUME_ALIGNMENT_STOP_WORDS = new Set([
+  'active',
+  'and',
+  'continue',
+  'continuation',
+  'current',
+  'for',
+  'from',
+  'handoff',
+  'implementation',
+  'implement',
+  'into',
+  'its',
+  'next',
+  'of',
+  'on',
+  'resume',
+  'status',
+  'step',
+  'take',
+  'task',
+  'the',
+  'this',
+  'to',
+  'while',
+  'with',
+  'work',
+]);
+
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 
 const CONTENT_HASH = /^[0-9a-f]{64}$/u;
@@ -375,6 +404,50 @@ export function contextBriefMemoryCandidate(
     ...(record.metadata.topic === undefined ? {} : {topic: record.metadata.topic}),
     ...(record.metadata.trust === undefined ? {} : {trust: record.metadata.trust}),
     uri: record.uri,
+  };
+}
+
+/** Rank explicit continuation identity against the requested resume task without inspecting arbitrary body prose. */
+export function contextBriefResumeTaskAlignmentScore(
+  task: string,
+  candidate: Pick<ContextBriefMemoryCandidateV1, 'continuationCard' | 'topic'>,
+): number {
+  const query = resumeAlignmentTerms(task);
+  const fields = [
+    {terms: resumeAlignmentTerms(candidate.topic ?? ''), weight: 3},
+    {terms: resumeAlignmentTerms(candidate.continuationCard?.task ?? ''), weight: 2},
+  ];
+  const matchedWords = new Set<string>();
+  let matchedPhrases = 0;
+  let score = 0;
+  for (const field of fields) {
+    for (const word of field.terms.words) {
+      if (!query.words.has(word)) continue;
+      matchedWords.add(word);
+      score += field.weight;
+    }
+    for (const phrase of field.terms.phrases) {
+      if (!query.phrases.has(phrase)) continue;
+      matchedPhrases += 1;
+      score += field.weight * 3;
+    }
+  }
+  return matchedPhrases > 0 || matchedWords.size >= 2 ? score : 0;
+}
+
+function resumeAlignmentTerms(value: string): {
+  readonly phrases: ReadonlySet<string>;
+  readonly words: ReadonlySet<string>;
+} {
+  const orderedWords = (
+    value
+      .normalize('NFKC')
+      .toLowerCase()
+      .match(/[\p{L}\p{N}]+/gu) ?? []
+  ).filter(word => word.length >= 3 && !RESUME_ALIGNMENT_STOP_WORDS.has(word));
+  return {
+    phrases: new Set(orderedWords.slice(1).map((word, index) => `${orderedWords[index]}\u0000${word}`)),
+    words: new Set(orderedWords),
   };
 }
 
