@@ -22,6 +22,7 @@ import {
   conflictId,
   formatShareConflictNextSteps,
   isShareableMemoryChange,
+  listShareConflicts,
   normalizePendingChange,
   teamsForShareQuery,
 } from './conflicts.js';
@@ -508,7 +509,8 @@ const runShareSyncForTeam = Effect.fn('share.runShareSyncForTeam')(function* (
         yield* Console.warn(
           `share sync: ${result.failed.length} file(s) could not be ingested on this run; they are persisted and will be retried on the next sync or agent recall/read.`,
         );
-        yield* Console.warn(formatShareConflictNextSteps(team.name, result.failed));
+        const conflicts = yield* listShareConflicts(config, {team: team.name});
+        yield* Console.warn(formatShareConflictNextSteps(team.name, conflicts));
       }
     }
   }

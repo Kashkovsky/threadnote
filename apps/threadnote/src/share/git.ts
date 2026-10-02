@@ -266,10 +266,13 @@ export function assertSharedWorktreeFileReady(
   dryRun = false,
   contentEquivalent: (currentContent: string, expectedContent: string) => boolean = (currentContent, expected) =>
     canonicalMemoryDocumentContent(currentContent) === canonicalMemoryDocumentContent(expected),
-  options: {readonly allowCleanTrackedReplacement?: boolean} = {},
+  options: {
+    readonly allowCleanTrackedReplacement?: boolean;
+    readonly exactRetryContent?: string;
+  } = {},
 ): Effect.Effect<string | undefined, unknown, CommandExecutor | FileSystem.FileSystem | Path.Path | SystemInfo> {
   return Effect.gen(function* () {
-    if (dryRun) return;
+    void dryRun;
     const safeRelativePath = assertSafeShareRelativePath(relativePath);
     const git = yield* requiredExecutable('git');
     const unmerged = yield* runCommand(git, ['-C', worktree, 'ls-files', '-u', '--', safeRelativePath], {
@@ -329,6 +332,19 @@ export function assertSharedWorktreeFileReady(
       return yield* ShareOperationError.make({message: `Shared worktree target is not a regular file: ${targetPath}`});
     }
     const currentContent = yield* fs.readFileString(targetPath);
+    if (options.exactRetryContent !== undefined && options.allowCleanTrackedReplacement === true) {
+      if (tracked && !dirty) return;
+      if (tracked && dirty) {
+        const index = yield* runCommand(git, ['-C', worktree, 'show', `:${safeRelativePath}`], {allowFailure: true});
+        const allowed = (content: string) =>
+          (expectedContent !== undefined && contentEquivalent(content, expectedContent)) ||
+          contentEquivalent(content, options.exactRetryContent!);
+        if (index.exitCode === 0 && allowed(currentContent) && allowed(index.stdout)) return;
+      }
+      return yield* ShareOperationError.make({
+        message: `Refusing to overwrite changed shared worktree file: ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
+      });
+    }
     if (expectedContent !== undefined && contentEquivalent(currentContent, expectedContent)) return;
     if (expectedContent === undefined && options.allowCleanTrackedReplacement === true && tracked && !dirty) {
       return currentContent;
