@@ -21,6 +21,8 @@ const CONTINUATION_FIELD_BYTES = {
   avoidRepeat: 256,
   blockers: 192,
   decisions: 512,
+  graphQuery: 256,
+  graphQuestion: 384,
   observations: 512,
   invariants: 320,
   nextStep: 384,
@@ -474,6 +476,8 @@ export function handoffEvidenceExcerpt(
     [
       card.task === undefined ? undefined : `task: ${card.task}`,
       card.decisions === undefined ? undefined : `decisions: ${card.decisions}`,
+      card.graphQuestion === undefined ? undefined : `graph_question: ${card.graphQuestion}`,
+      card.graphQuery === undefined ? undefined : `graph_query: ${card.graphQuery}`,
       card.observations === undefined ? undefined : `observed: ${card.observations}`,
       card.anchors === undefined ? undefined : `anchors: ${card.anchors}`,
       card.attempted === undefined ? undefined : `attempted: ${card.attempted}`,
@@ -508,7 +512,7 @@ export function parseContextBriefContinuationCard(body: string): ContextBriefCon
       continue;
     }
     const match = rawLine.match(
-      /^\s{0,3}(?:#{1,6}\s*)?(task|decisions|observed|observations|findings|anchors|attempted|tried|avoid_repeat|avoid repeat|constraints|invariants|rationale|verification|unresolved|unknowns|blockers|risks|next_step|next step)\s*:\s*(.*)$/iu,
+      /^\s{0,3}(?:#{1,6}\s*)?(task|decisions|graph_query|graph query|graph_question|graph question|observed|observations|findings|anchors|attempted|tried|avoid_repeat|avoid repeat|constraints|invariants|rationale|verification|unresolved|unknowns|blockers|risks|next_step|next step)\s*:\s*(.*)$/iu,
     );
     if (match !== null) {
       const key = continuationKey(match[1]);
@@ -605,6 +609,10 @@ function continuationKey(value: string): keyof ContextBriefContinuationCardV1 {
     case 'constraints':
     case 'invariants':
       return 'invariants';
+    case 'graph_query':
+      return 'graphQuery';
+    case 'graph_question':
+      return 'graphQuestion';
     case 'observed':
     case 'findings':
     case 'observations':

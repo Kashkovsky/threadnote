@@ -305,6 +305,8 @@ export interface ContextBriefContinuationCardV1 {
   readonly avoidRepeat?: string;
   readonly blockers?: string;
   readonly decisions?: string;
+  readonly graphQuery?: string;
+  readonly graphQuestion?: string;
   readonly observations?: string;
   readonly invariants?: string;
   readonly nextStep?: string;

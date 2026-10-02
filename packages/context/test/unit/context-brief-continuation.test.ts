@@ -243,6 +243,8 @@ describe('Context Brief continuation contracts', () => {
         [
           'task: implement the card',
           'decisions: keep stable selectors',
+          'graph question: which caller owns the state transition',
+          'graph_query: Parser.advance callers and state transitions',
           'observed: the focused check fails only in the new regression',
           'anchors: packages/context/src/projector.ts:10-20',
           'tried: inspected the regression and ran the focused check',
@@ -265,6 +267,8 @@ describe('Context Brief continuation contracts', () => {
       avoidRepeat: 'do not reread the cited regression unless source changed',
       blockers: 'none',
       decisions: 'keep stable selectors',
+      graphQuery: 'Parser.advance callers and state transitions',
+      graphQuestion: 'which caller owns the state transition',
       invariants: 'preserve source evidence',
       nextStep: 'update projector at [path omitted]',
       observations: 'the focused check fails only in the new regression',
@@ -309,6 +313,19 @@ describe('Context Brief continuation contracts', () => {
         const card = parseContextBriefContinuationCard(body);
         expect(card).toEqual(parseContextBriefContinuationCard(body));
         expect(new TextEncoder().encode(card?.task).byteLength).toBeLessThanOrEqual(192);
+      }),
+      {numRuns: 50},
+    );
+  });
+
+  it('keeps arbitrary graph queries UTF-8 bounded and deterministic', () => {
+    fc.assert(
+      fc.property(fc.array(fc.constantFrom('symbol', '東京', '🙂', '.member', ':scope'), {maxLength: 80}), parts => {
+        const body = `graph query: ${parts.join(' ')}`;
+        const first = parseContextBriefContinuationCard(body);
+        const second = parseContextBriefContinuationCard(body);
+        expect(first).toEqual(second);
+        expect(new TextEncoder().encode(first?.graphQuery ?? '').byteLength).toBeLessThanOrEqual(256);
       }),
       {numRuns: 50},
     );
@@ -469,6 +486,43 @@ describe('Context Brief continuation contracts', () => {
     expect(projected.measurement.totalBytes).toBeLessThan(2_200);
   });
 
+  it('keeps decision-grade diagnosis and the exact graph query in a compact exact resume', () => {
+    const logical = validatedResumeLogical('exact', 800);
+    const primary = logical.activeHandoffs[0];
+    if (primary?.continuationCard === undefined) throw new Error('expected exact continuation card');
+    const graphQuery =
+      'rest_framework/fields.py Which callers distinguish an empty parsed dictionary from the empty sentinel?';
+    const projected = projectContextBrief(
+      {
+        ...logical,
+        activeHandoffs: [
+          {
+            ...primary,
+            continuationCard: {
+              ...primary.continuationCard,
+              anchors: 'tests/test_fields.py:2560-2572; rest_framework/fields.py:1749-1754',
+              avoidRepeat: 'Do not rerun the sealed failure or reread unchanged cited anchors.',
+              graphQuery,
+              graphQuestion: 'Which callers distinguish parsed empty dictionaries from the empty sentinel?',
+              observations: 'Absent HTML dictionary input is converted to an empty mapping before defaults apply.',
+              unresolved: 'Preserve explicit empty input while returning the empty sentinel for absence.',
+            },
+          },
+        ],
+      },
+      800,
+      'agent',
+    );
+    const view = projectContextBriefAgentView(projected.structuredContent, true);
+
+    expect(view.answer).toContain('Observed: Absent HTML dictionary input');
+    expect(view.answer).toContain('Unresolved: Preserve explicit empty input');
+    expect(view.answer).toContain(`Graph query: ${graphQuery}`);
+    expect(view.answer).toContain('Anchors: tests/test_fields.py:2560-2572');
+    expect(view.answer).toContain('Avoid repeat: Do not rerun the sealed failure');
+    expect(projected.measurement.totalBytes).toBeLessThanOrEqual(projected.maximumBytes);
+  });
+
   it('does not call an exact current resume sufficient without a fresh implementation anchor', () => {
     const logical = validatedResumeLogical();
     const withoutAnchor = projectContextBrief(
@@ -489,12 +543,25 @@ describe('Context Brief continuation contracts', () => {
   });
 
   it('retains the structured continuation card in the dual text compatibility channel', () => {
+    const graphQuery = 'h11/_abnf.py Which callers depend on the chunk-size state transition?';
     const projected = projectContextBrief(validatedResumeLogical(), 1_500, 'dual');
 
     expect(projected.structuredContent.graph.cards[0]?.id).toBe('card-1');
     expect(projected.text).toContain('"continuationCard"');
     expect(projected.text).toContain('h11/_abnf.py');
-    expect(parseContextBriefJsonText(projected.text).graph?.cards?.[0]?.ref).toBe(REF);
+    const compatibleAgentView = JSON.parse(projected.text) as {
+      activeHandoffs: Array<{continuationCard?: Record<string, string>}>;
+    };
+    const continuationCard = compatibleAgentView.activeHandoffs[0]?.continuationCard;
+    if (continuationCard === undefined) throw new Error('expected dual continuation card');
+    continuationCard.graphQuery = graphQuery;
+    continuationCard.graphQuestion = 'Which callers depend on the chunk-size state transition?';
+    const parsed = parseContextBriefJsonText(JSON.stringify(compatibleAgentView));
+    expect(parsed.graph?.cards?.[0]?.ref).toBe(REF);
+    expect(parsed.activeHandoffs?.[0]?.continuationCard).toMatchObject({
+      graphQuery,
+      graphQuestion: 'Which callers depend on the chunk-size state transition?',
+    });
   });
 
   it('keeps graph evidence when resume citations are not exact and current-complete', () => {
