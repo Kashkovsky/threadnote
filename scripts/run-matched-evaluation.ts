@@ -3276,6 +3276,15 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
       sourceCitations: diagnostic.sourceCitations,
       trackedRegularFiles,
     });
+    await assertMatchedEvaluationContinuationGraphEvidenceV1({
+      executable: graphArm.toolExecutable,
+      graphHome,
+      project: sourceGraphHome.project,
+      query: diagnostic.graphQuery,
+      repositoryDirectory: checkpointRepository,
+      sourceCitations: diagnostic.sourceCitations,
+      threadnoteEnvironment,
+    });
   }
   const finalizedHandoff = buildMatchedEvaluationContinuationDiagnosticHandoffV1({
     changedPaths,
@@ -5238,6 +5247,80 @@ function parseLastJsonLine(value: string, label: string): Record<string, unknown
     return object(JSON.parse(lines.at(-1)!) as unknown, label);
   } catch (cause) {
     throw new Error(`${label} returned invalid terminal JSON.`, {cause});
+  }
+}
+
+async function assertMatchedEvaluationContinuationGraphEvidenceV1(input: {
+  readonly executable: string;
+  readonly graphHome: string;
+  readonly project: string;
+  readonly query: string;
+  readonly repositoryDirectory: string;
+  readonly sourceCitations: readonly {readonly path: string}[];
+  readonly threadnoteEnvironment: Readonly<Record<string, string>>;
+}): Promise<void> {
+  const result = await captureCodeMemoryLinkProcessGroup({
+    arguments: [
+      'graph',
+      'query',
+      '--home',
+      input.graphHome,
+      '--cwd',
+      input.repositoryDirectory,
+      '--project',
+      input.project,
+      '--freshness',
+      'ready',
+      '--node-limit',
+      '8',
+      '--edge-limit',
+      '24',
+      '--query',
+      input.query,
+      '--json',
+    ],
+    command: input.executable,
+    cwd: input.repositoryDirectory,
+    environment: input.threadnoteEnvironment,
+    label: 'Continuation checkpoint required graph evidence',
+    maxOutputBytes: 2 * 1_024 * 1_024,
+    timeoutMilliseconds: 120_000,
+  });
+  assertMatchedEvaluationContinuationGraphEvidenceResultV1(JSON.parse(result.stdout) as unknown, input.sourceCitations);
+}
+
+export function assertMatchedEvaluationContinuationGraphEvidenceResultV1(
+  value: unknown,
+  sourceCitations: readonly {readonly path: string}[],
+): void {
+  const response = object(value, 'continuation checkpoint graph query');
+  const nodes = array(response.nodes, 'continuation checkpoint graph query nodes').map((value, index) =>
+    object(value, `continuation checkpoint graph query node ${index}`),
+  );
+  const edges = array(response.edges, 'continuation checkpoint graph query edges').map((value, index) =>
+    object(value, `continuation checkpoint graph query edge ${index}`),
+  );
+  const sourcePaths = new Set(sourceCitations.map(citation => citation.path));
+  const evidenceNodeIds = new Set(
+    nodes
+      .filter(
+        node =>
+          typeof node.path === 'string' &&
+          sourcePaths.has(node.path) &&
+          typeof node.resolutionDomain === 'string' &&
+          node.resolutionDomain !== 'degraded' &&
+          typeof node.id === 'string',
+      )
+      .map(node => node.id as string),
+  );
+  if (
+    response.operation !== 'query' ||
+    evidenceNodeIds.size === 0 ||
+    !edges.some(edge => evidenceNodeIds.has(String(edge.sourceId)) || evidenceNodeIds.has(String(edge.targetId)))
+  ) {
+    throw new Error(
+      'Continuation checkpoint required graph query did not return relationship evidence on a cited source path.',
+    );
   }
 }
 

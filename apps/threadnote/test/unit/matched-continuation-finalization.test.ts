@@ -30,6 +30,7 @@ import {
 import {
   assertMatchedContinuationPhaseTwoBaselineResultV1,
   assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1,
+  assertMatchedEvaluationContinuationGraphEvidenceResultV1,
   buildMatchedEvaluationContinuationAnchoredGraphQueryV1,
   buildMatchedEvaluationContinuationDiagnosticHandoffV1,
   extractMatchedEvaluationContinuationPhaseOneEvidenceV1,
@@ -349,6 +350,75 @@ describe('matched continuation finalization', () => {
         sourceCitations: [{path: `src/${'nested/'.repeat(30)}node.ts`}],
       }),
     ).toBe('find the transition');
+  });
+
+  it('requires structural relationship evidence on a cited source path', () => {
+    const sourceCitations = [{path: 'src/normalizer.ts'}];
+    expect(() =>
+      assertMatchedEvaluationContinuationGraphEvidenceResultV1(
+        {
+          edges: [{sourceId: 'normalizer', targetId: 'renderer'}],
+          nodes: [
+            {id: 'normalizer', path: 'src/normalizer.ts', resolutionDomain: 'typescript'},
+            {id: 'renderer', path: 'src/renderer.ts', resolutionDomain: 'typescript'},
+          ],
+          operation: 'query',
+        },
+        sourceCitations,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedEvaluationContinuationGraphEvidenceResultV1(
+        {
+          edges: [{sourceId: 'normalizer', targetId: 'renderer'}],
+          nodes: [{id: 'normalizer', path: 'src/normalizer.ts', resolutionDomain: 'degraded'}],
+          operation: 'query',
+        },
+        sourceCitations,
+      ),
+    ).toThrow('did not return relationship evidence');
+    expect(() =>
+      assertMatchedEvaluationContinuationGraphEvidenceResultV1(
+        {
+          edges: [],
+          nodes: [{id: 'normalizer', path: 'src/normalizer.ts', resolutionDomain: 'typescript'}],
+          operation: 'query',
+        },
+        sourceCitations,
+      ),
+    ).toThrow('did not return relationship evidence');
+    expect(() =>
+      assertMatchedEvaluationContinuationGraphEvidenceResultV1(
+        {
+          edges: [{sourceId: 'normalizer', targetId: 'renderer'}],
+          nodes: [{id: 'normalizer', path: 'src/normalizer.ts'}],
+          operation: 'query',
+        },
+        sourceCitations,
+      ),
+    ).toThrow('did not return relationship evidence');
+  });
+
+  it('never accepts degraded cited nodes as continuation graph evidence', () => {
+    fc.assert(
+      fc.property(fc.array(fc.string({maxLength: 32}), {maxLength: 16}), unrelatedIds => {
+        const nodes = [
+          {id: 'cited', path: 'src/normalizer.ts', resolutionDomain: 'degraded'},
+          ...unrelatedIds.map((id, index) => ({
+            id: `${index}-${id}`,
+            path: `src/unrelated-${index}.ts`,
+            resolutionDomain: 'typescript',
+          })),
+        ];
+        const edges = nodes.map(node => ({sourceId: 'cited', targetId: node.id}));
+        expect(() =>
+          assertMatchedEvaluationContinuationGraphEvidenceResultV1({edges, nodes, operation: 'query'}, [
+            {path: 'src/normalizer.ts'},
+          ]),
+        ).toThrow('did not return relationship evidence');
+      }),
+      {numRuns: 64},
+    );
   });
 
   it('attests every exact-current handoff citation and selects the regression citation', () => {
