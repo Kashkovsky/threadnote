@@ -21964,6 +21964,7 @@
         "@tree-sitter-grammars/tree-sitter-zig",
         "@vscode/tree-sitter-wasm",
         "effect",
+        "fast-check",
         "fflate",
         "jose",
         "js-yaml",
