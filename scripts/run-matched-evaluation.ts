@@ -4272,12 +4272,15 @@ async function prepareMatchedEvaluationContinuationPhaseTwoVerificationPlanV1(in
       repositoryDirectory,
     });
     for (const [index, command] of input.commands.entries()) {
-      const diagnosticParser = matchedContinuationDiagnosticParserForCommandV1(command.tokens);
       const result = await runMatchedEvaluationContinuationFocusedCheckV1({
         commandTokens: command.tokens,
         repositoryDirectory,
         safeExecutablePath: input.safeExecutablePath,
         temporaryDirectory: resolve(input.temporaryRoot, `check-${index + 1}`),
+      });
+      const diagnosticParser = matchedContinuationDiagnosticParserForCommandV1(command.tokens, {
+        stderr: result.stderr,
+        stdout: result.stdout,
       });
       const failureIds = parseMatchedContinuationFailureIdsV1(diagnosticParser, result.stdout, result.stderr);
       assertMatchedContinuationPhaseTwoBaselineResultV1({
@@ -4335,14 +4338,22 @@ export function assertMatchedContinuationPhaseTwoBaselineResultV1(input: {
 
 export function matchedContinuationDiagnosticParserForCommandV1(
   commandTokens: readonly string[],
+  diagnosticOutput?: {readonly stderr: string; readonly stdout: string},
 ): MatchedContinuationPhaseTwoDiagnosticParser {
   const executableName = commandTokens[0]?.split('/').at(-1) ?? '';
   const usesPytest = commandTokens.includes('pytest') || /^pytest(?:$|-)/u.test(executableName);
   const usesVitest = commandTokens.includes('vitest') || /^vitest(?:$|-)/u.test(executableName);
-  if (usesPytest === usesVitest) {
-    throw new Error('Continuation phase-two command must select exactly one supported diagnostic parser.');
+  if (usesPytest !== usesVitest) {
+    return usesPytest ? 'pytest-summary-v1' : 'vitest-summary-v1';
   }
-  return usesPytest ? 'pytest-summary-v1' : 'vitest-summary-v1';
+  if (!usesPytest && diagnosticOutput !== undefined) {
+    const inferred = (['pytest-summary-v1', 'vitest-summary-v1'] as const).filter(
+      parser =>
+        parseMatchedContinuationFailureIdsV1(parser, diagnosticOutput.stdout, diagnosticOutput.stderr).length > 0,
+    );
+    if (inferred.length === 1) return inferred[0];
+  }
+  throw new Error('Continuation phase-two command must select exactly one supported diagnostic parser.');
 }
 
 export async function verifyMatchedEvaluationContinuationArtifactV1(input: {

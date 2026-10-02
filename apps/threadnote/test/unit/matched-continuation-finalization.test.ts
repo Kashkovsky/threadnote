@@ -53,6 +53,14 @@ describe('matched continuation finalization', () => {
     expect(
       matchedContinuationDiagnosticParserForCommandV1(['pytest-source-runner', '-q', 'tests/test_target.py']),
     ).toBe('pytest-summary-v1');
+    expect(
+      matchedContinuationDiagnosticParserForCommandV1(['qualify-typescript-eslint'], {
+        stderr: '',
+        stdout:
+          ' FAIL  tests/rules/no-unnecessary-type-parameters.test.ts > rule > invalid > regression\n' +
+          'AssertionError: expected output to match\n',
+      }),
+    ).toBe('vitest-summary-v1');
     expect(() => matchedContinuationDiagnosticParserForCommandV1(['node', 'custom-test.js'])).toThrow(
       'exactly one supported diagnostic parser',
     );
