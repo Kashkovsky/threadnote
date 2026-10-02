@@ -190,7 +190,9 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
         message: `Refusing to publish: ${targetUri} already exists with different content. Inspect it via threadnote read and resolve the conflict explicitly.`,
       });
     }
-    yield* assertSharedWorktreeFileReady(worktree, relativePath, currentScrub.cleaned, dryRun);
+    yield* assertSharedWorktreeFileReady(worktree, relativePath, existingTarget, dryRun, undefined, {
+      allowCleanTrackedReplacement: existingTarget === undefined,
+    });
     yield* ensureSharedDirectoryChain(config, ov, targetUri, dryRun);
     yield* writeMemoryFile(
       config,

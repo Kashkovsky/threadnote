@@ -292,9 +292,10 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
             yield* assertSharedWorktreeFileReady(
               resolved.config.worktree,
               relativePath,
-              currentScrub.cleaned,
+              existingTarget?.content,
               false,
               sharedPublicationContentEquivalent,
+              {allowCleanTrackedReplacement: existingTarget === undefined},
             );
             yield* ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
             yield* writeMemoryFile(
