@@ -13,6 +13,7 @@ export const MATCHED_CONTEXT_CONTINUATION_VARIANTS = [
   'manual-handoff',
   'threadnote-preloaded-resume',
 ] as const;
+export const AUTOMATED_CONTEXT_CONTINUATION_VARIANTS = ['files-bare', 'threadnote-preloaded-resume'] as const;
 
 export type MatchedContinuationVariant = (typeof MATCHED_CONTINUATION_VARIANTS)[number];
 
@@ -508,7 +509,11 @@ function canonicalVariantSet(values: readonly unknown[]): readonly MatchedContin
     literal(variant, MATCHED_CONTINUATION_VARIANTS, `continuation study variant ${index}`),
   );
   unique(variants, 'continuation study variants');
-  for (const supported of [MATCHED_CONTEXT_CONTINUATION_VARIANTS, MATCHED_CONTINUATION_VARIANTS] as const) {
+  for (const supported of [
+    AUTOMATED_CONTEXT_CONTINUATION_VARIANTS,
+    MATCHED_CONTEXT_CONTINUATION_VARIANTS,
+    MATCHED_CONTINUATION_VARIANTS,
+  ] as const) {
     if (sameStrings([...variants].sort(), [...supported].sort())) return supported;
   }
   invalid('continuation study variants must be a complete supported treatment set');

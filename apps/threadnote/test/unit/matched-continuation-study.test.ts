@@ -5,6 +5,7 @@ import {tmpdir} from '@threadnote/testing/node-os';
 import {join} from '@threadnote/testing/node-path';
 import {sha256HexSync} from '@threadnote/platform/sha256';
 import {
+  AUTOMATED_CONTEXT_CONTINUATION_VARIANTS,
   assertMatchedContinuationRuntimeMatchesStudyV1,
   createMatchedContinuationStudyV1,
   matchedContinuationStudyHashV1,
@@ -253,6 +254,25 @@ describe('matched continuation claim-study sealing', () => {
         },
       ),
       {numRuns: 20},
+    );
+  });
+
+  it('seals the reproducible automated-context treatment set independent of input order', () => {
+    fc.assert(
+      fc.property(
+        fc.shuffledSubarray([...AUTOMATED_CONTEXT_CONTINUATION_VARIANTS], {minLength: 2, maxLength: 2}),
+        variantOrder => {
+          const study = createMatchedContinuationStudyV1({
+            ...studyInput({taskCount: 2, variants: AUTOMATED_CONTEXT_CONTINUATION_VARIANTS}),
+            variants: variantOrder,
+          });
+
+          expect(study.schedule).toHaveLength(4);
+          expect(study.variants).toEqual(AUTOMATED_CONTEXT_CONTINUATION_VARIANTS);
+          expect(parseMatchedContinuationStudyV1(JSON.parse(JSON.stringify(study)))).toEqual(study);
+        },
+      ),
+      {numRuns: 12},
     );
   });
 });

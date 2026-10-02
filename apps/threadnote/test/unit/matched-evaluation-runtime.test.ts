@@ -773,6 +773,53 @@ describe('matched evaluation runtime integrity', () => {
     );
   });
 
+  it('seals an automated-context two-treatment design without manual handoff', () => {
+    const sourceTaskPrompt = 'Implement the frozen source task.';
+    const packet = parseMatchedEvaluationContinuationPhaseOneTaskPacketV1({
+      phaseOneAllowedPaths: ['tests/test_regression.py'],
+      phaseTwoProtectedPaths: ['tests/test_regression.py'],
+      phaseOneDirective: 'Add only the failing regression and stop.',
+      phaseOneFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
+      phaseTwoFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
+      phaseTwoPrompt: 'Continue from the checkpoint and implement the production correction.',
+      repositoryName: 'example',
+      sourceRevision: 'a'.repeat(40),
+      sourceTaskPrompt,
+      status: 'draft-unsealed',
+      taskKey: 'example-regression',
+      treatmentSet: 'automated-context-v1',
+      version: 3,
+    });
+    const input = {
+      packet,
+      repositoryRevision: packet.sourceRevision,
+      task: {
+        promptHash: matchedEvaluationPromptHashV1(sourceTaskPrompt),
+        repositoryFixtureHash: 'b'.repeat(64),
+        taskId: 'tsk_1234567890abcdef',
+      } as MatchedEvaluationManifestV1['tasks'][number],
+      taskPacketSha256: 'c'.repeat(64),
+      taskPrompt: sourceTaskPrompt,
+    };
+
+    const selection = createMatchedEvaluationContinuationPhaseOneSelectionV1(input);
+
+    expect(selection.continuationAttempts).toHaveLength(2);
+    expect(selection.continuationAttempts.map(attempt => attempt.runOrder)).toEqual([1, 2]);
+    expect(new Set(selection.continuationAttempts.map(attempt => attempt.variant))).toEqual(
+      new Set(['files-bare', 'threadnote-preloaded-resume']),
+    );
+    expect(parseMatchedEvaluationContinuationPhaseOneSelectionV1(selection)).toEqual(selection);
+    fc.assert(
+      fc.property(fc.stringMatching(/^[0-9a-f]{64}$/u), taskPacketSha256 => {
+        const candidate = createMatchedEvaluationContinuationPhaseOneSelectionV1({...input, taskPacketSha256});
+        expect(new Set(candidate.continuationAttempts.map(attempt => attempt.runNonce))).toHaveProperty('size', 2);
+        expect(createMatchedEvaluationContinuationPhaseOneSelectionV1({...input, taskPacketSha256})).toEqual(candidate);
+      }),
+      {numRuns: 8},
+    );
+  });
+
   it('matches quoted empty command arguments against sealed token arrays', () => {
     const approvedCommands = [
       {

@@ -8,6 +8,7 @@ import {
   type MatchedContinuationOutcomeV1,
 } from '@threadnote/threadnote/evaluation/matched-continuation-report';
 import {
+  AUTOMATED_CONTEXT_CONTINUATION_VARIANTS,
   createMatchedContinuationStudyV1,
   MATCHED_CONTEXT_CONTINUATION_VARIANTS,
   MATCHED_CONTINUATION_VARIANTS,
@@ -165,6 +166,18 @@ describe('matched continuation claim report', () => {
     expect(report.supportedClaims).toEqual([]);
     expect(report.limitations).toContain(
       'Claims apply only to the frozen repositories, tasks, candidate, model configuration, and 3 continuation treatments.',
+    );
+  });
+
+  it('reports the two-arm automated-context design without a manual-handoff comparison', () => {
+    const study = createStudy({taskCount: 2, variants: AUTOMATED_CONTEXT_CONTINUATION_VARIANTS});
+    const report = evaluateMatchedContinuationStudyV1({outcomes: createOutcomes(study), study});
+
+    expect(report.variants.map(result => result.variant)).toEqual(AUTOMATED_CONTEXT_CONTINUATION_VARIANTS);
+    expect(report.comparisons.map(result => result.target)).toEqual(['threadnote-preloaded-resume']);
+    expect(report.primaryComparison).toEqual({baseline: 'files-bare', target: 'threadnote-preloaded-resume'});
+    expect(report.limitations).toContain(
+      'Claims apply only to the frozen repositories, tasks, candidate, model configuration, and 2 continuation treatments.',
     );
   });
 

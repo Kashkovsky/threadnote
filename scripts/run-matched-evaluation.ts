@@ -215,8 +215,19 @@ export interface MatchedEvaluationContinuationPhaseOneTaskPacketV2 extends Omit<
   readonly version: 2;
 }
 
+export interface MatchedEvaluationContinuationPhaseOneTaskPacketV3 extends Omit<
+  MatchedEvaluationContinuationPhaseOneTaskPacketV1,
+  'version'
+> {
+  readonly phaseTwoProtectedPaths: readonly string[];
+  readonly treatmentSet: 'automated-context-v1';
+  readonly version: 3;
+}
+
 export type MatchedEvaluationContinuationPhaseOneTaskPacket =
-  MatchedEvaluationContinuationPhaseOneTaskPacketV1 | MatchedEvaluationContinuationPhaseOneTaskPacketV2;
+  | MatchedEvaluationContinuationPhaseOneTaskPacketV1
+  | MatchedEvaluationContinuationPhaseOneTaskPacketV2
+  | MatchedEvaluationContinuationPhaseOneTaskPacketV3;
 
 export interface MatchedEvaluationContinuationPhaseOneSelectionV1 {
   readonly continuationAttempts: MatchedEvaluationContinuationPilotPlanV2['attempts'];
@@ -483,6 +494,7 @@ export function selectMatchedEvaluationPilotRowsV1(
 
 const BASE_CONTINUATION_VARIANTS = ['files-bare', 'manual-handoff', 'threadnote-graph', 'threadnote-resume'] as const;
 const CONTINUATION_VARIANTS = [...BASE_CONTINUATION_VARIANTS, 'threadnote-preloaded-resume'] as const;
+const AUTOMATED_CONTEXT_CONTINUATION_VARIANTS = ['files-bare', 'threadnote-preloaded-resume'] as const;
 const MATCHED_CONTEXT_CONTINUATION_VARIANTS = ['files-bare', 'manual-handoff', 'threadnote-preloaded-resume'] as const;
 
 type MatchedEvaluationContinuationVariantV1 = (typeof CONTINUATION_VARIANTS)[number];
@@ -614,7 +626,7 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
     packet,
     [
       'phaseOneAllowedPaths',
-      ...(version === 2 ? ['phaseTwoProtectedPaths'] : []),
+      ...(version === 2 || version === 3 ? ['phaseTwoProtectedPaths'] : []),
       'phaseOneDirective',
       'phaseOneFocusedChecks',
       'phaseTwoFocusedChecks',
@@ -624,12 +636,12 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
       'sourceTaskPrompt',
       'status',
       'taskKey',
-      ...(version === 2 ? ['treatmentSet'] : []),
+      ...(version === 2 || version === 3 ? ['treatmentSet'] : []),
       'version',
     ],
     'continuation phase-one task packet',
   );
-  if ((version !== 1 && version !== 2) || packet.status !== 'draft-unsealed') {
+  if ((version !== 1 && version !== 2 && version !== 3) || packet.status !== 'draft-unsealed') {
     invalid('continuation phase-one task packet version or status is invalid');
   }
   const paths = stringArray(packet.phaseOneAllowedPaths, 1, 16, 4_096, 'phase-one allowed paths');
@@ -637,7 +649,9 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
     invalid('continuation phase-one allowed paths are invalid');
   }
   const phaseTwoProtectedPaths =
-    version === 2 ? stringArray(packet.phaseTwoProtectedPaths, 1, 64, 4_096, 'phase-two protected paths') : undefined;
+    version === 2 || version === 3
+      ? stringArray(packet.phaseTwoProtectedPaths, 1, 64, 4_096, 'phase-two protected paths')
+      : undefined;
   if (
     phaseTwoProtectedPaths &&
     (new Set(phaseTwoProtectedPaths).size !== phaseTwoProtectedPaths.length ||
@@ -657,14 +671,21 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
     status: 'draft-unsealed' as const,
     taskKey: matchingString(packet.taskKey, /^[a-z][a-z0-9-]{2,127}$/u, 'task key'),
   };
-  return version === 1
-    ? {...common, version}
-    : {
-        ...common,
-        phaseTwoProtectedPaths: phaseTwoProtectedPaths!,
-        treatmentSet: literal(packet.treatmentSet, ['matched-context-v1'] as const, 'continuation treatment set'),
-        version,
-      };
+  if (version === 1) return {...common, version};
+  if (version === 2) {
+    return {
+      ...common,
+      phaseTwoProtectedPaths: phaseTwoProtectedPaths!,
+      treatmentSet: literal(packet.treatmentSet, ['matched-context-v1'] as const, 'continuation treatment set'),
+      version,
+    };
+  }
+  return {
+    ...common,
+    phaseTwoProtectedPaths: phaseTwoProtectedPaths!,
+    treatmentSet: literal(packet.treatmentSet, ['automated-context-v1'] as const, 'continuation treatment set'),
+    version,
+  };
 }
 
 function isSafeContinuationRepositoryPath(path: string): boolean {
@@ -698,7 +719,12 @@ export function createMatchedEvaluationContinuationPhaseOneSelectionV1(input: {
   }
   const packetHash = matchingString(input.taskPacketSha256, HASH, 'phase-one task packet hash');
   const phaseOnePrompt = renderMatchedEvaluationContinuationPhaseOnePromptV1(input.packet);
-  const treatmentVariants = input.packet.version === 2 ? MATCHED_CONTEXT_CONTINUATION_VARIANTS : CONTINUATION_VARIANTS;
+  const treatmentVariants =
+    input.packet.version === 3
+      ? AUTOMATED_CONTEXT_CONTINUATION_VARIANTS
+      : input.packet.version === 2
+        ? MATCHED_CONTEXT_CONTINUATION_VARIANTS
+        : CONTINUATION_VARIANTS;
   const variants = treatmentVariants
     .map(variant => ({
       score: sha256Bytes(
@@ -812,7 +838,14 @@ export function parseMatchedEvaluationContinuationPhaseOneSelectionV1(
     selection.continuationAttempts,
     'continuation phase-one attempts',
   );
-  if ((taskPacket.version === 2 && attempts.length !== 3) || (taskPacket.version === 1 && attempts.length === 3)) {
+  const expectedAttemptCount =
+    taskPacket.version === 3 ? AUTOMATED_CONTEXT_CONTINUATION_VARIANTS.length : taskPacket.version === 2 ? 3 : null;
+  if (
+    (expectedAttemptCount !== null && attempts.length !== expectedAttemptCount) ||
+    (taskPacket.version === 1 &&
+      (attempts.length === AUTOMATED_CONTEXT_CONTINUATION_VARIANTS.length ||
+        attempts.length === MATCHED_CONTEXT_CONTINUATION_VARIANTS.length))
+  ) {
     invalid('continuation phase-one treatment set differs from its task packet');
   }
   return {
@@ -940,13 +973,15 @@ function parseContinuationPhaseOneAttemptsV1(
     };
   });
   const expectedVariants =
-    attempts.length === MATCHED_CONTEXT_CONTINUATION_VARIANTS.length
-      ? MATCHED_CONTEXT_CONTINUATION_VARIANTS
-      : attempts.length === BASE_CONTINUATION_VARIANTS.length
-        ? BASE_CONTINUATION_VARIANTS
-        : attempts.length === CONTINUATION_VARIANTS.length
-          ? CONTINUATION_VARIANTS
-          : null;
+    attempts.length === AUTOMATED_CONTEXT_CONTINUATION_VARIANTS.length
+      ? AUTOMATED_CONTEXT_CONTINUATION_VARIANTS
+      : attempts.length === MATCHED_CONTEXT_CONTINUATION_VARIANTS.length
+        ? MATCHED_CONTEXT_CONTINUATION_VARIANTS
+        : attempts.length === BASE_CONTINUATION_VARIANTS.length
+          ? BASE_CONTINUATION_VARIANTS
+          : attempts.length === CONTINUATION_VARIANTS.length
+            ? CONTINUATION_VARIANTS
+            : null;
   if (
     expectedVariants === null ||
     new Set(attempts.map(attempt => attempt.blindLabel)).size !== expectedVariants.length ||
@@ -955,7 +990,7 @@ function parseContinuationPhaseOneAttemptsV1(
     new Set(attempts.map(attempt => attempt.variant)).size !== expectedVariants.length ||
     expectedVariants.some(variant => !attempts.some(attempt => attempt.variant === variant))
   ) {
-    invalid(`${label} must contain a complete supported three-, four-, or five-treatment set`);
+    invalid(`${label} must contain a complete supported two-, three-, four-, or five-treatment set`);
   }
   return [...attempts].sort((left, right) => left.runOrder - right.runOrder);
 }
@@ -1098,13 +1133,15 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
     };
   });
   const expectedVariants =
-    attempts.length === MATCHED_CONTEXT_CONTINUATION_VARIANTS.length
-      ? MATCHED_CONTEXT_CONTINUATION_VARIANTS
-      : attempts.length === BASE_CONTINUATION_VARIANTS.length
-        ? BASE_CONTINUATION_VARIANTS
-        : attempts.length === CONTINUATION_VARIANTS.length
-          ? CONTINUATION_VARIANTS
-          : null;
+    attempts.length === AUTOMATED_CONTEXT_CONTINUATION_VARIANTS.length
+      ? AUTOMATED_CONTEXT_CONTINUATION_VARIANTS
+      : attempts.length === MATCHED_CONTEXT_CONTINUATION_VARIANTS.length
+        ? MATCHED_CONTEXT_CONTINUATION_VARIANTS
+        : attempts.length === BASE_CONTINUATION_VARIANTS.length
+          ? BASE_CONTINUATION_VARIANTS
+          : attempts.length === CONTINUATION_VARIANTS.length
+            ? CONTINUATION_VARIANTS
+            : null;
   if (
     expectedVariants === null ||
     new Set(attempts.map(attempt => attempt.variant)).size !== expectedVariants.length ||
@@ -2566,7 +2603,7 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     protectedPaths: [
       ...new Set([
         ...selection.taskPacket.phaseOneAllowedPaths,
-        ...(selection.taskPacket.version === 2 ? selection.taskPacket.phaseTwoProtectedPaths : []),
+        ...(selection.taskPacket.version === 1 ? [] : selection.taskPacket.phaseTwoProtectedPaths),
       ]),
     ].sort(),
     repositoryDirectory: checkpointRepository,
