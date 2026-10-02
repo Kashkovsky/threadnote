@@ -139,7 +139,12 @@ describe('matched evaluation context proxy', () => {
   it('starts preloaded resume with follow-ups ready and no context_brief tool', async () => {
     if (process.platform === 'win32') return;
     const fixture = await contextFixture(roots, 'Resume the checkpoint.', 'compact', 'linked', 'resume');
-    const packet = {...fixture.packet, initialBriefDelivery: 'preloaded' as const};
+    const requiredGraphQuery = 'find the production caller for the failing regression';
+    const packet = {
+      ...fixture.packet,
+      expectedResume: {...fixture.packet.expectedResume!, requiredGraphQuery},
+      initialBriefDelivery: 'preloaded' as const,
+    };
     const packetPath = join(fixture.root, 'preloaded-packet.json');
     await writeFile(packetPath, JSON.stringify(packet));
     const transport = new StdioClientTransport({
@@ -154,17 +159,62 @@ describe('matched evaluation context proxy', () => {
       await client.connect(transport);
       const listed = await client.listTools();
       expect(listed.tools.map(tool => tool.name).sort()).toEqual(
-        [...matchedEvaluationContextTools(packet.detail, 'preloaded')].sort(),
+        [...matchedEvaluationContextTools(packet.detail, 'preloaded', requiredGraphQuery)].sort(),
       );
       expect(listed.tools.some(tool => tool.name === 'context_brief')).toBe(false);
+      expect(listed.tools.map(tool => tool.name)).toEqual(['inspect_code_graph']);
       const followup = await client.callTool({
         name: 'inspect_code_graph',
-        arguments: {callerCwd: fixture.repository, operation: 'query', query: 'fixture'},
+        arguments: {callerCwd: fixture.repository, operation: 'query', query: requiredGraphQuery},
       });
       expect(followup.isError).not.toBe(true);
     } finally {
       await client.close();
     }
+  });
+
+  it('retains legacy preloaded choices and seals diagnostic preloaded inventory to inspect only', async () => {
+    expect(matchedEvaluationContextTools('compact', 'preloaded', null)).toEqual([
+      'inspect_code_graph',
+      'analyze_code_graph',
+      'recall_context',
+      'read_context',
+    ]);
+    expect(matchedEvaluationContextTools('compact', 'preloaded', 'find the caller')).toEqual(['inspect_code_graph']);
+  });
+
+  it('rejects a wrong sealed diagnostic query before invoking the backend', async () => {
+    const fixture = await contextFixture(roots, 'resume prompt', 'compact', 'linked', 'resume');
+    const requiredGraphQuery = 'find the production caller for the failing regression';
+    const packet = {
+      ...fixture.packet,
+      initialBriefDelivery: 'preloaded' as const,
+      expectedResume: {...fixture.packet.expectedResume!, requiredGraphQuery},
+    };
+    let invokeCalls = 0;
+    const invoke = async () => {
+      invokeCalls += 1;
+      return {content: [{type: 'text' as const, text: 'unexpected backend call'}]};
+    };
+
+    await expect(
+      handleMatchedEvaluationFollowupRequest(
+        packet,
+        'inspect_code_graph',
+        {callerCwd: fixture.repository, operation: 'query', query: 'different query'},
+        invoke,
+      ),
+    ).rejects.toThrow('sealed diagnostic graph query');
+    expect(invokeCalls).toBe(0);
+    await expect(
+      handleMatchedEvaluationFollowupRequest(
+        {...packet, initialBriefDelivery: 'mcp'},
+        'inspect_code_graph',
+        {callerCwd: fixture.repository, operation: 'query', query: requiredGraphQuery},
+        invoke,
+      ),
+    ).rejects.toThrow('required graph query is supported only for preloaded resume');
+    expect(invokeCalls).toBe(0);
   });
 
   it('preserves native memory text when structured content is only metadata and authenticates follow-up errors', async () => {
@@ -228,7 +278,11 @@ describe('matched evaluation context proxy', () => {
     const fixture = await contextFixture(roots, 'resume prompt', 'graph-only', 'disabled', 'resume');
     const packet = {
       ...fixture.packet,
-      expectedResume: {automaticHandoffUri: 'prepared context', resumeEvidenceMarker: 'implementation contract'},
+      expectedResume: {
+        automaticHandoffUri: 'prepared context',
+        requiredGraphQuery: null,
+        resumeEvidenceMarker: 'implementation contract',
+      },
     };
     const delivered = await handleMatchedEvaluationContextRequest(packet, {
       callerCwd: fixture.repository,
@@ -247,7 +301,14 @@ describe('matched evaluation context proxy', () => {
     ).rejects.toThrow('omitted the sealed automatic handoff URI, continuation evidence, or marker');
     await expect(
       handleMatchedEvaluationContextRequest(
-        {...packet, expectedResume: {automaticHandoffUri: 'absent', resumeEvidenceMarker: 'implementation contract'}},
+        {
+          ...packet,
+          expectedResume: {
+            automaticHandoffUri: 'absent',
+            requiredGraphQuery: null,
+            resumeEvidenceMarker: 'implementation contract',
+          },
+        },
         {callerCwd: fixture.repository, mode: 'resume'},
       ),
     ).rejects.toThrow('omitted the sealed automatic handoff URI, continuation evidence, or marker');
@@ -504,7 +565,11 @@ async function contextFixture(
       },
       expectedResume:
         mode === 'resume'
-          ? {automaticHandoffUri: 'prepared context', resumeEvidenceMarker: 'implementation contract'}
+          ? {
+              automaticHandoffUri: 'prepared context',
+              requiredGraphQuery: null,
+              resumeEvidenceMarker: 'implementation contract',
+            }
           : null,
       initialBriefDelivery: 'mcp',
       maximumFollowupCalls: mode === 'resume' ? 1 : detail === 'source' ? 0 : 4,

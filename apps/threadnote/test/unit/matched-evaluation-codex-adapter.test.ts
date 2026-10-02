@@ -89,6 +89,7 @@ describe('matched evaluation Codex adapter', () => {
           manualHandoff: null,
           manualHandoffSha256: null,
           automaticHandoffUri: null,
+          requiredGraphQuery: null,
           resumeEvidenceMarker: null,
         },
       },
@@ -100,6 +101,7 @@ describe('matched evaluation Codex adapter', () => {
           manualHandoff,
           manualHandoffSha256: sha256HexSync(manualHandoff),
           automaticHandoffUri: null,
+          requiredGraphQuery: null,
           resumeEvidenceMarker: null,
         },
       },
@@ -111,6 +113,7 @@ describe('matched evaluation Codex adapter', () => {
           manualHandoff: null,
           manualHandoffSha256: null,
           automaticHandoffUri: null,
+          requiredGraphQuery: null,
           resumeEvidenceMarker: null,
         },
       },
@@ -122,6 +125,7 @@ describe('matched evaluation Codex adapter', () => {
           manualHandoff: null,
           manualHandoffSha256: null,
           automaticHandoffUri: 'threadnote://handoff/phase-one',
+          requiredGraphQuery: null,
           resumeEvidenceMarker: 'resume-marker-123',
         },
       },
@@ -133,6 +137,7 @@ describe('matched evaluation Codex adapter', () => {
           manualHandoff: null,
           manualHandoffSha256: null,
           automaticHandoffUri: 'threadnote://handoff/phase-one',
+          requiredGraphQuery: 'find the production caller that violates the verified invariant',
           resumeEvidenceMarker: 'resume-marker-123',
         },
       },
@@ -169,6 +174,7 @@ describe('matched evaluation Codex adapter', () => {
         manualHandoff,
         manualHandoffSha256: sha256HexSync(manualHandoff),
         automaticHandoffUri: null,
+        requiredGraphQuery: null,
         resumeEvidenceMarker: null,
       }),
     );
@@ -179,6 +185,7 @@ describe('matched evaluation Codex adapter', () => {
         manualHandoff: null,
         manualHandoffSha256: null,
         automaticHandoffUri: 'threadnote://handoff/phase-one',
+        requiredGraphQuery: null,
         resumeEvidenceMarker: 'resume-marker-123',
       }),
     );
@@ -204,6 +211,7 @@ describe('matched evaluation Codex adapter', () => {
         manualHandoff: null,
         manualHandoffSha256: null,
         automaticHandoffUri: 'threadnote://handoff/phase-one',
+        requiredGraphQuery: 'find the production caller that violates the verified invariant',
         resumeEvidenceMarker: 'resume-marker-123',
       }),
     );
@@ -214,6 +222,7 @@ describe('matched evaluation Codex adapter', () => {
       '{"evidenceState":"sufficient"}',
     );
     expect(preloadedPrompt).toContain('already been loaded');
+    expect(preloadedPrompt).toContain('find the production caller that violates the verified invariant');
     expect(preloadedPrompt).not.toContain('{"evidenceState":"sufficient"}');
     expect(preloadedPrompt).not.toContain('call context_brief exactly once');
     const preloadedInstructions = renderMatchedEvaluationAgentInstructionsV1(
@@ -221,6 +230,7 @@ describe('matched evaluation Codex adapter', () => {
       1,
       'preloaded',
       '{"evidenceState":"sufficient"}',
+      'find the production caller that violates the verified invariant',
     );
     expect(preloadedInstructions).toContain('Do not call context_brief');
     expect(preloadedInstructions).toContain('{"evidenceState":"sufficient"}');
@@ -353,6 +363,67 @@ describe('matched evaluation Codex adapter', () => {
     expect(() => assertMatchedEvaluationContextDeliveryV1([base.event], expected)).toThrow(
       'unexpected MCP server or tool',
     );
+  });
+
+  it('requires the sealed graph query as the first and only diagnostic continuation action', () => {
+    const base = contextDelivery();
+    const requiredGraphQuery = 'find callers from normalizeNode to renderSuggestion';
+    const diagnosticBase = {
+      ...base,
+      expected: {
+        ...base.expected,
+        initialBriefDelivery: 'preloaded' as const,
+        maximumFollowupCalls: 1,
+        requiredGraphQuery,
+      },
+    };
+    const graph = contextFollowup(
+      diagnosticBase,
+      'inspect_code_graph',
+      {operation: 'query', query: requiredGraphQuery},
+      'completed',
+      false,
+    );
+    const startedGraph = {...graph.event, method: 'item/started'};
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1([startedGraph, graph.event], diagnosticBase.expected),
+    ).not.toThrow();
+    const startedCommand = {
+      method: 'item/started',
+      params: {item: {id: 'command-first', type: 'commandExecution'}},
+    };
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1([startedCommand, graph.event], diagnosticBase.expected),
+    ).toThrow('before graph completion');
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1([startedGraph, startedCommand, graph.event], diagnosticBase.expected),
+    ).toThrow('before graph completion');
+    const wrong = contextFollowup(
+      diagnosticBase,
+      'inspect_code_graph',
+      {operation: 'query', query: 'different query'},
+      'completed',
+      false,
+    );
+    expect(() => assertMatchedEvaluationContextDeliveryV1([wrong.event], diagnosticBase.expected)).toThrow(
+      'other than the sealed diagnosis query',
+    );
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1([graph.event, graph.event], diagnosticBase.expected),
+    ).toThrow();
+    const errorResultGraph = contextFollowup(
+      diagnosticBase,
+      'inspect_code_graph',
+      {operation: 'query', query: requiredGraphQuery},
+      'completed',
+      true,
+    );
+    expect(() =>
+      assertMatchedEvaluationContextDeliveryV1(
+        [{...errorResultGraph.event, method: 'item/started'}, errorResultGraph.event],
+        diagnosticBase.expected,
+      ),
+    ).toThrow('did not complete successfully');
   });
 
   it('binds a production Codex hook preload to its sealed handoff, opaque receipt, and value event', () => {
@@ -987,6 +1058,33 @@ describe('matched evaluation Codex adapter', () => {
         'graph-only',
       ),
     ).toThrow('unexpected context tool');
+    expect(() =>
+      assertMatchedEvaluationMcpInventoryV1(
+        inventory({...base, tools: {recall_context: {name: 'recall_context'}}}),
+        base.name,
+        'compact',
+        'preloaded',
+        null,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedEvaluationMcpInventoryV1(
+        inventory({...base, tools: {recall_context: {name: 'recall_context'}}}),
+        base.name,
+        'compact',
+        'preloaded',
+        'find callers from normalizeNode to renderSuggestion',
+      ),
+    ).toThrow('unexpected context tool');
+    expect(() =>
+      assertMatchedEvaluationMcpInventoryV1(
+        inventory({...base, tools: {inspect_code_graph: {name: 'inspect_code_graph'}}}),
+        base.name,
+        'compact',
+        'preloaded',
+        'find callers from normalizeNode to renderSuggestion',
+      ),
+    ).not.toThrow();
     expect(() =>
       assertMatchedEvaluationMcpInventoryV1(
         inventory({...base, tools: {context_brief: {name: 'recall_context'}}}),
@@ -1966,6 +2064,7 @@ function contextDelivery(text = '{"answer":"Relevant evidence","graph":{"cards":
     frozenPromptSha256: sha256HexSync('Task with `formatting` and trailing space. '),
     initialBriefDelivery: 'mcp',
     maximumFollowupCalls: 4,
+    requiredGraphQuery: null,
     runNonce: 'run_0123456789abcdef0123456789abcdef',
     runtimeManifestSha256: '6'.repeat(64),
     expectedResumeHash: null,

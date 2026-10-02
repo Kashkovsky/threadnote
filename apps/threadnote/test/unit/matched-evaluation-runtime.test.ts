@@ -301,6 +301,61 @@ describe('matched evaluation runtime integrity', () => {
       phaseOnePatchSha256: versionTwo.checkpoint.phaseOnePatchSha256,
       phaseOnePromptSha256: versionTwo.checkpoint.phaseOnePromptSha256,
     });
+    const diagnosticEvidence = {
+      diagnosticConclusion: 'The normalizer drops the wrapper before rendering.',
+      graphQuery: 'find callers from normalizeNode to renderSuggestion',
+      graphQuestion: 'Which caller passes the normalized node into the renderer?',
+      rejectedHypothesis: 'The parser preserves the wrapper in its intermediate node.',
+      sourceCitations: [{endLine: 88, path: 'src/normalizer.ts', startLine: 72}],
+      unresolvedGap: 'Identify the caller responsible for stripping the wrapper.',
+      untestedInvariant: 'Nested wrappers still require focused verification.',
+      verifiedInvariant: 'The regression fails only when the wrapper is absent.',
+    } as const;
+    const versionFour = {
+      ...versionTwo,
+      attempts: [
+        {...versionTwo.attempts[2], runOrder: 1},
+        {
+          blindLabel: 'A',
+          runNonce: 'run_00000000000000000000000000000005',
+          runOrder: 2,
+          variant: 'threadnote-preloaded-resume',
+        },
+      ],
+      checkpoint: {...versionTwo.checkpoint, diagnosticEvidence},
+      phaseTwoVerification: createMatchedContinuationPhaseTwoVerificationPlanV1({
+        checks: [
+          {
+            allowedBaselineFailureIds: [],
+            commandTokens: ['python', '-m', 'pytest', '-q', 'tests/test_regression.py'],
+            diagnosticParser: 'pytest-summary-v1',
+            policy: 'must-pass',
+          },
+        ],
+        protectedPaths: ['tests/test_regression.py'],
+        taskId: versionTwo.taskId,
+      }),
+      version: 4,
+    } as const;
+    expect(parseMatchedEvaluationContinuationPilotPlanV1(versionFour)).toMatchObject({
+      checkpoint: {diagnosticEvidence},
+      version: 4,
+    });
+    expect(projectMatchedEvaluationContinuationSelectionCheckpointV1(versionFour)).toMatchObject({
+      diagnosticEvidence,
+    });
+    expect(() =>
+      parseMatchedEvaluationContinuationPilotPlanV1({
+        ...versionFour,
+        checkpoint: {
+          ...versionFour.checkpoint,
+          diagnosticEvidence: {
+            ...diagnosticEvidence,
+            sourceCitations: [{endLine: 2, path: '../outside.ts', startLine: 1}],
+          },
+        },
+      }),
+    ).toThrow('source citation path is invalid');
     expect(() =>
       parseMatchedEvaluationContinuationPilotPlanV1({
         ...versionTwo,
@@ -820,6 +875,44 @@ describe('matched evaluation runtime integrity', () => {
     );
   });
 
+  it('seals the graph-required two-treatment design and its diagnosis prompt', () => {
+    const sourceTaskPrompt = 'Implement the frozen source task.';
+    const packet = parseMatchedEvaluationContinuationPhaseOneTaskPacketV1({
+      phaseOneAllowedPaths: ['tests/test_regression.py'],
+      phaseTwoProtectedPaths: ['tests/test_regression.py'],
+      phaseOneDirective: 'Add only the failing regression and stop.',
+      phaseOneFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
+      phaseTwoFocusedChecks: ['PYTHONPATH=src {python} -m pytest -q tests/test_regression.py'],
+      phaseTwoPrompt: 'Continue from the checkpoint and implement the production correction.',
+      repositoryName: 'example',
+      sourceRevision: 'a'.repeat(40),
+      sourceTaskPrompt,
+      status: 'draft-unsealed',
+      taskKey: 'example-regression',
+      treatmentSet: 'automated-context-graph-v1',
+      version: 4,
+    });
+    const selection = createMatchedEvaluationContinuationPhaseOneSelectionV1({
+      packet,
+      repositoryRevision: packet.sourceRevision,
+      task: {
+        promptHash: matchedEvaluationPromptHashV1(sourceTaskPrompt),
+        repositoryFixtureHash: 'b'.repeat(64),
+        taskId: 'tsk_1234567890abcdef',
+      } as MatchedEvaluationManifestV1['tasks'][number],
+      taskPacketSha256: 'c'.repeat(64),
+      taskPrompt: sourceTaskPrompt,
+    });
+
+    expect(selection.continuationAttempts.map(attempt => attempt.variant).sort()).toEqual([
+      'files-bare',
+      'threadnote-preloaded-resume',
+    ]);
+    expect(selection.phaseOnePrompt).toContain('CONTINUATION DIAGNOSIS/1');
+    expect(selection.phaseOnePrompt).toContain('Graph query: <one concise inspect_code_graph query');
+    expect(parseMatchedEvaluationContinuationPhaseOneSelectionV1(selection)).toEqual(selection);
+  });
+
   it('matches quoted empty command arguments against sealed token arrays', () => {
     const approvedCommands = [
       {
@@ -1035,6 +1128,23 @@ describe('matched evaluation runtime integrity', () => {
       '- memories/handoffs/active/project/pilot.md [fresh]',
     ].join('\n');
     expect(parseMatchedEvaluationContinuationAgentBriefResultV1({content: [{type: 'text', text: valid}]})).toBe(valid);
+    const requiredGraphQuery = 'find callers from normalizeNode to renderSuggestion';
+    expect(() =>
+      assertMatchedEvaluationContinuationAgentBriefV1({
+        automaticHandoffUri,
+        requiredGraphQuery,
+        resumeEvidenceMarker: marker,
+        text: `${valid}\nGraph query: ${requiredGraphQuery}`,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertMatchedEvaluationContinuationAgentBriefV1({
+        automaticHandoffUri,
+        requiredGraphQuery,
+        resumeEvidenceMarker: marker,
+        text: valid,
+      }),
+    ).toThrow('does not surface the exact automatic handoff');
     expect(() =>
       parseMatchedEvaluationContinuationAgentBriefResultV1({
         content: [{type: 'text', text: valid}],

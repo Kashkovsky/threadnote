@@ -27,7 +27,10 @@ import {
 } from '../../../../scripts/finalize-matched-continuation-study.js';
 import {
   assertMatchedContinuationPhaseTwoBaselineResultV1,
+  assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1,
+  buildMatchedEvaluationContinuationDiagnosticHandoffV1,
   extractMatchedEvaluationContinuationPhaseOneEvidenceV1,
+  extractMatchedEvaluationContinuationPhaseOneEvidenceV2,
   initializeMatchedEvaluationContinuationNonceStatesV1,
   markMatchedEvaluationContinuationNonceStartedV1,
   matchedContinuationDiagnosticParserForCommandV1,
@@ -162,6 +165,127 @@ describe('matched continuation finalization', () => {
       ),
       {numRuns: 64},
     );
+  });
+
+  it('admits only a seven-line diagnosis with regression and production-source evidence', () => {
+    const summary = [
+      'Diagnosis: The production normalizer drops the wrapper before the suggestion is rendered.',
+      'Rejected hypothesis: The parser still preserves the wrapper in its intermediate node.',
+      'Verified invariant: The focused regression fails only when the wrapper is absent.',
+      'Untested invariant: Nested wrappers still need verification after the production correction.',
+      'Unresolved gap: Identify the caller that strips the wrapper before rendering.',
+      'Graph question: Which production caller passes the normalized node into the renderer?',
+      'Graph query: find callers from normalizeNode to renderSuggestion',
+    ].join('\n');
+    const transcript = phaseOneTranscript({
+      citations: [
+        {endLine: 42, path: 'tests/regression.test.ts', startLine: 31},
+        {endLine: 88, path: 'src/normalizer.ts', startLine: 72},
+      ],
+      completed: true,
+      summary,
+    });
+
+    expect(extractMatchedEvaluationContinuationPhaseOneEvidenceV2(transcript, ['tests/regression.test.ts'])).toEqual({
+      diagnosticEvidence: {
+        diagnosticConclusion: 'The production normalizer drops the wrapper before the suggestion is rendered.',
+        graphQuery: 'find callers from normalizeNode to renderSuggestion',
+        graphQuestion: 'Which production caller passes the normalized node into the renderer?',
+        rejectedHypothesis: 'The parser still preserves the wrapper in its intermediate node.',
+        sourceCitations: [{endLine: 88, path: 'src/normalizer.ts', startLine: 72}],
+        unresolvedGap: 'Identify the caller that strips the wrapper before rendering.',
+        untestedInvariant: 'Nested wrappers still need verification after the production correction.',
+        verifiedInvariant: 'The focused regression fails only when the wrapper is absent.',
+      },
+      regressionAnchors: 'tests/regression.test.ts:31-42',
+    });
+    expect(() =>
+      extractMatchedEvaluationContinuationPhaseOneEvidenceV2(
+        phaseOneTranscript({
+          citations: [{endLine: 42, path: 'tests/regression.test.ts', startLine: 31}],
+          completed: true,
+          summary,
+        }),
+        ['tests/regression.test.ts'],
+      ),
+    ).toThrow('production-source citation');
+    expect(() =>
+      extractMatchedEvaluationContinuationPhaseOneEvidenceV2(
+        phaseOneTranscript({
+          citations: [
+            {endLine: 42, path: 'tests/regression.test.ts', startLine: 31},
+            {endLine: 88, path: 'src/normalizer.ts', startLine: 72},
+          ],
+          completed: true,
+          summary: `${summary}\nExtra: forbidden`,
+        }),
+        ['tests/regression.test.ts'],
+      ),
+    ).toThrow('exactly the seven ordered contract lines');
+  });
+
+  it('requires v4 source citations to resolve to in-range tracked production files', () => {
+    const citation = (path: string, startLine = 1, endLine = 2) => [{endLine, path, startLine}];
+    const validate = (path: string, options: {readonly allowed?: readonly string[]; readonly content?: string} = {}) =>
+      assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1({
+        changedPaths: ['tests/regression.test.ts'],
+        phaseOneAllowedPaths: options.allowed ?? [],
+        sourceCitations: citation(path),
+        trackedRegularFiles: options.content === undefined ? new Map() : new Map([[path, options.content]]),
+      });
+
+    expect(() => validate('tests/unchanged.test.ts', {content: 'one\ntwo\n'})).toThrow('not production source');
+    expect(() => validate('docs/architecture.md', {content: 'one\ntwo\n'})).toThrow('not production source');
+    expect(() => validate('fixture.ts', {content: 'one\ntwo\n'})).toThrow('not production source');
+    expect(() => validate('generated.ts', {content: 'one\ntwo\n'})).toThrow('not production source');
+    expect(() => validate('src/__fixtures__/case.ts', {content: 'one\ntwo\n'})).toThrow('not production source');
+    expect(() => validate('src/normalizer.ts')).toThrow('not a tracked regular file');
+    expect(() => validate('src/normalizer.ts', {content: 'only one line'})).toThrow('out of bounds');
+    expect(() => validate('src/normalizer.ts', {allowed: ['src/normalizer.ts'], content: 'one\ntwo\n'})).toThrow(
+      'not production source',
+    );
+    expect(() => validate('src/normalizer.ts', {content: 'one\ntwo\n'})).not.toThrow();
+  });
+
+  it('wires v4 diagnostic evidence into a source-grounded handoff while retaining the v3 projection', () => {
+    const diagnosticEvidence = {
+      diagnosticConclusion: 'The normalizer removes the wrapper before rendering.',
+      graphQuery: 'find callers from normalizeNode to renderSuggestion',
+      graphQuestion: 'Which production caller passes the normalized node to rendering?',
+      rejectedHypothesis: 'The parser drops the wrapper before normalization.',
+      sourceCitations: [{endLine: 12, path: 'src/normalizer.ts', startLine: 8}],
+      unresolvedGap: 'Trace which caller selects the normalized node.',
+      untestedInvariant: 'Nested wrappers still need a regression after the fix.',
+      verifiedInvariant: 'The focused test fails when the wrapper is absent.',
+    } as const;
+    const shared = {
+      changedPaths: ['tests/regression.test.ts'],
+      phaseTwoPrompt: 'Continue phase two.',
+      resumeEvidenceMarker: 'resume-evidence-marker',
+      verification: 'bun test target.test.ts fails with exit code 1 at this checkpoint.',
+    };
+    const v4 = buildMatchedEvaluationContinuationDiagnosticHandoffV1({
+      ...shared,
+      diagnosticEvidence,
+      legacyEvidence: {anchors: 'tests/regression.test.ts:4-5', observations: ''},
+    });
+    expect(v4.planVersion).toBe(4);
+    expect(v4.codeRefs).toEqual(['tests/regression.test.ts', 'src/normalizer.ts']);
+    expect(v4.sourceAnchors).toBe('src/normalizer.ts:8-12');
+    expect(v4.handoff).toContain('Graph query: find callers from normalizeNode to renderSuggestion');
+    expect(v4.handoff).toContain('Regression anchors: tests/regression.test.ts:4-5');
+    expect(v4.handoff).toContain('Source anchors: src/normalizer.ts:8-12');
+    expect(v4.handoff).toContain('First run exactly one inspect_code_graph query using the Graph query above');
+    const v3 = buildMatchedEvaluationContinuationDiagnosticHandoffV1({
+      ...shared,
+      diagnosticEvidence: null,
+      legacyEvidence: {anchors: 'tests/regression.test.ts:4-5', observations: 'The failing assertion is reproducible.'},
+    });
+    expect(v3.planVersion).toBe(3);
+    expect(v3.codeRefs).toEqual(['tests/regression.test.ts']);
+    expect(v3.sourceAnchors).toBeNull();
+    expect(v3.handoff).toContain('Observed: The failing assertion is reproducible.');
+    expect(v3.handoff).not.toContain('Graph query:');
   });
 
   it('rehashes task-report evidence and rejects partial or tampered reports', async () => {

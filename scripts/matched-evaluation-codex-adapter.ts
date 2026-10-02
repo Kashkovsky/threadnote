@@ -243,6 +243,7 @@ interface ContinuationTreatment {
   readonly manualHandoff: string | null;
   readonly manualHandoffSha256: string | null;
   readonly automaticHandoffUri: string | null;
+  readonly requiredGraphQuery: string | null;
   readonly resumeEvidenceMarker: string | null;
   readonly variant: ContinuationVariant;
 }
@@ -417,6 +418,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
               ? null
               : {
                   automaticHandoffUri: request.continuationTreatment.automaticHandoffUri,
+                  requiredGraphQuery: request.continuationTreatment.requiredGraphQuery,
                   resumeEvidenceMarker: request.continuationTreatment.resumeEvidenceMarker,
                 },
         maximumFollowupCalls: maximumContextFollowupCalls(request, context),
@@ -461,6 +463,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       maximumContextFollowupCalls(request, context),
       initialBriefDelivery,
       agentIsolation.preloadedContext?.text ?? null,
+      request.continuationTreatment?.requiredGraphQuery ?? null,
     );
     let agentTurn: AppServerTurnResult;
     try {
@@ -473,6 +476,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
         expectedMcpServer: context === null ? null : MATCHED_EVALUATION_CONTEXT_SERVER_NAME,
         expectedContextDetail: context === null ? null : (request.tool.detail ?? 'compact'),
         expectedInitialBriefDelivery: initialBriefDelivery,
+        expectedRequiredGraphQuery: request.continuationTreatment?.requiredGraphQuery ?? null,
         model: config.model,
         outputSchema: AGENT_OUTPUT_SCHEMA,
         prompt: agentPrompt,
@@ -622,6 +626,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       expectedMcpServer: null,
       expectedContextDetail: null,
       expectedInitialBriefDelivery: 'mcp',
+      expectedRequiredGraphQuery: null,
       model: config.judgeModel,
       outputSchema: JUDGE_OUTPUT_SCHEMA,
       prompt: renderMatchedEvaluationJudgePromptV1(request, artifact),
@@ -1969,6 +1974,7 @@ async function createCodexIsolation(input: {
       mode: packet.mode,
       frozenPromptSha256: hashMatchedEvaluationContextContent(input.taskPrompt),
       maximumFollowupCalls: packet.maximumFollowupCalls,
+      requiredGraphQuery: packet.expectedResume?.requiredGraphQuery ?? null,
       runNonce: input.runNonce,
       runtimeManifestSha256: packet.runtimeManifestSha256,
       expectedResumeHash: hashExpectedResume(packet.expectedResume),
@@ -1981,6 +1987,7 @@ async function createCodexIsolation(input: {
         account: packet.threadnoteAccount,
         executable: packet.threadnoteExecutable,
         expectedHandoffUri: packet.expectedResume.automaticHandoffUri,
+        expectedRequiredGraphQuery: packet.expectedResume.requiredGraphQuery,
         expectedResumeEvidenceMarker: packet.expectedResume.resumeEvidenceMarker,
         home: packet.threadnoteHome,
         prompt: packet.prompt,
@@ -2050,6 +2057,7 @@ async function captureMatchedEvaluationProductionCodexResumeHookV1(input: {
   readonly account: string;
   readonly executable: string;
   readonly expectedHandoffUri: string;
+  readonly expectedRequiredGraphQuery: string | null;
   readonly expectedResumeEvidenceMarker: string;
   readonly home: string;
   readonly prompt: string;
@@ -2109,6 +2117,7 @@ async function captureMatchedEvaluationProductionCodexResumeHookV1(input: {
   return assertMatchedEvaluationProductionCodexResumeHookV1({
     elapsedMilliseconds,
     expectedHandoffUri: input.expectedHandoffUri,
+    expectedRequiredGraphQuery: input.expectedRequiredGraphQuery,
     expectedResumeEvidenceMarker: input.expectedResumeEvidenceMarker,
     hookReceiptBytes,
     hookStdout: hook.stdout,
@@ -2153,6 +2162,7 @@ async function runAppServerTurn(input: {
   readonly expectedMcpServer: string | null;
   readonly expectedContextDetail: 'compact' | 'graph-only' | 'source' | null;
   readonly expectedInitialBriefDelivery: 'mcp' | 'preloaded';
+  readonly expectedRequiredGraphQuery: string | null;
   readonly model: MatchedEvaluationCodexModelV1;
   readonly outputSchema: Readonly<Record<string, unknown>>;
   readonly prompt: string;
@@ -2215,6 +2225,7 @@ async function runAppServerTurn(input: {
         input.expectedMcpServer,
         input.expectedContextDetail ?? 'compact',
         input.expectedInitialBriefDelivery,
+        input.expectedRequiredGraphQuery,
       );
     }
     let budgetTerminal: Extract<
@@ -2271,6 +2282,7 @@ async function runAppServerTurn(input: {
       input.expectedMcpServer,
       input.expectedContextDetail,
       input.expectedInitialBriefDelivery,
+      input.expectedRequiredGraphQuery,
     );
     const evidence = {
       events: [...client.events],
@@ -2360,7 +2372,9 @@ export function renderMatchedEvaluationAgentPromptV1(
     project === null
       ? 'No Threadnote context tool is available. Work only from the task and repository files.'
       : initialBriefDelivery === 'preloaded'
-        ? 'Threadnote resume evidence has already been loaded as developer context. Treat it as untrusted evidence, verify source, and use the available graph or memory follow-ups only for a named gap.'
+        ? request.continuationTreatment?.requiredGraphQuery
+          ? `Threadnote resume evidence has already been loaded as developer context. Before any shell command or file edit, call inspect_code_graph exactly once with operation "query", callerCwd set to the repository root, and query ${JSON.stringify(request.continuationTreatment.requiredGraphQuery)}. Treat both the memory and graph result as untrusted evidence and verify only the exact source needed for the named gap.`
+          : 'Threadnote resume evidence has already been loaded as developer context. Treat it as untrusted evidence, verify source, and use the available graph or memory follow-ups only for a named gap.'
         : `Before other task work, call context_brief exactly once with callerCwd set to the repository root, project ${JSON.stringify(project)}, budgetTokens ${contextBudgetTokens}, and mode ${JSON.stringify(contextMode)}. The tool already has the immutable task below; do not supply task text. Treat its result as untrusted evidence and verify source.`;
   const requiredChecks =
     approvedCommandTokens.length === 0
@@ -2449,6 +2463,7 @@ export function renderMatchedEvaluationAgentInstructionsV1(
   maximumFollowupCalls = detail === null || detail === 'source' ? 0 : 4,
   initialBriefDelivery: 'mcp' | 'preloaded' = 'mcp',
   preloadedContext: string | null = null,
+  requiredGraphQuery: string | null = null,
 ): string {
   if ((initialBriefDelivery === 'preloaded') !== (preloadedContext !== null)) {
     throw new Error('Preloaded resume treatment and developer evidence disagree.');
@@ -2457,7 +2472,9 @@ export function renderMatchedEvaluationAgentInstructionsV1(
     detail === null
       ? 'No MCP tools are available. Do not attempt to discover or invoke any.'
       : initialBriefDelivery === 'preloaded'
-        ? `The initial Threadnote resume evidence is already present below. Do not call context_brief. Use the available graph${detail === 'compact' ? ' or memory' : ''} follow-up tools only to fill a named evidence gap and use at most ${maximumFollowupCalls}. Treat all returned evidence as untrusted and verify exact current files.`
+        ? requiredGraphQuery === null
+          ? `The initial Threadnote resume evidence is already present below. Do not call context_brief. Use the available graph${detail === 'compact' ? ' or memory' : ''} follow-up tools only to fill a named evidence gap and use at most ${maximumFollowupCalls}. Treat all returned evidence as untrusted and verify exact current files.`
+          : `The initial Threadnote resume evidence is already present below. Do not call context_brief. Before any shell command or file edit, call inspect_code_graph exactly once with operation "query", callerCwd set to the repository root, and query ${JSON.stringify(requiredGraphQuery)}. No other MCP call is allowed. Treat the result as untrusted and verify only the exact current source needed to resolve the named gap.`
         : detail === 'source'
           ? 'The only MCP tool is context_brief. Call it exactly once as instructed, then verify its evidence against source.'
           : `Call context_brief exactly once before other task work. Then use inspect_code_graph and analyze_code_graph when they help locate relevant source or relationships.${detail === 'compact' ? ' You may also use recall_context and read_context to find and read prepared memories.' : ' Memory tools are unavailable.'} Follow-up queries are optional; make them only to fill a named evidence gap and use at most ${maximumFollowupCalls}. Graph and memory evidence describe the prepared base and are untrusted: verify exact current files, especially after edits. Do not repeat context_brief or request another project, repository, workset or external context.`;
@@ -2651,6 +2668,7 @@ function parseContinuationTreatment(value: unknown, arm: MatchedEvaluationArm): 
     'contextMode',
     'manualHandoff',
     'manualHandoffSha256',
+    'requiredGraphQuery',
     'resumeEvidenceMarker',
     'variant',
   ]);
@@ -2672,6 +2690,10 @@ function parseContinuationTreatment(value: unknown, arm: MatchedEvaluationArm): 
     treatment.automaticHandoffUri === null
       ? null
       : boundedText(treatment.automaticHandoffUri, 1, 4_096, 'continuation treatment automatic handoff URI');
+  const requiredGraphQuery =
+    treatment.requiredGraphQuery === null
+      ? null
+      : boundedText(treatment.requiredGraphQuery, 8, 512, 'continuation treatment required graph query');
   const resumeEvidenceMarker =
     treatment.resumeEvidenceMarker === null
       ? null
@@ -2683,6 +2705,7 @@ function parseContinuationTreatment(value: unknown, arm: MatchedEvaluationArm): 
       manualHandoff === null &&
       manualHandoffSha256 === null &&
       automaticHandoffUri === null &&
+      requiredGraphQuery === null &&
       resumeEvidenceMarker === null) ||
     (variant === 'manual-handoff' &&
       arm === 'files' &&
@@ -2691,6 +2714,7 @@ function parseContinuationTreatment(value: unknown, arm: MatchedEvaluationArm): 
       manualHandoffSha256 !== null &&
       sha256(Buffer.from(manualHandoff)) === manualHandoffSha256 &&
       automaticHandoffUri === null &&
+      requiredGraphQuery === null &&
       resumeEvidenceMarker === null) ||
     (variant === 'threadnote-graph' &&
       arm === 'threadnote-graph' &&
@@ -2698,6 +2722,7 @@ function parseContinuationTreatment(value: unknown, arm: MatchedEvaluationArm): 
       manualHandoff === null &&
       manualHandoffSha256 === null &&
       automaticHandoffUri === null &&
+      requiredGraphQuery === null &&
       resumeEvidenceMarker === null) ||
     (variant === 'threadnote-resume' &&
       arm === 'threadnote-compact' &&
@@ -2705,6 +2730,7 @@ function parseContinuationTreatment(value: unknown, arm: MatchedEvaluationArm): 
       manualHandoff === null &&
       manualHandoffSha256 === null &&
       automaticHandoffUri !== null &&
+      requiredGraphQuery === null &&
       resumeEvidenceMarker !== null) ||
     (variant === 'threadnote-preloaded-resume' &&
       arm === 'threadnote-compact' &&
@@ -2714,7 +2740,15 @@ function parseContinuationTreatment(value: unknown, arm: MatchedEvaluationArm): 
       automaticHandoffUri !== null &&
       resumeEvidenceMarker !== null);
   if (!coherent) invalid('continuation treatment does not match the sealed arm and delivery contract');
-  return {contextMode, manualHandoff, manualHandoffSha256, automaticHandoffUri, resumeEvidenceMarker, variant};
+  return {
+    contextMode,
+    manualHandoff,
+    manualHandoffSha256,
+    automaticHandoffUri,
+    requiredGraphQuery,
+    resumeEvidenceMarker,
+    variant,
+  };
 }
 
 function contextModeForRequest(request: AdapterRequest): 'brief' | 'resume' | null {
@@ -2952,6 +2986,7 @@ export interface MatchedEvaluationExpectedContextDeliveryV1 extends ParsedContex
   readonly frozenPromptSha256: string;
   readonly initialBriefDelivery: 'mcp' | 'preloaded';
   readonly maximumFollowupCalls: number;
+  readonly requiredGraphQuery: string | null;
   readonly mode: 'brief' | 'resume';
   readonly runNonce: string;
   readonly runtimeManifestSha256: string;
@@ -3050,6 +3085,7 @@ export function assertMatchedEvaluationPreloadedContextV1(
 export function assertMatchedEvaluationProductionCodexResumeHookV1(input: {
   readonly elapsedMilliseconds: number;
   readonly expectedHandoffUri: string;
+  readonly expectedRequiredGraphQuery?: string | null;
   readonly expectedResumeEvidenceMarker: string;
   readonly hookReceiptBytes: Uint8Array;
   readonly hookStdout: string;
@@ -3073,6 +3109,9 @@ export function assertMatchedEvaluationProductionCodexResumeHookV1(input: {
   }
   if (!text.includes(input.expectedResumeEvidenceMarker)) {
     throw new Error('Production Codex resume hook omitted the sealed resume evidence marker.');
+  }
+  if (input.expectedRequiredGraphQuery && !text.includes(input.expectedRequiredGraphQuery)) {
+    throw new Error('Production Codex resume hook omitted the sealed diagnostic graph query.');
   }
   const expectedSource = input.expectedHandoffUri.replace(/^threadnote:\/\/user\/[^/]+\//u, '');
   const lines = text.split('\n');
@@ -3156,6 +3195,62 @@ export function assertMatchedEvaluationContextDeliveryV1(
   expected: MatchedEvaluationExpectedContextDeliveryV1 | null,
 ): MatchedEvaluationContextDeliveryDiagnosticsV1 {
   const diagnostics = {incompleteOptionalFailures: 0, optionalFailures: 0, version: 1 as const};
+  const requiredGraphQuery = expected?.requiredGraphQuery ?? null;
+  let requiredGraphItemId: string | null = null;
+  let requiredGraphArguments: string | null = null;
+  let requiredGraphCompleted = false;
+  const actions = events.flatMap(event => {
+    if (event.method !== 'item/started' && event.method !== 'item/completed') return [];
+    const item = object(object(event.params, 'action item params').item, 'action item');
+    return item.type === 'commandExecution' || item.type === 'fileChange' || item.type === 'mcpToolCall' ? [item] : [];
+  });
+  if (requiredGraphQuery !== null) {
+    for (const event of events) {
+      if (event.method !== 'item/started' && event.method !== 'item/completed') continue;
+      const item = object(object(event.params, 'action item params').item, 'action item');
+      if (item.type === 'mcpToolCall') {
+        const id = boundedText(item.id, 1, 512, 'context item id');
+        const tool = boundedText(item.tool, 1, 128, 'context tool');
+        const parsed = parseMcpArguments(item.arguments ?? item.input ?? item.request);
+        const arguments_ = object(parsed, 'required graph follow-up arguments');
+        if (
+          tool !== 'inspect_code_graph' ||
+          arguments_.operation !== 'query' ||
+          arguments_.query !== requiredGraphQuery
+        ) {
+          throw new Error(
+            'Preloaded diagnostic continuation used a graph query other than the sealed diagnosis query.',
+          );
+        }
+        const canonicalArguments = hashMatchedEvaluationContextRequest('inspect_code_graph', parsed);
+        if (requiredGraphItemId === null) {
+          if (event.method !== 'item/started')
+            throw new Error('Preloaded diagnostic continuation must begin with inspect_code_graph.');
+          requiredGraphItemId = id;
+          requiredGraphArguments = canonicalArguments;
+        } else if (id !== requiredGraphItemId || canonicalArguments !== requiredGraphArguments) {
+          throw new Error('Preloaded diagnostic continuation contains an unexpected MCP call or item id.');
+        }
+        if (event.method === 'item/completed') {
+          if (requiredGraphCompleted)
+            throw new Error('Preloaded diagnostic continuation contains duplicate graph completion.');
+          requiredGraphCompleted = true;
+          if (item.status !== 'completed' || (item.error !== null && item.error !== undefined)) {
+            throw new Error('Preloaded diagnostic continuation graph call did not complete successfully.');
+          }
+          const result = object(item.result, 'required graph follow-up result');
+          if (result.isError === true)
+            throw new Error('Preloaded diagnostic continuation graph call did not complete successfully.');
+        }
+      } else if (item.type === 'commandExecution' || item.type === 'fileChange') {
+        if (requiredGraphItemId === null || !requiredGraphCompleted) {
+          throw new Error(
+            'Preloaded diagnostic continuation started a command or file change before graph completion.',
+          );
+        }
+      }
+    }
+  }
   const calls = events.flatMap(event => {
     if (event.method !== 'item/completed') return [];
     const item = object(object(event.params, 'completed item params').item, 'completed item');
@@ -3164,6 +3259,12 @@ export function assertMatchedEvaluationContextDeliveryV1(
   if (expected === null) {
     if (calls.length !== 0) throw new Error('Files-only arm received an unexpected MCP context call.');
     return diagnostics;
+  }
+  if (requiredGraphQuery !== null) {
+    const firstAction = actions[0];
+    if (firstAction?.type !== 'mcpToolCall' || firstAction.tool !== 'inspect_code_graph') {
+      throw new Error('Preloaded diagnostic continuation must begin with inspect_code_graph.');
+    }
   }
   const ids = new Set<string>();
   let briefCount = 0;
@@ -3273,6 +3374,25 @@ export function assertMatchedEvaluationContextDeliveryV1(
     .filter(call => call.status === 'completed').length;
   if (completedFollowupCalls > expected.maximumFollowupCalls) {
     throw new Error('Context delivery exceeded the sealed follow-up call budget.');
+  }
+  if (requiredGraphQuery !== null) {
+    if (
+      calls.length !== 1 ||
+      completedFollowupCalls !== 1 ||
+      calls[0]?.tool !== 'inspect_code_graph' ||
+      calls[0]?.result === null ||
+      calls[0]?.result === undefined ||
+      object(calls[0].result, 'required graph follow-up result').isError === true
+    ) {
+      throw new Error('Preloaded diagnostic continuation requires exactly one completed graph follow-up.');
+    }
+    const arguments_ = object(
+      parseMcpArguments(calls[0].arguments ?? calls[0].input ?? calls[0].request),
+      'required graph follow-up arguments',
+    );
+    if (arguments_.operation !== 'query' || arguments_.query !== requiredGraphQuery) {
+      throw new Error('Preloaded diagnostic continuation used a graph query other than the sealed diagnosis query.');
+    }
   }
   if (
     expected.detail === 'graph-only' &&
@@ -3385,6 +3505,7 @@ export function assertMatchedEvaluationMcpInventoryV1(
   serverName: string,
   detail: 'compact' | 'graph-only' | 'source' = 'compact',
   initialBriefDelivery: 'mcp' | 'preloaded' = 'mcp',
+  requiredGraphQuery: string | null = null,
 ): void {
   const inventory = object(value, 'MCP inventory');
   if (!Array.isArray(inventory.data) || inventory.nextCursor != null || inventory.data.length !== 1) {
@@ -3394,7 +3515,7 @@ export function assertMatchedEvaluationMcpInventoryV1(
   if (server.name !== serverName) throw new Error('Codex MCP inventory contains an unexpected server.');
   const tools = server.tools === undefined || server.tools === null ? undefined : object(server.tools, 'MCP tools');
   if (tools && Object.keys(tools).length > 0) {
-    const allowed = matchedEvaluationContextTools(detail, initialBriefDelivery);
+    const allowed = matchedEvaluationContextTools(detail, initialBriefDelivery, requiredGraphQuery);
     if (Object.keys(tools).some(tool => !allowed.includes(tool))) {
       throw new Error('Codex MCP inventory exposes an unexpected context tool.');
     }
@@ -3416,6 +3537,7 @@ function assertMcpCalls(
   expectedServer: string | null,
   detail: 'compact' | 'graph-only' | 'source' | null,
   initialBriefDelivery: 'mcp' | 'preloaded',
+  requiredGraphQuery: string | null,
 ): void {
   for (const event of events) {
     const method = boundedText(event.method, 1, 512, 'app-server event method');
@@ -3431,7 +3553,7 @@ function assertMcpCalls(
       detail === null ||
       item.server !== expectedServer ||
       typeof item.tool !== 'string' ||
-      !matchedEvaluationContextTools(detail, initialBriefDelivery).includes(item.tool)
+      !matchedEvaluationContextTools(detail, initialBriefDelivery, requiredGraphQuery).includes(item.tool)
     ) {
       throw new Error('Codex invoked an unexpected MCP server or tool.');
     }

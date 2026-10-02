@@ -8,7 +8,7 @@ import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {createHash} from 'node:crypto';
 import {cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
+import {dirname, extname, isAbsolute, join, relative, resolve, sep} from 'node:path';
 import {Effect} from 'effect';
 import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {
@@ -224,10 +224,20 @@ export interface MatchedEvaluationContinuationPhaseOneTaskPacketV3 extends Omit<
   readonly version: 3;
 }
 
+export interface MatchedEvaluationContinuationPhaseOneTaskPacketV4 extends Omit<
+  MatchedEvaluationContinuationPhaseOneTaskPacketV1,
+  'version'
+> {
+  readonly phaseTwoProtectedPaths: readonly string[];
+  readonly treatmentSet: 'automated-context-graph-v1';
+  readonly version: 4;
+}
+
 export type MatchedEvaluationContinuationPhaseOneTaskPacket =
   | MatchedEvaluationContinuationPhaseOneTaskPacketV1
   | MatchedEvaluationContinuationPhaseOneTaskPacketV2
-  | MatchedEvaluationContinuationPhaseOneTaskPacketV3;
+  | MatchedEvaluationContinuationPhaseOneTaskPacketV3
+  | MatchedEvaluationContinuationPhaseOneTaskPacketV4;
 
 export interface MatchedEvaluationContinuationPhaseOneSelectionV1 {
   readonly continuationAttempts: MatchedEvaluationContinuationPilotPlanV2['attempts'];
@@ -504,8 +514,24 @@ export interface MatchedEvaluationContinuationTreatmentV1 {
   readonly contextMode: 'brief' | 'resume' | null;
   readonly manualHandoff: string | null;
   readonly manualHandoffSha256: string | null;
+  readonly requiredGraphQuery: string | null;
   readonly resumeEvidenceMarker: string | null;
   readonly variant: MatchedEvaluationContinuationVariantV1;
+}
+
+export interface MatchedEvaluationContinuationDiagnosticEvidenceV1 {
+  readonly diagnosticConclusion: string;
+  readonly graphQuery: string;
+  readonly graphQuestion: string;
+  readonly rejectedHypothesis: string;
+  readonly sourceCitations: readonly {
+    readonly endLine: number;
+    readonly path: string;
+    readonly startLine: number;
+  }[];
+  readonly unresolvedGap: string;
+  readonly untestedInvariant: string;
+  readonly verifiedInvariant: string;
 }
 
 export interface MatchedEvaluationContinuationPilotPlanV1 {
@@ -611,8 +637,23 @@ export interface MatchedEvaluationContinuationPilotPlanV3 extends Omit<
   readonly version: 3;
 }
 
+export interface MatchedEvaluationContinuationPilotPlanV4 extends Omit<
+  MatchedEvaluationContinuationPilotPlanV3,
+  'checkpoint' | 'version'
+> {
+  readonly checkpoint: MatchedEvaluationContinuationPilotPlanV3['checkpoint'] & {
+    readonly diagnosticEvidence: MatchedEvaluationContinuationDiagnosticEvidenceV1;
+  };
+  readonly version: 4;
+}
+
+type MatchedEvaluationContinuationVerifiedPilotPlan =
+  MatchedEvaluationContinuationPilotPlanV3 | MatchedEvaluationContinuationPilotPlanV4;
+
 export type MatchedEvaluationContinuationPilotPlanCurrent =
-  MatchedEvaluationContinuationPilotPlanV2 | MatchedEvaluationContinuationPilotPlanV3;
+  | MatchedEvaluationContinuationPilotPlanV2
+  | MatchedEvaluationContinuationPilotPlanV3
+  | MatchedEvaluationContinuationPilotPlanV4;
 
 export type MatchedEvaluationContinuationPilotPlan =
   MatchedEvaluationContinuationPilotPlanV1 | MatchedEvaluationContinuationPilotPlanCurrent;
@@ -626,7 +667,7 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
     packet,
     [
       'phaseOneAllowedPaths',
-      ...(version === 2 || version === 3 ? ['phaseTwoProtectedPaths'] : []),
+      ...(version === 2 || version === 3 || version === 4 ? ['phaseTwoProtectedPaths'] : []),
       'phaseOneDirective',
       'phaseOneFocusedChecks',
       'phaseTwoFocusedChecks',
@@ -636,12 +677,12 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
       'sourceTaskPrompt',
       'status',
       'taskKey',
-      ...(version === 2 || version === 3 ? ['treatmentSet'] : []),
+      ...(version === 2 || version === 3 || version === 4 ? ['treatmentSet'] : []),
       'version',
     ],
     'continuation phase-one task packet',
   );
-  if ((version !== 1 && version !== 2 && version !== 3) || packet.status !== 'draft-unsealed') {
+  if ((version !== 1 && version !== 2 && version !== 3 && version !== 4) || packet.status !== 'draft-unsealed') {
     invalid('continuation phase-one task packet version or status is invalid');
   }
   const paths = stringArray(packet.phaseOneAllowedPaths, 1, 16, 4_096, 'phase-one allowed paths');
@@ -649,7 +690,7 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
     invalid('continuation phase-one allowed paths are invalid');
   }
   const phaseTwoProtectedPaths =
-    version === 2 || version === 3
+    version === 2 || version === 3 || version === 4
       ? stringArray(packet.phaseTwoProtectedPaths, 1, 64, 4_096, 'phase-two protected paths')
       : undefined;
   if (
@@ -680,10 +721,18 @@ export function parseMatchedEvaluationContinuationPhaseOneTaskPacketV1(
       version,
     };
   }
+  if (version === 3) {
+    return {
+      ...common,
+      phaseTwoProtectedPaths: phaseTwoProtectedPaths!,
+      treatmentSet: literal(packet.treatmentSet, ['automated-context-v1'] as const, 'continuation treatment set'),
+      version,
+    };
+  }
   return {
     ...common,
     phaseTwoProtectedPaths: phaseTwoProtectedPaths!,
-    treatmentSet: literal(packet.treatmentSet, ['automated-context-v1'] as const, 'continuation treatment set'),
+    treatmentSet: literal(packet.treatmentSet, ['automated-context-graph-v1'] as const, 'continuation treatment set'),
     version,
   };
 }
@@ -697,11 +746,167 @@ function isSafeContinuationRepositoryPath(path: string): boolean {
   );
 }
 
+const CONTINUATION_PRODUCTION_SOURCE_EXTENSIONS = new Set([
+  '.c',
+  '.cc',
+  '.cpp',
+  '.cs',
+  '.go',
+  '.h',
+  '.hpp',
+  '.java',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.php',
+  '.py',
+  '.rb',
+  '.rs',
+  '.sh',
+  '.swift',
+  '.ts',
+  '.tsx',
+  '.vue',
+]);
+
+function isContinuationProductionSourcePath(path: string): boolean {
+  const segments = path.toLowerCase().split('/');
+  if (
+    segments.some(segment =>
+      /^(?:test|tests|__tests__|testdata|docs?|examples?|samples?|fixture|fixtures|__fixtures__|mock|mocks|__mocks__|generated|__generated__|dist|build|coverage)$/u.test(
+        segment,
+      ),
+    )
+  ) {
+    return false;
+  }
+  const filename = segments.at(-1) ?? '';
+  if (
+    /(?:^|[._-])(?:test|spec|fixture|fixtures|mock|mocks|generated)(?:[._-]|$)/u.test(filename) ||
+    /__generated__/u.test(filename)
+  )
+    return false;
+  return CONTINUATION_PRODUCTION_SOURCE_EXTENSIONS.has(extname(path).toLowerCase());
+}
+
+/** Validate v4 anchors against a bounded view of regular tracked checkpoint files. */
+export function assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1(input: {
+  readonly changedPaths: readonly string[];
+  readonly phaseOneAllowedPaths: readonly string[];
+  readonly sourceCitations: MatchedEvaluationContinuationDiagnosticEvidenceV1['sourceCitations'];
+  readonly trackedRegularFiles: ReadonlyMap<string, string>;
+}): void {
+  const changed = new Set(input.changedPaths);
+  const phaseOneAllowed = new Set(input.phaseOneAllowedPaths);
+  for (const citation of input.sourceCitations) {
+    const content = input.trackedRegularFiles.get(citation.path);
+    if (content === undefined)
+      throw new Error(`Continuation diagnostic citation is not a tracked regular file: ${citation.path}.`);
+    if (
+      changed.has(citation.path) ||
+      phaseOneAllowed.has(citation.path) ||
+      !isContinuationProductionSourcePath(citation.path)
+    ) {
+      throw new Error(`Continuation diagnostic citation is not production source: ${citation.path}.`);
+    }
+    const lineCount =
+      content.length === 0 ? 0 : content.split(/\r\n|\n|\r/u).length - (/(?:\r\n|\n|\r)$/u.test(content) ? 1 : 0);
+    if (citation.endLine > lineCount) {
+      throw new Error(
+        `Continuation diagnostic citation is out of bounds: ${citation.path}:${citation.startLine}-${citation.endLine}.`,
+      );
+    }
+  }
+}
+
+/** Pure checkpoint/handoff projection shared by the v3 and diagnostic v4 finalizer paths. */
+export function buildMatchedEvaluationContinuationDiagnosticHandoffV1(input: {
+  readonly changedPaths: readonly string[];
+  readonly diagnosticEvidence: MatchedEvaluationContinuationDiagnosticEvidenceV1 | null;
+  readonly legacyEvidence: {readonly anchors: string; readonly observations: string} | null;
+  readonly phaseTwoPrompt: string;
+  readonly resumeEvidenceMarker: string;
+  readonly verification: string;
+}): {
+  readonly codeRefs: readonly string[];
+  readonly handoff: string;
+  readonly planVersion: 3 | 4;
+  readonly sourceAnchors: string | null;
+} {
+  const diagnostic = input.diagnosticEvidence;
+  const sourceAnchors =
+    diagnostic === null
+      ? null
+      : diagnostic.sourceCitations
+          .map(citation => `${citation.path}:${citation.startLine}-${citation.endLine}`)
+          .join(', ');
+  const handoff = [
+    `Task: ${input.phaseTwoPrompt}`,
+    `Decisions: Phase 1 added only the committed regression in ${input.changedPaths.join(', ')}; production code is unchanged. ${input.resumeEvidenceMarker}`,
+    ...(diagnostic === null
+      ? [
+          `Observed: ${input.legacyEvidence!.observations}`,
+          `Anchors: ${input.legacyEvidence!.anchors}`,
+          'Attempted: Phase 1 changed only the cited regression and ran the required focused check.',
+        ]
+      : [
+          `Diagnosis: ${diagnostic.diagnosticConclusion}`,
+          `Unresolved gap: ${diagnostic.unresolvedGap}`,
+          `Graph question: ${diagnostic.graphQuestion}`,
+          `Graph query: ${diagnostic.graphQuery}`,
+          `Rejected hypothesis: ${diagnostic.rejectedHypothesis}`,
+          `Verified invariant: ${diagnostic.verifiedInvariant}`,
+          `Untested invariant: ${diagnostic.untestedInvariant}`,
+          `Regression anchors: ${input.legacyEvidence!.anchors}`,
+          `Source anchors: ${sourceAnchors}`,
+          'Attempted: Phase 1 added the regression, inspected the cited production path, narrowed the diagnosis, and stopped before the production fix.',
+        ]),
+    'Constraints: Keep the committed regression unchanged, preserve public behavior, use no network access, and implement the smallest general production correction.',
+    'Rationale: The direct-child checkpoint isolates cross-session continuation from initial test discovery and makes every treatment start from the same failing regression.',
+    `Verification: ${input.verification}`,
+    'Blockers: none.',
+    ...(diagnostic === null
+      ? [
+          'Unresolved: Root cause and broader production invariants were not established in Phase 1.',
+          'Avoid repeat: Do not reread the cited regression unless current source differs; trace the production path behind the observed failure.',
+        ]
+      : [
+          'Avoid repeat: The sealed baseline failure is already established; do not rerun it before changing production code. Do not reread unchanged cited anchors. First run exactly one inspect_code_graph query using the Graph query above, then inspect only the source needed to resolve the named gap.',
+        ]),
+    'Risks: Adjacent compatibility behavior may encode the old implementation and must remain covered by the sealed Phase 2 checks.',
+    `Next step: ${input.phaseTwoPrompt}`,
+  ].join('\n');
+  return {
+    codeRefs: [...input.changedPaths, ...(diagnostic?.sourceCitations.map(citation => citation.path) ?? [])],
+    handoff,
+    planVersion: diagnostic === null ? 3 : 4,
+    sourceAnchors,
+  };
+}
+
 function renderMatchedEvaluationContinuationPhaseOnePromptV1(
   packet: MatchedEvaluationContinuationPhaseOneTaskPacket,
 ): string {
   const focusedCheck = packet.phaseOneFocusedChecks[0].replaceAll('{python}', 'python');
-  return `${packet.sourceTaskPrompt}\n\n${packet.phaseOneDirective}\n\nRequired focused check (run exactly as written; do not change its flags or selector):\n${focusedCheck}`;
+  const diagnosticContract =
+    packet.version === 4
+      ? [
+          '',
+          'CONTINUATION DIAGNOSIS/1',
+          'Add the failing regression and inspect the production source deeply enough to leave a decision-grade diagnosis, but do not edit production code or implement the fix.',
+          'Your citations must include both the changed regression and at least one unchanged production-source anchor.',
+          'Write the summary as exactly these seven nonempty lines:',
+          'Diagnosis: <source-grounded conclusion>',
+          'Rejected hypothesis: <attempted explanation that evidence ruled out or narrowed>',
+          'Verified invariant: <behavior established by source or the focused check>',
+          'Untested invariant: <important behavior still requiring verification>',
+          'Unresolved gap: <one exact decision still blocking the production fix>',
+          'Graph question: <one bounded source-relationship question whose answer advances that decision>',
+          'Graph query: <one concise inspect_code_graph query for that question>',
+        ].join('\n')
+      : '';
+  return `${packet.sourceTaskPrompt}\n\n${packet.phaseOneDirective}${diagnosticContract}\n\nRequired focused check (run exactly as written; do not change its flags or selector):\n${focusedCheck}`;
 }
 
 export function createMatchedEvaluationContinuationPhaseOneSelectionV1(input: {
@@ -720,7 +925,7 @@ export function createMatchedEvaluationContinuationPhaseOneSelectionV1(input: {
   const packetHash = matchingString(input.taskPacketSha256, HASH, 'phase-one task packet hash');
   const phaseOnePrompt = renderMatchedEvaluationContinuationPhaseOnePromptV1(input.packet);
   const treatmentVariants =
-    input.packet.version === 3
+    input.packet.version === 3 || input.packet.version === 4
       ? AUTOMATED_CONTEXT_CONTINUATION_VARIANTS
       : input.packet.version === 2
         ? MATCHED_CONTEXT_CONTINUATION_VARIANTS
@@ -839,7 +1044,11 @@ export function parseMatchedEvaluationContinuationPhaseOneSelectionV1(
     'continuation phase-one attempts',
   );
   const expectedAttemptCount =
-    taskPacket.version === 3 ? AUTOMATED_CONTEXT_CONTINUATION_VARIANTS.length : taskPacket.version === 2 ? 3 : null;
+    taskPacket.version === 3 || taskPacket.version === 4
+      ? AUTOMATED_CONTEXT_CONTINUATION_VARIANTS.length
+      : taskPacket.version === 2
+        ? 3
+        : null;
   if (
     (expectedAttemptCount !== null && attempts.length !== expectedAttemptCount) ||
     (taskPacket.version === 1 &&
@@ -1007,7 +1216,9 @@ export interface MatchedEvaluationContinuationSupplementV1 {
 export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): MatchedEvaluationContinuationPilotPlan {
   const plan = object(value, 'continuation pilot plan');
   const version = plan.version;
-  if (version !== 1 && version !== 2 && version !== 3) invalid('continuation pilot plan version is invalid');
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) {
+    invalid('continuation pilot plan version is invalid');
+  }
   exactKeys(
     plan,
     version === 1
@@ -1018,7 +1229,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
           'checkpoint',
           'phaseTwoPrompt',
           'phaseTwoPromptSha256',
-          ...(version === 3 ? ['phaseTwoVerification'] : []),
+          ...(version === 3 || version === 4 ? ['phaseTwoVerification'] : []),
           'retries',
           'sourceTask',
           'taskId',
@@ -1041,6 +1252,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
       ...(version !== 1
         ? [
             'adapterConfigurations',
+            ...(version === 4 ? ['diagnosticEvidence'] : []),
             'phaseOneExecution',
             'phaseOnePatchSha256',
             'phaseOnePrompt',
@@ -1142,10 +1354,12 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
           : attempts.length === CONTINUATION_VARIANTS.length
             ? CONTINUATION_VARIANTS
             : null;
+  const versionedExpectedVariants = version === 4 ? AUTOMATED_CONTEXT_CONTINUATION_VARIANTS : expectedVariants;
   if (
-    expectedVariants === null ||
-    new Set(attempts.map(attempt => attempt.variant)).size !== expectedVariants.length ||
-    expectedVariants.some(variant => !attempts.some(attempt => attempt.variant === variant)) ||
+    versionedExpectedVariants === null ||
+    attempts.length !== versionedExpectedVariants.length ||
+    new Set(attempts.map(attempt => attempt.variant)).size !== versionedExpectedVariants.length ||
+    versionedExpectedVariants.some(variant => !attempts.some(attempt => attempt.variant === variant)) ||
     new Set(attempts.map(attempt => attempt.runNonce)).size !== attempts.length ||
     new Set(attempts.map(attempt => attempt.blindLabel)).size !== attempts.length ||
     new Set(attempts.map(attempt => attempt.runOrder)).size !== attempts.length
@@ -1267,6 +1481,8 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
   if (!phaseOnePrompt.includes(parsedSourceTask.prompt)) {
     invalid('continuation pilot phase-one prompt must include the exact source task prompt');
   }
+  const diagnosticEvidence =
+    version === 4 ? parseMatchedEvaluationContinuationDiagnosticEvidenceV1(checkpoint.diagnosticEvidence) : null;
   const current = {
     ...common,
     checkpoint: {
@@ -1281,6 +1497,7 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
       phaseOnePrompt,
       phaseOnePromptSha256,
       preparedContext: parseContinuationPreparedContextV2(checkpoint.preparedContext),
+      ...(diagnosticEvidence === null ? {} : {diagnosticEvidence}),
       preparedGraphHome: parseContinuationPreparedHomeV2(
         checkpoint.preparedGraphHome,
         'continuation pilot prepared graph home',
@@ -1298,10 +1515,84 @@ export function parseMatchedEvaluationContinuationPilotPlanV1(value: unknown): M
   if (phaseTwoVerification.taskId !== common.taskId) {
     invalid('continuation pilot phase-two verification task id differs');
   }
+  if (version === 3) {
+    return {
+      ...current,
+      phaseTwoVerification,
+      version,
+    };
+  }
   return {
     ...current,
+    checkpoint: {...current.checkpoint, diagnosticEvidence: diagnosticEvidence!},
     phaseTwoVerification,
     version,
+  };
+}
+
+function parseMatchedEvaluationContinuationDiagnosticEvidenceV1(
+  value: unknown,
+): MatchedEvaluationContinuationDiagnosticEvidenceV1 {
+  const evidence = object(value, 'continuation diagnostic evidence');
+  exactKeys(
+    evidence,
+    [
+      'diagnosticConclusion',
+      'graphQuery',
+      'graphQuestion',
+      'rejectedHypothesis',
+      'sourceCitations',
+      'unresolvedGap',
+      'untestedInvariant',
+      'verifiedInvariant',
+    ],
+    'continuation diagnostic evidence',
+  );
+  const sourceCitations = array(evidence.sourceCitations, 'continuation diagnostic source citations').map(
+    (entry, index) => {
+      const citation = object(entry, `continuation diagnostic source citation ${index}`);
+      exactKeys(citation, ['endLine', 'path', 'startLine'], `continuation diagnostic source citation ${index}`);
+      const path = boundedString(citation.path, 1, 1_024, `continuation diagnostic source citation ${index} path`);
+      if (!isSafeContinuationRepositoryPath(path)) {
+        invalid('continuation diagnostic source citation path is invalid');
+      }
+      const startLine = boundedPositiveInteger(
+        citation.startLine,
+        1,
+        10_000_000,
+        `continuation diagnostic source citation ${index} start line`,
+      );
+      return {
+        endLine: boundedPositiveInteger(
+          citation.endLine,
+          startLine,
+          10_000_000,
+          `continuation diagnostic source citation ${index} end line`,
+        ),
+        path,
+        startLine,
+      };
+    },
+  );
+  if (sourceCitations.length === 0 || sourceCitations.length > 16) {
+    invalid('continuation diagnostic evidence requires one to sixteen production-source citations');
+  }
+  const graphQuery = boundedString(evidence.graphQuery, 8, 256, 'continuation diagnostic graph query');
+  if (/\r|\n/u.test(graphQuery)) invalid('continuation diagnostic graph query must be a single line');
+  return {
+    diagnosticConclusion: boundedString(evidence.diagnosticConclusion, 8, 384, 'continuation diagnostic conclusion'),
+    graphQuery,
+    graphQuestion: boundedString(evidence.graphQuestion, 8, 384, 'continuation diagnostic graph question'),
+    rejectedHypothesis: boundedString(
+      evidence.rejectedHypothesis,
+      8,
+      384,
+      'continuation diagnostic rejected hypothesis',
+    ),
+    sourceCitations,
+    unresolvedGap: boundedString(evidence.unresolvedGap, 8, 384, 'continuation diagnostic unresolved gap'),
+    untestedInvariant: boundedString(evidence.untestedInvariant, 8, 384, 'continuation diagnostic untested invariant'),
+    verifiedInvariant: boundedString(evidence.verifiedInvariant, 8, 384, 'continuation diagnostic verified invariant'),
   };
 }
 
@@ -1531,7 +1822,17 @@ function parseContinuationPreparedHomeV2(
 
 /** Bind the v2 phase-one claims to immutable sibling evidence before any phase-two attempt starts. */
 export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(input: {
-  readonly plan: MatchedEvaluationContinuationPilotPlanCurrent;
+  readonly plan: {
+    readonly checkpoint: Pick<
+      MatchedEvaluationContinuationPilotPlanV2['checkpoint'],
+      'phaseOneAccounting' | 'phaseOneExecution' | 'phaseOnePatchSha256' | 'phaseOnePrompt'
+    >;
+    readonly sourceTask: Pick<
+      MatchedEvaluationContinuationPilotPlanV2['sourceTask'],
+      'repositoryFixtureHash' | 'repositoryRevision'
+    >;
+    readonly taskId: string;
+  };
   readonly planPath: string;
 }): Promise<{readonly checkpointPatch: string}> {
   const evidenceDirectory = join(dirname(input.planPath), 'phase-one');
@@ -1672,11 +1973,9 @@ export async function assertMatchedEvaluationContinuationPhaseOneEvidenceV2(inpu
 
 function continuationTreatment(
   variant: MatchedEvaluationContinuationVariantV1,
-  checkpoint: Pick<
-    MatchedEvaluationContinuationPilotPlan['checkpoint'],
-    'automaticHandoffUri' | 'handoff' | 'handoffSha256' | 'resumeEvidenceMarker'
-  >,
+  checkpoint: MatchedEvaluationContinuationPilotPlan['checkpoint'],
 ): {readonly arm: MatchedEvaluationArm; readonly treatment: MatchedEvaluationContinuationTreatmentV1} {
+  const requiredGraphQuery = 'diagnosticEvidence' in checkpoint ? checkpoint.diagnosticEvidence.graphQuery : null;
   switch (variant) {
     case 'files-bare':
       return {
@@ -1686,6 +1985,7 @@ function continuationTreatment(
           contextMode: null,
           manualHandoff: null,
           manualHandoffSha256: null,
+          requiredGraphQuery: null,
           resumeEvidenceMarker: null,
           variant,
         },
@@ -1698,6 +1998,7 @@ function continuationTreatment(
           contextMode: null,
           manualHandoff: checkpoint.handoff,
           manualHandoffSha256: checkpoint.handoffSha256,
+          requiredGraphQuery: null,
           resumeEvidenceMarker: null,
           variant,
         },
@@ -1710,6 +2011,7 @@ function continuationTreatment(
           contextMode: 'brief',
           manualHandoff: null,
           manualHandoffSha256: null,
+          requiredGraphQuery: null,
           resumeEvidenceMarker: null,
           variant,
         },
@@ -1722,6 +2024,7 @@ function continuationTreatment(
           contextMode: 'resume',
           manualHandoff: null,
           manualHandoffSha256: null,
+          requiredGraphQuery: null,
           resumeEvidenceMarker: checkpoint.resumeEvidenceMarker,
           variant,
         },
@@ -1734,6 +2037,7 @@ function continuationTreatment(
           contextMode: 'resume',
           manualHandoff: null,
           manualHandoffSha256: null,
+          requiredGraphQuery,
           resumeEvidenceMarker: checkpoint.resumeEvidenceMarker,
           variant,
         },
@@ -1750,6 +2054,7 @@ export function projectMatchedEvaluationContinuationSelectionCheckpointV1(
     ...(plan.version !== 1
       ? {
           adapterConfigurations: plan.checkpoint.adapterConfigurations,
+          ...('diagnosticEvidence' in plan.checkpoint ? {diagnosticEvidence: plan.checkpoint.diagnosticEvidence} : {}),
           phaseOneExecution: plan.checkpoint.phaseOneExecution,
           phaseOnePatchSha256: plan.checkpoint.phaseOnePatchSha256,
           phaseOnePromptSha256: plan.checkpoint.phaseOnePromptSha256,
@@ -2336,28 +2641,7 @@ export function extractMatchedEvaluationContinuationPhaseOneEvidenceV1(
   transcript: string,
   changedPaths: readonly string[],
 ): {readonly anchors: string; readonly observations: string} {
-  const envelopes = transcript
-    .split(/\r?\n/gu)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map((line, index) => object(JSON.parse(line) as unknown, `continuation phase-one transcript line ${index + 1}`));
-  const agentEnvelopes = envelopes.filter(envelope => envelope.kind === 'agent');
-  if (agentEnvelopes.length !== 1) {
-    throw new Error('Continuation phase-one transcript must contain exactly one agent envelope.');
-  }
-  const events = array(agentEnvelopes[0].events, 'continuation phase-one agent events');
-  const finalMessages = events.flatMap((event, index) => {
-    const envelope = object(event, `continuation phase-one agent event ${index}`);
-    if (envelope.method !== 'item/completed') return [];
-    const params = object(envelope.params, `continuation phase-one agent event ${index} params`);
-    const item = object(params.item, `continuation phase-one agent event ${index} item`);
-    return item.type === 'agentMessage' && item.phase === 'final_answer' ? [item] : [];
-  });
-  if (finalMessages.length !== 1) {
-    throw new Error('Continuation phase-one transcript must contain exactly one completed final answer.');
-  }
-  const finalText = boundedString(finalMessages[0].text, 1, 16 * 1_024, 'continuation phase-one final answer text');
-  const finalAnswer = object(JSON.parse(finalText) as unknown, 'continuation phase-one structured final answer');
+  const finalAnswer = matchedEvaluationContinuationPhaseOneFinalAnswer(transcript);
   exactKeys(finalAnswer, ['citations', 'completed', 'summary'], 'continuation phase-one structured final answer');
   if (finalAnswer.completed !== true) {
     throw new Error('Continuation phase-one structured final answer is not completed.');
@@ -2392,6 +2676,113 @@ export function extractMatchedEvaluationContinuationPhaseOneEvidenceV1(
   });
   if (anchors.length === 0) throw new Error('Continuation phase-one final answer lacks a changed regression citation.');
   return {anchors: [...new Set(anchors)].join(', '), observations};
+}
+
+export function extractMatchedEvaluationContinuationPhaseOneEvidenceV2(
+  transcript: string,
+  changedPaths: readonly string[],
+): {
+  readonly diagnosticEvidence: MatchedEvaluationContinuationDiagnosticEvidenceV1;
+  readonly regressionAnchors: string;
+} {
+  const finalAnswer = matchedEvaluationContinuationPhaseOneFinalAnswer(transcript);
+  exactKeys(finalAnswer, ['citations', 'completed', 'summary'], 'continuation phase-one structured final answer');
+  if (finalAnswer.completed !== true) {
+    throw new Error('Continuation phase-one structured final answer is not completed.');
+  }
+  const summary = boundedString(finalAnswer.summary, 1, 8_192, 'continuation phase-one diagnostic summary');
+  const summaryLines = summary.split(/\r?\n/u).map(line => line.trim());
+  const expectedPrefixes = [
+    'Diagnosis: ',
+    'Rejected hypothesis: ',
+    'Verified invariant: ',
+    'Untested invariant: ',
+    'Unresolved gap: ',
+    'Graph question: ',
+    'Graph query: ',
+  ] as const;
+  if (
+    summaryLines.length !== expectedPrefixes.length ||
+    summaryLines.some((line, index) => !line.startsWith(expectedPrefixes[index]) || line === expectedPrefixes[index])
+  ) {
+    throw new Error('Continuation diagnostic summary must contain exactly the seven ordered contract lines.');
+  }
+  const fields = {
+    diagnosticConclusion: uniquePrefixedLine(summary, 'Diagnosis: ', 'continuation diagnostic conclusion'),
+    graphQuery: uniquePrefixedLine(summary, 'Graph query: ', 'continuation diagnostic graph query'),
+    graphQuestion: uniquePrefixedLine(summary, 'Graph question: ', 'continuation diagnostic graph question'),
+    rejectedHypothesis: uniquePrefixedLine(
+      summary,
+      'Rejected hypothesis: ',
+      'continuation diagnostic rejected hypothesis',
+    ),
+    unresolvedGap: uniquePrefixedLine(summary, 'Unresolved gap: ', 'continuation diagnostic unresolved gap'),
+    untestedInvariant: uniquePrefixedLine(
+      summary,
+      'Untested invariant: ',
+      'continuation diagnostic untested invariant',
+    ),
+    verifiedInvariant: uniquePrefixedLine(
+      summary,
+      'Verified invariant: ',
+      'continuation diagnostic verified invariant',
+    ),
+  };
+  const changed = new Set(changedPaths);
+  const regressionAnchors: string[] = [];
+  const sourceCitations: MatchedEvaluationContinuationDiagnosticEvidenceV1['sourceCitations'][number][] = [];
+  for (const [index, entry] of array(finalAnswer.citations, 'continuation phase-one diagnostic citations').entries()) {
+    const citation = object(entry, `continuation phase-one diagnostic citation ${index}`);
+    exactKeys(citation, ['endLine', 'path', 'startLine'], `continuation phase-one diagnostic citation ${index}`);
+    const path = boundedString(citation.path, 1, 1_024, `continuation phase-one diagnostic citation ${index} path`);
+    if (!isSafeContinuationRepositoryPath(path)) {
+      throw new Error('Continuation phase-one diagnostic citation path is invalid.');
+    }
+    const startLine = boundedPositiveInteger(
+      citation.startLine,
+      1,
+      10_000_000,
+      `continuation phase-one diagnostic citation ${index} start line`,
+    );
+    const endLine = boundedPositiveInteger(
+      citation.endLine,
+      startLine,
+      10_000_000,
+      `continuation phase-one diagnostic citation ${index} end line`,
+    );
+    if (changed.has(path)) regressionAnchors.push(`${path}:${startLine}-${endLine}`);
+    else sourceCitations.push({endLine, path, startLine});
+  }
+  if (regressionAnchors.length === 0) {
+    throw new Error('Continuation diagnostic evidence lacks a changed regression citation.');
+  }
+  const diagnosticEvidence = parseMatchedEvaluationContinuationDiagnosticEvidenceV1({...fields, sourceCitations});
+  return {diagnosticEvidence, regressionAnchors: [...new Set(regressionAnchors)].join(', ')};
+}
+
+function matchedEvaluationContinuationPhaseOneFinalAnswer(transcript: string): Record<string, unknown> {
+  const envelopes = transcript
+    .split(/\r?\n/gu)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map((line, index) => object(JSON.parse(line) as unknown, `continuation phase-one transcript line ${index + 1}`));
+  const agentEnvelopes = envelopes.filter(envelope => envelope.kind === 'agent');
+  if (agentEnvelopes.length !== 1) {
+    throw new Error('Continuation phase-one transcript must contain exactly one agent envelope.');
+  }
+  const events = array(agentEnvelopes[0].events, 'continuation phase-one agent events');
+  const finalMessages = events.flatMap((event, index) => {
+    const envelope = object(event, `continuation phase-one agent event ${index}`);
+    if (envelope.method !== 'item/completed') return [];
+    const params = object(envelope.params, `continuation phase-one agent event ${index} params`);
+    const item = object(params.item, `continuation phase-one agent event ${index} item`);
+    return item.type === 'agentMessage' && item.phase === 'final_answer' ? [item] : [];
+  });
+  if (finalMessages.length !== 1) {
+    throw new Error('Continuation phase-one transcript must contain exactly one completed final answer.');
+  }
+  const finalText = boundedString(finalMessages[0].text, 1, 16 * 1_024, 'continuation phase-one final answer text');
+  return object(JSON.parse(finalText) as unknown, 'continuation phase-one structured final answer');
 }
 
 /** Turn preserved Phase-1 evidence into one direct-child checkpoint and sealed v2 continuation plan. */
@@ -2729,25 +3120,64 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
   }
   await cp(graphHome, compactHome, {errorOnExist: true, force: false, recursive: true});
   const resumeEvidenceMarker = `threadnote-resume-${phaseOnePatchSha256.slice(0, 20)}`;
-  const phaseOneEvidence = extractMatchedEvaluationContinuationPhaseOneEvidenceV1(
-    await readFile(resolve(outputDirectory, 'phase-one', 'transcript.jsonl'), 'utf8'),
+  const phaseOneTranscript = await readFile(resolve(outputDirectory, 'phase-one', 'transcript.jsonl'), 'utf8');
+  const diagnosticPhaseOneEvidence =
+    selection.taskPacket.version === 4
+      ? extractMatchedEvaluationContinuationPhaseOneEvidenceV2(phaseOneTranscript, changedPaths)
+      : null;
+  const legacyPhaseOneEvidence =
+    diagnosticPhaseOneEvidence === null
+      ? extractMatchedEvaluationContinuationPhaseOneEvidenceV1(phaseOneTranscript, changedPaths)
+      : null;
+  const diagnostic = diagnosticPhaseOneEvidence?.diagnosticEvidence ?? null;
+  if (diagnostic !== null) {
+    const trackedPaths = new Set(
+      (await captureContinuationGit(checkpointRepository, ['ls-files', '-z'], 8 * 1_024 * 1_024))
+        .split('\0')
+        .filter(Boolean),
+    );
+    const trackedRegularFiles = new Map<string, string>();
+    const canonicalCheckpointRepository = await realpath(checkpointRepository);
+    for (const citation of diagnostic.sourceCitations) {
+      if (!trackedPaths.has(citation.path)) continue;
+      const citationPath = resolve(checkpointRepository, citation.path);
+      const pathFromRepository = relative(
+        canonicalCheckpointRepository,
+        await realpath(citationPath).catch(cause => {
+          if (isMissing(cause)) return citationPath;
+          throw cause;
+        }),
+      );
+      if (pathFromRepository.startsWith('..') || isAbsolute(pathFromRepository)) continue;
+      const metadata = await lstat(citationPath).catch(cause => (isMissing(cause) ? null : Promise.reject(cause)));
+      if (
+        metadata?.isFile() &&
+        !metadata.isSymbolicLink() &&
+        metadata.nlink === 1 &&
+        metadata.size <= 4 * 1_024 * 1_024
+      ) {
+        trackedRegularFiles.set(citation.path, await readFile(citationPath, 'utf8'));
+      }
+    }
+    assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1({
+      changedPaths,
+      phaseOneAllowedPaths: selection.taskPacket.phaseOneAllowedPaths,
+      sourceCitations: diagnostic.sourceCitations,
+      trackedRegularFiles,
+    });
+  }
+  const finalizedHandoff = buildMatchedEvaluationContinuationDiagnosticHandoffV1({
     changedPaths,
-  );
-  const handoff = [
-    `Task: ${selection.taskPacket.phaseTwoPrompt}`,
-    `Decisions: Phase 1 added only the committed regression in ${changedPaths.join(', ')}; production code is unchanged. ${resumeEvidenceMarker}`,
-    `Observed: ${phaseOneEvidence.observations}`,
-    `Anchors: ${phaseOneEvidence.anchors}`,
-    'Attempted: Phase 1 changed only the cited regression and ran the required focused check.',
-    'Constraints: Keep the committed regression unchanged, preserve public behavior, use no network access, and implement the smallest general production correction.',
-    'Rationale: The direct-child checkpoint isolates cross-session continuation from initial test discovery and makes every treatment start from the same failing regression.',
-    `Verification: ${focusedCommand.tokens.join(' ')} fails with exit code 1 at this checkpoint, as required before the production fix.`,
-    'Blockers: none.',
-    'Unresolved: Root cause and broader production invariants were not established in Phase 1.',
-    'Avoid repeat: Do not reread the cited regression unless current source differs; trace the production path behind the observed failure.',
-    'Risks: Adjacent compatibility behavior may encode the old implementation and must remain covered by the sealed Phase 2 checks.',
-    `Next step: ${selection.taskPacket.phaseTwoPrompt}`,
-  ].join('\n');
+    diagnosticEvidence: diagnostic,
+    legacyEvidence:
+      diagnostic === null
+        ? legacyPhaseOneEvidence!
+        : {anchors: diagnosticPhaseOneEvidence!.regressionAnchors, observations: ''},
+    phaseTwoPrompt: selection.taskPacket.phaseTwoPrompt,
+    resumeEvidenceMarker,
+    verification: `${focusedCommand.tokens.join(' ')} fails with exit code 1 at this checkpoint, as required before the production fix.`,
+  });
+  const {handoff} = finalizedHandoff;
   const memory = await captureCodeMemoryLinkProcessGroup({
     arguments: [
       'remember',
@@ -2761,7 +3191,7 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
       sourceCompactHome.project,
       '--topic',
       `continuation-${corpusTask.taskId}`,
-      ...changedPaths.flatMap(path => ['--code-ref', path]),
+      ...finalizedHandoff.codeRefs.flatMap(path => ['--code-ref', path]),
       '--require-current-code-refs',
       '--text',
       handoff,
@@ -2838,6 +3268,7 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
   });
   assertMatchedEvaluationContinuationAgentBriefV1({
     automaticHandoffUri,
+    requiredGraphQuery: diagnostic?.graphQuery ?? null,
     resumeEvidenceMarker,
     text: resumeBrief,
   });
@@ -2925,6 +3356,7 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
       },
       automaticHandoffReadSha256: sha256Bytes(Buffer.from(automaticHandoffRead.stdout)),
       automaticHandoffUri,
+      ...(diagnostic === null ? {} : {diagnosticEvidence: diagnostic}),
       handoff,
       handoffSha256: sha256Bytes(Buffer.from(handoff)),
       phaseOneAccounting: {
@@ -3004,9 +3436,11 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     sourceTask: selection.sourceTask,
     taskId: corpusTask.taskId,
     phaseTwoVerification,
-    version: 3,
+    version: finalizedHandoff.planVersion,
   });
-  if (plan.version !== 3) throw new Error('Continuation checkpoint finalizer produced a legacy plan.');
+  if (plan.version !== 3 && plan.version !== 4) {
+    throw new Error('Continuation checkpoint finalizer produced a legacy plan.');
+  }
   const planPath = resolve(outputDirectory, 'continuation-plan.json');
   await writeFile(planPath, `${JSON.stringify(plan, undefined, 2)}\n`, {flag: 'wx', mode: 0o600});
   const continuationRuntime = {
@@ -3076,8 +3510,8 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     throw new Error(`${options.planPath} is not valid JSON.`, {cause});
   }
   const plan = parseMatchedEvaluationContinuationPilotPlanV1(planInput);
-  if (plan.version !== 3) {
-    throw new Error('Continuation pilot execution requires a version 3 plan with full Phase-2 verification.');
+  if (plan.version !== 3 && plan.version !== 4) {
+    throw new Error('Continuation pilot execution requires a version 3 or 4 plan with full Phase-2 verification.');
   }
   const planFileHash = sha256Bytes(Buffer.from(planText));
   const phaseOneEvidence = await assertMatchedEvaluationContinuationPhaseOneEvidenceV2({
@@ -3449,7 +3883,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
 
 export async function initializeMatchedEvaluationContinuationNonceStatesV1(input: {
   readonly pilotDirectory: string;
-  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
+  readonly plan: MatchedEvaluationContinuationVerifiedPilotPlan;
   readonly selected: readonly {readonly row: {readonly runNonce: string; readonly runOrder: number}}[];
 }): Promise<void> {
   const directory = resolve(input.pilotDirectory, 'nonce-state');
@@ -3467,7 +3901,7 @@ export async function initializeMatchedEvaluationContinuationNonceStatesV1(input
 
 export async function markMatchedEvaluationContinuationNonceStartedV1(input: {
   readonly pilotDirectory: string;
-  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
+  readonly plan: MatchedEvaluationContinuationVerifiedPilotPlan;
   readonly row: {readonly runNonce: string; readonly runOrder: number};
 }): Promise<void> {
   const expected = continuationNonceStateContent(input.plan, input.row);
@@ -3485,7 +3919,7 @@ function continuationNonceStatePath(pilotDirectory: string, runNonce: string, st
 }
 
 function continuationNonceStateContent(
-  plan: MatchedEvaluationContinuationPilotPlanV3,
+  plan: MatchedEvaluationContinuationVerifiedPilotPlan,
   row: {readonly runNonce: string; readonly runOrder: number},
 ): string {
   return `${JSON.stringify({
@@ -3499,7 +3933,7 @@ function continuationNonceStateContent(
 
 export async function recoverMatchedEvaluationContinuationAttemptsV1(input: {
   readonly pilotDirectory: string;
-  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
+  readonly plan: MatchedEvaluationContinuationVerifiedPilotPlan;
   readonly reportPath: string;
   readonly selected: readonly {
     readonly arm: MatchedEvaluationArm;
@@ -3606,7 +4040,7 @@ export async function recoverMatchedEvaluationContinuationAttemptsV1(input: {
 async function validateRecoveredContinuationAttemptV1(input: {
   readonly arm: MatchedEvaluationArm;
   readonly pilotDirectory: string;
-  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
+  readonly plan: MatchedEvaluationContinuationVerifiedPilotPlan;
   readonly row: {readonly runNonce: string; readonly runOrder: number};
   readonly value: unknown;
   readonly variant: MatchedEvaluationContinuationVariantV1;
@@ -4627,6 +5061,7 @@ export function parseMatchedEvaluationContinuationAgentBriefResultV1(value: unkn
 
 export function assertMatchedEvaluationContinuationAgentBriefV1(input: {
   readonly automaticHandoffUri: string;
+  readonly requiredGraphQuery?: string | null;
   readonly resumeEvidenceMarker: string;
   readonly text: string;
 }): void {
@@ -4652,7 +5087,16 @@ export function assertMatchedEvaluationContinuationAgentBriefV1(input: {
       return handoffEvidence.uri === input.automaticHandoffUri || handoffEvidence.uri === compactHandoffUri;
     });
   }
-  if (!isSufficient || (!referencesHandoff && !jsonReferencesHandoff) || markerCount !== 1) {
+  const includesRequiredGraphQuery =
+    input.requiredGraphQuery === null ||
+    input.requiredGraphQuery === undefined ||
+    input.text.includes(input.requiredGraphQuery);
+  if (
+    !isSufficient ||
+    (!referencesHandoff && !jsonReferencesHandoff) ||
+    markerCount !== 1 ||
+    !includesRequiredGraphQuery
+  ) {
     throw new Error('Continuation checkpoint agent resume brief does not surface the exact automatic handoff.');
   }
 }

@@ -14,7 +14,7 @@ import {EffectSchemaSdkTools} from '@threadnote/threadnote/mcp/effect_schema_sdk
 
 export const MATCHED_EVALUATION_CONTEXT_PACKET_ENV = 'MATCHED_EVALUATION_CONTEXT_PACKET' as const;
 export const MATCHED_EVALUATION_CONTEXT_SERVER_NAME = 'matched_evaluation_context' as const;
-export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 6 as const;
+export const MATCHED_EVALUATION_CONTEXT_PROXY_VERSION = 7 as const;
 
 type MatchedEvaluationContextBriefMode = 'brief' | 'resume';
 
@@ -35,6 +35,7 @@ export interface MatchedEvaluationContextProxyPacketV1 {
   };
   readonly expectedResume: {
     readonly automaticHandoffUri: string;
+    readonly requiredGraphQuery: string | null;
     readonly resumeEvidenceMarker: string;
   } | null;
   readonly maximumFollowupCalls: number;
@@ -90,8 +91,10 @@ export function hashMatchedEvaluationContextRequest(toolName: string, requestInp
 export function matchedEvaluationContextTools(
   detail: MatchedEvaluationContextProxyPacketV1['detail'],
   initialBriefDelivery: MatchedEvaluationContextProxyPacketV1['initialBriefDelivery'] = 'mcp',
+  requiredGraphQuery: string | null = null,
 ): readonly string[] {
   if (detail === 'source') return ['context_brief'];
+  if (initialBriefDelivery === 'preloaded' && requiredGraphQuery !== null) return ['inspect_code_graph'];
   const graph = [
     ...(initialBriefDelivery === 'mcp' ? ['context_brief'] : []),
     'inspect_code_graph',
@@ -249,6 +252,7 @@ export async function handleMatchedEvaluationContextRequest(
     !hasExpectedResumeDelivery(
       structuredContent,
       packet.expectedResume.automaticHandoffUri,
+      packet.expectedResume.requiredGraphQuery,
       packet.expectedResume.resumeEvidenceMarker,
     )
   ) {
@@ -260,6 +264,7 @@ export async function handleMatchedEvaluationContextRequest(
 function hasExpectedResumeDelivery(
   structuredContent: Record<string, unknown>,
   automaticHandoffUri: string,
+  requiredGraphQuery: string | null,
   resumeEvidenceMarker: string,
 ): boolean {
   if (!Array.isArray(structuredContent.activeHandoffs)) return false;
@@ -278,7 +283,8 @@ function hasExpectedResumeDelivery(
     return (
       handoff.uri === automaticHandoffUri &&
       continuationEvidence.trim().length > 0 &&
-      continuationEvidence.includes(resumeEvidenceMarker)
+      continuationEvidence.includes(resumeEvidenceMarker) &&
+      (requiredGraphQuery === null || continuationEvidence.includes(requiredGraphQuery))
     );
   });
 }
@@ -290,7 +296,9 @@ export async function handleMatchedEvaluationFollowupRequest(
   invoke: typeof runThreadnoteTool = runThreadnoteTool,
 ): Promise<ContextResult> {
   const packet = parseMatchedEvaluationContextProxyPacketV1(packetInput);
-  if (toolName === 'context_brief' || !matchedEvaluationContextTools(packet.detail).includes(toolName)) {
+  const requiredGraphQuery = packet.expectedResume?.requiredGraphQuery ?? null;
+  const allowedTools = matchedEvaluationContextTools(packet.detail, packet.initialBriefDelivery, requiredGraphQuery);
+  if (toolName === 'context_brief' || !allowedTools.includes(toolName)) {
     throw new Error('Tool is not allowed by the sealed treatment.');
   }
   const schemas = {
@@ -304,6 +312,13 @@ export async function handleMatchedEvaluationFollowupRequest(
     string,
     unknown
   >;
+  if (
+    packet.initialBriefDelivery === 'preloaded' &&
+    requiredGraphQuery !== null &&
+    (toolName !== 'inspect_code_graph' || request.operation !== 'query' || request.query !== requiredGraphQuery)
+  ) {
+    throw new Error('Preloaded continuation must use its sealed diagnostic graph query.');
+  }
   const preparedHome = await realpath(packet.threadnoteHome);
   if (!isContained(dirname(packet.repositoryRoot), preparedHome) || isContained(packet.repositoryRoot, preparedHome)) {
     throw new Error('Prepared Threadnote home escaped its isolated private root.');
@@ -435,7 +450,7 @@ export function parseMatchedEvaluationContextProxyPacketV1(
     'threadnoteUser',
     'version',
   ]);
-  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 6');
+  if (packet.version !== MATCHED_EVALUATION_CONTEXT_PROXY_VERSION) invalid('packet version must be 7');
   const expected = object(packet.expectedContext, 'expected context');
   exactKeys(expected, [
     'graphContentHash',
@@ -464,9 +479,13 @@ export function parseMatchedEvaluationContextProxyPacketV1(
       ? null
       : (() => {
           const resume = object(packet.expectedResume, 'expected resume');
-          exactKeys(resume, ['automaticHandoffUri', 'resumeEvidenceMarker']);
+          exactKeys(resume, ['automaticHandoffUri', 'requiredGraphQuery', 'resumeEvidenceMarker']);
           return {
             automaticHandoffUri: boundedText(resume.automaticHandoffUri, 1, 4_096, 'automatic handoff URI'),
+            requiredGraphQuery:
+              resume.requiredGraphQuery === null
+                ? null
+                : boundedText(resume.requiredGraphQuery, 8, 512, 'required graph query'),
             resumeEvidenceMarker: boundedText(resume.resumeEvidenceMarker, 1, 4_096, 'resume evidence marker'),
           };
         })();
@@ -475,6 +494,9 @@ export function parseMatchedEvaluationContextProxyPacketV1(
   }
   if (initialBriefDelivery === 'preloaded' && (mode !== 'resume' || detail !== 'compact')) {
     invalid('preloaded initial context is supported only for compact resume');
+  }
+  if ((expectedResume?.requiredGraphQuery ?? null) !== null && initialBriefDelivery !== 'preloaded') {
+    invalid('a required graph query is supported only for preloaded resume');
   }
   if ((detail === 'source' && maximumFollowupCalls !== 0) || (mode === 'resume' && maximumFollowupCalls > 1)) {
     invalid('context detail or resume mode disagrees with the follow-up call budget');
@@ -691,7 +713,14 @@ export async function runMatchedEvaluationContextProxy(): Promise<void> {
     ],
   ] as const;
   for (const [name, inputSchema, description] of followups) {
-    if (!matchedEvaluationContextTools(packet.detail, packet.initialBriefDelivery).includes(name)) continue;
+    if (
+      !matchedEvaluationContextTools(
+        packet.detail,
+        packet.initialBriefDelivery,
+        packet.expectedResume?.requiredGraphQuery ?? null,
+      ).includes(name)
+    )
+      continue;
     tools.register(
       name,
       {
