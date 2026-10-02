@@ -155,7 +155,7 @@ jobs:
       - name: Prepare explicit website metadata
         run: bun apps/website/tools/site-prepared-metadata.ts --output apps/website/.bazel-inputs/metadata.json
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: bazel-selection
           path: .context/bazel-selection
