@@ -215,7 +215,11 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
       return {entry, plan, planSha256: sha256(planBytes), cluster};
     }),
   );
-  assertExposureAuditV1(parseJson(exposureAuditBytes, 'continuation exposure audit'), preparation, taskInputs);
+  assertMatchedContinuationExposureAudit(
+    parseJson(exposureAuditBytes, 'continuation exposure audit'),
+    preparation.sourceCommit,
+    taskInputs.map(({plan}) => plan.taskId),
+  );
   const variants = MATCHED_CONTINUATION_VARIANTS.filter(variant =>
     taskInputs[0]?.plan.attempts.some(attempt => attempt.variant === variant),
   );
@@ -304,21 +308,35 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
   );
 }
 
-function assertExposureAuditV1(
+export function assertMatchedContinuationExposureAudit(
   value: unknown,
-  preparation: MatchedContinuationPreparationPlanV1,
-  taskInputs: readonly {readonly plan: {readonly taskId: string}}[],
+  sourceCommit: string,
+  taskIds: readonly string[],
 ): void {
   const audit = object(value, 'continuation exposure audit');
-  exactKeys(audit, ['productFreezeCommit', 'reviewedBeforeProviderOutcomes', 'tasks', 'version']);
-  if (audit.version !== 1) invalid('exposure audit version must be 1');
-  if (audit.productFreezeCommit !== preparation.sourceCommit) {
+  if (audit.productFreezeCommit !== sourceCommit) {
     invalid('exposure audit product freeze commit differs from the candidate');
   }
+  const tasks =
+    audit.version === 1
+      ? strictHeldOutTaskIds(audit)
+      : audit.version === 2
+        ? disclosedBenchmarkReuseTaskIds(audit)
+        : invalid('exposure audit version must be 1 or 2');
+  unique(tasks, 'continuation exposure audit task ids');
+  const expected = [...taskIds].sort();
+  const actual = [...tasks].sort();
+  if (expected.length !== actual.length || expected.some((taskId, index) => taskId !== actual[index])) {
+    invalid('exposure audit tasks do not exactly cover the continuation study');
+  }
+}
+
+function strictHeldOutTaskIds(audit: Record<string, unknown>): readonly string[] {
+  exactKeys(audit, ['productFreezeCommit', 'reviewedBeforeProviderOutcomes', 'tasks', 'version']);
   if (audit.reviewedBeforeProviderOutcomes !== true) {
     invalid('exposure audit must be reviewed before provider outcomes');
   }
-  const tasks = array(audit.tasks, 'continuation exposure audit tasks').map((entry, index) => {
+  return array(audit.tasks, 'continuation exposure audit tasks').map((entry, index) => {
     const task = object(entry, `continuation exposure audit task ${index}`);
     exactKeys(task, ['priorProductImplementationExposure', 'priorProviderOutcomeExposure', 'taskId']);
     if (task.priorProductImplementationExposure !== false || task.priorProviderOutcomeExposure !== false) {
@@ -326,12 +344,44 @@ function assertExposureAuditV1(
     }
     return matching(task.taskId, /^tsk_[0-9a-f]{16,64}$/u, `exposure audit task ${index} id`);
   });
-  unique(tasks, 'continuation exposure audit task ids');
-  const expected = taskInputs.map(({plan}) => plan.taskId).sort();
-  const actual = [...tasks].sort();
-  if (expected.length !== actual.length || expected.some((taskId, index) => taskId !== actual[index])) {
-    invalid('exposure audit tasks do not exactly cover the continuation study');
+}
+
+function disclosedBenchmarkReuseTaskIds(audit: Record<string, unknown>): readonly string[] {
+  exactKeys(audit, [
+    'benchmarkReuse',
+    'productFreezeCommit',
+    'reviewedBeforeCurrentProviderOutcomes',
+    'tasks',
+    'version',
+  ]);
+  if (audit.reviewedBeforeCurrentProviderOutcomes !== true) {
+    invalid('benchmark-reuse audit must be reviewed before current provider outcomes');
   }
+  const reuse = object(audit.benchmarkReuse, 'continuation benchmark reuse disclosure');
+  exactKeys(reuse, [
+    'freshRunNonces',
+    'isolatedFreshSessions',
+    'limitation',
+    'priorOutcomesPooled',
+    'taskSpecificProductTuning',
+  ]);
+  if (
+    reuse.freshRunNonces !== true ||
+    reuse.isolatedFreshSessions !== true ||
+    reuse.priorOutcomesPooled !== false ||
+    reuse.taskSpecificProductTuning !== false
+  ) {
+    invalid('benchmark reuse requires fresh isolation, no pooled outcomes, and no task-specific product tuning');
+  }
+  boundedText(reuse.limitation, 1, 2_048, 'benchmark reuse limitation');
+  return array(audit.tasks, 'continuation exposure audit tasks').map((entry, index) => {
+    const task = object(entry, `continuation exposure audit task ${index}`);
+    exactKeys(task, ['priorProviderOutcomeExposure', 'taskId']);
+    if (typeof task.priorProviderOutcomeExposure !== 'boolean') {
+      invalid(`exposure audit task ${index} provider exposure must be boolean`);
+    }
+    return matching(task.taskId, /^tsk_[0-9a-f]{16,64}$/u, `exposure audit task ${index} id`);
+  });
 }
 
 function parseMatchedPreparationReceipt(value: unknown): {

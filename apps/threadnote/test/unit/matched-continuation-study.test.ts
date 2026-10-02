@@ -15,7 +15,10 @@ import {
   type MatchedContinuationStudyTaskV1,
   type MatchedContinuationVariant,
 } from '@threadnote/threadnote/evaluation/matched-continuation-study';
-import {assertMatchedQualificationReceiptBindingV1} from '../../../../scripts/prepare-matched-continuation-study.js';
+import {
+  assertMatchedContinuationExposureAudit,
+  assertMatchedQualificationReceiptBindingV1,
+} from '../../../../scripts/prepare-matched-continuation-study.js';
 import {assertMatchedContinuationRuntimeFilesV1} from '../../../../scripts/matched-continuation-runtime-integrity.js';
 
 describe('matched continuation claim-study sealing', () => {
@@ -275,6 +278,89 @@ describe('matched continuation claim-study sealing', () => {
       {numRuns: 12},
     );
   });
+});
+
+describe('matched continuation exposure audit', () => {
+  const sourceCommit = commit(70);
+  const taskIds = [`tsk_${hex(71).slice(-16)}`, `tsk_${hex(72).slice(-16)}`];
+
+  it('retains the strict held-out v1 contract', () => {
+    expect(() =>
+      assertMatchedContinuationExposureAudit(
+        {
+          productFreezeCommit: sourceCommit,
+          reviewedBeforeProviderOutcomes: true,
+          tasks: taskIds.map(taskId => ({
+            priorProductImplementationExposure: false,
+            priorProviderOutcomeExposure: false,
+            taskId,
+          })),
+          version: 1,
+        },
+        sourceCommit,
+        taskIds,
+      ),
+    ).not.toThrow();
+  });
+
+  it('accepts disclosed benchmark reuse without pooling earlier outcomes', () => {
+    expect(() => assertMatchedContinuationExposureAudit(reuseAudit(), sourceCommit, taskIds)).not.toThrow();
+  });
+
+  it('accepts benchmark reuse exactly when every isolation attestation holds', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          freshRunNonces: fc.boolean(),
+          isolatedFreshSessions: fc.boolean(),
+          priorOutcomesPooled: fc.boolean(),
+          taskSpecificProductTuning: fc.boolean(),
+        }),
+        controls => {
+          const audit = reuseAudit(controls);
+          const accepted =
+            controls.freshRunNonces &&
+            controls.isolatedFreshSessions &&
+            !controls.priorOutcomesPooled &&
+            !controls.taskSpecificProductTuning;
+          if (accepted) {
+            expect(() => assertMatchedContinuationExposureAudit(audit, sourceCommit, taskIds)).not.toThrow();
+          } else {
+            expect(() => assertMatchedContinuationExposureAudit(audit, sourceCommit, taskIds)).toThrow(
+              'benchmark reuse requires fresh isolation',
+            );
+          }
+        },
+      ),
+      {numRuns: 40},
+    );
+  });
+
+  function reuseAudit(
+    controls: {
+      readonly freshRunNonces: boolean;
+      readonly isolatedFreshSessions: boolean;
+      readonly priorOutcomesPooled: boolean;
+      readonly taskSpecificProductTuning: boolean;
+    } = {
+      freshRunNonces: true,
+      isolatedFreshSessions: true,
+      priorOutcomesPooled: false,
+      taskSpecificProductTuning: false,
+    },
+  ) {
+    return {
+      benchmarkReuse: {
+        ...controls,
+        limitation:
+          'The tasks were used for general product development, but no task-specific product change was made.',
+      },
+      productFreezeCommit: sourceCommit,
+      reviewedBeforeCurrentProviderOutcomes: true,
+      tasks: taskIds.map(taskId => ({priorProviderOutcomeExposure: true, taskId})),
+      version: 2,
+    };
+  }
 });
 
 function createStudy() {
