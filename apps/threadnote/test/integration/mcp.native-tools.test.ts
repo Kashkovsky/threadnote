@@ -4926,11 +4926,56 @@ describe('Threadnote MCP toolsets', () => {
 
   it('advertises the complete toolset when requested', async () => {
     await withMcpClient(
-      async client => {
+      async (client, fixture) => {
         const tools = await client.listTools();
         const names = tools.tools.map(tool => tool.name);
         expect(names).toHaveLength(CORE_TOOL_NAMES.length + ADVANCED_TOOL_NAMES.length);
         expect([...names].sort()).toEqual([...CORE_TOOL_NAMES, ...ADVANCED_TOOL_NAMES].sort());
+        const readContext = tools.tools.find(tool => tool.name === 'read_context');
+        const readAlias = tools.tools.find(tool => tool.name === 'read');
+        expect(readAlias?.inputSchema).toEqual(readContext?.inputSchema);
+        expect(readAlias?.inputSchema.properties).toMatchObject({
+          responseFormat: {enum: ['agent', 'dual', 'text']},
+        });
+
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/read-alias.md';
+        const citation = createMemoryCodeCitation({
+          extractorSet: 'mcp-read-alias-projection',
+          fileContentHash: {algorithm: 'sha256', value: '1'.repeat(64)},
+          path: 'packages/memory/src/read/projection.ts',
+          repositoryId: '2'.repeat(64),
+          repositoryIdentityKind: 'remote',
+          sourceCommit: '3'.repeat(40),
+          sourceDirty: false,
+          sourceSnapshotId: `cgsn_${'4'.repeat(40)}`,
+          target: {kind: 'file'},
+          version: 1,
+        });
+        const memory = formatMemoryDocument(
+          'MEMORY',
+          {
+            codeCitations: [citation],
+            kind: 'durable',
+            project: 'threadnote',
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'integration-test',
+            status: 'active',
+            timestamp: '2026-10-02T00:00:00.000Z',
+            topic: 'read-alias',
+          },
+          'Alias projection evidence.',
+        );
+        await writeCanonicalMemory(fixture.home, 'read-alias.md', memory);
+        const [primaryRead, aliasRead] = await Promise.all([
+          client.callTool({arguments: {uri}, name: 'read_context'}),
+          client.callTool({arguments: {uri}, name: 'read'}),
+        ]);
+        expect(aliasRead.content).toEqual(primaryRead.content);
+        expect(aliasRead.structuredContent).toEqual(primaryRead.structuredContent);
+        const aliasText = ((aliasRead.content as readonly TextContent[])[0]?.text ?? '').trim();
+        expect(aliasText).toContain('TN-MEMORY/1');
+        expect(aliasText).toContain(`Code evidence [remote:${citation.repositoryId.slice(0, 12)}`);
+        expect(aliasText).not.toContain('code_citations:');
         expect(tools.tools.find(tool => tool.name === 'finalize_code_refs')?.inputSchema).toMatchObject({
           properties: {
             uri: {type: 'string'},
