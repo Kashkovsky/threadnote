@@ -34,6 +34,7 @@ import {
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
   projectMatchedEvaluationContinuationAdapterTaskV2,
+  prepareMatchedEvaluationContinuationAdapterRuntimeOverridesV1,
   prepareMatchedEvaluationContinuationPhaseOnePatchV1,
   resolveRuntimeArm,
   resolveMatchedEvaluationRuntimeRepositoriesV1,
@@ -55,6 +56,7 @@ import {
 } from '@threadnote/threadnote/evaluation/matched-evaluation';
 import {
   matchedEvaluationCodexEnvironmentPolicyHashV1,
+  matchedEvaluationDependencyProjectionFixtureHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
 } from '../../../../scripts/matched-evaluation-codex-adapter.js';
 import type {MatchedTokenEfficiencyStudyV1} from '@threadnote/threadnote/evaluation/matched-token-efficiency';
@@ -1480,6 +1482,104 @@ describe('matched evaluation runtime integrity', () => {
       ),
       {numRuns: 9},
     );
+  });
+
+  it('rebinds continuation dependency projections to the sealed checkpoint before adapter execution', async () => {
+    const root = await temporaryRoot(roots);
+    const sourceRepository = join(root, 'source-repository');
+    const checkpointRepository = join(root, 'checkpoint-repository');
+    await repositoryFixture(sourceRepository, 'https://github.com/example/continuation-dependency.git', 'source');
+    await repositoryFixture(
+      checkpointRepository,
+      'https://github.com/example/continuation-dependency.git',
+      'checkpoint',
+    );
+    const lockBytes = Buffer.from('locked dependencies\n');
+    await Promise.all([
+      writeFile(join(sourceRepository, '.gitignore'), '.venv/\nruntime-venv/\n'),
+      writeFile(join(sourceRepository, 'requirements.lock'), lockBytes),
+      writeFile(join(checkpointRepository, '.gitignore'), '.venv/\nruntime-venv/\n'),
+      writeFile(join(checkpointRepository, 'requirements.lock'), lockBytes),
+    ]);
+    await Promise.all([
+      git(sourceRepository, ['add', '.gitignore', 'requirements.lock']),
+      git(checkpointRepository, ['add', '.gitignore', 'requirements.lock']),
+    ]);
+    await Promise.all([
+      git(sourceRepository, ['commit', '-qm', 'dependency lock']),
+      git(checkpointRepository, ['commit', '-qm', 'dependency lock']),
+    ]);
+    const sourceDependency = join(sourceRepository, '.venv');
+    const checkpointDependency = join(checkpointRepository, 'runtime-venv');
+    await Promise.all([mkdir(sourceDependency), mkdir(checkpointDependency)]);
+    await Promise.all([
+      writeFile(join(sourceDependency, 'marker'), 'same environment\n'),
+      writeFile(join(checkpointDependency, 'marker'), 'same environment\n'),
+    ]);
+    const taskId = 'tsk_1234567890abcdef';
+    const projection = {
+      architecture: process.arch,
+      fixtureHash: await matchedEvaluationDependencyProjectionFixtureHashV1(sourceDependency, sourceRepository),
+      lockFileRelativePath: 'requirements.lock',
+      lockFileSha256: sha256HexSync(lockBytes),
+      platform: process.platform,
+      sourceDirectory: sourceDependency,
+      sourceRepositoryDirectory: sourceRepository,
+      targetRelativePath: 'runtime-venv',
+      taskId,
+    };
+    const filesConfig = {
+      ...continuationAdapterConfig('threadnote-compact', []),
+      arm: 'files' as const,
+      dependencyProjections: [projection],
+    };
+    const compactConfig = {...continuationAdapterConfig('threadnote-compact', []), dependencyProjections: [projection]};
+    const filesConfigPath = join(root, 'files.json');
+    const compactConfigPath = join(root, 'compact.json');
+    const filesBytes = `${JSON.stringify(filesConfig)}\n`;
+    const compactBytes = `${JSON.stringify(compactConfig)}\n`;
+    await Promise.all([writeFile(filesConfigPath, filesBytes), writeFile(compactConfigPath, compactBytes)]);
+    const checkpoint = await observeMatchedEvaluationRepositoryV1(checkpointRepository);
+    const overrides = await prepareMatchedEvaluationContinuationAdapterRuntimeOverridesV1({
+      arms: ['files', 'threadnote-compact'],
+      checkpointOverrides: new Map([
+        [
+          'threadnote-compact',
+          {
+            adapterConfigFile: compactConfigPath,
+            adapterConfigurationHash: sha256HexSync(Buffer.from(compactBytes)),
+          },
+        ],
+      ]),
+      checkpointRepository,
+      manifest: {
+        arms: [
+          {adapterConfigurationHash: sha256HexSync(Buffer.from(filesBytes)), arm: 'files'},
+          {adapterConfigurationHash: sha256HexSync(Buffer.from(compactBytes)), arm: 'threadnote-compact'},
+        ],
+      } as unknown as MatchedEvaluationManifestV1,
+      outputDirectory: join(root, 'runtime-output'),
+      plan: {
+        checkpoint: {repositoryFixtureHash: checkpoint.fixtureHash, repositoryRevision: checkpoint.revision},
+        taskId,
+      } as unknown as MatchedEvaluationContinuationPilotPlanV2,
+      runtime: {
+        arms: [
+          {adapterConfigFile: filesConfigPath, arm: 'files'},
+          {adapterConfigFile: compactConfigPath, arm: 'threadnote-compact'},
+        ],
+      } as unknown as MatchedEvaluationRuntimeV1,
+    });
+
+    for (const arm of ['files', 'threadnote-compact'] as const) {
+      const runtimeConfig = JSON.parse(
+        await readFile(overrides.get(arm)!.adapterConfigFile, 'utf8'),
+      ) as typeof filesConfig;
+      const rebound = runtimeConfig.dependencyProjections.find(candidate => candidate.taskId === taskId)!;
+      expect(rebound.sourceRepositoryDirectory).toBe(checkpointRepository);
+      expect(rebound.sourceDirectory).toBe(checkpointDependency);
+      expect(rebound.fixtureHash).toBe(projection.fixtureHash);
+    }
   });
 
   it('stages a sealed continuation adapter-config override instead of the source config', async () => {

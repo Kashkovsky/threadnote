@@ -358,6 +358,99 @@ export async function assertMatchedEvaluationContinuationAdapterConfigurationsV2
   return new Map(overrides);
 }
 
+export async function prepareMatchedEvaluationContinuationAdapterRuntimeOverridesV1(input: {
+  readonly arms: readonly ('files' | 'threadnote-compact' | 'threadnote-graph')[];
+  readonly checkpointOverrides: ReadonlyMap<
+    'threadnote-compact' | 'threadnote-graph',
+    MatchedEvaluationContinuationAdapterConfigOverrideV2
+  >;
+  readonly checkpointRepository: string;
+  readonly manifest: MatchedEvaluationManifestV1;
+  readonly outputDirectory: string;
+  readonly plan: MatchedEvaluationContinuationPilotPlanCurrent;
+  readonly runtime: MatchedEvaluationRuntimeV1;
+}): Promise<ReadonlyMap<MatchedEvaluationArm, MatchedEvaluationContinuationAdapterConfigOverrideV2>> {
+  const checkpointRepository = await realpath(input.checkpointRepository);
+  const observedCheckpoint = await observeMatchedEvaluationRepositoryV1(checkpointRepository);
+  if (
+    observedCheckpoint.dirty ||
+    observedCheckpoint.fixtureHash !== input.plan.checkpoint.repositoryFixtureHash ||
+    observedCheckpoint.revision !== input.plan.checkpoint.repositoryRevision
+  ) {
+    throw new Error('Continuation adapter runtime projection differs from the sealed checkpoint.');
+  }
+  const outputDirectory = resolve(input.outputDirectory, 'continuation-runtime-config');
+  await mkdir(outputDirectory, {recursive: true, mode: 0o700});
+  const overrides = await Promise.all(
+    input.arms.map(async arm => {
+      const definition = input.manifest.arms.find(candidate => candidate.arm === arm);
+      const runtimeArm = input.runtime.arms.find(candidate => candidate.arm === arm);
+      if (definition === undefined || runtimeArm === undefined) {
+        throw new Error(`Continuation runtime lacks ${arm}.`);
+      }
+      const sourceConfigFile = await canonicalRegularFile(
+        runtimeArm.adapterConfigFile,
+        `${arm} source adapter configuration`,
+      );
+      if ((await sha256File(sourceConfigFile)) !== definition.adapterConfigurationHash) {
+        throw new Error(`${arm} source adapter configuration differs from its manifest identity.`);
+      }
+      const baseConfigFile =
+        input.checkpointOverrides.get(arm as 'threadnote-compact' | 'threadnote-graph')?.adapterConfigFile ??
+        sourceConfigFile;
+      const baseConfig = parseMatchedEvaluationCodexAdapterConfigV1(await readJson(baseConfigFile));
+      const dependencyProjection = dependencyProjectionForTaskV1(baseConfig, input.plan.taskId);
+      let runtimeConfig = baseConfig;
+      if (dependencyProjection !== null) {
+        await ensureMatchedEvaluationDependencyProjectionV1({
+          projection: dependencyProjection,
+          repositoryDirectory: checkpointRepository,
+        });
+        const checkpointDependencyDirectory = await realpath(
+          resolve(checkpointRepository, dependencyProjection.targetRelativePath),
+        );
+        if (
+          (await matchedEvaluationDependencyProjectionFixtureHashV1(
+            checkpointDependencyDirectory,
+            checkpointRepository,
+          )) !== dependencyProjection.fixtureHash
+        ) {
+          throw new Error(`${arm} checkpoint dependency projection differs from its pinned fixture hash.`);
+        }
+        runtimeConfig = {
+          ...baseConfig,
+          dependencyProjections: baseConfig.dependencyProjections.map(projection =>
+            projection.taskId === input.plan.taskId
+              ? {
+                  ...projection,
+                  sourceDirectory: checkpointDependencyDirectory,
+                  sourceRepositoryDirectory: checkpointRepository,
+                }
+              : projection,
+          ),
+        };
+      }
+      const runtimeConfigText = `${JSON.stringify(runtimeConfig, undefined, 2)}\n`;
+      const runtimeConfigPath = resolve(outputDirectory, `${arm}.json`);
+      const existing = await readOptionalTextOrNull(runtimeConfigPath, MAXIMUM_JSON_BYTES);
+      if (existing === null) {
+        await writeFile(runtimeConfigPath, runtimeConfigText, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+      } else if (existing !== runtimeConfigText) {
+        throw new Error(`${arm} continuation runtime configuration changed across recovery.`);
+      }
+      parseMatchedEvaluationCodexAdapterConfigV1(JSON.parse(runtimeConfigText) as unknown);
+      return [
+        arm,
+        {
+          adapterConfigFile: runtimeConfigPath,
+          adapterConfigurationHash: sha256Bytes(Buffer.from(runtimeConfigText)),
+        },
+      ] as const;
+    }),
+  );
+  return new Map(overrides);
+}
+
 export interface ResolvedRuntimeRepository {
   readonly clusterId: string | null;
   readonly expected: MatchedEvaluationRepositoryObservationV1;
@@ -2901,7 +2994,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
   if (runtime.verificationPlanHash !== study.verificationPlanHash) {
     throw new Error('Runtime and study disagree on the sealed verification plan.');
   }
-  const adapterConfigOverrides = await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+  const checkpointAdapterConfigOverrides = await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
     manifest,
     plan,
     planPath: options.planPath,
@@ -3042,6 +3135,18 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     repositoryDirectory: checkpointRepository.repositoryDirectory,
   });
   const requiredArms = [...new Set([...selected.map(attempt => attempt.arm), 'files' as const])];
+  const adapterConfigOverrides = await prepareMatchedEvaluationContinuationAdapterRuntimeOverridesV1({
+    arms: requiredArms.filter(
+      (arm): arm is 'files' | 'threadnote-compact' | 'threadnote-graph' =>
+        arm === 'files' || arm === 'threadnote-compact' || arm === 'threadnote-graph',
+    ),
+    checkpointOverrides: checkpointAdapterConfigOverrides,
+    checkpointRepository: checkpointRepository.repositoryDirectory,
+    manifest,
+    outputDirectory: pilotDirectory,
+    plan,
+    runtime,
+  });
   const preflight = await Promise.all(
     requiredArms.map(async arm => {
       const definition = manifest.arms.find(candidate => candidate.arm === arm);
@@ -3051,7 +3156,7 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
         arm,
         definition,
         supplement?.adapterArtifactSha256 ?? null,
-        adapterConfigOverrides.get(arm as 'threadnote-compact' | 'threadnote-graph') ?? null,
+        adapterConfigOverrides.get(arm) ?? null,
       );
       if ('reason' in resolution)
         throw new Error(`Continuation pilot runtime unavailable for ${arm}: ${resolution.detail}`);
