@@ -71,7 +71,7 @@ export const MATCHED_EVALUATION_CODEX_ENVIRONMENT_POLICY_V1 = Object.freeze({
   sandbox: 'workspace-write-no-network',
   subagents: 'disabled',
   userInstructions: 'disabled',
-  version: 3,
+  version: 4,
   workspace: 'isolated-worktree',
 });
 
@@ -477,6 +477,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
         outputSchema: AGENT_OUTPUT_SCHEMA,
         prompt: agentPrompt,
         recordBudgetTerminal: true,
+        scratchDirectory: agentIsolation.scratchDirectory,
         taskBudget: config.taskBudget,
         timeoutMilliseconds: 60 * 60_000,
       });
@@ -619,6 +620,7 @@ export async function runMatchedEvaluationCodexAdapter(input: {
       outputSchema: JUDGE_OUTPUT_SCHEMA,
       prompt: renderMatchedEvaluationJudgePromptV1(request, artifact),
       recordBudgetTerminal: false,
+      scratchDirectory: judgeIsolation.scratchDirectory,
       taskBudget: config.taskBudget,
       timeoutMilliseconds: 60 * 60_000,
     });
@@ -1890,16 +1892,19 @@ async function createCodexIsolation(input: {
   readonly environment: Readonly<Record<string, string>>;
   readonly expectedContextDelivery: MatchedEvaluationExpectedContextDeliveryV1 | null;
   readonly preloadedContext: MatchedEvaluationPreloadedContextV1 | null;
+  readonly scratchDirectory: string;
 }> {
   const codexHome = join(input.root, 'codex-home');
   const home = join(input.root, 'home');
   const privateRoot = join(input.root, 'private');
   const rules = join(codexHome, 'rules');
+  const scratchDirectory = join(input.root, 'scratch');
   await Promise.all([
     mkdir(codexHome, {recursive: true}),
     mkdir(home, {recursive: true}),
     mkdir(privateRoot, {recursive: true}),
     mkdir(rules, {recursive: true}),
+    mkdir(scratchDirectory, {recursive: true}),
   ]);
   await copyPrivateFile(input.config.authSourcePath, join(codexHome, 'auth.json'));
   await writeFile(join(rules, 'default.rules'), renderMatchedEvaluationCommandReviewRulesV1(), {mode: 0o600});
@@ -1992,6 +1997,7 @@ async function createCodexIsolation(input: {
       model,
       repositoryRoot: input.repositoryRoot,
       safeExecutablePath: input.config.safeExecutablePath,
+      scratchDirectory,
       selfExecutable: input.selfExecutable,
     }),
     {mode: 0o600},
@@ -1999,6 +2005,7 @@ async function createCodexIsolation(input: {
   return {
     expectedContextDelivery,
     preloadedContext,
+    scratchDirectory,
     command: {
       argumentsAfterSubcommand: input.config.appServer.argumentsAfterSubcommand,
       argumentsBeforeSubcommand: input.config.appServer.argumentsBeforeSubcommand,
@@ -2021,7 +2028,7 @@ async function createCodexIsolation(input: {
       LC_ALL: 'C.UTF-8',
       NO_COLOR: '1',
       PATH: input.config.safeExecutablePath,
-      TMPDIR: input.root,
+      TMPDIR: scratchDirectory,
     },
   };
 }
@@ -2137,6 +2144,7 @@ async function runAppServerTurn(input: {
   readonly outputSchema: Readonly<Record<string, unknown>>;
   readonly prompt: string;
   readonly recordBudgetTerminal: boolean;
+  readonly scratchDirectory: string;
   readonly taskBudget: {readonly steps: number; readonly tokens: number};
   readonly timeoutMilliseconds: number;
 }): Promise<AppServerTurnResult> {
@@ -2164,11 +2172,11 @@ async function runAppServerTurn(input: {
         approvalsReviewer: 'user',
         cwd: input.cwd,
         developerInstructions: input.developerInstructions,
-        environments: [localEnvironment(input.cwd)],
+        environments: [localEnvironment(input.cwd, input.scratchDirectory)],
         ephemeral: true,
         model: input.model.id,
         modelProvider: input.model.provider,
-        runtimeWorkspaceRoots: [input.cwd],
+        runtimeWorkspaceRoots: [input.cwd, input.scratchDirectory],
         sandbox: 'workspace-write',
       },
       input.timeoutMilliseconds,
@@ -2207,17 +2215,17 @@ async function runAppServerTurn(input: {
           approvalsReviewer: 'user',
           cwd: input.cwd,
           effort: input.model.reasoningEffort,
-          environments: [localEnvironment(input.cwd)],
+          environments: [localEnvironment(input.cwd, input.scratchDirectory)],
           input: [{text: input.prompt, type: 'text'}],
           model: input.model.id,
           outputSchema: input.outputSchema,
-          runtimeWorkspaceRoots: [input.cwd],
+          runtimeWorkspaceRoots: [input.cwd, input.scratchDirectory],
           sandboxPolicy: {
             excludeSlashTmp: true,
-            excludeTmpdirEnvVar: true,
+            excludeTmpdirEnvVar: false,
             networkAccess: false,
             type: 'workspaceWrite',
-            writableRoots: [input.cwd],
+            writableRoots: [input.cwd, input.scratchDirectory],
           },
           threadId,
         },
@@ -3333,6 +3341,7 @@ function monotonicMilliseconds(): number {
 }
 
 function assertEffectiveThread(response: Record<string, unknown>, input: Parameters<typeof runAppServerTurn>[0]): void {
+  const expectedWorkspaceRoots = [input.cwd, input.scratchDirectory];
   if (
     response.model !== input.model.id ||
     response.modelProvider !== input.model.provider ||
@@ -3340,10 +3349,13 @@ function assertEffectiveThread(response: Record<string, unknown>, input: Paramet
     response.cwd !== input.cwd ||
     response.approvalPolicy !== 'untrusted' ||
     response.approvalsReviewer !== 'user' ||
+    JSON.stringify(response.runtimeWorkspaceRoots) !== JSON.stringify(expectedWorkspaceRoots) ||
     !Array.isArray(response.instructionSources) ||
     response.instructionSources.length !== 0
   ) {
-    throw new Error('Codex did not honor the pinned model, provider, effort, cwd, or instruction isolation.');
+    throw new Error(
+      'Codex did not honor the pinned model, provider, effort, cwd, workspace roots, or instruction isolation.',
+    );
   }
   const sandbox = object(response.sandbox, 'thread sandbox');
   if (sandbox.type !== 'workspaceWrite' || sandbox.networkAccess !== false) {
@@ -3416,6 +3428,7 @@ function buildCodexConfig(input: {
   readonly model: MatchedEvaluationCodexModelV1;
   readonly repositoryRoot: string;
   readonly safeExecutablePath: string;
+  readonly scratchDirectory: string;
   readonly selfExecutable: string;
 }): string {
   const lines = [
@@ -3445,8 +3458,8 @@ function buildCodexConfig(input: {
     '[shell_environment_policy]',
     'inherit = "none"',
     'ignore_default_excludes = false',
-    'include_only = ["PATH", "LANG", "LC_ALL", "NO_COLOR"]',
-    `set = { PATH = ${toml(input.safeExecutablePath)}, LANG = "C.UTF-8", LC_ALL = "C.UTF-8", NO_COLOR = "1", GIT_ATTR_NOSYSTEM = "1", GIT_CONFIG_COUNT = "1", GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_KEY_0 = "core.fsmonitor", GIT_CONFIG_NOSYSTEM = "1", GIT_CONFIG_VALUE_0 = "false", GIT_OPTIONAL_LOCKS = "0", GIT_PAGER = "cat", GIT_TERMINAL_PROMPT = "0" }`,
+    'include_only = ["PATH", "LANG", "LC_ALL", "NO_COLOR", "TMPDIR"]',
+    `set = { PATH = ${toml(input.safeExecutablePath)}, LANG = "C.UTF-8", LC_ALL = "C.UTF-8", NO_COLOR = "1", TMPDIR = ${toml(input.scratchDirectory)}, GIT_ATTR_NOSYSTEM = "1", GIT_CONFIG_COUNT = "1", GIT_CONFIG_GLOBAL = "/dev/null", GIT_CONFIG_KEY_0 = "core.fsmonitor", GIT_CONFIG_NOSYSTEM = "1", GIT_CONFIG_VALUE_0 = "false", GIT_OPTIONAL_LOCKS = "0", GIT_PAGER = "cat", GIT_TERMINAL_PROMPT = "0" }`,
     '',
     '[tools]',
     'web_search = false',
@@ -3937,8 +3950,8 @@ function sha256(value: Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function localEnvironment(cwd: string) {
-  return {cwd, environmentId: 'local' as const, runtimeWorkspaceRoots: [cwd] as const};
+function localEnvironment(cwd: string, scratchDirectory: string) {
+  return {cwd, environmentId: 'local' as const, runtimeWorkspaceRoots: [cwd, scratchDirectory] as const};
 }
 
 function shellWord(value: string): string {

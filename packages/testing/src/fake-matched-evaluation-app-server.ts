@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import {readFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 
 if (process.argv[2] === '--version') {
@@ -8,6 +10,18 @@ if (process.argv[2] === '--version') {
 }
 if (process.argv[2] !== 'app-server') {
   process.stderr.write('expected app-server\n');
+  process.exit(2);
+}
+
+const scratchDirectory = process.env.TMPDIR;
+const codexHome = process.env.CODEX_HOME;
+if (scratchDirectory === undefined || codexHome === undefined) {
+  process.stderr.write('expected isolated TMPDIR and CODEX_HOME\n');
+  process.exit(2);
+}
+const codexConfig = readFileSync(join(codexHome, 'config.toml'), 'utf8');
+if (!codexConfig.includes(`TMPDIR = ${JSON.stringify(scratchDirectory)}`)) {
+  process.stderr.write('expected isolated TMPDIR in shell environment policy\n');
   process.exit(2);
 }
 
@@ -87,7 +101,7 @@ lines.on('line', line => {
       model: params.model,
       modelProvider: params.modelProvider,
       reasoningEffort: 'medium',
-      runtimeWorkspaceRoots: [params.cwd],
+      runtimeWorkspaceRoots: params.runtimeWorkspaceRoots,
       sandbox: {networkAccess: false, type: params.sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite'},
       thread: {id: threadId},
     });
@@ -113,6 +127,20 @@ lines.on('line', line => {
   }
   if (request.method === 'turn/start') {
     const params = request.params ?? {};
+    const sandboxPolicy = params.sandboxPolicy as Record<string, unknown> | undefined;
+    const workspaceRoots = params.runtimeWorkspaceRoots as readonly unknown[] | undefined;
+    if (
+      JSON.stringify(workspaceRoots) !== JSON.stringify([params.cwd, scratchDirectory]) ||
+      sandboxPolicy === undefined ||
+      sandboxPolicy.excludeSlashTmp !== true ||
+      sandboxPolicy.excludeTmpdirEnvVar !== false ||
+      sandboxPolicy.networkAccess !== false ||
+      sandboxPolicy.type !== 'workspaceWrite' ||
+      JSON.stringify(sandboxPolicy.writableRoots) !== JSON.stringify([params.cwd, scratchDirectory])
+    ) {
+      respondError(request.id, -32_000, 'expected repository plus isolated writable scratch sandbox');
+      return;
+    }
     const threadId = String(params.threadId);
     const turnId = `turn_matched_${turnIndex++}`;
     const schema = params.outputSchema as {properties?: Record<string, unknown>} | undefined;
