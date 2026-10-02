@@ -4,6 +4,8 @@ import {mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile} from '@threa
 import {tmpdir} from '@threadnote/testing/node-os';
 import {join} from '@threadnote/testing/node-path';
 import {sha256HexSync} from '@threadnote/platform/sha256';
+import {parseContextBriefContinuationCard} from '@threadnote/context/memory-evidence';
+import {codexResumeContinuationEvidenceState} from '@threadnote/threadnote/codex/resume_hook';
 import {matchedEvaluationPromptHashV1} from '@threadnote/threadnote/evaluation/matched-evaluation';
 import {
   createMatchedContinuationPhaseTwoVerificationCheckReceiptV1,
@@ -28,12 +30,15 @@ import {
 import {
   assertMatchedContinuationPhaseTwoBaselineResultV1,
   assertMatchedEvaluationContinuationDiagnosticSourceCitationsV1,
+  buildMatchedEvaluationContinuationAnchoredGraphQueryV1,
   buildMatchedEvaluationContinuationDiagnosticHandoffV1,
   extractMatchedEvaluationContinuationPhaseOneEvidenceV1,
   extractMatchedEvaluationContinuationPhaseOneEvidenceV2,
   initializeMatchedEvaluationContinuationNonceStatesV1,
   markMatchedEvaluationContinuationNonceStartedV1,
   matchedContinuationDiagnosticParserForCommandV1,
+  normalizeMatchedEvaluationContinuationGraphQueryV1,
+  parseMatchedEvaluationContinuationAutomaticHandoffReadV1,
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
   recoverMatchedEvaluationContinuationAttemptsV1,
@@ -189,7 +194,7 @@ describe('matched continuation finalization', () => {
     expect(extractMatchedEvaluationContinuationPhaseOneEvidenceV2(transcript, ['tests/regression.test.ts'])).toEqual({
       diagnosticEvidence: {
         diagnosticConclusion: 'The production normalizer drops the wrapper before the suggestion is rendered.',
-        graphQuery: 'find callers from normalizeNode to renderSuggestion',
+        graphQuery: 'src/normalizer.ts Which production caller passes the normalized node into the renderer?',
         graphQuestion: 'Which production caller passes the normalized node into the renderer?',
         rejectedHypothesis: 'The parser still preserves the wrapper in its intermediate node.',
         sourceCitations: [{endLine: 88, path: 'src/normalizer.ts', startLine: 72}],
@@ -273,9 +278,11 @@ describe('matched continuation finalization', () => {
     expect(v4.codeRefs).toEqual(['tests/regression.test.ts', 'src/normalizer.ts']);
     expect(v4.sourceAnchors).toBe('src/normalizer.ts:8-12');
     expect(v4.handoff).toContain('Graph query: find callers from normalizeNode to renderSuggestion');
-    expect(v4.handoff).toContain('Regression anchors: tests/regression.test.ts:4-5');
-    expect(v4.handoff).toContain('Source anchors: src/normalizer.ts:8-12');
+    expect(v4.handoff).toContain('Anchors: regression tests/regression.test.ts:4-5; source src/normalizer.ts:8-12');
     expect(v4.handoff).toContain('First run exactly one inspect_code_graph query using the Graph query above');
+    expect(codexResumeContinuationEvidenceState(parseContextBriefContinuationCard(v4.handoff))).toBe(
+      'evidence-bearing',
+    );
     const v3 = buildMatchedEvaluationContinuationDiagnosticHandoffV1({
       ...shared,
       diagnosticEvidence: null,
@@ -286,6 +293,101 @@ describe('matched continuation finalization', () => {
     expect(v3.sourceAnchors).toBeNull();
     expect(v3.handoff).toContain('Observed: The failing assertion is reproducible.');
     expect(v3.handoff).not.toContain('Graph query:');
+  });
+
+  it('seals the semantic graph argument and keeps it intact in the resume next step', () => {
+    const invocation = 'inspect_code_graph("Node.search queue transition to static child")';
+    expect(normalizeMatchedEvaluationContinuationGraphQueryV1(invocation)).toBe(
+      'Node.search queue transition to static child',
+    );
+    const projected = buildMatchedEvaluationContinuationDiagnosticHandoffV1({
+      changedPaths: ['tests/regression.test.ts'],
+      diagnosticEvidence: {
+        diagnosticConclusion: 'The queue transition skips the static child.',
+        graphQuery: invocation,
+        graphQuestion: 'Which transition advances the queue?',
+        rejectedHypothesis: 'The regular expression itself matches.',
+        sourceCitations: [{endLine: 12, path: 'src/node.ts', startLine: 8}],
+        unresolvedGap: 'Choose the correct queue offset update.',
+        untestedInvariant: 'Wildcard traversal remains unchanged.',
+        verifiedInvariant: 'The focused regression isolates the traversal.',
+      },
+      legacyEvidence: {anchors: 'tests/regression.test.ts:4-5', observations: ''},
+      phaseTwoPrompt: 'Continue phase two.',
+      resumeEvidenceMarker: 'resume-evidence-marker',
+      verification: 'The focused regression fails.',
+    });
+    expect(projected.handoff).toContain(
+      'Next step: First inspect_code_graph query: Node.search queue transition to static child.',
+    );
+    expect(projected.handoff).toContain('Task: resume-evidence-marker. Node.search queue transition to static child');
+    expect(projected.handoff).not.toContain(invocation);
+  });
+
+  it('grounds graph questions in their attested production source without exceeding the tool bound', () => {
+    const query = buildMatchedEvaluationContinuationAnchoredGraphQueryV1({
+      fallbackQuery: 'inspect_code_graph("find the transition")',
+      graphQuestion: `Which transition advances the queue? ${'detail '.repeat(80)}`,
+      sourceCitations: [{path: 'src/router/node.ts'}],
+    });
+    expect(query.startsWith('src/router/node.ts Which transition advances the queue?')).toBe(true);
+    expect(Buffer.byteLength(query, 'utf8')).toBeLessThanOrEqual(256);
+    expect(
+      Buffer.byteLength(
+        buildMatchedEvaluationContinuationAnchoredGraphQueryV1({
+          fallbackQuery: 'find the transition',
+          graphQuestion: `Which transition? ${'é'.repeat(300)}`,
+          sourceCitations: [{path: 'src/router/node.ts'}],
+        }),
+        'utf8',
+      ),
+    ).toBeLessThanOrEqual(256);
+    expect(
+      buildMatchedEvaluationContinuationAnchoredGraphQueryV1({
+        fallbackQuery: 'inspect_code_graph("find the transition")',
+        graphQuestion: 'Which transition advances the queue?',
+        sourceCitations: [{path: `src/${'nested/'.repeat(30)}node.ts`}],
+      }),
+    ).toBe('find the transition');
+  });
+
+  it('attests every exact-current handoff citation and selects the regression citation', () => {
+    const citation = (id: string, path: string) =>
+      JSON.stringify({
+        id,
+        path,
+        sourceCommit: 'a'.repeat(40),
+        sourceDirty: false,
+        sourceGraphContentId: 'graph-content',
+        sourceSnapshotId: 'snapshot',
+        target: {kind: 'file'},
+      });
+    const stdout = [
+      'memory_id: tn_handoff',
+      `code_citation: ${citation(`tncc_${'1'.repeat(40)}`, 'tests/regression.test.ts')}`,
+      `code_citation: ${citation(`tncc_${'2'.repeat(40)}`, 'src/normalizer.ts')}`,
+    ].join('\n');
+
+    expect(
+      parseMatchedEvaluationContinuationAutomaticHandoffReadV1({
+        expectedCodeRefs: ['tests/regression.test.ts', 'src/normalizer.ts'],
+        graphContentId: 'graph-content',
+        regressionPath: 'tests/regression.test.ts',
+        repositoryRevision: 'a'.repeat(40),
+        snapshotId: 'snapshot',
+        stdout,
+      }),
+    ).toEqual({citationId: `tncc_${'1'.repeat(40)}`, managedMemoryId: 'tn_handoff'});
+    expect(() =>
+      parseMatchedEvaluationContinuationAutomaticHandoffReadV1({
+        expectedCodeRefs: ['tests/regression.test.ts'],
+        graphContentId: 'graph-content',
+        regressionPath: 'tests/regression.test.ts',
+        repositoryRevision: 'a'.repeat(40),
+        snapshotId: 'snapshot',
+        stdout,
+      }),
+    ).toThrow('citations differ');
   });
 
   it('rehashes task-report evidence and rejects partial or tampered reports', async () => {

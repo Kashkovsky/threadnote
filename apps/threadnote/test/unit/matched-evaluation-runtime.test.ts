@@ -1144,7 +1144,7 @@ describe('matched evaluation runtime integrity', () => {
         resumeEvidenceMarker: marker,
         text: valid,
       }),
-    ).toThrow('does not surface the exact automatic handoff');
+    ).toThrow('graphQuery=false');
     expect(() =>
       parseMatchedEvaluationContinuationAgentBriefResultV1({
         content: [{type: 'text', text: valid}],

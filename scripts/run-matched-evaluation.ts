@@ -835,6 +835,8 @@ export function buildMatchedEvaluationContinuationDiagnosticHandoffV1(input: {
   readonly sourceAnchors: string | null;
 } {
   const diagnostic = input.diagnosticEvidence;
+  const graphQuery =
+    diagnostic === null ? null : normalizeMatchedEvaluationContinuationGraphQueryV1(diagnostic.graphQuery);
   const sourceAnchors =
     diagnostic === null
       ? null
@@ -842,8 +844,8 @@ export function buildMatchedEvaluationContinuationDiagnosticHandoffV1(input: {
           .map(citation => `${citation.path}:${citation.startLine}-${citation.endLine}`)
           .join(', ');
   const handoff = [
-    `Task: ${input.phaseTwoPrompt}`,
-    `Decisions: Phase 1 added only the committed regression in ${input.changedPaths.join(', ')}; production code is unchanged. ${input.resumeEvidenceMarker}`,
+    diagnostic === null ? `Task: ${input.phaseTwoPrompt}` : `Task: ${input.resumeEvidenceMarker}. ${graphQuery!}`,
+    `Decisions: Phase 1 added only the committed regression in ${input.changedPaths.join(', ')}; production code is unchanged.${diagnostic === null ? ` ${input.resumeEvidenceMarker}` : ''}`,
     ...(diagnostic === null
       ? [
           `Observed: ${input.legacyEvidence!.observations}`,
@@ -851,15 +853,14 @@ export function buildMatchedEvaluationContinuationDiagnosticHandoffV1(input: {
           'Attempted: Phase 1 changed only the cited regression and ran the required focused check.',
         ]
       : [
-          `Diagnosis: ${diagnostic.diagnosticConclusion}`,
-          `Unresolved gap: ${diagnostic.unresolvedGap}`,
-          `Graph question: ${diagnostic.graphQuestion}`,
-          `Graph query: ${diagnostic.graphQuery}`,
+          `Observed: ${diagnostic.diagnosticConclusion}`,
           `Rejected hypothesis: ${diagnostic.rejectedHypothesis}`,
           `Verified invariant: ${diagnostic.verifiedInvariant}`,
           `Untested invariant: ${diagnostic.untestedInvariant}`,
-          `Regression anchors: ${input.legacyEvidence!.anchors}`,
-          `Source anchors: ${sourceAnchors}`,
+          `Unresolved: ${diagnostic.unresolvedGap}`,
+          `Graph question: ${diagnostic.graphQuestion}`,
+          `Graph query: ${graphQuery!}`,
+          `Anchors: regression ${input.legacyEvidence!.anchors}; source ${sourceAnchors}`,
           'Attempted: Phase 1 added the regression, inspected the cited production path, narrowed the diagnosis, and stopped before the production fix.',
         ]),
     'Constraints: Keep the committed regression unchanged, preserve public behavior, use no network access, and implement the smallest general production correction.',
@@ -875,14 +876,115 @@ export function buildMatchedEvaluationContinuationDiagnosticHandoffV1(input: {
           'Avoid repeat: The sealed baseline failure is already established; do not rerun it before changing production code. Do not reread unchanged cited anchors. First run exactly one inspect_code_graph query using the Graph query above, then inspect only the source needed to resolve the named gap.',
         ]),
     'Risks: Adjacent compatibility behavior may encode the old implementation and must remain covered by the sealed Phase 2 checks.',
-    `Next step: ${input.phaseTwoPrompt}`,
+    diagnostic === null
+      ? `Next step: ${input.phaseTwoPrompt}`
+      : `Next step: First inspect_code_graph query: ${graphQuery!}. Then resolve the named gap, implement the smallest general correction, and run the sealed check.`,
   ].join('\n');
   return {
-    codeRefs: [...input.changedPaths, ...(diagnostic?.sourceCitations.map(citation => citation.path) ?? [])],
+    codeRefs: [
+      ...new Set([...input.changedPaths, ...(diagnostic?.sourceCitations.map(citation => citation.path) ?? [])]),
+    ],
     handoff,
     planVersion: diagnostic === null ? 3 : 4,
     sourceAnchors,
   };
+}
+
+/** Accept a model's invocation-like spelling while sealing only the semantic graph query argument. */
+export function normalizeMatchedEvaluationContinuationGraphQueryV1(value: string): string {
+  const trimmed = value.trim();
+  const invocation = /^inspect_code_graph\s*\(\s*("(?:[^"\\]|\\.)*")\s*\)$/u.exec(trimmed);
+  if (invocation === null) return trimmed;
+  try {
+    const parsed = JSON.parse(invocation[1]) as unknown;
+    return typeof parsed === 'string' && parsed.trim() !== '' ? parsed.trim() : trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+/** Ground a continuation graph question in its first attested production-source citation. */
+export function buildMatchedEvaluationContinuationAnchoredGraphQueryV1(input: {
+  readonly fallbackQuery: string;
+  readonly graphQuestion: string;
+  readonly sourceCitations: readonly {readonly path: string}[];
+}): string {
+  const fallback = normalizeMatchedEvaluationContinuationGraphQueryV1(input.fallbackQuery).replace(/\s+/gu, ' ').trim();
+  const question = input.graphQuestion.replace(/\s+/gu, ' ').trim();
+  const sourcePath = input.sourceCitations[0]?.path;
+  if (sourcePath === undefined || Buffer.byteLength(sourcePath, 'utf8') > 160) {
+    return matchedEvaluationUtf8Prefix(fallback, 256).trim();
+  }
+  const availableQuestionBytes = 256 - Buffer.byteLength(sourcePath, 'utf8') - 1;
+  if (availableQuestionBytes < 8) return matchedEvaluationUtf8Prefix(fallback, 256).trim();
+  const boundedQuestion = matchedEvaluationUtf8Prefix(question, availableQuestionBytes).trim();
+  return `${sourcePath} ${boundedQuestion}`;
+}
+
+function matchedEvaluationUtf8Prefix(value: string, maximumBytes: number): string {
+  let bytes = 0;
+  let output = '';
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8');
+    if (bytes + characterBytes > maximumBytes) break;
+    bytes += characterBytes;
+    output += character;
+  }
+  return output;
+}
+
+/** Attest every citation emitted by a stored continuation handoff and select its regression link. */
+export function parseMatchedEvaluationContinuationAutomaticHandoffReadV1(input: {
+  readonly expectedCodeRefs: readonly string[];
+  readonly graphContentId: string;
+  readonly regressionPath: string;
+  readonly repositoryRevision: string;
+  readonly snapshotId: string;
+  readonly stdout: string;
+}): {readonly citationId: string; readonly managedMemoryId: string} {
+  const managedMemoryId = matchingString(
+    uniquePrefixedLine(input.stdout, 'memory_id: ', 'continuation automatic handoff memory id'),
+    /^tn_[A-Za-z0-9_-]{1,128}$/u,
+    'continuation automatic handoff memory id',
+  );
+  const expectedPaths = [...new Set(input.expectedCodeRefs)].sort((left, right) => left.localeCompare(right));
+  const citations = prefixedLines(input.stdout, 'code_citation: ', 'continuation automatic handoff citations').map(
+    (line, index) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line) as unknown;
+      } catch (cause) {
+        throw new Error(`Continuation automatic handoff citation ${index} is invalid JSON.`, {cause});
+      }
+      const citation = object(parsed, `continuation automatic handoff citation ${index}`);
+      const target = object(citation.target, `continuation automatic handoff citation ${index} target`);
+      const path = boundedString(citation.path, 1, 4_096, `continuation automatic handoff citation ${index} path`);
+      const citationId = matchingString(
+        citation.id,
+        /^tncc_[0-9a-f]{40}$/u,
+        `continuation automatic handoff citation ${index} id`,
+      );
+      if (
+        citation.sourceCommit !== input.repositoryRevision ||
+        citation.sourceDirty !== false ||
+        citation.sourceSnapshotId !== input.snapshotId ||
+        citation.sourceGraphContentId !== input.graphContentId ||
+        target.kind !== 'file'
+      ) {
+        throw new Error(`Continuation automatic handoff citation ${index} is not exact-current.`);
+      }
+      return {citationId, path};
+    },
+  );
+  const actualPaths = citations.map(citation => citation.path).sort((left, right) => left.localeCompare(right));
+  if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
+    throw new Error('Continuation automatic handoff citations differ from the requested code references.');
+  }
+  const regression = citations.filter(citation => citation.path === input.regressionPath);
+  if (regression.length !== 1) {
+    throw new Error('Continuation automatic handoff citation is missing or ambiguous for the regression.');
+  }
+  return {citationId: regression[0].citationId, managedMemoryId};
 }
 
 function renderMatchedEvaluationContinuationPhaseOnePromptV1(
@@ -2756,7 +2858,16 @@ export function extractMatchedEvaluationContinuationPhaseOneEvidenceV2(
   if (regressionAnchors.length === 0) {
     throw new Error('Continuation diagnostic evidence lacks a changed regression citation.');
   }
-  const diagnosticEvidence = parseMatchedEvaluationContinuationDiagnosticEvidenceV1({...fields, sourceCitations});
+  const graphQuery = buildMatchedEvaluationContinuationAnchoredGraphQueryV1({
+    fallbackQuery: fields.graphQuery,
+    graphQuestion: fields.graphQuestion,
+    sourceCitations,
+  });
+  const diagnosticEvidence = parseMatchedEvaluationContinuationDiagnosticEvidenceV1({
+    ...fields,
+    graphQuery,
+    sourceCitations,
+  });
   return {diagnosticEvidence, regressionAnchors: [...new Set(regressionAnchors)].join(', ')};
 }
 
@@ -3220,33 +3331,14 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
   if (!automaticHandoffRead.stdout.includes(handoff) || !automaticHandoffRead.stdout.includes(resumeEvidenceMarker)) {
     throw new Error('Continuation checkpoint automatic handoff cannot be read back exactly.');
   }
-  const managedMemoryId = matchingString(
-    uniquePrefixedLine(automaticHandoffRead.stdout, 'memory_id: ', 'continuation automatic handoff memory id'),
-    /^tn_[A-Za-z0-9_-]{1,128}$/u,
-    'continuation automatic handoff memory id',
-  );
-  const citationInput = object(
-    JSON.parse(
-      uniquePrefixedLine(automaticHandoffRead.stdout, 'code_citation: ', 'continuation automatic handoff citation'),
-    ) as unknown,
-    'continuation automatic handoff citation',
-  );
-  const citationTarget = object(citationInput.target, 'continuation automatic handoff citation target');
-  const citationId = matchingString(
-    citationInput.id,
-    /^tncc_[0-9a-f]{40}$/u,
-    'continuation automatic handoff citation id',
-  );
-  if (
-    citationInput.sourceCommit !== checkpoint.revision ||
-    citationInput.sourceDirty !== false ||
-    citationInput.sourceSnapshotId !== statusSnapshot.id ||
-    citationInput.sourceGraphContentId !== statusSnapshot.graphContentId ||
-    citationInput.path !== changedPaths[0] ||
-    citationTarget.kind !== 'file'
-  ) {
-    throw new Error('Continuation checkpoint automatic handoff citation is not exact-current for the regression.');
-  }
+  const {citationId, managedMemoryId} = parseMatchedEvaluationContinuationAutomaticHandoffReadV1({
+    expectedCodeRefs: finalizedHandoff.codeRefs,
+    graphContentId: boundedString(statusSnapshot.graphContentId, 1, 256, 'checkpoint graph content id'),
+    regressionPath: changedPaths[0],
+    repositoryRevision: checkpoint.revision,
+    snapshotId: boundedString(statusSnapshot.id, 1, 256, 'checkpoint graph snapshot id'),
+    stdout: automaticHandoffRead.stdout,
+  });
   const fixtureMemoryId = `mem_${sha256Bytes(
     Buffer.from(`matched-continuation-automatic-handoff-v1\0${corpusTask.taskId}`),
   ).slice(0, 32)}`;
@@ -5065,15 +5157,19 @@ export function assertMatchedEvaluationContinuationAgentBriefV1(input: {
   readonly resumeEvidenceMarker: string;
   readonly text: string;
 }): void {
-  const markerCount = input.text.split(input.resumeEvidenceMarker).length - 1;
   const memoriesIndex = input.automaticHandoffUri.indexOf('/memories/');
   const compactHandoffUri = memoriesIndex === -1 ? null : input.automaticHandoffUri.slice(memoriesIndex + 1);
   const referencesHandoff =
     input.text.includes(input.automaticHandoffUri) ||
     (compactHandoffUri !== null && input.text.includes(compactHandoffUri));
   const trimmed = input.text.trimStart();
-  let isSufficient = /^State: sufficient(?:\s|\|)/mu.test(input.text);
+  let evidenceState: 'partial' | 'sufficient' | null = /^State: sufficient(?:\s|\|)/mu.test(input.text)
+    ? 'sufficient'
+    : /^State: partial(?:\s|\|)/mu.test(input.text)
+      ? 'partial'
+      : null;
   let jsonReferencesHandoff = false;
+  let jsonHandoffEvidence: string | null = null;
   if (trimmed.startsWith('{')) {
     let parsed: Record<string, unknown>;
     try {
@@ -5081,33 +5177,55 @@ export function assertMatchedEvaluationContinuationAgentBriefV1(input: {
     } catch (cause) {
       throw new Error('Continuation checkpoint agent Context Brief returned invalid JSON.', {cause});
     }
-    isSufficient = parsed.evidenceState === 'sufficient';
-    jsonReferencesHandoff = array(parsed.activeHandoffs, 'continuation checkpoint active handoffs').some(candidate => {
-      const handoffEvidence = object(candidate, 'continuation checkpoint active handoff');
-      return handoffEvidence.uri === input.automaticHandoffUri || handoffEvidence.uri === compactHandoffUri;
-    });
+    evidenceState =
+      parsed.evidenceState === 'sufficient' || parsed.evidenceState === 'partial' ? parsed.evidenceState : null;
+    const matchingHandoffs = array(parsed.activeHandoffs, 'continuation checkpoint active handoffs').flatMap(
+      candidate => {
+        const handoffEvidence = object(candidate, 'continuation checkpoint active handoff');
+        return handoffEvidence.uri === input.automaticHandoffUri || handoffEvidence.uri === compactHandoffUri
+          ? [handoffEvidence]
+          : [];
+      },
+    );
+    jsonReferencesHandoff = matchingHandoffs.length === 1;
+    jsonHandoffEvidence =
+      matchingHandoffs.length === 1 && typeof matchingHandoffs[0].excerpt === 'string'
+        ? matchingHandoffs[0].excerpt
+        : null;
   }
-  const includesRequiredGraphQuery =
-    input.requiredGraphQuery === null ||
+  const evidenceText = jsonHandoffEvidence ?? input.text;
+  const markerCount = evidenceText.split(input.resumeEvidenceMarker).length - 1;
+  const referencesRequiredGraphQuery =
     input.requiredGraphQuery === undefined ||
-    input.text.includes(input.requiredGraphQuery);
+    input.requiredGraphQuery === null ||
+    evidenceText.includes(`Graph query: ${input.requiredGraphQuery}`);
   if (
-    !isSufficient ||
+    evidenceState !== 'sufficient' ||
     (!referencesHandoff && !jsonReferencesHandoff) ||
     markerCount !== 1 ||
-    !includesRequiredGraphQuery
+    !referencesRequiredGraphQuery
   ) {
-    throw new Error('Continuation checkpoint agent resume brief does not surface the exact automatic handoff.');
+    throw new Error(
+      `Continuation checkpoint agent resume brief does not surface the exact automatic handoff (state=${evidenceState ?? 'missing'}, handoff=${referencesHandoff || jsonReferencesHandoff}, markerCount=${markerCount}, graphQuery=${referencesRequiredGraphQuery}).`,
+    );
   }
 }
 
 function uniquePrefixedLine(value: string, prefix: string, label: string): string {
+  const matches = prefixedLines(value, prefix, label);
+  if (matches.length !== 1) throw new Error(`${label} is missing or ambiguous.`);
+  return matches[0];
+}
+
+function prefixedLines(value: string, prefix: string, label: string): readonly string[] {
   const matches = value
     .split(/\r?\n/u)
     .filter(line => line.startsWith(prefix))
     .map(line => line.slice(prefix.length));
-  if (matches.length !== 1 || matches[0].length === 0) throw new Error(`${label} is missing or ambiguous.`);
-  return matches[0];
+  if (matches.length === 0 || matches.some(match => match.length === 0)) {
+    throw new Error(`${label} is missing or ambiguous.`);
+  }
+  return matches;
 }
 
 function parseLastJsonLine(value: string, label: string): Record<string, unknown> {

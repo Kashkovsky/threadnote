@@ -32,7 +32,14 @@ import {
 import {type EdgeRow, type FileBlobRow, type SnapshotRow, type SymbolRow} from './internal_models.js';
 import {edgeFromRow, snapshotFromRow, symbolFromRow} from './rows.js';
 import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from './build/core.js';
-import {boundedPageLimit, chunk, normalizedTerms, sqlTextOption, uniqueBy} from './utilities.js';
+import {
+  boundedPageLimit,
+  chunk,
+  codeGraphIdentitySelectors,
+  normalizedTerms,
+  sqlTextOption,
+  uniqueBy,
+} from './utilities.js';
 import {
   codeGraphAdjacencyQueryStatement,
   codeGraphDirectEdgeQueryStatement,
@@ -1481,12 +1488,16 @@ const selectSearchSymbolsWithSql = Effect.fn('codeGraph.selectSearchSymbolsWithS
   });
   const exactPath = normalizeExactSearchPath(query);
   const exactStatement = codeGraphExactSymbolQueryStatement(snapshotId, baseSnapshotId, exactPath ?? query, safeLimit);
-  const exactRows = yield* sql.unsafe<SearchSymbolRow>(exactStatement.text, exactStatement.parameters);
+  const exactRows = [...(yield* sql.unsafe<SearchSymbolRow>(exactStatement.text, exactStatement.parameters))];
   if (
     exactPath !== undefined &&
     exactRows.some(row => normalizeExactSearchPath(row.path)?.toLocaleLowerCase() === exactPath.toLocaleLowerCase())
   ) {
     return [...exactRows].sort(compareRows).slice(0, safeLimit).map(rankedNode);
+  }
+  for (const selector of codeGraphIdentitySelectors(query)) {
+    const statement = codeGraphExactSymbolQueryStatement(snapshotId, baseSnapshotId, selector, safeLimit);
+    exactRows.push(...(yield* sql.unsafe<SearchSymbolRow>(statement.text, statement.parameters)));
   }
   const candidateLimit = Math.min(2_000, Math.max(100, safeLimit * 20));
   const termStatement =
