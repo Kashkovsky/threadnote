@@ -14,6 +14,7 @@ import {
   type MatchedContinuationStudyTaskV1,
   type MatchedContinuationVariant,
 } from '@threadnote/threadnote/evaluation/matched-continuation-study';
+import {assertMatchedQualificationReceiptBindingV1} from '../../../../scripts/prepare-matched-continuation-study.js';
 import {assertMatchedContinuationRuntimeFilesV1} from '../../../../scripts/matched-continuation-runtime-integrity.js';
 
 describe('matched continuation claim-study sealing', () => {
@@ -165,6 +166,61 @@ describe('matched continuation claim-study sealing', () => {
     );
   });
 
+  it('binds continuation preparation to the validated qualification evidence', () => {
+    const qualificationWithoutHash = {
+      tasks: [
+        {
+          appliedPaths: ['src/service.ts'],
+          baseFixtureHash: hex(20),
+          baseRevision: commit(20),
+          commands: [{commandHash: hex(21), diagnosticHash: hex(22), exitCode: 0 as const}],
+          fixRevision: commit(23),
+          fixFixtureHash: hex(23),
+          protectedPaths: ['tests/expected.txt'],
+          taskId: `tsk_${hex(24).slice(-16)}`,
+        },
+      ],
+      version: 1 as const,
+    };
+    const qualification = {
+      ...qualificationWithoutHash,
+      receiptHash: digest('matched-token-efficiency-known-fix-qualification-v1', qualificationWithoutHash),
+    };
+    const qualificationBytes = Buffer.from(`${JSON.stringify(qualification, undefined, 2)}\n`);
+    const preparationWithoutHash = matchedPreparationReceipt(qualification.receiptHash, qualificationBytes);
+    const preparation = {
+      ...preparationWithoutHash,
+      receiptHash: digest('matched-token-efficiency-preparation-receipt-v2', preparationWithoutHash),
+    };
+
+    expect(() => assertMatchedQualificationReceiptBindingV1(preparation, qualificationBytes)).not.toThrow();
+    fc.assert(
+      fc.property(
+        fc.integer({min: 0, max: qualificationBytes.length - 1}),
+        fc.integer({min: 1, max: 255}),
+        (index, mask) => {
+          const mutatedBytes = Buffer.from(qualificationBytes);
+          mutatedBytes[index] ^= mask;
+          expect(() => assertMatchedQualificationReceiptBindingV1(preparation, mutatedBytes)).toThrow(
+            'qualification receipt bytes differ',
+          );
+        },
+      ),
+      {numRuns: 20},
+    );
+
+    const forgedQualification = {...qualification, receiptHash: hex(31)};
+    const forgedBytes = Buffer.from(`${JSON.stringify(forgedQualification, undefined, 2)}\n`);
+    const forgedPreparationWithoutHash = matchedPreparationReceipt(forgedQualification.receiptHash, forgedBytes);
+    const forgedPreparation = {
+      ...forgedPreparationWithoutHash,
+      receiptHash: digest('matched-token-efficiency-preparation-receipt-v2', forgedPreparationWithoutHash),
+    };
+    expect(() => assertMatchedQualificationReceiptBindingV1(forgedPreparation, forgedBytes)).toThrow(
+      'qualification receipt hash is invalid',
+    );
+  });
+
   it('canonicalizes task order without changing the sealed hash', () => {
     fc.assert(
       fc.property(fc.shuffledSubarray([0, 1, 2, 3, 4], {minLength: 5, maxLength: 5}), order => {
@@ -203,6 +259,30 @@ describe('matched continuation claim-study sealing', () => {
 
 function createStudy() {
   return createMatchedContinuationStudyV1(studyInput());
+}
+
+function matchedPreparationReceipt(qualificationReceiptHash: string, qualificationReceiptBytes: Uint8Array) {
+  return {
+    adapterArtifactHash: hex(1),
+    adapterConfigurationHashes: {'threadnote-compact': hex(2)},
+    corpusHash: hex(3),
+    manifestHash: hex(4),
+    outputHashes: {'qualification-receipt.json': sha256HexSync(qualificationReceiptBytes)},
+    referenceArm: 'unavailable',
+    requiredProductVersion: '5.1.0-beta.2',
+    productionRelease: null,
+    qualificationReceiptHash,
+    studyHash: hex(5),
+    threadnoteArtifactHash: hex(6),
+    threadnoteLockHash: hex(7),
+    threadnoteSourceCommit: commit(8),
+    verificationPlanHash: hex(9),
+    version: 4,
+  };
+}
+
+function digest(namespace: string, value: unknown): string {
+  return sha256HexSync(Buffer.from(`${namespace}\n${JSON.stringify(value)}`));
 }
 
 function studyInput(

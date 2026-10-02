@@ -5,7 +5,7 @@
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {createHash} from 'node:crypto';
 import {chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises';
-import {dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
+import {basename, dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {Effect} from 'effect';
@@ -46,6 +46,7 @@ import {
   matchedEvaluationDependencyProjectionFixtureHashV1,
   matchedEvaluationPreparedHomeFixtureHashV1,
   matchedEvaluationVerifierEnvironmentHashV1,
+  materializeMatchedEvaluationDependencyProjectionV1,
   parseMatchedEvaluationCodexAdapterConfigV1,
   runMatchedEvaluationDeterministicVerifierV1,
   type MatchedEvaluationCodexAdapterConfigV1,
@@ -64,7 +65,7 @@ import {
   type MatchedEvaluationRuntimeV1,
 } from './run-matched-evaluation.js';
 
-export const MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION = 3 as const;
+export const MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION = 4 as const;
 export const MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION = '5.0.6' as const;
 export const MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION = '5.0.7' as const;
 export const MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION = '5.1.0-beta.2' as const;
@@ -84,7 +85,7 @@ export interface MatchedTokenEfficiencyProductionReleaseV1 {
 }
 
 interface PreparationPlanV1 {
-  /** Selected runtime subset; v3 plans must declare this explicitly. */
+  /** Selected runtime subset; v4 plans must declare this explicitly. */
   readonly activeArms: readonly MatchedEvaluationArm[];
   readonly adapter: {
     readonly approvedCommands: readonly {
@@ -152,6 +153,8 @@ interface VerificationPreparationPlanV1 {
   readonly sandboxExecutable: string;
   readonly tasks: readonly {
     readonly fixRepositoryDirectory: string;
+    readonly protectedPaths: readonly string[];
+    readonly qualificationCommands: readonly (readonly string[])[];
     readonly selector: string;
     readonly taskId: string;
   }[];
@@ -227,12 +230,32 @@ export interface MatchedTokenEfficiencyPreparationReceiptV1 {
     | typeof MATCHED_TOKEN_EFFICIENCY_PRODUCTION_PRODUCT_VERSION
     | typeof MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION;
   readonly productionRelease: MatchedTokenEfficiencyProductionReleaseV1 | null;
+  readonly qualificationReceiptHash: string;
   readonly studyHash: string;
   readonly threadnoteArtifactHash: string;
   readonly threadnoteLockHash: string;
   readonly threadnoteSourceCommit: string;
   readonly verificationPlanHash: string;
   readonly version: typeof MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION;
+}
+
+interface MatchedTokenEfficiencyQualificationReceiptV1 {
+  readonly receiptHash: string;
+  readonly tasks: readonly {
+    readonly appliedPaths: readonly string[];
+    readonly baseFixtureHash: string;
+    readonly baseRevision: string;
+    readonly commands: readonly {
+      readonly commandHash: string;
+      readonly diagnosticHash: string;
+      readonly exitCode: 0;
+    }[];
+    readonly fixRevision: string;
+    readonly fixFixtureHash: string;
+    readonly protectedPaths: readonly string[];
+    readonly taskId: string;
+  }[];
+  readonly version: 1;
 }
 
 const HASH = /^[0-9a-f]{64}$/u;
@@ -292,7 +315,12 @@ export async function prepareMatchedTokenEfficiencyStudyV1(
   await canonicalDirectory(plan.adapter.temporaryRoot, 'adapter temporary root');
   const clusterObservations = await prepareClusters(plan, corpus);
   const dependencyProjections = await prepareDependencyProjections(plan);
-  const verificationPlan = await prepareVerificationPlan(plan, corpus, clusterObservations);
+  const {qualificationReceipt, verificationPlan} = await prepareVerificationPlan(
+    plan,
+    corpus,
+    clusterObservations,
+    dependencyProjections,
+  );
   const provisionalManifest = createMatchedEvaluationManifestV1({
     activeArms,
     arms: placeholderArmDefinitions(),
@@ -382,6 +410,7 @@ export async function prepareMatchedTokenEfficiencyStudyV1(
     ['study.json', jsonBytes(study)],
     ['runtime.json', jsonBytes(runtime)],
     ['verification-plan.json', jsonBytes(verificationPlan)],
+    ['qualification-receipt.json', jsonBytes(qualificationReceipt)],
     ['reference-scope-unavailable.json', unavailableReference],
   ]);
   for (const [arm, bytes] of configBytes) files.set(`adapter-config/${arm}.json`, bytes);
@@ -395,6 +424,7 @@ export async function prepareMatchedTokenEfficiencyStudyV1(
     referenceArm: 'unavailable' as const,
     requiredProductVersion: product.version,
     productionRelease: product.productionRelease,
+    qualificationReceiptHash: qualificationReceipt.receiptHash,
     studyHash: study.studyHash,
     threadnoteArtifactHash,
     threadnoteLockHash,
@@ -417,6 +447,7 @@ export async function prepareMatchedTokenEfficiencyStudyV1(
       clusterObservations,
       plan,
       prepared: tasks,
+      qualificationReceipt,
       runtimeFileHashes,
       sourceCommit,
       threadnoteArtifactHash,
@@ -446,6 +477,7 @@ async function assertPreparationInputsUnchanged(input: {
   readonly clusterObservations: ReadonlyMap<string, MatchedEvaluationRepositoryObservationV1>;
   readonly plan: PreparationPlanV1;
   readonly prepared: readonly PreparedTask[];
+  readonly qualificationReceipt: MatchedTokenEfficiencyQualificationReceiptV1;
   readonly runtimeFileHashes: ReadonlyMap<string, string>;
   readonly sourceCommit: string;
   readonly threadnoteArtifactHash: string;
@@ -475,6 +507,20 @@ async function assertPreparationInputsUnchanged(input: {
   );
   await assertPrivateAuthFile(input.plan.adapter.authSourcePath);
   await assertVerificationPlanUnchanged(input.verificationPlan);
+  for (const qualification of input.qualificationReceipt.tasks) {
+    const task = required(
+      input.plan.verification.tasks.find(candidate => candidate.taskId === qualification.taskId),
+      `qualification task ${qualification.taskId}`,
+    );
+    const observed = await observeMatchedEvaluationRepositoryV1(task.fixRepositoryDirectory);
+    if (
+      observed.dirty ||
+      observed.fixtureHash !== qualification.fixFixtureHash ||
+      observed.revision !== qualification.fixRevision
+    ) {
+      throw new Error(`Known-fix repository changed during preparation: ${qualification.taskId}`);
+    }
+  }
   for (const cluster of input.plan.clusters) {
     const observed = await observeMatchedEvaluationRepositoryV1(cluster.repositoryDirectory);
     const expected = required(input.clusterObservations.get(cluster.clusterId), cluster.clusterId);
@@ -524,7 +570,11 @@ async function prepareVerificationPlan(
   plan: PreparationPlanV1,
   corpus: MatchedEvaluationCorpusV1,
   clusterObservations: ReadonlyMap<string, MatchedEvaluationRepositoryObservationV1>,
-): Promise<MatchedEvaluationVerificationPlanV1> {
+  dependencyProjections: readonly MatchedEvaluationDependencyProjectionV1[],
+): Promise<{
+  readonly qualificationReceipt: MatchedTokenEfficiencyQualificationReceiptV1;
+  readonly verificationPlan: MatchedEvaluationVerificationPlanV1;
+}> {
   const environmentDirectory = await canonicalDirectory(
     plan.verification.environmentDirectory,
     'verification environment',
@@ -600,6 +650,7 @@ async function prepareVerificationPlan(
     timeoutMilliseconds: plan.verification.timeoutMilliseconds,
   });
   const calibratedTasks = [];
+  const qualificationTasks: MatchedTokenEfficiencyQualificationReceiptV1['tasks'][number][] = [];
   for (const task of provisionalTasks) {
     const root = await realpath(await mkdtemp(join(plan.adapter.temporaryRoot, '.verification-calibration-')));
     try {
@@ -620,6 +671,17 @@ async function prepareVerificationPlan(
       if (baseReceipt.status !== 'task-failed' || fixReceipt.status !== 'passed') {
         throw new Error(`Verification calibration did not fail at base and pass at fix for ${task.task.taskId}.`);
       }
+      qualificationTasks.push(
+        await qualifyMatchedEvaluationKnownFixV1({
+          base: task.base,
+          dependencyProjection: dependencyProjections.find(projection => projection.taskId === task.task.taskId),
+          fix: task.fix,
+          fixDirectory: task.fixDirectory,
+          plan,
+          root: join(root, 'qualification'),
+          task: task.task,
+        }),
+      );
       calibratedTasks.push({
         calibration: createMatchedEvaluationVerificationCalibrationV1({
           baseDiagnosticHash: baseReceipt.diagnosticHash,
@@ -639,7 +701,7 @@ async function prepareVerificationPlan(
       await rm(root, {force: true, recursive: true});
     }
   }
-  return createMatchedEvaluationVerificationPlanV1({
+  const verificationPlan = createMatchedEvaluationVerificationPlanV1({
     environmentDirectory,
     environmentHash,
     interpreter: plan.verification.interpreter,
@@ -654,6 +716,209 @@ async function prepareVerificationPlan(
     tasks: calibratedTasks,
     timeoutMilliseconds: plan.verification.timeoutMilliseconds,
   });
+  const qualificationWithoutHash = {
+    tasks: qualificationTasks.sort((left, right) => left.taskId.localeCompare(right.taskId)),
+    version: 1 as const,
+  };
+  return {
+    qualificationReceipt: {
+      ...qualificationWithoutHash,
+      receiptHash: digest('matched-token-efficiency-known-fix-qualification-v1', qualificationWithoutHash),
+    },
+    verificationPlan,
+  };
+}
+
+async function qualifyMatchedEvaluationKnownFixV1(input: {
+  readonly base: MatchedEvaluationRepositoryObservationV1;
+  readonly dependencyProjection?: MatchedEvaluationDependencyProjectionV1;
+  readonly fix: MatchedEvaluationRepositoryObservationV1;
+  readonly fixDirectory: string;
+  readonly plan: PreparationPlanV1;
+  readonly root: string;
+  readonly task: PreparationPlanV1['verification']['tasks'][number];
+}): Promise<MatchedTokenEfficiencyQualificationReceiptV1['tasks'][number]> {
+  const ancestry = await captureGit(
+    input.fixDirectory,
+    ['merge-base', '--is-ancestor', input.base.revision, input.fix.revision],
+    true,
+  );
+  if (ancestry.exitCode !== 0) {
+    throw new Error(`Known fix for ${input.task.taskId} must descend from the held-out base revision.`);
+  }
+  const changedPaths = await matchedEvaluationChangedPathsV1(
+    input.plan.adapter.gitExecutable,
+    input.fixDirectory,
+    input.base.revision,
+    input.fix.revision,
+  );
+  const appliedPaths = changedPaths.filter(path => !input.task.protectedPaths.some(root => protectedPath(root, path)));
+  if (appliedPaths.length === 0) {
+    throw new Error(`Known fix for ${input.task.taskId} has no production change outside protected paths.`);
+  }
+
+  let worktreeCreated = false;
+  try {
+    await captureGit(input.fixDirectory, ['worktree', 'add', '--detach', input.root, input.base.revision]);
+    worktreeCreated = true;
+    const patch = await captureCodeMemoryLinkProcessGroup({
+      arguments: [
+        '-C',
+        input.fixDirectory,
+        'diff',
+        '--binary',
+        '--no-ext-diff',
+        '--no-renames',
+        input.base.revision,
+        input.fix.revision,
+        '--',
+        ...appliedPaths,
+      ],
+      command: input.plan.adapter.gitExecutable,
+      cwd: input.fixDirectory,
+      environment: qualificationGitEnvironment(),
+      label: `Known-fix production patch ${input.task.taskId}`,
+      maxOutputBytes: 32 * 1_024 * 1_024,
+      timeoutMilliseconds: 60_000,
+    });
+    if (patch.stdout.length === 0) throw new Error(`Known fix for ${input.task.taskId} produced an empty patch.`);
+    await captureCodeMemoryLinkProcessGroup({
+      arguments: ['-C', input.root, 'apply', '--binary', '-'],
+      command: input.plan.adapter.gitExecutable,
+      cwd: input.root,
+      environment: qualificationGitEnvironment(),
+      label: `Known-fix production-only application ${input.task.taskId}`,
+      maxOutputBytes: 1 * 1_024 * 1_024,
+      stdin: patch.stdout,
+      timeoutMilliseconds: 60_000,
+    });
+    const materializedPaths = await matchedEvaluationChangedPathsV1(
+      input.plan.adapter.gitExecutable,
+      input.root,
+      input.base.revision,
+    );
+    if (JSON.stringify(materializedPaths) !== JSON.stringify(appliedPaths)) {
+      throw new Error(`Known-fix production-only patch differs from its admitted paths for ${input.task.taskId}.`);
+    }
+    if (input.dependencyProjection !== undefined) {
+      await materializeMatchedEvaluationDependencyProjectionV1({
+        projection: input.dependencyProjection,
+        repositoryRoot: input.root,
+      });
+    }
+
+    const commands = [];
+    for (const [commandIndex, tokens] of input.task.qualificationCommands.entries()) {
+      const executableIndex = tokens.findIndex(token => !token.includes('='));
+      const executableName = tokens[executableIndex];
+      const executables = input.plan.adapter.safeBinaries.filter(path => basename(path) === executableName);
+      if (executables.length !== 1) {
+        throw new Error(
+          `Qualification command ${commandIndex} for ${input.task.taskId} must resolve to one pinned safe binary.`,
+        );
+      }
+      const environment: Record<string, string> = {
+        CI: '1',
+        HOME: '/nonexistent',
+        LANG: 'C.UTF-8',
+        LC_ALL: 'C.UTF-8',
+        NO_COLOR: '1',
+        PATH: input.plan.adapter.safeExecutablePath,
+      };
+      for (const assignment of tokens.slice(0, executableIndex)) {
+        const separator = assignment.indexOf('=');
+        environment[assignment.slice(0, separator)] = assignment.slice(separator + 1);
+      }
+      const result = await captureCodeMemoryLinkProcessGroup({
+        allowFailure: true,
+        arguments: tokens.slice(executableIndex + 1),
+        command: executables[0],
+        cwd: input.root,
+        environment,
+        label: `Known-fix qualification command ${input.task.taskId}/${commandIndex}`,
+        maxOutputBytes: 8 * 1_024 * 1_024,
+        timeoutMilliseconds: input.plan.verification.timeoutMilliseconds,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Known-fix qualification command ${commandIndex} failed for ${input.task.taskId} with exit code ${result.exitCode}.`,
+        );
+      }
+      commands.push({
+        commandHash: digest('matched-token-efficiency-qualification-command-v1', {tokens}),
+        diagnosticHash: sha256(Buffer.from(`${result.stdout}\0${result.stderr}`)),
+        exitCode: 0 as const,
+      });
+    }
+    const finalPaths = await matchedEvaluationChangedPathsV1(
+      input.plan.adapter.gitExecutable,
+      input.root,
+      input.base.revision,
+    );
+    if (JSON.stringify(finalPaths) !== JSON.stringify(appliedPaths)) {
+      throw new Error(`Qualification commands changed the production-only candidate for ${input.task.taskId}.`);
+    }
+    return {
+      appliedPaths,
+      baseFixtureHash: input.base.fixtureHash,
+      baseRevision: input.base.revision,
+      commands,
+      fixRevision: input.fix.revision,
+      fixFixtureHash: input.fix.fixtureHash,
+      protectedPaths: input.task.protectedPaths,
+      taskId: input.task.taskId,
+    };
+  } finally {
+    if (worktreeCreated) {
+      await captureGit(input.fixDirectory, ['worktree', 'remove', '--force', input.root]);
+    }
+  }
+}
+
+async function matchedEvaluationChangedPathsV1(
+  gitExecutable: string,
+  repository: string,
+  fromRevision: string,
+  toRevision?: string,
+): Promise<readonly string[]> {
+  const result = await captureCodeMemoryLinkProcessGroup({
+    arguments: [
+      '-C',
+      repository,
+      'diff',
+      '--name-only',
+      '--no-ext-diff',
+      '--no-renames',
+      '-z',
+      fromRevision,
+      ...(toRevision === undefined ? [] : [toRevision]),
+      '--',
+    ],
+    command: gitExecutable,
+    cwd: repository,
+    environment: qualificationGitEnvironment(),
+    label: 'Known-fix changed paths',
+    maxOutputBytes: 4 * 1_024 * 1_024,
+    timeoutMilliseconds: 60_000,
+  });
+  return result.stdout
+    .split('\0')
+    .filter(Boolean)
+    .map((path, index) => safePlanRelativePath(path, `known-fix changed path ${index}`))
+    .sort();
+}
+
+function protectedPath(root: string, path: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+function qualificationGitEnvironment(): Readonly<Record<string, string>> {
+  return {
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    HOME: '/nonexistent',
+    PATH: '/usr/bin:/bin',
+  };
 }
 
 async function assertVerificationPlanUnchanged(plan: MatchedEvaluationVerificationPlanV1): Promise<void> {
@@ -1547,7 +1812,7 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
     'verification',
     'version',
   ]);
-  if (plan.version !== MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION) invalid('preparation plan version must be 3');
+  if (plan.version !== MATCHED_TOKEN_EFFICIENCY_PREPARATION_VERSION) invalid('preparation plan version must be 4');
   const adapter = object(plan.adapter, 'adapter plan');
   exactKeys(adapter, [
     ...(adapter.approvedCommands === undefined ? [] : ['approvedCommands']),
@@ -1592,6 +1857,9 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
     'task context ids',
   );
   const pricing = adapter.pricingMicrosPerMillionTokens;
+  const safeBinaries = stringArray(adapter.safeBinaries, 'safe binaries').map((path, index) =>
+    absolutePath(path, `safe binary ${index}`),
+  );
   const verification = object(plan.verification, 'verification plan');
   exactKeys(verification, [
     'environmentDirectory',
@@ -1603,9 +1871,27 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
   ]);
   const verificationTasks = array(verification.tasks, 'verification tasks').map((value, index) => {
     const task = object(value, `verification task ${index}`);
-    exactKeys(task, ['fixRepositoryDirectory', 'selector', 'taskId']);
+    exactKeys(task, ['fixRepositoryDirectory', 'protectedPaths', 'qualificationCommands', 'selector', 'taskId']);
+    const protectedPaths = array(task.protectedPaths, `verification task ${index} protected paths`).map(
+      (path, pathIndex) => safePlanRelativePath(path, `verification task ${index} protected path ${pathIndex}`),
+    );
+    if (protectedPaths.length === 0 || protectedPaths.length > 256) {
+      invalid(`verification task ${index} protected paths has invalid bounds`);
+    }
+    unique(protectedPaths, `verification task ${index} protected paths`);
+    const qualificationCommands = array(
+      task.qualificationCommands,
+      `verification task ${index} qualification commands`,
+    ).map((tokens, commandIndex) =>
+      parseCommandTokens(tokens, `verification task ${index} qualification command ${commandIndex}`),
+    );
+    if (qualificationCommands.length === 0 || qualificationCommands.length > 16) {
+      invalid(`verification task ${index} qualification commands has invalid bounds`);
+    }
     return {
       fixRepositoryDirectory: absolutePath(task.fixRepositoryDirectory, `verification task ${index} fix repository`),
+      protectedPaths: protectedPaths.sort(),
+      qualificationCommands,
       selector: matching(task.selector, VERIFIER_SELECTOR, `verification task ${index} selector`),
       taskId: matching(task.taskId, TASK_ID, `verification task ${index} id`),
     };
@@ -1618,6 +1904,14 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
     verificationTasks.map(task => task.fixRepositoryDirectory),
     'verification fix repositories',
   );
+  for (const [taskIndex, task] of verificationTasks.entries()) {
+    for (const [commandIndex, tokens] of task.qualificationCommands.entries()) {
+      const executable = tokens.find(token => !token.includes('='));
+      if (safeBinaries.filter(path => basename(path) === executable).length !== 1) {
+        invalid(`verification task ${taskIndex} qualification command ${commandIndex} is not one pinned safe binary`);
+      }
+    }
+  }
   const taskBudget = object(adapter.taskBudget, 'task budget');
   exactKeys(taskBudget, ['steps', 'tokens']);
   const productionRelease =
@@ -1707,9 +2001,7 @@ function parsePreparationPlanV1(value: unknown): PreparationPlanV1 {
                 output: integer(parsed.output, 0, Number.MAX_SAFE_INTEGER, 'output price'),
               };
             })(),
-      safeBinaries: stringArray(adapter.safeBinaries, 'safe binaries').map((path, index) =>
-        absolutePath(path, `safe binary ${index}`),
-      ),
+      safeBinaries,
       safeExecutablePath: boundedText(adapter.safeExecutablePath, 1, 16_384, 'safe executable PATH'),
       taskBudget: {
         steps: integer(taskBudget.steps, 1, 1_000, 'task step budget'),
@@ -1877,18 +2169,24 @@ function parseApprovedCommandPlan(
 ): {readonly taskId: string; readonly tokens: readonly string[]} {
   const command = object(value, `approved command ${index}`);
   exactKeys(command, ['taskId', 'tokens']);
-  const tokenInputs = array(command.tokens, `approved command ${index} tokens`);
-  if (tokenInputs.length < 1 || tokenInputs.length > 64) invalid(`approved command ${index} tokens has invalid bounds`);
-  const tokens = tokenInputs.map((token, tokenIndex) =>
-    boundedText(token, 1, 1_024, `approved command ${index} token ${tokenIndex}`),
-  );
+  const tokens = parseCommandTokens(command.tokens, `approved command ${index}`);
+  return {
+    taskId: matching(command.taskId, TASK_ID, `approved command ${index} task id`),
+    tokens,
+  };
+}
+
+function parseCommandTokens(value: unknown, label: string): readonly string[] {
+  const tokenInputs = array(value, `${label} tokens`);
+  if (tokenInputs.length < 1 || tokenInputs.length > 64) invalid(`${label} tokens has invalid bounds`);
+  const tokens = tokenInputs.map((token, tokenIndex) => boundedText(token, 1, 1_024, `${label} token ${tokenIndex}`));
   const executableIndex = tokens.findIndex(token => !token.includes('='));
-  if (executableIndex < 0) invalid(`approved command ${index} lacks an executable`);
+  if (executableIndex < 0) invalid(`${label} lacks an executable`);
   for (const assignment of tokens.slice(0, executableIndex)) {
-    if (assignment !== 'PYTHONPATH=src') invalid(`approved command ${index} has an unsupported environment assignment`);
+    if (assignment !== 'PYTHONPATH=src') invalid(`${label} has an unsupported environment assignment`);
   }
   if (!/^[A-Za-z0-9._+-]{1,128}$/u.test(tokens[executableIndex])) {
-    invalid(`approved command ${index} executable must be one bare name`);
+    invalid(`${label} executable must be one bare name`);
   }
   for (const token of tokens.slice(executableIndex + 1)) {
     if (
@@ -1896,13 +2194,10 @@ function parseApprovedCommandPlan(
       isAbsolute(token) ||
       token.split('/').some(segment => segment === '..')
     ) {
-      invalid(`approved command ${index} argument is outside the sealed task-command grammar`);
+      invalid(`${label} argument is outside the sealed task-command grammar`);
     }
   }
-  return {
-    taskId: matching(command.taskId, TASK_ID, `approved command ${index} task id`),
-    tokens,
-  };
+  return tokens;
 }
 
 function manifestModel(model: ModelPlanV1) {

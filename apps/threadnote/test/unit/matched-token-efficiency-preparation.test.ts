@@ -1,7 +1,7 @@
 import {createHash} from '@threadnote/testing/node-crypto';
 import {chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile} from '@threadnote/testing/node-fs-promises';
 import {tmpdir} from '@threadnote/testing/node-os';
-import {join} from '@threadnote/testing/node-path';
+import {dirname, join} from '@threadnote/testing/node-path';
 import {afterEach, describe, expect, it} from 'vitest';
 import {createMemoryCodeCitation} from '@threadnote/memory/code/citation';
 import {formatMemoryDocument} from '@threadnote/memory/document';
@@ -325,9 +325,10 @@ describe('matched token-efficiency study preparation', () => {
     const fixRepositories = await Promise.all(
       corpus.tasks.map(async (_task, index) => {
         const base = repositories[index % 2];
-        const fix = await heldOutRepository(join(root, `fix-repository-${index}`), base.url);
+        const fix = await cloneHeldOutRepository(join(root, `fix-repository-${index}`), base);
         await writeFile(join(fix.directory, 'service.ts'), 'export const value = 2;\n');
-        await git(fix.directory, ['add', 'service.ts']);
+        await writeFile(join(fix.directory, 'tests', 'expected.txt'), 'accepted-fix expectation\n');
+        await git(fix.directory, ['add', 'service.ts', 'tests/expected.txt']);
         await git(fix.directory, ['commit', '-qm', 'known fix']);
         return {...fix, ...(await observeMatchedEvaluationRepositoryV1(fix.directory))};
       }),
@@ -437,6 +438,9 @@ describe('matched token-efficiency study preparation', () => {
     const verificationSandbox = join(root, 'verification-sandbox');
     await writeFile(verificationSandbox, '#!/bin/sh\nshift 2\nexec "$@"\n');
     await chmod(verificationSandbox, 0o700);
+    const qualificationCheck = join(root, 'qualification-check');
+    await writeFile(qualificationCheck, '#!/bin/sh\nexit 1\n');
+    await chmod(qualificationCheck, 0o700);
     const planPath = join(root, 'plan.json');
     await writeFile(
       planPath,
@@ -446,7 +450,7 @@ describe('matched token-efficiency study preparation', () => {
             approvedCommands: [{taskId: corpus.tasks[0].taskId, tokens: ['true', '--version']}],
             dependencyProjections: [
               {
-                lockFileRelativePath: 'service.ts',
+                lockFileRelativePath: 'dependency.lock',
                 sourceDirectory: dependencySource,
                 targetRelativePath: 'node_modules',
                 taskId: corpus.tasks[0].taskId,
@@ -469,7 +473,7 @@ describe('matched token-efficiency study preparation', () => {
             },
             model: {id: 'agent-model', provider: 'fixture', reasoningEffort: 'medium'},
             pricingMicrosPerMillionTokens: null,
-            safeBinaries: ['/usr/bin/true'],
+            safeBinaries: ['/usr/bin/true', qualificationCheck],
             safeExecutablePath: '/usr/bin:/bin',
             taskBudget: {steps: 100, tokens: 100_000},
             temporaryRoot: adapterTemporaryRoot,
@@ -520,18 +524,31 @@ describe('matched token-efficiency study preparation', () => {
             sandboxExecutable: verificationSandbox,
             tasks: corpus.tasks.map((task, index) => ({
               fixRepositoryDirectory: fixRepositories[index].directory,
+              protectedPaths: ['tests'],
+              qualificationCommands: [['qualification-check']],
               selector: `task-${index}`,
               taskId: task.taskId,
             })),
             timeoutMilliseconds: 10_000,
           },
-          version: 3,
+          version: 4,
         },
         undefined,
         2,
       )}\n`,
     );
     const outputRoot = join(contextRoot, 'prepared-study');
+
+    await expect(
+      prepareMatchedTokenEfficiencyStudyV1(
+        {corpusPath, outputRoot, planPath},
+        {readAgentContextBrief: readFixtureAgentContextBrief},
+      ),
+    ).rejects.toThrow('Known-fix qualification command 0 failed');
+    await writeFile(
+      qualificationCheck,
+      '#!/bin/sh\nread -r service < service.ts\nread -r expected < tests/expected.txt\n[ "$service" = "export const value = 2;" ] && [ "$expected" = "base expectation" ]\n',
+    );
 
     const receipt = await prepareMatchedTokenEfficiencyStudyV1(
       {corpusPath, outputRoot, planPath},
@@ -546,6 +563,10 @@ describe('matched token-efficiency study preparation', () => {
     const runtime = parseMatchedEvaluationRuntimeV1(
       JSON.parse(await readFile(join(outputRoot, 'runtime.json'), 'utf8')),
     );
+    const qualification = JSON.parse(await readFile(join(outputRoot, 'qualification-receipt.json'), 'utf8')) as {
+      readonly receiptHash: string;
+      readonly tasks: readonly {readonly appliedPaths: readonly string[]; readonly commands: readonly unknown[]}[];
+    };
     const configs = await Promise.all(
       manifest.arms.map(async definition => {
         const bytes = await readFile(join(outputRoot, 'adapter-config', `${definition.arm}.json`));
@@ -561,10 +582,14 @@ describe('matched token-efficiency study preparation', () => {
       manifestHash: manifest.manifestHash,
       referenceArm: 'unavailable',
       requiredProductVersion: MATCHED_TOKEN_EFFICIENCY_REQUIRED_PRODUCT_VERSION,
+      qualificationReceiptHash: qualification.receiptHash,
       studyHash: study.studyHash,
       threadnoteSourceCommit: sourceCommit,
     });
     expect(await realpath(adapterTemporaryRoot)).toBe(adapterTemporaryRoot);
+    expect(qualification.tasks).toHaveLength(corpus.tasks.length);
+    expect(qualification.tasks.every(task => task.appliedPaths.join(',') === 'service.ts')).toBe(true);
+    expect(qualification.tasks.every(task => task.commands.length === 1)).toBe(true);
     expect(manifest.schedule).toHaveLength(108);
     expect(runtime.arms.map(arm => arm.arm)).toEqual([
       'files',
@@ -582,7 +607,7 @@ describe('matched token-efficiency study preparation', () => {
     expect(configs.every(entry => entry.config.approvedCommands[0]?.taskId === corpus.tasks[0].taskId)).toBe(true);
     expect(configs.every(entry => entry.config.dependencyProjections.length === 1)).toBe(true);
     expect(configs[0].config.dependencyProjections[0]).toMatchObject({
-      lockFileRelativePath: 'service.ts',
+      lockFileRelativePath: 'dependency.lock',
       sourceDirectory: dependencySource,
       sourceRepositoryDirectory: repositories[0].directory,
       targetRelativePath: 'node_modules',
@@ -686,9 +711,33 @@ async function heldOutRepository(directory: string, url: string) {
   await git(directory, ['config', 'user.name', 'Evaluation Fixture']);
   await git(directory, ['remote', 'add', 'origin', url]);
   await writeFile(join(directory, 'service.ts'), 'export const value = 1;\n');
-  await git(directory, ['add', 'service.ts']);
+  await writeFile(join(directory, 'dependency.lock'), 'fixture-dependency-v1\n');
+  await mkdir(join(directory, 'tests'));
+  await writeFile(join(directory, 'tests', 'expected.txt'), 'base expectation\n');
+  await git(directory, ['add', 'dependency.lock', 'service.ts', 'tests/expected.txt']);
   await git(directory, ['commit', '-qm', 'held-out fixture']);
   return {directory, url, ...(await observeMatchedEvaluationRepositoryV1(directory))};
+}
+
+async function cloneHeldOutRepository(directory: string, base: Awaited<ReturnType<typeof heldOutRepository>>) {
+  await captureCodeMemoryLinkProcessGroup({
+    arguments: ['clone', '--quiet', '--no-hardlinks', base.directory, directory],
+    command: 'git',
+    cwd: dirname(directory),
+    environment: {
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1',
+      HOME: '/nonexistent',
+      PATH: process.env.PATH ?? '/usr/bin:/bin',
+    },
+    label: 'Matched preparation fix clone',
+    maxOutputBytes: 64 * 1_024,
+    timeoutMilliseconds: 10_000,
+  });
+  await git(directory, ['config', 'user.email', 'evaluation@example.invalid']);
+  await git(directory, ['config', 'user.name', 'Evaluation Fixture']);
+  await git(directory, ['remote', 'set-url', 'origin', base.url]);
+  return {directory, url: base.url, ...(await observeMatchedEvaluationRepositoryV1(directory))};
 }
 
 async function git(cwd: string, arguments_: readonly string[]): Promise<void> {

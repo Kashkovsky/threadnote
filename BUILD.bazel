@@ -8511,6 +8511,7 @@ bun_test(
         "//:scripts/matched-evaluation-context-proxy.ts",
         "//:scripts/matched-evaluation-runtime-integrity.ts",
         "//:scripts/prepare-code-memory-link-agent-ab.ts",
+        "//:scripts/prepare-matched-continuation-study.ts",
         "//:scripts/prepare-matched-token-efficiency-study.ts",
         "//:scripts/prepare-release.ts",
         "//:scripts/recall-vector-performance-budget.ts",

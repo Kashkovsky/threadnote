@@ -79,10 +79,12 @@ const program = Effect.gen(function* () {
 });
 
 export async function prepareMatchedContinuationStudyFromFilesV1(options: PreparationOptions): Promise<void> {
+  const qualificationReceiptPath = join(dirname(options.matchedPreparationReceiptPath), 'qualification-receipt.json');
   const [
     corpusBytes,
     manifestBytes,
     matchedPreparationReceiptBytes,
+    qualificationReceiptBytes,
     matchedStudyBytes,
     matchedRuntimeBytes,
     preparationPlanBytes,
@@ -91,6 +93,7 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
     readBoundedRegularFile(options.corpusPath, 8 * 1_024 * 1_024, 'corpus'),
     readBoundedRegularFile(options.manifestPath, 8 * 1_024 * 1_024, 'manifest'),
     readBoundedRegularFile(options.matchedPreparationReceiptPath, 8 * 1_024 * 1_024, 'matched preparation receipt'),
+    readBoundedRegularFile(qualificationReceiptPath, 8 * 1_024 * 1_024, 'qualification receipt'),
     readBoundedRegularFile(options.matchedStudyPath, 8 * 1_024 * 1_024, 'matched study'),
     readBoundedRegularFile(options.matchedRuntimePath, 8 * 1_024 * 1_024, 'matched runtime'),
     readBoundedRegularFile(options.preparationPlanPath, 8 * 1_024 * 1_024, 'continuation preparation plan'),
@@ -103,6 +106,7 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
   const matchedPreparationReceipt = parseMatchedPreparationReceipt(
     parseJson(matchedPreparationReceiptBytes, 'matched preparation receipt'),
   );
+  assertQualificationReceiptBindingV1(matchedPreparationReceipt, qualificationReceiptBytes);
   const preparation = parsePreparationPlanV1(parseJson(preparationPlanBytes, 'continuation preparation plan'));
   const exposureAuditBytes = await readBoundedRegularFile(
     preparation.exposureAuditPath,
@@ -334,16 +338,69 @@ function parseMatchedPreparationReceipt(value: unknown): {
   readonly adapterArtifactHash: string;
   readonly corpusHash: string;
   readonly manifestHash: string;
+  readonly qualificationReceiptSha256: string;
+  readonly qualificationReceiptHash: string;
   readonly studyHash: string;
   readonly threadnoteArtifactHash: string;
   readonly threadnoteSourceCommit: string;
   readonly verificationPlanHash: string;
 } {
   const receipt = object(value, 'matched preparation receipt');
+  exactKeys(receipt, [
+    'adapterArtifactHash',
+    'adapterConfigurationHashes',
+    'corpusHash',
+    'manifestHash',
+    'outputHashes',
+    'receiptHash',
+    'referenceArm',
+    'requiredProductVersion',
+    'productionRelease',
+    'qualificationReceiptHash',
+    'studyHash',
+    'threadnoteArtifactHash',
+    'threadnoteLockHash',
+    'threadnoteSourceCommit',
+    'verificationPlanHash',
+    'version',
+  ]);
+  if (receipt.version !== 4) invalid('matched preparation receipt version must be 4');
+  const receiptHash = matching(receipt.receiptHash, /^[0-9a-f]{64}$/u, 'matched preparation receipt hash');
+  const receiptWithoutHash = {
+    adapterArtifactHash: receipt.adapterArtifactHash,
+    adapterConfigurationHashes: receipt.adapterConfigurationHashes,
+    corpusHash: receipt.corpusHash,
+    manifestHash: receipt.manifestHash,
+    outputHashes: receipt.outputHashes,
+    referenceArm: receipt.referenceArm,
+    requiredProductVersion: receipt.requiredProductVersion,
+    productionRelease: receipt.productionRelease,
+    qualificationReceiptHash: receipt.qualificationReceiptHash,
+    studyHash: receipt.studyHash,
+    threadnoteArtifactHash: receipt.threadnoteArtifactHash,
+    threadnoteLockHash: receipt.threadnoteLockHash,
+    threadnoteSourceCommit: receipt.threadnoteSourceCommit,
+    verificationPlanHash: receipt.verificationPlanHash,
+    version: receipt.version,
+  };
+  if (receiptHash !== digest('matched-token-efficiency-preparation-receipt-v2', receiptWithoutHash)) {
+    invalid('matched preparation receipt hash is invalid');
+  }
+  const outputHashes = object(receipt.outputHashes, 'matched preparation output hashes');
   return {
     adapterArtifactHash: matching(receipt.adapterArtifactHash, /^[0-9a-f]{64}$/u, 'receipt adapter hash'),
     corpusHash: matching(receipt.corpusHash, /^[0-9a-f]{64}$/u, 'receipt corpus hash'),
     manifestHash: matching(receipt.manifestHash, /^[0-9a-f]{64}$/u, 'receipt manifest hash'),
+    qualificationReceiptSha256: matching(
+      outputHashes['qualification-receipt.json'],
+      /^[0-9a-f]{64}$/u,
+      'qualification receipt output hash',
+    ),
+    qualificationReceiptHash: matching(
+      receipt.qualificationReceiptHash,
+      /^[0-9a-f]{64}$/u,
+      'receipt qualification hash',
+    ),
     studyHash: matching(receipt.studyHash, /^[0-9a-f]{64}$/u, 'receipt study hash'),
     threadnoteArtifactHash: matching(
       receipt.threadnoteArtifactHash,
@@ -357,6 +414,110 @@ function parseMatchedPreparationReceipt(value: unknown): {
     ),
     verificationPlanHash: matching(receipt.verificationPlanHash, /^[0-9a-f]{64}$/u, 'receipt verification plan hash'),
   };
+}
+
+interface MatchedQualificationReceiptBindingV1 {
+  readonly qualificationReceiptHash: string;
+  readonly qualificationReceiptSha256: string;
+}
+
+export function assertMatchedQualificationReceiptBindingV1(
+  matchedPreparationReceiptValue: unknown,
+  qualificationReceiptBytes: Uint8Array,
+): void {
+  assertQualificationReceiptBindingV1(
+    parseMatchedPreparationReceipt(matchedPreparationReceiptValue),
+    qualificationReceiptBytes,
+  );
+}
+
+function assertQualificationReceiptBindingV1(
+  preparationReceipt: MatchedQualificationReceiptBindingV1,
+  qualificationReceiptBytes: Uint8Array,
+): void {
+  if (sha256(qualificationReceiptBytes) !== preparationReceipt.qualificationReceiptSha256) {
+    invalid('qualification receipt bytes differ from the matched preparation receipt');
+  }
+  const qualificationReceipt = parseQualificationReceiptV1(
+    parseJson(qualificationReceiptBytes, 'qualification receipt'),
+  );
+  if (qualificationReceipt.receiptHash !== preparationReceipt.qualificationReceiptHash) {
+    invalid('qualification receipt hash differs from the matched preparation receipt');
+  }
+}
+
+function parseQualificationReceiptV1(value: unknown): {readonly receiptHash: string} {
+  const receipt = object(value, 'qualification receipt');
+  exactKeys(receipt, ['receiptHash', 'tasks', 'version']);
+  if (receipt.version !== 1) invalid('qualification receipt version must be 1');
+  const tasks = array(receipt.tasks, 'qualification receipt tasks').map((value, taskIndex) => {
+    const task = object(value, `qualification receipt task ${taskIndex}`);
+    exactKeys(task, [
+      'appliedPaths',
+      'baseFixtureHash',
+      'baseRevision',
+      'commands',
+      'fixFixtureHash',
+      'fixRevision',
+      'protectedPaths',
+      'taskId',
+    ]);
+    const appliedPaths = qualificationPaths(task.appliedPaths, `qualification task ${taskIndex} applied paths`);
+    const protectedPaths = qualificationPaths(task.protectedPaths, `qualification task ${taskIndex} protected paths`);
+    const commands = array(task.commands, `qualification task ${taskIndex} commands`).map((value, commandIndex) => {
+      const command = object(value, `qualification task ${taskIndex} command ${commandIndex}`);
+      exactKeys(command, ['commandHash', 'diagnosticHash', 'exitCode']);
+      if (command.exitCode !== 0) invalid(`qualification task ${taskIndex} command ${commandIndex} did not pass`);
+      return {
+        commandHash: matching(command.commandHash, /^[0-9a-f]{64}$/u, 'qualification command hash'),
+        diagnosticHash: matching(command.diagnosticHash, /^[0-9a-f]{64}$/u, 'qualification diagnostic hash'),
+        exitCode: 0 as const,
+      };
+    });
+    if (appliedPaths.length === 0 || commands.length === 0 || commands.length > 16) {
+      invalid(`qualification task ${taskIndex} has invalid evidence bounds`);
+    }
+    return {
+      appliedPaths,
+      baseFixtureHash: matching(task.baseFixtureHash, /^[0-9a-f]{64}$/u, 'qualification base fixture hash'),
+      baseRevision: matching(task.baseRevision, /^[0-9a-f]{40}$/u, 'qualification base revision'),
+      commands,
+      fixRevision: matching(task.fixRevision, /^[0-9a-f]{40}$/u, 'qualification fix revision'),
+      fixFixtureHash: matching(task.fixFixtureHash, /^[0-9a-f]{64}$/u, 'qualification fix fixture hash'),
+      protectedPaths,
+      taskId: matching(task.taskId, /^tsk_[0-9a-f]{16,64}$/u, 'qualification task id'),
+    };
+  });
+  if (tasks.length === 0 || tasks.length > 64) invalid('qualification receipt tasks have invalid bounds');
+  unique(
+    tasks.map(task => task.taskId),
+    'qualification receipt task ids',
+  );
+  const receiptWithoutHash = {tasks, version: 1 as const};
+  const receiptHash = matching(receipt.receiptHash, /^[0-9a-f]{64}$/u, 'qualification receipt hash');
+  if (receiptHash !== digest('matched-token-efficiency-known-fix-qualification-v1', receiptWithoutHash)) {
+    invalid('qualification receipt hash is invalid');
+  }
+  return {receiptHash};
+}
+
+function qualificationPaths(value: unknown, label: string): readonly string[] {
+  const paths = array(value, label).map((path, index) => safeRelativePath(path, `${label} ${index}`));
+  if (paths.length === 0 || paths.length > 256) invalid(`${label} has invalid bounds`);
+  unique(paths, label);
+  return paths;
+}
+
+function safeRelativePath(value: unknown, label: string): string {
+  const path = boundedText(value, 1, 4_096, label);
+  if (
+    path.includes('\\') ||
+    isAbsolute(path) ||
+    path.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    invalid(`${label} must be one normalized relative path`);
+  }
+  return path;
 }
 
 function parsePreparationPlanV1(value: unknown): MatchedContinuationPreparationPlanV1 {
@@ -514,6 +675,10 @@ function jsonBytes(value: unknown): Buffer {
 
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function digest(namespace: string, value: unknown): string {
+  return sha256(Buffer.from(`${namespace}\n${JSON.stringify(value)}`));
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
