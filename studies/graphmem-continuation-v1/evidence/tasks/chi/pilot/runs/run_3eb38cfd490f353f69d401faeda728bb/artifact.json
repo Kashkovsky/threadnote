@@ -1,0 +1,27 @@
+{
+  "agentResult": {
+    "citations": [
+      {
+        "endLine": 633,
+        "path": "tree.go",
+        "startLine": 628
+      }
+    ],
+    "completed": true,
+    "summary": "Removed the premature route-enumeration skip so real handlers sharing a mount node remain visible to Walk. The committed regression is unchanged, and v19-verifier.py chi passed."
+  },
+  "agentTerminal": null,
+  "arm": "threadnote-compact",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/tree.go b/tree.go\nindex 74ff43d..c1962d6 100644\n--- a/tree.go\n+++ b/tree.go\n@@ -629,10 +629,6 @@ func (n *node) routes() []Route {\n \trts := []Route{}\n \n \tn.walk(func(eps endpoints, subroutes Routes) bool {\n-\t\tif eps[mSTUB] != nil && eps[mSTUB].handler != nil && subroutes == nil {\n-\t\t\treturn false\n-\t\t}\n-\n \t\t// Group methodHandlers by unique patterns\n \t\tpats := make(map[string]endpoints)\n \n",
+  "patchSha256": "1cc2f21d89f750b1defe3b15523bc94182578c261a4cacca2ef45abe4927801e",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "ec912675e99ca648247db2b24941b46b454e43cf67ec9ba30dabcc5644b97d97",
+    "identityHash": "0fed5fdd675e6215aefb073803ec28d90cd0ffccd7163b7680566f5f7d558248",
+    "revision": "a67fe48735a92a2f3195952aea4ea120997e1b45"
+  },
+  "runNonce": "run_3eb38cfd490f353f69d401faeda728bb",
+  "taskId": "tsk_8b02783134c4b12b327add82",
+  "version": 4
+}

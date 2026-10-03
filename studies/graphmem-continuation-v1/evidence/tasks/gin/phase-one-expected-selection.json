@@ -1,0 +1,51 @@
+{
+  "continuationAttempts": [
+    {
+      "blindLabel": "A",
+      "runNonce": "run_fd9e151b26af4308ec5356b60d20bec1",
+      "runOrder": 1,
+      "variant": "threadnote-preloaded-resume"
+    },
+    {
+      "blindLabel": "B",
+      "runNonce": "run_2ef1bfb5beec05fb5d3a61e40c20814d",
+      "runOrder": 2,
+      "variant": "files-bare"
+    }
+  ],
+  "phaseOnePrompt": "With `HandleMethodNotAllowed` enabled and several method trees containing wildcard alternatives, a missing path can panic in radix-tree lookup because skipped-node backtracking entries accumulate across successive method-tree searches. Make each `getValue` lookup start with an empty skipped-node stack while retaining the pooled allocation. Preserve correct 404 behavior for an unmatched path and 405 behavior, including the `Allow` header, when another method is registered. Add focused stress coverage across many method trees.\n\nPhase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Name the focused regression with the prefix `TestIssue4818_`. Reproduce the fixed-method-tree failure with OPTIONS and GET on `/:p0/:p1/a/:p2`; PATCH on `/b/:p0/:p1/c`; DELETE on `/b/:p0/:p1/d/:p3`; GET on `/b/:p0/:p1/e/f`; POST and OPTIONS on `/b/:p0/:p1/g/:p4/h`; DELETE on `/b/cache`; GET and POST on `/b/clients/:p1/g`; and PATCH and OPTIONS on `/b/clients/:p1/g/:p4`. Assert that POST `/b/clients/42` does not panic and returns 404. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.\nCONTINUATION DIAGNOSIS/1\nAdd the failing regression and inspect the production source deeply enough to leave a decision-grade diagnosis, but do not edit production code or implement the fix.\nYour citations must include both the changed regression and at least one unchanged production-source anchor.\nWrite the summary as exactly these seven nonempty lines:\nDiagnosis: <source-grounded conclusion>\nRejected hypothesis: <attempted explanation that evidence ruled out or narrowed>\nVerified invariant: <behavior established by source or the focused check>\nUntested invariant: <important behavior still requiring verification>\nUnresolved gap: <one exact decision still blocking the production fix>\nGraph question: <one bounded source-relationship question whose answer advances that decision>\nGraph query: <one concise inspect_code_graph query for that question>\n\nRequired focused check (run exactly as written; do not change its flags or selector):\nv19-verifier.py gin",
+  "phaseOnePromptSha256": "379bc363c826a1872d5904bae7b34b9b092837c1c9eb82b3cc648bc5916db222",
+  "phaseOneRunNonce": "run_ecc5f06664b059a7eeb57ef4f2833a55",
+  "sourceTask": {
+    "prompt": "With `HandleMethodNotAllowed` enabled and several method trees containing wildcard alternatives, a missing path can panic in radix-tree lookup because skipped-node backtracking entries accumulate across successive method-tree searches. Make each `getValue` lookup start with an empty skipped-node stack while retaining the pooled allocation. Preserve correct 404 behavior for an unmatched path and 405 behavior, including the `Allow` header, when another method is registered. Add focused stress coverage across many method trees.",
+    "promptSha256": "44301e3ccf7ba64929abd47ebec31b686ac8fd03df80adc0653cfd32b876df89",
+    "repositoryFixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+    "repositoryRevision": "d8f2d588d7573b3438cfc95b7a47f9ec8966273c",
+    "taskId": "tsk_3e2e9ab2f03a7d743856d6fd"
+  },
+  "taskPacket": {
+    "phaseOneAllowedPaths": [
+      "routes_test.go"
+    ],
+    "phaseOneDirective": "Phase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Name the focused regression with the prefix `TestIssue4818_`. Reproduce the fixed-method-tree failure with OPTIONS and GET on `/:p0/:p1/a/:p2`; PATCH on `/b/:p0/:p1/c`; DELETE on `/b/:p0/:p1/d/:p3`; GET on `/b/:p0/:p1/e/f`; POST and OPTIONS on `/b/:p0/:p1/g/:p4/h`; DELETE on `/b/cache`; GET and POST on `/b/clients/:p1/g`; and PATCH and OPTIONS on `/b/clients/:p1/g/:p4`. Assert that POST `/b/clients/42` does not panic and returns 404. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.",
+    "phaseOneFocusedChecks": [
+      "v19-verifier.py gin"
+    ],
+    "phaseTwoFocusedChecks": [
+      "v19-verifier.py gin"
+    ],
+    "phaseTwoPrompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryName": "gin",
+    "sourceRevision": "d8f2d588d7573b3438cfc95b7a47f9ec8966273c",
+    "sourceTaskPrompt": "With `HandleMethodNotAllowed` enabled and several method trees containing wildcard alternatives, a missing path can panic in radix-tree lookup because skipped-node backtracking entries accumulate across successive method-tree searches. Make each `getValue` lookup start with an empty skipped-node stack while retaining the pooled allocation. Preserve correct 404 behavior for an unmatched path and 405 behavior, including the `Allow` header, when another method is registered. Add focused stress coverage across many method trees.",
+    "status": "draft-unsealed",
+    "taskKey": "gin-skipped-node-state",
+    "phaseTwoProtectedPaths": [
+      "routes_test.go"
+    ],
+    "treatmentSet": "automated-context-graph-v1",
+    "version": 4
+  },
+  "taskPacketSha256": "416b573f5141b8af3e085d9e3833a8fdb8fb42db3c41e6412c53f60687896e02",
+  "version": 1
+}

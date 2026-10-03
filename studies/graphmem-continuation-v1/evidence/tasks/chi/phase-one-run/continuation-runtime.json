@@ -1,0 +1,71 @@
+{
+  "arms": [
+    {
+      "adapterArguments": [],
+      "adapterConfigFile": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/prepared-study/adapter-config/files.json",
+      "adapterExecutable": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/bin/matched-evaluation-codex-adapter-8da0eae8",
+      "arm": "files",
+      "environmentKeys": [],
+      "toolExecutable": null,
+      "toolLockFile": null
+    },
+    {
+      "adapterArguments": [],
+      "adapterConfigFile": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/prepared-study/adapter-config/threadnote-graph.json",
+      "adapterExecutable": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/bin/matched-evaluation-codex-adapter-8da0eae8",
+      "arm": "threadnote-graph",
+      "environmentKeys": [],
+      "toolExecutable": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/candidate-release/threadnote",
+      "toolLockFile": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/candidate-release/release.json"
+    },
+    {
+      "adapterArguments": [],
+      "adapterConfigFile": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/prepared-study/adapter-config/threadnote-compact.json",
+      "adapterExecutable": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/bin/matched-evaluation-codex-adapter-8da0eae8",
+      "arm": "threadnote-compact",
+      "environmentKeys": [],
+      "toolExecutable": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/candidate-release/threadnote",
+      "toolLockFile": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/candidate-release/release.json"
+    },
+    {
+      "adapterArguments": [],
+      "adapterConfigFile": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/prepared-study/adapter-config/threadnote-source.json",
+      "adapterExecutable": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/bin/matched-evaluation-codex-adapter-8da0eae8",
+      "arm": "threadnote-source",
+      "environmentKeys": [],
+      "toolExecutable": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/candidate-release/threadnote",
+      "toolLockFile": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/candidate-release/release.json"
+    }
+  ],
+  "artifactDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/chi/phase-one-run/pilot",
+  "repositories": [
+    {
+      "clusterId": "cluster_cc386a2d43df6fdd",
+      "repositoryDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/bases/click",
+      "repositoryIdentityHash": "60bb20143d5c034afb55cc5e18cdaf27168572a4ddb2b15a749f0eef4f994318"
+    },
+    {
+      "clusterId": "cluster_bee055c9b9ce1ce3",
+      "repositoryDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/bases/pluggy",
+      "repositoryIdentityHash": "39b62cb8ca199660d20b40a9a23974fcd50bf8e69e7f1f79bf009752f4b8cc74"
+    },
+    {
+      "clusterId": "cluster_f27d359e0c2d0671",
+      "repositoryDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/chi/phase-one-run/checkpoint-repository",
+      "repositoryIdentityHash": "0fed5fdd675e6215aefb073803ec28d90cd0ffccd7163b7680566f5f7d558248"
+    },
+    {
+      "clusterId": "cluster_db78cae6e3269e7c",
+      "repositoryDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/bases/gin",
+      "repositoryIdentityHash": "32a6812b574138d9a8af93f5d36ad4fd0eaf3b50c4b44e4795f15828181ab6f9"
+    },
+    {
+      "clusterId": "cluster_a084322c85405c82",
+      "repositoryDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/bases/echo",
+      "repositoryIdentityHash": "38449e1e0f8dda75617e11f582deb34bd9ffdae521a56887ffbe1c15fdf76abc"
+    }
+  ],
+  "timeoutMilliseconds": 7200000,
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "version": 4
+}

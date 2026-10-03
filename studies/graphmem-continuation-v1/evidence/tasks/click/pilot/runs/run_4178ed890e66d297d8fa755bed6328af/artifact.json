@@ -1,0 +1,27 @@
+{
+  "agentResult": {
+    "citations": [
+      {
+        "endLine": 81,
+        "path": "src/click/utils.py",
+        "startLine": 79
+      }
+    ],
+    "completed": true,
+    "summary": "Fixed short-help sentence detection so periods in abbreviations are not treated as sentence endings. `v19-verifier.py click` passed."
+  },
+  "agentTerminal": null,
+  "arm": "files",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/src/click/utils.py b/src/click/utils.py\nindex b529eb0..70ccec1 100644\n--- a/src/click/utils.py\n+++ b/src/click/utils.py\n@@ -89,7 +89,9 @@ def _make_default_short_help(help: str, max_length: int = 45) -> str:\n         if total_length > max_length:  # too long, truncate\n             break\n \n-        if word[-1] == \".\":  # sentence end, truncate without \"...\"\n+        if word[-1] == \".\" and (\n+            i == last_index or words[i + 1][:1].isupper()\n+        ):  # sentence end, truncate without \"...\"\n             return \" \".join(words[: i + 1])\n \n         if total_length == max_length and i != last_index:\n",
+  "patchSha256": "c3c6f25fb1a9391b3308c4d1335c42fbf3df5eb5e56b5bfde5c48fb4e34405ac",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "33bdc182440503c7439b656c03082251165f443aaaacf90190154bfa6bab7424",
+    "identityHash": "60bb20143d5c034afb55cc5e18cdaf27168572a4ddb2b15a749f0eef4f994318",
+    "revision": "0f2c0879d80a23cd10e799d7965520a13eb51e3d"
+  },
+  "runNonce": "run_4178ed890e66d297d8fa755bed6328af",
+  "taskId": "tsk_6f8c95b80697e7612413ed04",
+  "version": 4
+}

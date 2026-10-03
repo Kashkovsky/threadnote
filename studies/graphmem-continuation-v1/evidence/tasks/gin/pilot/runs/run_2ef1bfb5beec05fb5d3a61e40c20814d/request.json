@@ -1,0 +1,91 @@
+{
+  "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+  "adapterProtocol": "matched-evaluation-adapter-v5",
+  "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+  "arm": "files",
+  "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+  "agentTask": {
+    "category": "stale-citation-refactor",
+    "memoryFixtures": [],
+    "prompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryFixtureHash": "5fda22c2e68fae8715b888280027d9fc6053929ed7957c9f660925ae39c0bec2",
+    "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+    "variant": "historical-as-issued"
+  },
+  "artifactPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/gin/pilot/runs/run_2ef1bfb5beec05fb5d3a61e40c20814d/artifact.json",
+  "blindLabel": "B",
+  "continuationTreatment": {
+    "automaticHandoffUri": null,
+    "contextMode": null,
+    "manualHandoff": null,
+    "manualHandoffSha256": null,
+    "requiredGraphQuery": null,
+    "resumeEvidenceMarker": null,
+    "variant": "files-bare"
+  },
+  "judgeTask": {
+    "negativeControls": [
+      {
+        "controlId": "ctl_3e2e9ab2f03a7d743856d6fd",
+        "reason": "Context pool allocation is not itself the lookup-state boundary.",
+        "text": "Increasing engine.maxSections or disabling Context pooling only postpones the overflow and does not establish per-tree lookup isolation."
+      }
+    ],
+    "rubric": {
+      "completion": "Each radix-tree lookup resets pooled backtracking state, eliminating cross-method overflow without changing 404/405 routing semantics.",
+      "criteria": [
+        "The multi-method wildcard reproduction no longer panics and returns 404 for a path with no matching route.",
+        "A path registered under another method still returns 405 with an Allow header.",
+        "The fix reuses the existing skipped-node allocation and remains stable across many method trees."
+      ],
+      "requiredEvidenceIds": [
+        "ev_3e2e9ab2f03a7d743856d6fd",
+        "ev_3e2e9ab2f03a7d743856d6fe"
+      ]
+    },
+    "sourceGold": [
+      {
+        "claim": "getValue grows the caller-provided skippedNodes slice while following alternative wildcard branches.",
+        "endLine": 449,
+        "evidenceId": "ev_3e2e9ab2f03a7d743856d6fd",
+        "path": "tree.go",
+        "repository": "gin-gonic/gin",
+        "startLine": 407
+      },
+      {
+        "claim": "handleHTTPRequest reuses the Context skippedNodes pointer across root.getValue calls while scanning method trees.",
+        "endLine": 790,
+        "evidenceId": "ev_3e2e9ab2f03a7d743856d6fe",
+        "path": "gin.go",
+        "repository": "gin-gonic/gin",
+        "startLine": 736
+      }
+    ]
+  },
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "model": {
+    "model": "gpt-5.6-luna",
+    "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+    "provider": "openai"
+  },
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "5fda22c2e68fae8715b888280027d9fc6053929ed7957c9f660925ae39c0bec2",
+    "identityHash": "32a6812b574138d9a8af93f5d36ad4fd0eaf3b50c4b44e4795f15828181ab6f9",
+    "revision": "07e522f9eb5881d76410bb802eb040d25e08bb96"
+  },
+  "preparedContext": null,
+  "runNonce": "run_2ef1bfb5beec05fb5d3a61e40c20814d",
+  "runOrder": 2,
+  "tool": {
+    "artifactHash": null,
+    "detail": null,
+    "executable": null,
+    "lockIdentityHash": null,
+    "name": "repository-files",
+    "version": "builtin-v1"
+  },
+  "transcriptPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/gin/pilot/transcripts/run_2ef1bfb5beec05fb5d3a61e40c20814d.jsonl",
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "version": 4
+}

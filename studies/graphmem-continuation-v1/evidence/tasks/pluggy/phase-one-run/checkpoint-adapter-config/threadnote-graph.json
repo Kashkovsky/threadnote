@@ -1,0 +1,198 @@
+{
+  "approvedCommands": [
+    {
+      "taskId": "tsk_6f8c95b80697e7612413ed04",
+      "tokens": [
+        "v19-verifier.py",
+        "click"
+      ]
+    },
+    {
+      "taskId": "tsk_a009739c16abeecaeafe13cb",
+      "tokens": [
+        "v19-verifier.py",
+        "pluggy"
+      ]
+    },
+    {
+      "taskId": "tsk_8b02783134c4b12b327add82",
+      "tokens": [
+        "v19-verifier.py",
+        "chi"
+      ]
+    },
+    {
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+      "tokens": [
+        "v19-verifier.py",
+        "gin"
+      ]
+    },
+    {
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+      "tokens": [
+        "v19-verifier.py",
+        "echo"
+      ]
+    }
+  ],
+  "appServer": {
+    "argumentsAfterSubcommand": [],
+    "argumentsBeforeSubcommand": [],
+    "executable": "/Users/denyskashkovskyi/.codex/packages/standalone/releases/0.144.5-aarch64-apple-darwin/bin/codex",
+    "executableSha256": "5e29ab10ca1171be158f7335dd6bd8ce1aaf9af1556939db36a5ee338be6f5f2",
+    "version": "codex-cli 0.144.5"
+  },
+  "arm": "threadnote-graph",
+  "authSourcePath": "/Users/denyskashkovskyi/.codex/auth.json",
+  "contextBudgetTokens": 1500,
+  "contextHomes": [
+    {
+      "expectedContext": {
+        "graphContentHash": "69193f00ff000db85010defac9e3664373811435ff9bd1a559e2a82ba50adcd0",
+        "graphSnapshotHash": "9002fca9b9d5f30f906a80be03630de063015e250a77e6aeb114fd9e206f7c47",
+        "linkReceiptsHash": null,
+        "memoryAccess": "disabled",
+        "taskContextHash": null
+      },
+      "homeDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/pluggy/phase-one-run/checkpoint-homes/graph",
+      "homeFixtureHash": "c742a3bfb72ec5562626fc9c0e6c601e972473697a5a2b802440a8046310fc26",
+      "identity": {
+        "account": "local",
+        "user": "evaluation-user"
+      },
+      "project": "threadnote",
+      "taskId": "tsk_a009739c16abeecaeafe13cb"
+    }
+  ],
+  "dependencyProjections": [],
+  "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+  "git": {
+    "executable": "/usr/bin/git",
+    "executableSha256": "ffdb53736fc808e793863887f2dba66c49d68f6aa0b43db5caa0fd8b1ec11aef"
+  },
+  "judgeModel": {
+    "id": "gpt-5.6-terra",
+    "parametersHash": "7e1701d8f556c6b086bac45874bf2a57ba4d1f286b4b8894d6bf585d9ceabc07",
+    "provider": "openai",
+    "reasoningEffort": "low"
+  },
+  "model": {
+    "id": "gpt-5.6-luna",
+    "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+    "provider": "openai",
+    "reasoningEffort": "low"
+  },
+  "pricingMicrosPerMillionTokens": null,
+  "safeBinaries": [
+    {
+      "path": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/verifier/v19-verifier.py",
+      "sha256": "604ff297a3cf1ba24653dfc93870a38e9c4fc873f0d4b35c304c7efbba318b6c"
+    }
+  ],
+  "safeExecutablePath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/verifier:/opt/homebrew/bin:/usr/bin:/bin",
+  "taskBudget": {
+    "steps": 100,
+    "tokens": 10000000
+  },
+  "temporaryRoot": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/adapter-temporary",
+  "verificationPlan": {
+    "environmentDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/verifier/environment",
+    "environmentHash": "2084a2ddc72485a8c9bf9bd911c38511e4b7684fd627ceca777e219798d1c237",
+    "interpreter": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/verifier/environment/python-runtime/bin/python3.12",
+    "interpreterHash": "7b05d803bbc1bbfc81644af4faf2b88f0a37b8de96b9f42c1e08033e2cd0848a",
+    "runner": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/verifier/v19-verifier.py",
+    "runnerHash": "604ff297a3cf1ba24653dfc93870a38e9c4fc873f0d4b35c304c7efbba318b6c",
+    "sandbox": {
+      "executable": "/usr/bin/sandbox-exec",
+      "executableHash": "4b65c7cbdfb11fd6199b8587d6f0334fe9277958be55d0168e29836d867b4866",
+      "policy": "darwin-seatbelt-v1"
+    },
+    "tasks": [
+      {
+        "calibration": {
+          "baseDiagnosticHash": "8bf477ef008d6b9a3bea6335eaeebaff423cd3783b152854499c978a34529f00",
+          "baseExitCode": 1,
+          "baseRepositoryFixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+          "baseRevision": "d8f2d588d7573b3438cfc95b7a47f9ec8966273c",
+          "fixDiagnosticHash": "e32082ad0f6183adb7a3a83f58f76613d24e4360733ea03b374ab235054c1e4a",
+          "fixExitCode": 0,
+          "fixRepositoryFixtureHash": "cdfdfd2012bba0cbed7a8f834caf127a72b8580a67a328f191edcf42f4cb4098",
+          "fixRevision": "3b08cd7235bd5ad2f055aa9e38135f111f6c5926",
+          "receiptHash": "789d274f87f9d9e886c3d66fbf105460d4532e17cc7ee0b74ffafa7a0cc53203"
+        },
+        "selector": "gin",
+        "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+        "verificationId": "132c088d7454a9e0e0f70cdf12826697132cde5f80da3b8ded8e11018e5a409e"
+      },
+      {
+        "calibration": {
+          "baseDiagnosticHash": "ae960970053caec218376a3e6967fdfa3effc9678fc14c75896b810930e2fe0a",
+          "baseExitCode": 1,
+          "baseRepositoryFixtureHash": "cf735873115f4962330218946edd4428637acc302be18c3511e1fa9c7cfaea32",
+          "baseRevision": "d036881798e34289a49b18a5c550c7cf687e5a7a",
+          "fixDiagnosticHash": "50ba9bc99f65c7b1352558c994260ada2f468688774e4fc7b8a69ab5eb23d534",
+          "fixExitCode": 0,
+          "fixRepositoryFixtureHash": "031afd2ac9a0066d7ee8284dd50f85f5e58f262b547b48c9c0822d5a8bec31ee",
+          "fixRevision": "70689853e39c30e36eb0d83d586cc914a74db9d3",
+          "receiptHash": "f1cf29deb416cf42ce48cc4d9bdbe8e412b5afe91703f5d7adc95793b076acec"
+        },
+        "selector": "click",
+        "taskId": "tsk_6f8c95b80697e7612413ed04",
+        "verificationId": "a1d77ce298a1174f46da6f2a9c1fd2a68c52905bf6a7e8dd951229e236b66336"
+      },
+      {
+        "calibration": {
+          "baseDiagnosticHash": "feee2e43282169de296b1b043f05598d14b45ab5a217f086addeb611f17c86b2",
+          "baseExitCode": 1,
+          "baseRepositoryFixtureHash": "a27735dae0269d1e60732cfaa010b04200928592ff50171f9eadf117ebb66f4e",
+          "baseRevision": "bc02284e9db220c644912320fe1db6bc9b4a087c",
+          "fixDiagnosticHash": "7d177c533c096777e43be662df09775a8b502c0421ac8b9c0caa3daba398053e",
+          "fixExitCode": 0,
+          "fixRepositoryFixtureHash": "5bce70c6724a3617ebf260dc9340d129332caec2f3d58f764e613c4ddc545249",
+          "fixRevision": "29164f023bf9319e74d5961a21a712653bb98c83",
+          "receiptHash": "1736182ca7864a054a465721ec916b6b2319e355855b87b9aba73919e6a782da"
+        },
+        "selector": "chi",
+        "taskId": "tsk_8b02783134c4b12b327add82",
+        "verificationId": "de6642cd49bd0eb660eb5a5e81be449ec02ad0ad4058a91a6b2cabdf45667345"
+      },
+      {
+        "calibration": {
+          "baseDiagnosticHash": "6908ae35de3904084cf5fbd488bee499c54069d87dd30091e09327f90cb7ed92",
+          "baseExitCode": 1,
+          "baseRepositoryFixtureHash": "89af053a162e2516689656fd1d2cbd0cc3321280d386ea3cbfbbc32d7d078d72",
+          "baseRevision": "6e1d0f13a259776bbf137f90bd7ab8b4474f68e7",
+          "fixDiagnosticHash": "d075fd149c3078224d5eaa5fed934806ca7183671735bf74841982802d4068cb",
+          "fixExitCode": 0,
+          "fixRepositoryFixtureHash": "261b92e9190a3ff3b78dff2f1624b8c7a51e9d96b9d7140628fcea71d8f5e189",
+          "fixRevision": "20d8143f127a4d7526dbbea441857b4b80ec8bdd",
+          "receiptHash": "35475ba2a7868d71c12895987306d17007865d5c23abb7b1f9b25a0c403d920f"
+        },
+        "selector": "pluggy",
+        "taskId": "tsk_a009739c16abeecaeafe13cb",
+        "verificationId": "b870d7ac34a9200b620b83cd72ed2b94ff940e69786d1055727cc88bc1e50cd6"
+      },
+      {
+        "calibration": {
+          "baseDiagnosticHash": "6dd0b678e25ae2e95e6bb480b0e0a2bd3e6ad3d12506977470709489e031e32e",
+          "baseExitCode": 1,
+          "baseRepositoryFixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+          "baseRevision": "90702e71a7cde342da70b1f97e8e6420c509f939",
+          "fixDiagnosticHash": "4141113f2ff298b58842668281690b8ab089f1efdc91e17f2bba48fb28fa2c2c",
+          "fixExitCode": 0,
+          "fixRepositoryFixtureHash": "ca86ef52e168401823bce8b60b3665251c71b42b4eaa6c96cdaba6f8c50172fc",
+          "fixRevision": "df5edd9146e40342726d71cbb71300b7fea096d0",
+          "receiptHash": "67d842464b39057a245cd34c4cdeedb24567b02d2d65d1018d401fdd96b86aa3"
+        },
+        "selector": "echo",
+        "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+        "verificationId": "4ce32018195247413d9de6249f0d5dc35c2a9e4987067f195b6bef7a95ac9025"
+      }
+    ],
+    "timeoutMilliseconds": 300000,
+    "version": 1,
+    "planHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0"
+  },
+  "version": 4
+}

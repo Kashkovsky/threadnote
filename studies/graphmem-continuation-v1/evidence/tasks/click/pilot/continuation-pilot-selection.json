@@ -1,0 +1,129 @@
+{
+  "candidate": {
+    "toolArtifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+    "toolVersion": "5.1.0-beta.2"
+  },
+  "checkpoint": {
+    "automaticHandoffUri": "threadnote://user/evaluation-user/memories/handoffs/active/threadnote/continuation-tsk_6f8c95b80697e7612413ed04.md",
+    "handoffSha256": "9b75e17af5db8830fb6fd8c95783b44a04741d5b154109e9028086bd4f94714f",
+    "adapterConfigurations": {
+      "threadnoteCompactSha256": "76bad42c3cea3c362cf0e5c36e3cc9a3fd11374b6ddd07838a6bfb97d262cc4f",
+      "threadnoteGraphSha256": "88876e986c4559a850a20caa8d4fe57965205ad6b9eb8ae5e4810e716dd32c32"
+    },
+    "diagnosticEvidence": {
+      "diagnosticConclusion": "`_make_default_short_help` treats every period-final word as a sentence boundary at src/click/utils.py:62-87; the new lowercase-following-abbreviation regression fails as expected.",
+      "graphQuery": "callers and tests of click.utils._make_default_short_help",
+      "graphQuestion": "Which callers and tests rely on `_make_default_short_help` sentence termination semantics?",
+      "rejectedHypothesis": "The defect is not caused by paragraph selection, whitespace collapsing, or the no-rewrap marker; existing cases remain passing.",
+      "sourceCitations": [
+        {
+          "endLine": 87,
+          "path": "src/click/utils.py",
+          "startLine": 62
+        }
+      ],
+      "unresolvedGap": "The production fix must choose the exact word-boundary predicate for deciding whether the next word begins with a lowercase character.",
+      "untestedInvariant": "Boundary behavior at end-of-text and with a following non-lowercase word remains unverified by this focused regression.",
+      "verifiedInvariant": "An uppercase-following period still ends the sentence, preserving the updated `sentence < max` expectation in tests/test_utils/test_make_default_short_help.py:11-14."
+    },
+    "phaseOneExecution": {
+      "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+      "adapterConfigurationFileSha256": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterProtocol": "matched-evaluation-adapter-v5",
+      "appServerExecutableSha256": "5e29ab10ca1171be158f7335dd6bd8ce1aaf9af1556939db36a5ee338be6f5f2",
+      "appServerVersion": "codex-cli 0.144.5",
+      "artifactSha256": "d4b8604fcf67594221c3851bf57bfdc2511ffe52033dd9a96e49ade265fb4034",
+      "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+      "model": {
+        "id": "gpt-5.6-luna",
+        "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+        "provider": "openai",
+        "reasoningEffort": "low"
+      },
+      "requestSha256": "026ef4bfe11d92789b83527271c746e349a567facd2e83ac48c3467f029e174f",
+      "responseSha256": "dfd52b052c83a4127cf9938dc07a798ddec5e23139444cd4877825860926192e",
+      "runNonce": "run_d85c600c7fc8a1f1b53c0814ffc8f906",
+      "transcriptHash": "a59c94a1bc8bbecf7e731ef0ccf8e70dd1269d7bfa61fc02d85cc2566c1e924b",
+      "transcriptSha256": "a59c94a1bc8bbecf7e731ef0ccf8e70dd1269d7bfa61fc02d85cc2566c1e924b"
+    },
+    "phaseOnePatchSha256": "1534b672b05949885a978229f5cd2c0688da610f7f4f9969426e4b0999e9dfcf",
+    "phaseOnePromptSha256": "86d6c06ac4d602abae29e8541d873e8956f7a24c234b64cd0b1f2dc9c804a3f6",
+    "preparedContext": {
+      "graphContentHash": "8b41f7f5e766d3cf07274e54130e90ac971c33c2752b61eb8ae4e0c2c3a5373a",
+      "graphSnapshotHash": "9fd1ed03bc7552b279630c6b707f278a18606376df36236fb94f2f7ecf13a5d6",
+      "linkReceiptsHash": "f1be789c2059646b924dd00c658ca52e8e2c9d8c515056f7554ae3bb80987f87",
+      "taskContextHash": "b0a74c2d0349379ce30c9ba9f9fb893bd94909c90d62a140183308a69e9ae66e"
+    },
+    "preparedGraphHome": {
+      "fixtureHash": "21215610f011ff4b6fa04d63cbeba9e37ff82166f78ab43ac84b8794d529a1ef",
+      "identitySha256": "433d687a08287f7e9e27ce5de73e7f715ca3ae52598ac453963d8111bbe8c89d"
+    },
+    "preparedHome": {
+      "fixtureHash": "5cc8c5c665394395a959db512641dde5a1606021c0c66899a6a32cfde6739609",
+      "identitySha256": "433d687a08287f7e9e27ce5de73e7f715ca3ae52598ac453963d8111bbe8c89d"
+    },
+    "phaseOneAccounting": {
+      "elapsedMilliseconds": 61331,
+      "providerTokens": {
+        "cachedInputTokens": 92416,
+        "inputTokens": 111511,
+        "outputTokens": 1794,
+        "reasoningOutputTokens": 424,
+        "totalTokens": 113305
+      },
+      "providerTokensMeasured": true
+    },
+    "repositoryFixtureHash": "33bdc182440503c7439b656c03082251165f443aaaacf90190154bfa6bab7424",
+    "repositoryRevision": "0f2c0879d80a23cd10e799d7965520a13eb51e3d",
+    "resumeEvidenceMarker": "threadnote-resume-1534b672b05949885a97",
+    "automaticHandoffReadSha256": "4ddc467e84a49da7312b8bfdc8417483a3e80b4341f8dddf30c6227c3c8520ea"
+  },
+  "completionMeaning": "completed is true only when all 2 fresh phase-two adapter attempts completed; verified completion is verifier-authoritative per attempt.",
+  "comparativeClaimsEligible": false,
+  "identities": {
+    "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+    "planFileHash": "30e7fd89fdc453e471fd72e7d2b0b7843a2230e0cfbbcbc4fca0603b9f24247e",
+    "runtimeVersion": 4,
+    "studyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+    "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0"
+  },
+  "limitations": [
+    "One development-calibration task, one attempt per treatment, no confidence interval or general product claim.",
+    "The common phase-one checkpoint cost is reported separately and is not duplicated into each phase-two attempt.",
+    "No retries are allowed; failed attempts remain in failure-inclusive completion accounting."
+  ],
+  "phaseTwoPromptSha256": "465d670de843de10bedb8691407924fe38917e9654463b28c707817300b2b4c0",
+  "phaseTwoVerificationPlanHash": "ff84006f129fd3c8ad8a6714049faeb9c27fe71c8bd0e943720c323cdb6ffe37",
+  "planVersion": 4,
+  "sourceTask": {
+    "promptSha256": "0e3576b4a4a7b009fbb0a43a16718bd0d161829a321f458b0095ba0850d187f2",
+    "repositoryFixtureHash": "cf735873115f4962330218946edd4428637acc302be18c3511e1fa9c7cfaea32",
+    "repositoryRevision": "d036881798e34289a49b18a5c550c7cf687e5a7a",
+    "taskId": "tsk_6f8c95b80697e7612413ed04"
+  },
+  "rows": [
+    {
+      "blindLabel": "A",
+      "position": 1,
+      "repetition": 1,
+      "runNonce": "run_a51f7c019b6a96e15ba1ea3a078f805c",
+      "runOrder": 1,
+      "taskId": "tsk_6f8c95b80697e7612413ed04",
+      "arm": "threadnote-compact",
+      "variant": "threadnote-preloaded-resume"
+    },
+    {
+      "blindLabel": "B",
+      "position": 2,
+      "repetition": 1,
+      "runNonce": "run_4178ed890e66d297d8fa755bed6328af",
+      "runOrder": 2,
+      "taskId": "tsk_6f8c95b80697e7612413ed04",
+      "arm": "files",
+      "variant": "files-bare"
+    }
+  ],
+  "taskId": "tsk_6f8c95b80697e7612413ed04",
+  "version": 2
+}

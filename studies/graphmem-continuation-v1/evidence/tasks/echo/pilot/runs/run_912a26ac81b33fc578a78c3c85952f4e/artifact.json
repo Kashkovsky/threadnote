@@ -1,0 +1,21 @@
+{
+  "agentResult": {
+    "citations": [],
+    "completed": true,
+    "summary": "Fixed shared ProblemError mutation by copying it before applying default fields. `v19-verifier.py echo` passed."
+  },
+  "agentTerminal": null,
+  "arm": "files",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/rfc9457.go b/rfc9457.go\nindex 90db0ac..4536642 100644\n--- a/rfc9457.go\n+++ b/rfc9457.go\n@@ -103,6 +103,8 @@ func ProblemDetailsHTTPErrorHandler(exposeError bool) HTTPErrorHandler {\n \t\t\t\tpe.Detail = err.Error()\n \t\t\t}\n \t\t}\n+\t\tproblem := *pe\n+\t\tpe = &problem\n \n \t\tif pe.Status == 0 {\n \t\t\tpe.Status = http.StatusInternalServerError\ndiff --git a/router.go b/router.go\nindex 99950aa..4da464e 100644\n--- a/router.go\n+++ b/router.go\n@@ -576,7 +576,7 @@ func (r *DefaultRouter) Add(route Route) (RouteInfo, error) {\n \t\t\tr.insert(staticKind, path[:i], method, routeMethod{RouteInfo: &RouteInfo{Method: method}})\n \t\t\tparamNames = append(paramNames, \"*\")\n \t\t\tri = route.ToRouteInfo(paramNames)\n-\t\t\trm := routeMethod{\n+\t\t\t rm := routeMethod{\n \t\t\t\tRouteInfo:          &RouteInfo{Method: method, Path: originalPath, Parameters: paramNames, Name: route.Name},\n \t\t\t\thandler:            h,\n \t\t\t\torgRouteInfo:       ri,\n",
+  "patchSha256": "f23ff226e13f08197afe29abd3ad61ac6ab1b1891b31d3a377dff44ac2856a5b",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "7d04d1963f6f0f3245feec30907836b5fa6e7068eb3a69b2cb5b7fa5d4eb43b0",
+    "identityHash": "38449e1e0f8dda75617e11f582deb34bd9ffdae521a56887ffbe1c15fdf76abc",
+    "revision": "b75f83f7cd4538c18fd1985310165bffb75f4852"
+  },
+  "runNonce": "run_912a26ac81b33fc578a78c3c85952f4e",
+  "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+  "version": 4
+}

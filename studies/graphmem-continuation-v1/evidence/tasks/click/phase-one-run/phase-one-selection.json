@@ -1,0 +1,51 @@
+{
+  "continuationAttempts": [
+    {
+      "blindLabel": "A",
+      "runNonce": "run_a51f7c019b6a96e15ba1ea3a078f805c",
+      "runOrder": 1,
+      "variant": "threadnote-preloaded-resume"
+    },
+    {
+      "blindLabel": "B",
+      "runNonce": "run_4178ed890e66d297d8fa755bed6328af",
+      "runOrder": 2,
+      "variant": "files-bare"
+    }
+  ],
+  "phaseOnePrompt": "Click's generated short help treats every word ending in a period as the end of a sentence. This truncates ordinary prose such as `Weigh apples vs. pears and plums.` after `vs.`. Fix short-help generation so a period is a sentence boundary only at the end of the text or when the following word does not start with a lowercase character. Preserve first-paragraph selection, whitespace collapsing, the no-rewrap marker, maximum-length accounting including the `...` suffix, and whole-word behavior: do not split hyphenated or overlong words, and return the suffix even when the configured width is narrower than it. Add focused regression coverage.\n\nPhase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Update the existing `sentence < max` parameter input from `123 567 9. aaaa bbb` to `123 567 9. Aaaa bbb` while keeping its expected value, then add a focused parameter case with the id `lowercase-following-abbreviation`. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.\nCONTINUATION DIAGNOSIS/1\nAdd the failing regression and inspect the production source deeply enough to leave a decision-grade diagnosis, but do not edit production code or implement the fix.\nYour citations must include both the changed regression and at least one unchanged production-source anchor.\nWrite the summary as exactly these seven nonempty lines:\nDiagnosis: <source-grounded conclusion>\nRejected hypothesis: <attempted explanation that evidence ruled out or narrowed>\nVerified invariant: <behavior established by source or the focused check>\nUntested invariant: <important behavior still requiring verification>\nUnresolved gap: <one exact decision still blocking the production fix>\nGraph question: <one bounded source-relationship question whose answer advances that decision>\nGraph query: <one concise inspect_code_graph query for that question>\n\nRequired focused check (run exactly as written; do not change its flags or selector):\nv19-verifier.py click",
+  "phaseOnePromptSha256": "86d6c06ac4d602abae29e8541d873e8956f7a24c234b64cd0b1f2dc9c804a3f6",
+  "phaseOneRunNonce": "run_d85c600c7fc8a1f1b53c0814ffc8f906",
+  "sourceTask": {
+    "prompt": "Click's generated short help treats every word ending in a period as the end of a sentence. This truncates ordinary prose such as `Weigh apples vs. pears and plums.` after `vs.`. Fix short-help generation so a period is a sentence boundary only at the end of the text or when the following word does not start with a lowercase character. Preserve first-paragraph selection, whitespace collapsing, the no-rewrap marker, maximum-length accounting including the `...` suffix, and whole-word behavior: do not split hyphenated or overlong words, and return the suffix even when the configured width is narrower than it. Add focused regression coverage.",
+    "promptSha256": "0e3576b4a4a7b009fbb0a43a16718bd0d161829a321f458b0095ba0850d187f2",
+    "repositoryFixtureHash": "cf735873115f4962330218946edd4428637acc302be18c3511e1fa9c7cfaea32",
+    "repositoryRevision": "d036881798e34289a49b18a5c550c7cf687e5a7a",
+    "taskId": "tsk_6f8c95b80697e7612413ed04"
+  },
+  "taskPacket": {
+    "phaseOneAllowedPaths": [
+      "tests/test_utils/test_make_default_short_help.py"
+    ],
+    "phaseOneDirective": "Phase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Update the existing `sentence < max` parameter input from `123 567 9. aaaa bbb` to `123 567 9. Aaaa bbb` while keeping its expected value, then add a focused parameter case with the id `lowercase-following-abbreviation`. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.",
+    "phaseOneFocusedChecks": [
+      "v19-verifier.py click"
+    ],
+    "phaseTwoFocusedChecks": [
+      "v19-verifier.py click"
+    ],
+    "phaseTwoPrompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryName": "click",
+    "sourceRevision": "d036881798e34289a49b18a5c550c7cf687e5a7a",
+    "sourceTaskPrompt": "Click's generated short help treats every word ending in a period as the end of a sentence. This truncates ordinary prose such as `Weigh apples vs. pears and plums.` after `vs.`. Fix short-help generation so a period is a sentence boundary only at the end of the text or when the following word does not start with a lowercase character. Preserve first-paragraph selection, whitespace collapsing, the no-rewrap marker, maximum-length accounting including the `...` suffix, and whole-word behavior: do not split hyphenated or overlong words, and return the suffix even when the configured width is narrower than it. Add focused regression coverage.",
+    "status": "draft-unsealed",
+    "taskKey": "click-short-help",
+    "phaseTwoProtectedPaths": [
+      "tests/test_utils/test_make_default_short_help.py"
+    ],
+    "treatmentSet": "automated-context-graph-v1",
+    "version": 4
+  },
+  "taskPacketSha256": "0e75e7dbd7b7e62f3b81db3af008488427c3746c51ac367ac85f0bad8e611ea9",
+  "version": 1
+}

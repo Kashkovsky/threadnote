@@ -1,0 +1,51 @@
+{
+  "continuationAttempts": [
+    {
+      "blindLabel": "A",
+      "runNonce": "run_109f05cc7c0e23327212ce60e9fa698b",
+      "runOrder": 1,
+      "variant": "threadnote-preloaded-resume"
+    },
+    {
+      "blindLabel": "B",
+      "runNonce": "run_912a26ac81b33fc578a78c3c85952f4e",
+      "runOrder": 2,
+      "variant": "files-bare"
+    }
+  ],
+  "phaseOnePrompt": "Echo's RFC 9457 error handler mutates a caller-owned `*ProblemError` while applying default status, type, and title. A package-level sentinel reused across requests is therefore permanently changed and can race. Apply defaults only to response-local state, leaving the original problem unchanged. Preserve explicit fields, exposed-detail behavior, response content type, JSON output, and HEAD/no-content status handling. Add focused regression coverage that reuses the same sentinel.\n\nPhase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Add the focused regression as `TestProblemDetailsHTTPErrorHandler_DoesNotMutateSharedProblem`. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.\nCONTINUATION DIAGNOSIS/1\nAdd the failing regression and inspect the production source deeply enough to leave a decision-grade diagnosis, but do not edit production code or implement the fix.\nYour citations must include both the changed regression and at least one unchanged production-source anchor.\nWrite the summary as exactly these seven nonempty lines:\nDiagnosis: <source-grounded conclusion>\nRejected hypothesis: <attempted explanation that evidence ruled out or narrowed>\nVerified invariant: <behavior established by source or the focused check>\nUntested invariant: <important behavior still requiring verification>\nUnresolved gap: <one exact decision still blocking the production fix>\nGraph question: <one bounded source-relationship question whose answer advances that decision>\nGraph query: <one concise inspect_code_graph query for that question>\n\nRequired focused check (run exactly as written; do not change its flags or selector):\nv19-verifier.py echo",
+  "phaseOnePromptSha256": "ba5a9c55aa7bd1ad812a0d113133cd971100f5301ee54d319bb2bc518e285bbc",
+  "phaseOneRunNonce": "run_8b299e760d644ab61006120dcbee4ab3",
+  "sourceTask": {
+    "prompt": "Echo's RFC 9457 error handler mutates a caller-owned `*ProblemError` while applying default status, type, and title. A package-level sentinel reused across requests is therefore permanently changed and can race. Apply defaults only to response-local state, leaving the original problem unchanged. Preserve explicit fields, exposed-detail behavior, response content type, JSON output, and HEAD/no-content status handling. Add focused regression coverage that reuses the same sentinel.",
+    "promptSha256": "1447457048fe12d0960c87a5def86fc277ff3aa2ba6f200d616ce01544bf2a95",
+    "repositoryFixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+    "repositoryRevision": "90702e71a7cde342da70b1f97e8e6420c509f939",
+    "taskId": "tsk_fc18a74be8742c6a9d6397ed"
+  },
+  "taskPacket": {
+    "phaseOneAllowedPaths": [
+      "rfc9457_test.go"
+    ],
+    "phaseOneDirective": "Phase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Add the focused regression as `TestProblemDetailsHTTPErrorHandler_DoesNotMutateSharedProblem`. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.",
+    "phaseOneFocusedChecks": [
+      "v19-verifier.py echo"
+    ],
+    "phaseTwoFocusedChecks": [
+      "v19-verifier.py echo"
+    ],
+    "phaseTwoPrompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryName": "echo",
+    "sourceRevision": "90702e71a7cde342da70b1f97e8e6420c509f939",
+    "sourceTaskPrompt": "Echo's RFC 9457 error handler mutates a caller-owned `*ProblemError` while applying default status, type, and title. A package-level sentinel reused across requests is therefore permanently changed and can race. Apply defaults only to response-local state, leaving the original problem unchanged. Preserve explicit fields, exposed-detail behavior, response content type, JSON output, and HEAD/no-content status handling. Add focused regression coverage that reuses the same sentinel.",
+    "status": "draft-unsealed",
+    "taskKey": "echo-shared-problem-error",
+    "phaseTwoProtectedPaths": [
+      "rfc9457_test.go"
+    ],
+    "treatmentSet": "automated-context-graph-v1",
+    "version": 4
+  },
+  "taskPacketSha256": "a43b855d1addfe371442a5d8e40cb58765c5e159075acc7dcd1416fc298b8ea4",
+  "version": 1
+}

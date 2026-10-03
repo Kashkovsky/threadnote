@@ -1,0 +1,337 @@
+{
+  "bootstrap": {
+    "confidenceLevelBasisPoints": 9500,
+    "iterations": 10000,
+    "seed": "1c5006081593fcea72d63283f2057800c3f38007e605deb6986a8d34d4838dc6"
+  },
+  "clusters": [
+    {
+      "clusterId": "cluster_a084322c85405c82",
+      "heldOut": true,
+      "repositoryFixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+      "repositoryIdentityHash": "38449e1e0f8dda75617e11f582deb34bd9ffdae521a56887ffbe1c15fdf76abc",
+      "repositoryUrl": "https://github.com/labstack/echo.git",
+      "revision": "90702e71a7cde342da70b1f97e8e6420c509f939",
+      "taskIds": [
+        "tsk_fc18a74be8742c6a9d6397ed"
+      ]
+    },
+    {
+      "clusterId": "cluster_bee055c9b9ce1ce3",
+      "heldOut": true,
+      "repositoryFixtureHash": "89af053a162e2516689656fd1d2cbd0cc3321280d386ea3cbfbbc32d7d078d72",
+      "repositoryIdentityHash": "39b62cb8ca199660d20b40a9a23974fcd50bf8e69e7f1f79bf009752f4b8cc74",
+      "repositoryUrl": "https://github.com/pytest-dev/pluggy.git",
+      "revision": "6e1d0f13a259776bbf137f90bd7ab8b4474f68e7",
+      "taskIds": [
+        "tsk_a009739c16abeecaeafe13cb"
+      ]
+    },
+    {
+      "clusterId": "cluster_cc386a2d43df6fdd",
+      "heldOut": true,
+      "repositoryFixtureHash": "cf735873115f4962330218946edd4428637acc302be18c3511e1fa9c7cfaea32",
+      "repositoryIdentityHash": "60bb20143d5c034afb55cc5e18cdaf27168572a4ddb2b15a749f0eef4f994318",
+      "repositoryUrl": "https://github.com/pallets/click.git",
+      "revision": "d036881798e34289a49b18a5c550c7cf687e5a7a",
+      "taskIds": [
+        "tsk_6f8c95b80697e7612413ed04"
+      ]
+    },
+    {
+      "clusterId": "cluster_db78cae6e3269e7c",
+      "heldOut": true,
+      "repositoryFixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+      "repositoryIdentityHash": "32a6812b574138d9a8af93f5d36ad4fd0eaf3b50c4b44e4795f15828181ab6f9",
+      "repositoryUrl": "https://github.com/gin-gonic/gin.git",
+      "revision": "d8f2d588d7573b3438cfc95b7a47f9ec8966273c",
+      "taskIds": [
+        "tsk_3e2e9ab2f03a7d743856d6fd"
+      ]
+    },
+    {
+      "clusterId": "cluster_f27d359e0c2d0671",
+      "heldOut": true,
+      "repositoryFixtureHash": "a27735dae0269d1e60732cfaa010b04200928592ff50171f9eadf117ebb66f4e",
+      "repositoryIdentityHash": "0fed5fdd675e6215aefb073803ec28d90cd0ffccd7163b7680566f5f7d558248",
+      "repositoryUrl": "https://github.com/go-chi/chi.git",
+      "revision": "bc02284e9db220c644912320fe1db6bc9b4a087c",
+      "taskIds": [
+        "tsk_8b02783134c4b12b327add82"
+      ]
+    }
+  ],
+  "gates": {
+    "completionNonInferiorityBasisPoints": 500,
+    "maximumAuthorizationLeaks": 0,
+    "maximumFalseCurrentOutcomes": 0,
+    "maximumHarmfulActions": 0,
+    "minimumCorrectnessScoreMilli": 800,
+    "minimumClusters": 5,
+    "minimumMemoryTokenReductionBasisPoints": 500,
+    "minimumTokenReductionBasisPoints": 500
+  },
+  "lifecycle": [
+    {
+      "arm": "files",
+      "setupMilliseconds": 0,
+      "setupUsage": {
+        "graphPreparation": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryAuthoring": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryReview": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        }
+      }
+    },
+    {
+      "arm": "threadnote-graph",
+      "setupMilliseconds": 0,
+      "setupUsage": {
+        "graphPreparation": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryAuthoring": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryReview": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        }
+      }
+    },
+    {
+      "arm": "threadnote-compact",
+      "setupMilliseconds": 0,
+      "setupUsage": {
+        "graphPreparation": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryAuthoring": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryReview": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        }
+      }
+    },
+    {
+      "arm": "threadnote-source",
+      "setupMilliseconds": 0,
+      "setupUsage": {
+        "graphPreparation": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryAuthoring": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryReview": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        }
+      }
+    },
+    {
+      "arm": "reference-scope",
+      "setupMilliseconds": 0,
+      "setupUsage": {
+        "graphPreparation": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryAuthoring": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        },
+        "memoryReview": {
+          "cachedInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 0
+        }
+      }
+    }
+  ],
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "promptPolicy": "identical-as-issued",
+  "studyId": "threadnote-continuation-v19",
+  "targetArms": [
+    "threadnote-compact"
+  ],
+  "taskContexts": [
+    {
+      "asIssuedContext": {
+        "assessmentHash": "8ada88889e4d4130364f4e4199477cf76fa74d75d799619aaf6d5d0c47e1f2e5",
+        "contentHash": null,
+        "sufficiency": "none",
+        "suppliedBytes": 0
+      },
+      "clusterId": "cluster_db78cae6e3269e7c",
+      "graphContentHash": "3c07451a86147e4fc2c878d989fd940cbaba62b98cb583640d7e84082bb59671",
+      "graphSnapshotHash": "fe206b45d2752fade1d601e1adc58c071dd4edd4996fd991348a2c7d85e59ba5",
+      "linkReceipts": [
+        {
+          "citationHash": "375365cea4670335f88fbc42158856cc29e13e673b2589ba28027d6a6d852300",
+          "memoryId": "mem_3e2e9ab2f03a7d743856d6fd",
+          "status": "exact"
+        }
+      ],
+      "linkReceiptsHash": "fd663b7005260184d0a79400047c71cf0b186ceeb533612f72b1f793ef3335b2",
+      "memoryFixtureHash": "1f1ec474629b593e9be49a29e8245c30a7d8b2cce86f34103e9444de21c06f50",
+      "repositoryFixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+      "taskContextHash": "6a902679de51dcb23074c9d37bd229a0783a6566fd3732044dd12d640f088146"
+    },
+    {
+      "asIssuedContext": {
+        "assessmentHash": "8ada88889e4d4130364f4e4199477cf76fa74d75d799619aaf6d5d0c47e1f2e5",
+        "contentHash": null,
+        "sufficiency": "none",
+        "suppliedBytes": 0
+      },
+      "clusterId": "cluster_cc386a2d43df6fdd",
+      "graphContentHash": "c332e86183f22c7f5d3248d4cad8a45f5c41afb50b0ddc1bbd30b1524508ca51",
+      "graphSnapshotHash": "8ac53c0d8a12fdccd7fddfe13c3b52e4c7463b8083c41adfdafe041e72abf722",
+      "linkReceipts": [
+        {
+          "citationHash": "26be1d02603493e6288cef11457dbf7ba85cbb9765c59cb9e0f3c1dce22cb21e",
+          "memoryId": "mem_6f8c95b80697e7612413ed04",
+          "status": "exact"
+        }
+      ],
+      "linkReceiptsHash": "a07997fcc82f8e3b4b21043778692480ef80f885e7ac9a318503a783046a58a9",
+      "memoryFixtureHash": "5e2c680fc6f1ec6429ba23acefc641ae6c8e26dea23160c0a2162b9c2daf7113",
+      "repositoryFixtureHash": "cf735873115f4962330218946edd4428637acc302be18c3511e1fa9c7cfaea32",
+      "taskId": "tsk_6f8c95b80697e7612413ed04",
+      "taskContextHash": "23bc5b3f9a926f83bdee2bd1e98364a945eae8847fe2d8bc3e0eda1aa8bfddb2"
+    },
+    {
+      "asIssuedContext": {
+        "assessmentHash": "8ada88889e4d4130364f4e4199477cf76fa74d75d799619aaf6d5d0c47e1f2e5",
+        "contentHash": null,
+        "sufficiency": "none",
+        "suppliedBytes": 0
+      },
+      "clusterId": "cluster_f27d359e0c2d0671",
+      "graphContentHash": "d19a7bf70c08f2f64b5c39ab326f5d55c5b4a403f0562f624b83b5353743a728",
+      "graphSnapshotHash": "afd5d89a8b7e1411d430e223525111435f594d524c424c7617a99ba96f9806fc",
+      "linkReceipts": [
+        {
+          "citationHash": "077f35517b696dafd1865887300d08614f74b023ce618c0e25a05e1775f74886",
+          "memoryId": "mem_8b02783134c4b12b327add82",
+          "status": "exact"
+        }
+      ],
+      "linkReceiptsHash": "121db0e4ce6877bf85f4648f2d2bef7a7d662080353cff66a9922b8e34a83ff5",
+      "memoryFixtureHash": "1e270c370732571b9d5c8c858a45b02d522df2761bef076495a0e71f7a26494c",
+      "repositoryFixtureHash": "a27735dae0269d1e60732cfaa010b04200928592ff50171f9eadf117ebb66f4e",
+      "taskId": "tsk_8b02783134c4b12b327add82",
+      "taskContextHash": "b34c956e2f7a15e2321da1c7fd3b9321b3b30a3bad9890b39c9afce46e4488f9"
+    },
+    {
+      "asIssuedContext": {
+        "assessmentHash": "8ada88889e4d4130364f4e4199477cf76fa74d75d799619aaf6d5d0c47e1f2e5",
+        "contentHash": null,
+        "sufficiency": "none",
+        "suppliedBytes": 0
+      },
+      "clusterId": "cluster_bee055c9b9ce1ce3",
+      "graphContentHash": "892ea55091b1c4ca7a737ca1aac2f346162741971ab15a150513a79f4f295d55",
+      "graphSnapshotHash": "5ff2229ddf426a27a1a970cb98a8f0d3925f677b652c2d8c86636b0a2b680163",
+      "linkReceipts": [
+        {
+          "citationHash": "b24c5c0ff3334187dbf5bb0ae4ab20ec1dda103a6355577e35624eea680b0635",
+          "memoryId": "mem_a009739c16abeecaeafe13cb",
+          "status": "exact"
+        }
+      ],
+      "linkReceiptsHash": "2b15bbe6b80db50a688abb470be383e8330a00b712d90690af9762a5cff1404d",
+      "memoryFixtureHash": "d437d7a4f257563bc58f8e6c3937ac6d11b67427be68ac964789aea2318c1942",
+      "repositoryFixtureHash": "89af053a162e2516689656fd1d2cbd0cc3321280d386ea3cbfbbc32d7d078d72",
+      "taskId": "tsk_a009739c16abeecaeafe13cb",
+      "taskContextHash": "0e6461bdfacaa57c8963b3a3bcdaefed37898bfc9da81232465eea8d0253347c"
+    },
+    {
+      "asIssuedContext": {
+        "assessmentHash": "8ada88889e4d4130364f4e4199477cf76fa74d75d799619aaf6d5d0c47e1f2e5",
+        "contentHash": null,
+        "sufficiency": "none",
+        "suppliedBytes": 0
+      },
+      "clusterId": "cluster_a084322c85405c82",
+      "graphContentHash": "836714bbbe6d69b902d266232074d004555b354ca529f2014452d3efa4a3bef0",
+      "graphSnapshotHash": "8f7fab0c9a2c7ec722e6d97fd5f31dda82735c9dcdaa21baeaca60de3cbcc853",
+      "linkReceipts": [
+        {
+          "citationHash": "dce6ce4b9a3891a117fe87a90ecb9c54a53e0caf52c2b33fbe058854fc037822",
+          "memoryId": "mem_fc18a74be8742c6a9d6397ed",
+          "status": "exact"
+        }
+      ],
+      "linkReceiptsHash": "a5252726b85d4f83291c2b6ddb223f22c08f227e20839dc8b7b216a288708bb6",
+      "memoryFixtureHash": "e19989ae1f35ac853482af1c47543f1d643718ce2ae1a833e41ce6bc1844b592",
+      "repositoryFixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+      "taskContextHash": "a559bc9905d58345e222f4d9102847d64d5f9585ac67256c36029e25bc42550b"
+    }
+  ],
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "studyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+  "version": 2
+}

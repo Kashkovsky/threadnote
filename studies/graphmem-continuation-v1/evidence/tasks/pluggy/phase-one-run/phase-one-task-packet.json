@@ -1,0 +1,23 @@
+{
+  "phaseOneAllowedPaths": [
+    "testing/test_pluginmanager.py"
+  ],
+  "phaseOneDirective": "Phase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Add the focused regression as `test_unregister_plugin_with_multi_hookimpls`. Before unregistering, assert that `get_hookcallers(plugin)` returns each affected HookCaller exactly once; then unregister and assert that every implementation owned by that plugin is gone while another plugin's implementation remains. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.",
+  "phaseOneFocusedChecks": [
+    "v19-verifier.py pluggy"
+  ],
+  "phaseTwoFocusedChecks": [
+    "v19-verifier.py pluggy"
+  ],
+  "phaseTwoPrompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+  "repositoryName": "pluggy",
+  "sourceRevision": "6e1d0f13a259776bbf137f90bd7ab8b4474f68e7",
+  "sourceTaskPrompt": "A plugin can register multiple implementations of the same hook using `specname`. Unregistering that plugin currently removes only one implementation, and `get_hookcallers(plugin)` can return the same HookCaller more than once. Make unregister remove every implementation owned by the plugin while preserving implementation ordering for other plugins, and make `get_hookcallers` return each affected HookCaller exactly once. Add focused regressions covering multiple implementations on one hook and a plugin spanning more than one hook.",
+  "status": "draft-unsealed",
+  "taskKey": "pluggy-multiple-hookimpls",
+  "phaseTwoProtectedPaths": [
+    "testing/test_pluginmanager.py"
+  ],
+  "treatmentSet": "automated-context-graph-v1",
+  "version": 4
+}

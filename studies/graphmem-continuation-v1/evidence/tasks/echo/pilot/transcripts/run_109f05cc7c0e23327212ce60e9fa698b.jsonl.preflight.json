@@ -1,0 +1,9 @@
+{
+  "appliedAndReverted": true,
+  "approvedActions": 7,
+  "receiptHash": "d273385f9643237f7a63160a3f707151ad7b5af50e60c8efc10b4dedf5c5412c",
+  "rejectedActions": 4,
+  "sourcePath": ".editorconfig",
+  "sourceReadSha256": "151eefbef4581480f74ba713f7ac64b9830f2252c2d2b8e9061b2e1104314364",
+  "version": 1
+}

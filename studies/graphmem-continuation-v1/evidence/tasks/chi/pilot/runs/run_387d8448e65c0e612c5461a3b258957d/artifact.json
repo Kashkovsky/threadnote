@@ -1,0 +1,21 @@
+{
+  "agentResult": {
+    "citations": [],
+    "completed": true,
+    "summary": "Fixed route walking so handlers on nodes with subrouters are included. v19-verifier.py chi passed."
+  },
+  "agentTerminal": null,
+  "arm": "files",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/tree.go b/tree.go\nindex 74ff43d..68a0197 100644\n--- a/tree.go\n+++ b/tree.go\n@@ -629,10 +629,6 @@ func (n *node) routes() []Route {\n \trts := []Route{}\n \n \tn.walk(func(eps endpoints, subroutes Routes) bool {\n-\t\tif eps[mSTUB] != nil && eps[mSTUB].handler != nil && subroutes == nil {\n-\t\t\treturn false\n-\t\t}\n-\n \t\t// Group methodHandlers by unique patterns\n \t\tpats := make(map[string]endpoints)\n \n@@ -857,7 +853,6 @@ func walk(r Routes, walkFn WalkFunc, parentRoute string, parentMw ...func(http.H\n \t\t\tif err := walk(route.SubRoutes, walkFn, parentRoute+route.Pattern, mws...); err != nil {\n \t\t\t\treturn err\n \t\t\t}\n-\t\t\tcontinue\n \t\t}\n \n \t\tfor method, handler := range route.Handlers {\n",
+  "patchSha256": "b9e52bab5886baab49faff7fd5513a9190a48c88e5571cfa794f535bc23f5874",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "ec912675e99ca648247db2b24941b46b454e43cf67ec9ba30dabcc5644b97d97",
+    "identityHash": "0fed5fdd675e6215aefb073803ec28d90cd0ffccd7163b7680566f5f7d558248",
+    "revision": "a67fe48735a92a2f3195952aea4ea120997e1b45"
+  },
+  "runNonce": "run_387d8448e65c0e612c5461a3b258957d",
+  "taskId": "tsk_8b02783134c4b12b327add82",
+  "version": 4
+}

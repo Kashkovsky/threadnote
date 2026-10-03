@@ -1,0 +1,21 @@
+{
+  "agentResult": {
+    "citations": [],
+    "completed": true,
+    "summary": "Implemented the smallest production fix: clone the resolved ProblemError before applying default fields, preventing mutation of caller-owned direct or ProblemErrorer-returned values. Required check passed: v19-verifier.py echo."
+  },
+  "agentTerminal": null,
+  "arm": "threadnote-compact",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/rfc9457.go b/rfc9457.go\nindex 90db0ac..4536642 100644\n--- a/rfc9457.go\n+++ b/rfc9457.go\n@@ -103,6 +103,8 @@ func ProblemDetailsHTTPErrorHandler(exposeError bool) HTTPErrorHandler {\n \t\t\t\tpe.Detail = err.Error()\n \t\t\t}\n \t\t}\n+\t\tproblem := *pe\n+\t\tpe = &problem\n \n \t\tif pe.Status == 0 {\n \t\t\tpe.Status = http.StatusInternalServerError\n",
+  "patchSha256": "a9cb8128e7a8ab49478c27d3cdebcc4c37ffa94e5876a0f1659c24be1a023251",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "7d04d1963f6f0f3245feec30907836b5fa6e7068eb3a69b2cb5b7fa5d4eb43b0",
+    "identityHash": "38449e1e0f8dda75617e11f582deb34bd9ffdae521a56887ffbe1c15fdf76abc",
+    "revision": "b75f83f7cd4538c18fd1985310165bffb75f4852"
+  },
+  "runNonce": "run_109f05cc7c0e23327212ce60e9fa698b",
+  "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+  "version": 4
+}

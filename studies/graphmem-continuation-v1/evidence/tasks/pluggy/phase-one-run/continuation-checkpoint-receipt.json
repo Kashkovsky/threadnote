@@ -1,0 +1,19 @@
+{
+  "checkpoint": {
+    "dirty": false,
+    "fixtureHash": "f5edfbade5ead35246d970396a085e593efd24bec6b8bd8c93e01d2b24c22aab",
+    "identityHash": "39b62cb8ca199660d20b40a9a23974fcd50bf8e69e7f1f79bf009752f4b8cc74",
+    "revision": "a48a4e3c283dbd789a1a16f499c8f101596bb9c0"
+  },
+  "focusedCheck": {
+    "diagnosticSha256": "8e660e4a972be58fc351e1382a4078f9bbb2260b540c31b34477d9a7276f0216",
+    "exitCode": 1
+  },
+  "graphContentHash": "69193f00ff000db85010defac9e3664373811435ff9bd1a559e2a82ba50adcd0",
+  "graphSnapshotHash": "9002fca9b9d5f30f906a80be03630de063015e250a77e6aeb114fd9e206f7c47",
+  "phaseOneReceiptSha256": "97049a497403bea95118bd5abd0cc1ac0cfc2d0ade6d67dbd2dc7e0de6ed3453",
+  "planSha256": "c33069bc115cfc12143f1e940bcf119a0a464479cf4d747dbd45d11a0ceeace0",
+  "runtimeSha256": "2d0ea7372e81bcecdfc610c0019bfb68baa0b8e4eb01e57dc649339292b21bab",
+  "taskId": "tsk_a009739c16abeecaeafe13cb",
+  "version": 1
+}

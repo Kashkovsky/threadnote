@@ -1,0 +1,37 @@
+{
+  "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+  "adapterConfigurationHashes": {
+    "files": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+    "threadnote-graph": "3b8dd85370d2f9a9b1ca7e1d34ba28bfa5f6d142966ac0a0dc3a18bf5a7f4a71",
+    "threadnote-compact": "a0d96f3879782edef296e7989499dcb2ed5ecf6189bd8cb052586ee39da5d4a1",
+    "threadnote-source": "57faa1e08be772389445e63c515dad9d7fd0c6294975c2c0919b861f1bcb2777",
+    "reference-scope": "e5ec27e6dbe61600570b49f6921439154f4bbab610825c2c55408f3b5ecc44dc"
+  },
+  "corpusHash": "704d46b7386561807d9393403daadad4675c5e9f61a180506b6afa3af9ca7046",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "outputHashes": {
+    "corpus.json": "a45f865f881fb147042c883ccc4b949a8773eb2db83939e9895363bae9c21c47",
+    "manifest.json": "903ada7ad5262650d0311ab626a334aac84d7485e351428681f0cb68e6bbbf9c",
+    "study.json": "6218e1ca5c7f0aeb985e89b51c044249e505a814c954147d326ca9d62c769536",
+    "runtime.json": "ea1b60c1d9290556debae637a8425020fd4d5dd486ed783c4df36b927e7869f4",
+    "verification-plan.json": "49b6ac53cf5143df4cb8bebe8dfa0051d5702b8e03b1a4cc7650c85fece397fd",
+    "qualification-receipt.json": "6f6e10eb2c9ead59d1202dd8af3157e654ebbf4c05e2c1b8ec87b61fb6c16c30",
+    "reference-scope-unavailable.json": "a9b92b4228cf73438cea016f10d3710add927b2b3d2a8eb5b054216329f7b7e0",
+    "adapter-config/files.json": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+    "adapter-config/threadnote-graph.json": "3b8dd85370d2f9a9b1ca7e1d34ba28bfa5f6d142966ac0a0dc3a18bf5a7f4a71",
+    "adapter-config/threadnote-compact.json": "a0d96f3879782edef296e7989499dcb2ed5ecf6189bd8cb052586ee39da5d4a1",
+    "adapter-config/threadnote-source.json": "57faa1e08be772389445e63c515dad9d7fd0c6294975c2c0919b861f1bcb2777",
+    "adapter-config/reference-scope.json": "e5ec27e6dbe61600570b49f6921439154f4bbab610825c2c55408f3b5ecc44dc"
+  },
+  "referenceArm": "unavailable",
+  "requiredProductVersion": "5.1.0-beta.2",
+  "productionRelease": null,
+  "qualificationReceiptHash": "35796d2c2e9a7432a1392ccd1cf1a8bbf3dff76381887ba216d1ba005cb3ffc4",
+  "studyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+  "threadnoteArtifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+  "threadnoteLockHash": "ab24ad9bc1e5ad27f149d52302efb02d2c45b01c7197697d14572f06d4fe1bda",
+  "threadnoteSourceCommit": "8da0eae878aaedc419319e32fd10fdcb5abccbb1",
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "version": 4,
+  "receiptHash": "e5f68b765f489ae21a5b7ad98255e805ae02986e328727b7d5c979315dc53d07"
+}

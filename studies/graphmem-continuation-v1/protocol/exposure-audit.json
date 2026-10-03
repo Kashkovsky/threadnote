@@ -1,0 +1,34 @@
+{
+  "benchmarkReuse": {
+    "freshRunNonces": true,
+    "isolatedFreshSessions": true,
+    "limitation": "The five public-repository tasks had been exercised during earlier evaluator and product iterations, so this is disclosed benchmark reuse rather than a strictly unseen corpus. The final run uses fresh run nonces, fresh isolated sessions, a candidate frozen before current provider outcomes, no pooled earlier outcomes, and no task-specific product tuning. Pre-treatment packet corrections only made the shared Phase 1 regressions compatible with the historical accepted fixes.",
+    "priorOutcomesPooled": false,
+    "taskSpecificProductTuning": false
+  },
+  "productFreezeCommit": "8da0eae878aaedc419319e32fd10fdcb5abccbb1",
+  "reviewedBeforeCurrentProviderOutcomes": true,
+  "tasks": [
+    {
+      "priorProviderOutcomeExposure": true,
+      "taskId": "tsk_6f8c95b80697e7612413ed04"
+    },
+    {
+      "priorProviderOutcomeExposure": true,
+      "taskId": "tsk_a009739c16abeecaeafe13cb"
+    },
+    {
+      "priorProviderOutcomeExposure": true,
+      "taskId": "tsk_8b02783134c4b12b327add82"
+    },
+    {
+      "priorProviderOutcomeExposure": true,
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd"
+    },
+    {
+      "priorProviderOutcomeExposure": true,
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed"
+    }
+  ],
+  "version": 2
+}

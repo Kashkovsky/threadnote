@@ -1,0 +1,32 @@
+{
+  "agentResult": {
+    "citations": [
+      {
+        "endLine": 176,
+        "path": "rfc9457_test.go",
+        "startLine": 158
+      },
+      {
+        "endLine": 112,
+        "path": "rfc9457.go",
+        "startLine": 74
+      }
+    ],
+    "completed": true,
+    "summary": "Diagnosis: `errors.As` returns the shared `*ProblemError`, and defaulting mutates its Status, Type, and Title in `rfc9457.go:74-112`; regression `rfc9457_test.go:158-176` reproduces this across two requests.\nRejected hypothesis: The response writer or JSON serialization was not the mutation source; the focused failure shows the sentinel itself changed immediately after handler execution.\nVerified invariant: Explicit response defaults and JSON status behavior remain observable, while the new regression fails because the original sentinel becomes status 500 with default type and title.\nUntested invariant: Explicit fields, exposed detail, content type, HEAD/no-content behavior, and concurrent reuse still require verification after the production fix.\nUnresolved gap: Decide the smallest response-local copy strategy that preserves all caller-provided fields without mutating either direct or ProblemErrorer-returned problems.\nGraph question: Which handler construction and response-writing paths consume the problem pointer, and can a shallow response-local copy preserve their current semantics?\nGraph query: inspect_code_graph callers and data flow for ProblemDetailsHTTPErrorHandler pe defaulting JSON HEAD"
+  },
+  "agentTerminal": null,
+  "arm": "files",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/rfc9457_test.go b/rfc9457_test.go\nindex 5902e11..dcddd2a 100644\n--- a/rfc9457_test.go\n+++ b/rfc9457_test.go\n@@ -157,6 +157,24 @@ func TestProblemDetailsHTTPErrorHandler(t *testing.T) {\n \t}\n }\n \n+func TestProblemDetailsHTTPErrorHandler_DoesNotMutateSharedProblem(t *testing.T) {\n+\tsentinel := &ProblemError{}\n+\terrHandler := ProblemDetailsHTTPErrorHandler(false)\n+\n+\tfor range 2 {\n+\t\te := New()\n+\t\treq := httptest.NewRequest(http.MethodGet, \"/\", nil)\n+\t\tresp := httptest.NewRecorder()\n+\t\tc := e.NewContext(req, resp)\n+\n+\t\terrHandler(c, sentinel)\n+\n+\t\tassert.Equal(t, http.StatusInternalServerError, resp.Code)\n+\t\tassert.Equal(t, `{\"type\":\"about:blank\",\"title\":\"Internal Server Error\",\"status\":500}`+\"\\n\", resp.Body.String())\n+\t\tassert.Equal(t, &ProblemError{}, sentinel)\n+\t}\n+}\n+\n func TestProblemDetailsHTTPErrorHandler_CommittedResponse(t *testing.T) {\n \te := New()\n \treq := httptest.NewRequest(http.MethodGet, \"/\", nil)\n",
+  "patchSha256": "675738dc355dd107bf008b36f6d2902c79ffe7cb60f057a26bb110602a90d3b2",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+    "identityHash": "38449e1e0f8dda75617e11f582deb34bd9ffdae521a56887ffbe1c15fdf76abc",
+    "revision": "90702e71a7cde342da70b1f97e8e6420c509f939"
+  },
+  "runNonce": "run_8b299e760d644ab61006120dcbee4ab3",
+  "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+  "version": 4
+}

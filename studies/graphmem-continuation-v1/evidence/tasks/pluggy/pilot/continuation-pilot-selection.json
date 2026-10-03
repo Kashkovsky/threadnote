@@ -1,0 +1,134 @@
+{
+  "candidate": {
+    "toolArtifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+    "toolVersion": "5.1.0-beta.2"
+  },
+  "checkpoint": {
+    "automaticHandoffUri": "threadnote://user/evaluation-user/memories/handoffs/active/threadnote/continuation-tsk_a009739c16abeecaeafe13cb.md",
+    "handoffSha256": "5c7fd93a33de9c809219b08257c8758043bbf84253cf61119066d42879715d51",
+    "adapterConfigurations": {
+      "threadnoteCompactSha256": "ca85f4074b3f4ff174e6499bf535a5141aeebde6a40ae6d74c94836fdd6dca27",
+      "threadnoteGraphSha256": "8ea3e22dec2782194497e6d22c743883ac042a5c040717f611accc99230682c7"
+    },
+    "diagnosticEvidence": {
+      "diagnosticConclusion": "The focused regression reproduces duplicate HookCaller results for two specname implementations, while unregister iterates that list and removes incompletely (testing/test_pluginmanager.py:581-613; src/pluggy/_manager.py:221-239,434-447).",
+      "graphQuery": "Trace PluginManager.unregister -> get_hookcallers -> HookCaller._remove_plugin and inspect all callers of _remove_plugin.",
+      "graphQuestion": "Which HookCaller removal and implementation-list mutation paths are shared by unregister and other plugin-management operations?",
+      "rejectedHypothesis": "The defect is not limited to plugins spanning multiple hooks; the failure occurs before unregister with two implementations targeting one hook.",
+      "sourceCitations": [
+        {
+          "endLine": 239,
+          "path": "src/pluggy/_manager.py",
+          "startLine": 221
+        },
+        {
+          "endLine": 447,
+          "path": "src/pluggy/_manager.py",
+          "startLine": 434
+        }
+      ],
+      "unresolvedGap": "The production fix must choose a removal strategy that handles repeated HookCaller entries without disturbing surviving implementation order.",
+      "untestedInvariant": "After a corrected unique-caller traversal, all owned implementations should disappear while the other plugin's implementation and relative ordering remain intact.",
+      "verifiedInvariant": "The plugin owns two implementations on he_method1 and one on he_method2, and another plugin owns he_method1; the required verifier fails at the uniqueness assertion."
+    },
+    "phaseOneExecution": {
+      "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+      "adapterConfigurationFileSha256": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterProtocol": "matched-evaluation-adapter-v5",
+      "appServerExecutableSha256": "5e29ab10ca1171be158f7335dd6bd8ce1aaf9af1556939db36a5ee338be6f5f2",
+      "appServerVersion": "codex-cli 0.144.5",
+      "artifactSha256": "b86779dc8298de740eef5bf633613136f41ac57aca0650b11136bdd96ec3184a",
+      "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+      "model": {
+        "id": "gpt-5.6-luna",
+        "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+        "provider": "openai",
+        "reasoningEffort": "low"
+      },
+      "requestSha256": "9c9c2009a36dcbe86fd22148012d39b01268c76b1b51f772bc9d04c5e5041065",
+      "responseSha256": "6b8d7e80b94c87d568b841522b0e837b03c93d356b4050f16bbc02a3d8106ba6",
+      "runNonce": "run_4fe29794aa151765c7ce1f3a72d04a09",
+      "transcriptHash": "ad781ca96d41c2661b2948e4fd8a5e3f874c8e9a90f93fc23dca63ebe49d686d",
+      "transcriptSha256": "ad781ca96d41c2661b2948e4fd8a5e3f874c8e9a90f93fc23dca63ebe49d686d"
+    },
+    "phaseOnePatchSha256": "1f7839cdd8dc2eff60c80d193f75d90ef31935f3a3d16b509053fbfb9d60488b",
+    "phaseOnePromptSha256": "d92e988f6af361ab7edd711fb5c6d822b90685a58356bfbac92331a9c0d42e6a",
+    "preparedContext": {
+      "graphContentHash": "69193f00ff000db85010defac9e3664373811435ff9bd1a559e2a82ba50adcd0",
+      "graphSnapshotHash": "9002fca9b9d5f30f906a80be03630de063015e250a77e6aeb114fd9e206f7c47",
+      "linkReceiptsHash": "8ceec3f8c54335098b44e3e395d200b734bda93ae688007071450c88cdf25fb4",
+      "taskContextHash": "684d4162325f5e530f37ddcf0c409f7144a5a42db8107080beb214a2575ad1e9"
+    },
+    "preparedGraphHome": {
+      "fixtureHash": "c742a3bfb72ec5562626fc9c0e6c601e972473697a5a2b802440a8046310fc26",
+      "identitySha256": "8ba446cdc5a7b792adf600d90228d196a7182eb4cd81548496b54c6de1aa5fe8"
+    },
+    "preparedHome": {
+      "fixtureHash": "392ae623c6c5736e451f935b73fc2802c613e15ee100ab026c42568908b1260d",
+      "identitySha256": "8ba446cdc5a7b792adf600d90228d196a7182eb4cd81548496b54c6de1aa5fe8"
+    },
+    "phaseOneAccounting": {
+      "elapsedMilliseconds": 95781,
+      "providerTokens": {
+        "cachedInputTokens": 152576,
+        "inputTokens": 175784,
+        "outputTokens": 2647,
+        "reasoningOutputTokens": 486,
+        "totalTokens": 178431
+      },
+      "providerTokensMeasured": true
+    },
+    "repositoryFixtureHash": "f5edfbade5ead35246d970396a085e593efd24bec6b8bd8c93e01d2b24c22aab",
+    "repositoryRevision": "a48a4e3c283dbd789a1a16f499c8f101596bb9c0",
+    "resumeEvidenceMarker": "threadnote-resume-1f7839cdd8dc2eff60c8",
+    "automaticHandoffReadSha256": "707596e2edefd5c86dee3a5ab780ed098f72219f6fb092db927fabcc664af2cf"
+  },
+  "completionMeaning": "completed is true only when all 2 fresh phase-two adapter attempts completed; verified completion is verifier-authoritative per attempt.",
+  "comparativeClaimsEligible": false,
+  "identities": {
+    "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+    "planFileHash": "c33069bc115cfc12143f1e940bcf119a0a464479cf4d747dbd45d11a0ceeace0",
+    "runtimeVersion": 4,
+    "studyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+    "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0"
+  },
+  "limitations": [
+    "One development-calibration task, one attempt per treatment, no confidence interval or general product claim.",
+    "The common phase-one checkpoint cost is reported separately and is not duplicated into each phase-two attempt.",
+    "No retries are allowed; failed attempts remain in failure-inclusive completion accounting."
+  ],
+  "phaseTwoPromptSha256": "465d670de843de10bedb8691407924fe38917e9654463b28c707817300b2b4c0",
+  "phaseTwoVerificationPlanHash": "9fea2b4c2ef7b04bbb157468dbfad1e376269cb7e9a2b6c42137ddfbeb05c743",
+  "planVersion": 4,
+  "sourceTask": {
+    "promptSha256": "2ee86dded0b0ad5e9a4d23c5223b33fb0fb457ec09e0a54e377f5830a78676fb",
+    "repositoryFixtureHash": "89af053a162e2516689656fd1d2cbd0cc3321280d386ea3cbfbbc32d7d078d72",
+    "repositoryRevision": "6e1d0f13a259776bbf137f90bd7ab8b4474f68e7",
+    "taskId": "tsk_a009739c16abeecaeafe13cb"
+  },
+  "rows": [
+    {
+      "blindLabel": "A",
+      "position": 1,
+      "repetition": 1,
+      "runNonce": "run_65917de36692400483fd3c2f6d4698c3",
+      "runOrder": 1,
+      "taskId": "tsk_a009739c16abeecaeafe13cb",
+      "arm": "threadnote-compact",
+      "variant": "threadnote-preloaded-resume"
+    },
+    {
+      "blindLabel": "B",
+      "position": 2,
+      "repetition": 1,
+      "runNonce": "run_84a787357c101850e1c881cb2506c53d",
+      "runOrder": 2,
+      "taskId": "tsk_a009739c16abeecaeafe13cb",
+      "arm": "files",
+      "variant": "files-bare"
+    }
+  ],
+  "taskId": "tsk_a009739c16abeecaeafe13cb",
+  "version": 2
+}

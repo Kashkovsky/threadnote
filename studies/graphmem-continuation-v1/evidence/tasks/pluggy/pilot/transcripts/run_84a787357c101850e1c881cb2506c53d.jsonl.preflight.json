@@ -1,0 +1,9 @@
+{
+  "appliedAndReverted": true,
+  "approvedActions": 7,
+  "receiptHash": "1fb7dd9c0f2c82d74529894e308e2776e54b53713e3f9b5691c3fd0b9553a774",
+  "rejectedActions": 4,
+  "sourcePath": ".claude/settings.json",
+  "sourceReadSha256": "a6fb08fda1acb957b6116bd37811a1fe41a01611c0631edbf786d6889a27a55c",
+  "version": 1
+}

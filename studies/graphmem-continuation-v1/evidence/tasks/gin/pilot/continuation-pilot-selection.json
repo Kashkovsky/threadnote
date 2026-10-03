@@ -1,0 +1,134 @@
+{
+  "candidate": {
+    "toolArtifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+    "toolVersion": "5.1.0-beta.2"
+  },
+  "checkpoint": {
+    "automaticHandoffUri": "threadnote://user/evaluation-user/memories/handoffs/active/threadnote/continuation-tsk_3e2e9ab2f03a7d743856d6fd.md",
+    "handoffSha256": "10c0a3b33643fa0ed16c2444d2d5a1857875a9f4025bc189446dd61b79a5e054",
+    "adapterConfigurations": {
+      "threadnoteCompactSha256": "b28736122f64ed76524ea12fa567a086324028dabbf2130b027304423814752c",
+      "threadnoteGraphSha256": "1033fadd79776cef443f9773becbfd503c79304bf964f662fb0c911da3e0d289"
+    },
+    "diagnosticEvidence": {
+      "diagnosticConclusion": "Added TestIssue4818_MethodNotAllowedLookupDoesNotPanic with the specified method-tree matrix; POST /b/clients/42 panics because gin.go reuses c.skippedNodes across method-tree getValue calls (routes_test.go:89-113; gin.go:744-781; tree.go:418-470).",
+      "graphQuery": "skippedNodes ownership lifecycle and all getValue call sites",
+      "graphQuestion": "Which context lifecycle and lookup call sites share c.skippedNodes, and where can its length be reset without changing normal route backtracking semantics?",
+      "rejectedHypothesis": "The failure is not an ordinary unmatched-path 404 regression; the focused verifier reproduced a panic during method-not-allowed probing before a response was produced.",
+      "sourceCitations": [
+        {
+          "endLine": 781,
+          "path": "gin.go",
+          "startLine": 744
+        },
+        {
+          "endLine": 470,
+          "path": "tree.go",
+          "startLine": 418
+        }
+      ],
+      "unresolvedGap": "Determine the production fix location that preserves the pooled skipped-node backing allocation while resetting its logical length before each getValue lookup.",
+      "untestedInvariant": "After clearing the stack per lookup, unmatched paths must return 404 while matched alternate methods return 405 with the correct Allow header.",
+      "verifiedInvariant": "The focused check reaches the reported defect with the exact route set and request, and the regression is confined to routes_test.go."
+    },
+    "phaseOneExecution": {
+      "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+      "adapterConfigurationFileSha256": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterProtocol": "matched-evaluation-adapter-v5",
+      "appServerExecutableSha256": "5e29ab10ca1171be158f7335dd6bd8ce1aaf9af1556939db36a5ee338be6f5f2",
+      "appServerVersion": "codex-cli 0.144.5",
+      "artifactSha256": "015c5cae7899b06cc6f468ccade78875ee0c7ea3e3134ff409ed0b608b6b6b56",
+      "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+      "model": {
+        "id": "gpt-5.6-luna",
+        "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+        "provider": "openai",
+        "reasoningEffort": "low"
+      },
+      "requestSha256": "b44c3a932f56b400525f8cd4650bcdfa4a33240d899b1b9c6d714974d6ff64ee",
+      "responseSha256": "47a37208d5053122d847b9101f23ddbc6fcc675e1666a2818f09a44fd67b7eb1",
+      "runNonce": "run_ecc5f06664b059a7eeb57ef4f2833a55",
+      "transcriptHash": "f67140fbd5cb9e489fd2576f08253aa8dc593bbee84063568a57fe5ab6edd38b",
+      "transcriptSha256": "f67140fbd5cb9e489fd2576f08253aa8dc593bbee84063568a57fe5ab6edd38b"
+    },
+    "phaseOnePatchSha256": "30c04e319859e54b23164864fd23b0c3b7f0b8a13b84b78d3282013b83785247",
+    "phaseOnePromptSha256": "379bc363c826a1872d5904bae7b34b9b092837c1c9eb82b3cc648bc5916db222",
+    "preparedContext": {
+      "graphContentHash": "67e6b5f80f3841fa3ae4bca241b1a789c4089fe8074db4fdba894b458a027482",
+      "graphSnapshotHash": "a3433b09e04d214a638dbe5d01123098c6e01d6f177478254f66214a951b2dba",
+      "linkReceiptsHash": "b03515dfc7e507418d6efd1fe8cbdc8c34e78c9b9fefecddbc0d333679b6431b",
+      "taskContextHash": "2bfc083578b605747a0e350f7e45671dce8710bda9e004456eed9f083498126b"
+    },
+    "preparedGraphHome": {
+      "fixtureHash": "1a69807ebed617e00b89218c54d3ee5875f3614a9923c43099b21f6a85d2da8b",
+      "identitySha256": "a233cf30c08635547ce64a47e0e22044d2791b4ca683a7005b8d2b678ec72ec4"
+    },
+    "preparedHome": {
+      "fixtureHash": "1574499b88f704ed664447687bbed6c97b8b89a6922a861278af1d6286b3f6a2",
+      "identitySha256": "a233cf30c08635547ce64a47e0e22044d2791b4ca683a7005b8d2b678ec72ec4"
+    },
+    "phaseOneAccounting": {
+      "elapsedMilliseconds": 103875,
+      "providerTokens": {
+        "cachedInputTokens": 127744,
+        "inputTokens": 152049,
+        "outputTokens": 2285,
+        "reasoningOutputTokens": 301,
+        "totalTokens": 154334
+      },
+      "providerTokensMeasured": true
+    },
+    "repositoryFixtureHash": "5fda22c2e68fae8715b888280027d9fc6053929ed7957c9f660925ae39c0bec2",
+    "repositoryRevision": "07e522f9eb5881d76410bb802eb040d25e08bb96",
+    "resumeEvidenceMarker": "threadnote-resume-30c04e319859e54b2316",
+    "automaticHandoffReadSha256": "0f3c9c881a5ee6d97a6c264a625c54c2ee7675036e0d421a7c1beac0d4b73a32"
+  },
+  "completionMeaning": "completed is true only when all 2 fresh phase-two adapter attempts completed; verified completion is verifier-authoritative per attempt.",
+  "comparativeClaimsEligible": false,
+  "identities": {
+    "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+    "planFileHash": "c5527864d4c2eb16c4ee5d7cc2c5010f716797f6521904da6d2bcd72f9012686",
+    "runtimeVersion": 4,
+    "studyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+    "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0"
+  },
+  "limitations": [
+    "One development-calibration task, one attempt per treatment, no confidence interval or general product claim.",
+    "The common phase-one checkpoint cost is reported separately and is not duplicated into each phase-two attempt.",
+    "No retries are allowed; failed attempts remain in failure-inclusive completion accounting."
+  ],
+  "phaseTwoPromptSha256": "465d670de843de10bedb8691407924fe38917e9654463b28c707817300b2b4c0",
+  "phaseTwoVerificationPlanHash": "5c3356a9bb4ec1fbed64c8ac5f00525da18bab48ec815d6348b5a1b420255086",
+  "planVersion": 4,
+  "sourceTask": {
+    "promptSha256": "44301e3ccf7ba64929abd47ebec31b686ac8fd03df80adc0653cfd32b876df89",
+    "repositoryFixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+    "repositoryRevision": "d8f2d588d7573b3438cfc95b7a47f9ec8966273c",
+    "taskId": "tsk_3e2e9ab2f03a7d743856d6fd"
+  },
+  "rows": [
+    {
+      "blindLabel": "A",
+      "position": 1,
+      "repetition": 1,
+      "runNonce": "run_fd9e151b26af4308ec5356b60d20bec1",
+      "runOrder": 1,
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+      "arm": "threadnote-compact",
+      "variant": "threadnote-preloaded-resume"
+    },
+    {
+      "blindLabel": "B",
+      "position": 2,
+      "repetition": 1,
+      "runNonce": "run_2ef1bfb5beec05fb5d3a61e40c20814d",
+      "runOrder": 2,
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+      "arm": "files",
+      "variant": "files-bare"
+    }
+  ],
+  "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+  "version": 2
+}

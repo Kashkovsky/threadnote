@@ -1,0 +1,134 @@
+{
+  "candidate": {
+    "toolArtifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+    "toolVersion": "5.1.0-beta.2"
+  },
+  "checkpoint": {
+    "automaticHandoffUri": "threadnote://user/evaluation-user/memories/handoffs/active/threadnote/continuation-tsk_8b02783134c4b12b327add82.md",
+    "handoffSha256": "102c17f33f114d2fd90cf3ac5ddb8616148fcf3dabece7f0cdef4bf6f39130e5",
+    "adapterConfigurations": {
+      "threadnoteCompactSha256": "7e1cf9b09b60863e8f7a5cdbb4ecbf46a4920636c6966e6b7ad4d6095cdde611",
+      "threadnoteGraphSha256": "afe7df03d163853526a93c35e2e88297e158fa4d9731bccc6f7ed830cf61e7a7"
+    },
+    "diagnosticEvidence": {
+      "diagnosticConclusion": "Walk omits GET /foo/bar when a real handler shares the node created by Route’s synthetic mount stub; the regression reproduces this, while GET /foo/bar/{id} remains visible (tree_test.go:526-558; tree.go:628-640). ",
+      "graphQuery": "nodes=\"Mux.Mount,node.routes,Walk\" edges=\"calls,mutates,reads\"",
+      "graphQuestion": "Which construction and traversal edges identify the synthetic mount stub separately from a real handler at the same node?",
+      "rejectedHypothesis": "The nested subrouter is not missing and path concatenation is not the cause, because the child route is enumerated correctly as GET /foo/bar/{id}.",
+      "sourceCitations": [
+        {
+          "endLine": 640,
+          "path": "tree.go",
+          "startLine": 628
+        },
+        {
+          "endLine": 340,
+          "path": "mux.go",
+          "startLine": 295
+        }
+      ],
+      "unresolvedGap": "The production fix still needs an identity-safe way to distinguish the synthetic stub handler from a user handler without comparing non-comparable interface values.",
+      "untestedInvariant": "Enumeration must retain a real same-pattern method handler while suppressing only the synthetic stub, including non-comparable handler implementations.",
+      "verifiedInvariant": "Route mounts install wildcard/stub routing state and attach subroutes, and Walk recursively visits attached subroutes while propagating middleware (mux.go:295-340; tree.go:628-640)."
+    },
+    "phaseOneExecution": {
+      "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+      "adapterConfigurationFileSha256": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterProtocol": "matched-evaluation-adapter-v5",
+      "appServerExecutableSha256": "5e29ab10ca1171be158f7335dd6bd8ce1aaf9af1556939db36a5ee338be6f5f2",
+      "appServerVersion": "codex-cli 0.144.5",
+      "artifactSha256": "3f29dec65b21da4c6a997fd715f89125702407f7d4684ab8a409876bbef2def5",
+      "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+      "model": {
+        "id": "gpt-5.6-luna",
+        "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+        "provider": "openai",
+        "reasoningEffort": "low"
+      },
+      "requestSha256": "83328a276bd564d1033c7aad4acbcffe50f2762fb4d35f10325ca6da3375c8e8",
+      "responseSha256": "71f017f0fc302c10876a21c37d01c08dcd659bb9e3ce257fdeb16d3423e5681f",
+      "runNonce": "run_e5cccb0a334cb1233301a5cb2a455e8f",
+      "transcriptHash": "128a05f6d3204556487d23a4ea294bda89844fa925bc4a126482afe541a2b520",
+      "transcriptSha256": "128a05f6d3204556487d23a4ea294bda89844fa925bc4a126482afe541a2b520"
+    },
+    "phaseOnePatchSha256": "39c4d6b1cfaf703dbf86b85d8fb53f6f929d7ace8220e9d32c0b871e07cdcb14",
+    "phaseOnePromptSha256": "3c6b6e2cccb2f37524d585f1d336457e6804d16233e67cbafd8269131c4b10ea",
+    "preparedContext": {
+      "graphContentHash": "e355dd5119eef4b7cf95a7fc6c9aa156f4a45064dc3889d6a7037a559c9fbf9f",
+      "graphSnapshotHash": "4f941023d6c075c6f541c359e08c2bc8421505ef2a0847849746073fee8efcb0",
+      "linkReceiptsHash": "cad1e186835c06e9e9b202c574d870dadac65a882dbdd8d598545e39830d23b7",
+      "taskContextHash": "9b1ce65bbac3c0f08b92e7ddb80f6f1539ca6c9808fe46b2a4668161b29ab5a3"
+    },
+    "preparedGraphHome": {
+      "fixtureHash": "9c0c0d1ed533185ee4644bf5e460b608b309bdce72c0ceb83c27cafe07d41599",
+      "identitySha256": "adc0a411bd1577e125ade766f6f77285005b4481506b046e5cbfd51fbe99e17b"
+    },
+    "preparedHome": {
+      "fixtureHash": "1e9e4b78f81b76109b0c1912daee46892233dbe295a5cbec93cb92faa09d1e2a",
+      "identitySha256": "adc0a411bd1577e125ade766f6f77285005b4481506b046e5cbfd51fbe99e17b"
+    },
+    "phaseOneAccounting": {
+      "elapsedMilliseconds": 77044,
+      "providerTokens": {
+        "cachedInputTokens": 93440,
+        "inputTokens": 111970,
+        "outputTokens": 1929,
+        "reasoningOutputTokens": 369,
+        "totalTokens": 113899
+      },
+      "providerTokensMeasured": true
+    },
+    "repositoryFixtureHash": "ec912675e99ca648247db2b24941b46b454e43cf67ec9ba30dabcc5644b97d97",
+    "repositoryRevision": "a67fe48735a92a2f3195952aea4ea120997e1b45",
+    "resumeEvidenceMarker": "threadnote-resume-39c4d6b1cfaf703dbf86",
+    "automaticHandoffReadSha256": "38429da3c6ebbc8c449a06c3998cbdffed135e0cf7a307441138fa1a1e401f20"
+  },
+  "completionMeaning": "completed is true only when all 2 fresh phase-two adapter attempts completed; verified completion is verifier-authoritative per attempt.",
+  "comparativeClaimsEligible": false,
+  "identities": {
+    "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+    "planFileHash": "944d2e0ad633d1d005efe79c15bc0a90a6a85b33d37fc87fe3a0b14bfc808c2d",
+    "runtimeVersion": 4,
+    "studyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+    "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0"
+  },
+  "limitations": [
+    "One development-calibration task, one attempt per treatment, no confidence interval or general product claim.",
+    "The common phase-one checkpoint cost is reported separately and is not duplicated into each phase-two attempt.",
+    "No retries are allowed; failed attempts remain in failure-inclusive completion accounting."
+  ],
+  "phaseTwoPromptSha256": "465d670de843de10bedb8691407924fe38917e9654463b28c707817300b2b4c0",
+  "phaseTwoVerificationPlanHash": "40040f8f65d4de5c27d198728eb7604b5bf7709fe777ea22f820157166178c08",
+  "planVersion": 4,
+  "sourceTask": {
+    "promptSha256": "3b137f97079ece44eadc24046046d88ac2cc90cd15f8ee7571211381c5398066",
+    "repositoryFixtureHash": "a27735dae0269d1e60732cfaa010b04200928592ff50171f9eadf117ebb66f4e",
+    "repositoryRevision": "bc02284e9db220c644912320fe1db6bc9b4a087c",
+    "taskId": "tsk_8b02783134c4b12b327add82"
+  },
+  "rows": [
+    {
+      "blindLabel": "A",
+      "position": 1,
+      "repetition": 1,
+      "runNonce": "run_387d8448e65c0e612c5461a3b258957d",
+      "runOrder": 1,
+      "taskId": "tsk_8b02783134c4b12b327add82",
+      "arm": "files",
+      "variant": "files-bare"
+    },
+    {
+      "blindLabel": "B",
+      "position": 2,
+      "repetition": 1,
+      "runNonce": "run_3eb38cfd490f353f69d401faeda728bb",
+      "runOrder": 2,
+      "taskId": "tsk_8b02783134c4b12b327add82",
+      "arm": "threadnote-compact",
+      "variant": "threadnote-preloaded-resume"
+    }
+  ],
+  "taskId": "tsk_8b02783134c4b12b327add82",
+  "version": 2
+}

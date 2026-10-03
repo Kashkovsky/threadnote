@@ -1,0 +1,37 @@
+{
+  "agentResult": {
+    "citations": [
+      {
+        "endLine": 613,
+        "path": "testing/test_pluginmanager.py",
+        "startLine": 581
+      },
+      {
+        "endLine": 239,
+        "path": "src/pluggy/_manager.py",
+        "startLine": 221
+      },
+      {
+        "endLine": 447,
+        "path": "src/pluggy/_manager.py",
+        "startLine": 434
+      }
+    ],
+    "completed": true,
+    "summary": "Diagnosis: The focused regression reproduces duplicate HookCaller results for two specname implementations, while unregister iterates that list and removes incompletely (testing/test_pluginmanager.py:581-613; src/pluggy/_manager.py:221-239,434-447).\nRejected hypothesis: The defect is not limited to plugins spanning multiple hooks; the failure occurs before unregister with two implementations targeting one hook.\nVerified invariant: The plugin owns two implementations on he_method1 and one on he_method2, and another plugin owns he_method1; the required verifier fails at the uniqueness assertion.\nUntested invariant: After a corrected unique-caller traversal, all owned implementations should disappear while the other plugin's implementation and relative ordering remain intact.\nUnresolved gap: The production fix must choose a removal strategy that handles repeated HookCaller entries without disturbing surviving implementation order.\nGraph question: Which HookCaller removal and implementation-list mutation paths are shared by unregister and other plugin-management operations?\nGraph query: Trace PluginManager.unregister -> get_hookcallers -> HookCaller._remove_plugin and inspect all callers of _remove_plugin."
+  },
+  "agentTerminal": null,
+  "arm": "files",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/testing/test_pluginmanager.py b/testing/test_pluginmanager.py\nindex f80b1b5..3d3c08e 100644\n--- a/testing/test_pluginmanager.py\n+++ b/testing/test_pluginmanager.py\n@@ -575,6 +575,47 @@ def test_get_hookcallers(pm: PluginManager) -> None:\n     assert pm.get_hookcallers(object()) is None\n \n \n+def test_unregister_plugin_with_multi_hookimpls(pm: PluginManager) -> None:\n+    class Hooks:\n+        @hookspec\n+        def he_method1(self): ...\n+\n+        @hookspec\n+        def he_method2(self): ...\n+\n+    pm.add_hookspecs(Hooks)\n+\n+    class Plugin:\n+        @hookimpl(specname=\"he_method1\")\n+        def first(self): ...\n+\n+        @hookimpl(specname=\"he_method1\")\n+        def second(self): ...\n+\n+        @hookimpl\n+        def he_method2(self): ...\n+\n+    class OtherPlugin:\n+        @hookimpl\n+        def he_method1(self): ...\n+\n+    plugin = Plugin()\n+    other_plugin = OtherPlugin()\n+    pm.register(plugin)\n+    pm.register(other_plugin)\n+\n+    hookcallers = pm.get_hookcallers(plugin)\n+    assert hookcallers is not None\n+    assert hookcallers == [pm.hook.he_method1, pm.hook.he_method2]\n+\n+    pm.unregister(plugin)\n+\n+    assert [impl.plugin for impl in pm.hook.he_method1.get_hookimpls()] == [\n+        other_plugin\n+    ]\n+    assert pm.hook.he_method2.get_hookimpls() == []\n+\n+\n def test_add_hookspecs_nohooks(pm: PluginManager) -> None:\n     class NoHooks:\n         pass\n",
+  "patchSha256": "4c389341ce30b4e3b993bc8ffaf730bda4b1ef8e595f751d7302df1fbfa7945b",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "89af053a162e2516689656fd1d2cbd0cc3321280d386ea3cbfbbc32d7d078d72",
+    "identityHash": "39b62cb8ca199660d20b40a9a23974fcd50bf8e69e7f1f79bf009752f4b8cc74",
+    "revision": "6e1d0f13a259776bbf137f90bd7ab8b4474f68e7"
+  },
+  "runNonce": "run_4fe29794aa151765c7ce1f3a72d04a09",
+  "taskId": "tsk_a009739c16abeecaeafe13cb",
+  "version": 4
+}

@@ -1,0 +1,6 @@
+{
+  "assessment": "The final experiment excludes a manually supplied context arm because there is no objective, reproducible way to choose a single representative amount of developer-authored context. Files-only receives only the issue prompt; the Threadnote treatment receives only product-generated memory and graph context.",
+  "decision": "excluded",
+  "sufficiency": "none",
+  "version": 1
+}

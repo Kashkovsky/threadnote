@@ -1,0 +1,91 @@
+{
+  "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+  "adapterProtocol": "matched-evaluation-adapter-v5",
+  "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+  "arm": "files",
+  "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+  "agentTask": {
+    "category": "unfamiliar-call-path",
+    "memoryFixtures": [],
+    "prompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryFixtureHash": "f5edfbade5ead35246d970396a085e593efd24bec6b8bd8c93e01d2b24c22aab",
+    "taskId": "tsk_a009739c16abeecaeafe13cb",
+    "variant": "historical-as-issued"
+  },
+  "artifactPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/pluggy/pilot/runs/run_84a787357c101850e1c881cb2506c53d/artifact.json",
+  "blindLabel": "B",
+  "continuationTreatment": {
+    "automaticHandoffUri": null,
+    "contextMode": null,
+    "manualHandoff": null,
+    "manualHandoffSha256": null,
+    "requiredGraphQuery": null,
+    "resumeEvidenceMarker": null,
+    "variant": "files-bare"
+  },
+  "judgeTask": {
+    "negativeControls": [
+      {
+        "controlId": "ctl_a009739c16abeecaeafe13cb",
+        "reason": "Call execution ordering is adjacent but not the broken lifecycle operation.",
+        "text": "Changing multicall execution or wrapper ordering would not make unregister remove every implementation owned by one plugin."
+      }
+    ],
+    "rubric": {
+      "completion": "Plugin removal clears all of its implementations and HookCaller introspection is deduplicated without disturbing other registrations.",
+      "criteria": [
+        "Unregister removes two or more same-hook implementations contributed through specname.",
+        "get_hookcallers returns one entry per affected hook even when that hook contains multiple implementations from the plugin.",
+        "Other plugins and hook implementation ordering remain intact, and an absent plugin still follows the established error contract."
+      ],
+      "requiredEvidenceIds": [
+        "ev_a009739c16abeecaeafe13cb",
+        "ev_a009739c16abeecaeafe13cc"
+      ]
+    },
+    "sourceGold": [
+      {
+        "claim": "HookCaller._remove_plugin currently deletes the first matching implementation and returns.",
+        "endLine": 451,
+        "evidenceId": "ev_a009739c16abeecaeafe13cb",
+        "path": "src/pluggy/_hooks.py",
+        "repository": "pytest-dev/pluggy",
+        "startLine": 438
+      },
+      {
+        "claim": "PluginManager.get_hookcallers appends once per matching implementation, which can duplicate a caller.",
+        "endLine": 448,
+        "evidenceId": "ev_a009739c16abeecaeafe13cc",
+        "path": "src/pluggy/_manager.py",
+        "repository": "pytest-dev/pluggy",
+        "startLine": 434
+      }
+    ]
+  },
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "model": {
+    "model": "gpt-5.6-luna",
+    "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+    "provider": "openai"
+  },
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "f5edfbade5ead35246d970396a085e593efd24bec6b8bd8c93e01d2b24c22aab",
+    "identityHash": "39b62cb8ca199660d20b40a9a23974fcd50bf8e69e7f1f79bf009752f4b8cc74",
+    "revision": "a48a4e3c283dbd789a1a16f499c8f101596bb9c0"
+  },
+  "preparedContext": null,
+  "runNonce": "run_84a787357c101850e1c881cb2506c53d",
+  "runOrder": 2,
+  "tool": {
+    "artifactHash": null,
+    "detail": null,
+    "executable": null,
+    "lockIdentityHash": null,
+    "name": "repository-files",
+    "version": "builtin-v1"
+  },
+  "transcriptPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/pluggy/pilot/transcripts/run_84a787357c101850e1c881cb2506c53d.jsonl",
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "version": 4
+}

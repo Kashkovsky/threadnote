@@ -1,0 +1,52 @@
+diff --git a/testing/test_pluginmanager.py b/testing/test_pluginmanager.py
+index f80b1b55b07a6b3c58c97b4a0e90dd0fbaa34502..3d3c08e9695135134d016856d7770a3bebcf019d 100644
+--- a/testing/test_pluginmanager.py
++++ b/testing/test_pluginmanager.py
+@@ -575,6 +575,47 @@ def test_get_hookcallers(pm: PluginManager) -> None:
+     assert pm.get_hookcallers(object()) is None
+ 
+ 
++def test_unregister_plugin_with_multi_hookimpls(pm: PluginManager) -> None:
++    class Hooks:
++        @hookspec
++        def he_method1(self): ...
++
++        @hookspec
++        def he_method2(self): ...
++
++    pm.add_hookspecs(Hooks)
++
++    class Plugin:
++        @hookimpl(specname="he_method1")
++        def first(self): ...
++
++        @hookimpl(specname="he_method1")
++        def second(self): ...
++
++        @hookimpl
++        def he_method2(self): ...
++
++    class OtherPlugin:
++        @hookimpl
++        def he_method1(self): ...
++
++    plugin = Plugin()
++    other_plugin = OtherPlugin()
++    pm.register(plugin)
++    pm.register(other_plugin)
++
++    hookcallers = pm.get_hookcallers(plugin)
++    assert hookcallers is not None
++    assert hookcallers == [pm.hook.he_method1, pm.hook.he_method2]
++
++    pm.unregister(plugin)
++
++    assert [impl.plugin for impl in pm.hook.he_method1.get_hookimpls()] == [
++        other_plugin
++    ]
++    assert pm.hook.he_method2.get_hookimpls() == []
++
++
+ def test_add_hookspecs_nohooks(pm: PluginManager) -> None:
+     class NoHooks:
+         pass

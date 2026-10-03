@@ -1,0 +1,108 @@
+{
+  "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+  "adapterProtocol": "matched-evaluation-adapter-v5",
+  "adapterConfigurationHash": "ef04ea53938bf3a4c09a1df61c4d34fa6d304eaea3d42e5a541050de9d402dc6",
+  "arm": "threadnote-compact",
+  "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+  "agentTask": {
+    "category": "cross-repository-transfer",
+    "memoryFixtures": [],
+    "prompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryFixtureHash": "7d04d1963f6f0f3245feec30907836b5fa6e7068eb3a69b2cb5b7fa5d4eb43b0",
+    "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+    "variant": "historical-as-issued"
+  },
+  "artifactPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/echo/pilot/runs/run_109f05cc7c0e23327212ce60e9fa698b/artifact.json",
+  "blindLabel": "A",
+  "continuationTreatment": {
+    "automaticHandoffUri": "threadnote://user/evaluation-user/memories/handoffs/active/threadnote/continuation-tsk_fc18a74be8742c6a9d6397ed.md",
+    "contextMode": "resume",
+    "manualHandoff": null,
+    "manualHandoffSha256": null,
+    "requiredGraphQuery": "callers and data flow for ProblemDetailsHTTPErrorHandler pe defaulting JSON HEAD",
+    "resumeEvidenceMarker": "threadnote-resume-7eb1da8b4de2c16d4e42",
+    "variant": "threadnote-preloaded-resume"
+  },
+  "judgeTask": {
+    "negativeControls": [
+      {
+        "controlId": "ctl_fc18a74be8742c6a9d6397ed",
+        "reason": "JSON serialization is downstream of the mutation.",
+        "text": "Changing the JSON serializer or ProblemError.StatusCode cannot prevent defaults from being written into the shared input object."
+      }
+    ],
+    "rubric": {
+      "completion": "RFC 9457 defaults are applied to a response-local value without mutating reusable ProblemError inputs.",
+      "criteria": [
+        "Serving the same sentinel repeatedly leaves every original field unchanged.",
+        "The response still contains the default about:blank type, status title, configured status, and detail.",
+        "HEAD responses and explicit ProblemError fields preserve their established behavior."
+      ],
+      "requiredEvidenceIds": [
+        "ev_fc18a74be8742c6a9d6397ed"
+      ]
+    },
+    "sourceGold": [
+      {
+        "claim": "ProblemDetailsHTTPErrorHandler resolves a ProblemError, writes defaults into it, and then uses it for HEAD or JSON responses.",
+        "endLine": 128,
+        "evidenceId": "ev_fc18a74be8742c6a9d6397ed",
+        "path": "rfc9457.go",
+        "repository": "labstack/echo",
+        "startLine": 68
+      }
+    ]
+  },
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "model": {
+    "model": "gpt-5.6-luna",
+    "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+    "provider": "openai"
+  },
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "7d04d1963f6f0f3245feec30907836b5fa6e7068eb3a69b2cb5b7fa5d4eb43b0",
+    "identityHash": "38449e1e0f8dda75617e11f582deb34bd9ffdae521a56887ffbe1c15fdf76abc",
+    "revision": "b75f83f7cd4538c18fd1985310165bffb75f4852"
+  },
+  "preparedContext": {
+    "memoryAccess": "linked",
+    "studyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+    "taskContext": {
+      "asIssuedContext": {
+        "assessmentHash": "8ada88889e4d4130364f4e4199477cf76fa74d75d799619aaf6d5d0c47e1f2e5",
+        "contentHash": null,
+        "sufficiency": "none",
+        "suppliedBytes": 0
+      },
+      "clusterId": "cluster_a084322c85405c82",
+      "graphContentHash": "edc529e87d2dbf716d8c56ef08fbf8aaa5b23dd273fd7f0e13aa232bc20bb84b",
+      "graphSnapshotHash": "9723b764d4a4ea4b2b5b9a6874bf22e0753a8a464796334d027d84b80a44db2c",
+      "linkReceipts": [
+        {
+          "citationHash": "dce6ce4b9a3891a117fe87a90ecb9c54a53e0caf52c2b33fbe058854fc037822",
+          "memoryId": "mem_fc18a74be8742c6a9d6397ed",
+          "status": "exact"
+        }
+      ],
+      "linkReceiptsHash": "a7ede6d0f31b320e4b52771eb8676f5a5c3dd6d7f7ad55a9f434030177baa035",
+      "memoryFixtureHash": "e19989ae1f35ac853482af1c47543f1d643718ce2ae1a833e41ce6bc1844b592",
+      "repositoryFixtureHash": "7d04d1963f6f0f3245feec30907836b5fa6e7068eb3a69b2cb5b7fa5d4eb43b0",
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+      "taskContextHash": "599c12b1ad724af07ee2d0cffff7b4a7833d122bb021be98d6a251e3cf0ba6a5"
+    }
+  },
+  "runNonce": "run_109f05cc7c0e23327212ce60e9fa698b",
+  "runOrder": 1,
+  "tool": {
+    "artifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+    "detail": "compact",
+    "executable": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/echo/pilot/runs/run_109f05cc7c0e23327212ce60e9fa698b/runtime/tool",
+    "lockIdentityHash": "ab24ad9bc1e5ad27f149d52302efb02d2c45b01c7197697d14572f06d4fe1bda",
+    "name": "threadnote",
+    "version": "5.1.0-beta.2"
+  },
+  "transcriptPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/echo/pilot/transcripts/run_109f05cc7c0e23327212ce60e9fa698b.jsonl",
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "version": 4
+}

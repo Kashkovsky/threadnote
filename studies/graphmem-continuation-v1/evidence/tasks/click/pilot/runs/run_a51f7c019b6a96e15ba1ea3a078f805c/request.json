@@ -1,0 +1,108 @@
+{
+  "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+  "adapterProtocol": "matched-evaluation-adapter-v5",
+  "adapterConfigurationHash": "76bad42c3cea3c362cf0e5c36e3cc9a3fd11374b6ddd07838a6bfb97d262cc4f",
+  "arm": "threadnote-compact",
+  "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+  "agentTask": {
+    "category": "same-repository-onboarding",
+    "memoryFixtures": [],
+    "prompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryFixtureHash": "33bdc182440503c7439b656c03082251165f443aaaacf90190154bfa6bab7424",
+    "taskId": "tsk_6f8c95b80697e7612413ed04",
+    "variant": "historical-as-issued"
+  },
+  "artifactPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/click/pilot/runs/run_a51f7c019b6a96e15ba1ea3a078f805c/artifact.json",
+  "blindLabel": "A",
+  "continuationTreatment": {
+    "automaticHandoffUri": "threadnote://user/evaluation-user/memories/handoffs/active/threadnote/continuation-tsk_6f8c95b80697e7612413ed04.md",
+    "contextMode": "resume",
+    "manualHandoff": null,
+    "manualHandoffSha256": null,
+    "requiredGraphQuery": "callers and tests of click.utils._make_default_short_help",
+    "resumeEvidenceMarker": "threadnote-resume-1534b672b05949885a97",
+    "variant": "threadnote-preloaded-resume"
+  },
+  "judgeTask": {
+    "negativeControls": [
+      {
+        "controlId": "ctl_6f8c95b80697e7612413ed04",
+        "reason": "Nearby wrapping behavior is not the implementation under test.",
+        "text": "Changing HelpFormatter.write_text or terminal-width discovery would bypass the private short-help contract and affect unrelated help rendering."
+      }
+    ],
+    "rubric": {
+      "completion": "Short-help generation preserves lowercase-following abbreviations while retaining sentence boundaries and robust whole-word width handling.",
+      "criteria": [
+        "An abbreviation such as `vs.` followed by a lowercase word does not end the short help.",
+        "A terminal period and a period followed by uppercase text or a digit still end the first sentence.",
+        "Truncation includes the ellipsis in the width and never splits hyphenated or overlong words, including widths below three."
+      ],
+      "requiredEvidenceIds": [
+        "ev_6f8c95b80697e7612413ed04"
+      ]
+    },
+    "sourceGold": [
+      {
+        "claim": "The private helper performs paragraph selection, whitespace normalization, sentence detection, and length-based truncation in one path.",
+        "endLine": 112,
+        "evidenceId": "ev_6f8c95b80697e7612413ed04",
+        "path": "src/click/utils.py",
+        "repository": "pallets/click",
+        "startLine": 62
+      }
+    ]
+  },
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "model": {
+    "model": "gpt-5.6-luna",
+    "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+    "provider": "openai"
+  },
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "33bdc182440503c7439b656c03082251165f443aaaacf90190154bfa6bab7424",
+    "identityHash": "60bb20143d5c034afb55cc5e18cdaf27168572a4ddb2b15a749f0eef4f994318",
+    "revision": "0f2c0879d80a23cd10e799d7965520a13eb51e3d"
+  },
+  "preparedContext": {
+    "memoryAccess": "linked",
+    "studyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+    "taskContext": {
+      "asIssuedContext": {
+        "assessmentHash": "8ada88889e4d4130364f4e4199477cf76fa74d75d799619aaf6d5d0c47e1f2e5",
+        "contentHash": null,
+        "sufficiency": "none",
+        "suppliedBytes": 0
+      },
+      "clusterId": "cluster_cc386a2d43df6fdd",
+      "graphContentHash": "8b41f7f5e766d3cf07274e54130e90ac971c33c2752b61eb8ae4e0c2c3a5373a",
+      "graphSnapshotHash": "9fd1ed03bc7552b279630c6b707f278a18606376df36236fb94f2f7ecf13a5d6",
+      "linkReceipts": [
+        {
+          "citationHash": "26be1d02603493e6288cef11457dbf7ba85cbb9765c59cb9e0f3c1dce22cb21e",
+          "memoryId": "mem_6f8c95b80697e7612413ed04",
+          "status": "exact"
+        }
+      ],
+      "linkReceiptsHash": "f1be789c2059646b924dd00c658ca52e8e2c9d8c515056f7554ae3bb80987f87",
+      "memoryFixtureHash": "5e2c680fc6f1ec6429ba23acefc641ae6c8e26dea23160c0a2162b9c2daf7113",
+      "repositoryFixtureHash": "33bdc182440503c7439b656c03082251165f443aaaacf90190154bfa6bab7424",
+      "taskId": "tsk_6f8c95b80697e7612413ed04",
+      "taskContextHash": "b0a74c2d0349379ce30c9ba9f9fb893bd94909c90d62a140183308a69e9ae66e"
+    }
+  },
+  "runNonce": "run_a51f7c019b6a96e15ba1ea3a078f805c",
+  "runOrder": 1,
+  "tool": {
+    "artifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+    "detail": "compact",
+    "executable": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/click/pilot/runs/run_a51f7c019b6a96e15ba1ea3a078f805c/runtime/tool",
+    "lockIdentityHash": "ab24ad9bc1e5ad27f149d52302efb02d2c45b01c7197697d14572f06d4fe1bda",
+    "name": "threadnote",
+    "version": "5.1.0-beta.2"
+  },
+  "transcriptPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/click/pilot/transcripts/run_a51f7c019b6a96e15ba1ea3a078f805c.jsonl",
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "version": 4
+}

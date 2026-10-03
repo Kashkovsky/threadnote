@@ -1,0 +1,30 @@
+{
+  "articleEvidenceSha256": "0192dc01cc8ad5f013bc29426e099f5426bbb09c1ef516cd8b96672d10972260",
+  "outcomeLedgerSha256": "c6bd28500e6702eb7dae942e73cadd167550a282e6e9eb0485b9f32000b5d9e7",
+  "reportSha256": "bc9bf93799a5e7e363c272d5ba4731a887c2f1f2491114925c8b5550d8206160",
+  "sourceReports": [
+    {
+      "sourceReportSha256": "99c09db0d145d2b9a942f63df01341eaa9e196beaada56091f89a283ff25b5c1",
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd"
+    },
+    {
+      "sourceReportSha256": "75a3a9060d61909d145284ef0da2d3653b362ae36a9f07b7c894aa1ff824a3e7",
+      "taskId": "tsk_6f8c95b80697e7612413ed04"
+    },
+    {
+      "sourceReportSha256": "4c756f45a198350ea5bad55366a7029a80c9741e62113a0b99a7d9cc0a9046ec",
+      "taskId": "tsk_8b02783134c4b12b327add82"
+    },
+    {
+      "sourceReportSha256": "f7ba5e03490f8df2f255bc9e747715f652cb39d0908fbef84d71c783c35269d7",
+      "taskId": "tsk_a009739c16abeecaeafe13cb"
+    },
+    {
+      "sourceReportSha256": "7e8497cdd735c17660f6743adc5b2caa2648f58b17a7a10508610b4050176232",
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed"
+    }
+  ],
+  "studyHash": "945b5466e0c2f86af7052916f2c29199dd7f913d01b94b427b39d285047a8046",
+  "version": 1,
+  "receiptHash": "caab6c601543d3d5cfa7769a19d417f47b37d9ecbe7b64b8e08244adcf9ffdb1"
+}

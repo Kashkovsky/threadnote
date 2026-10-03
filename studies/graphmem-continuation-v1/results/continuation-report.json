@@ -1,0 +1,158 @@
+{
+  "comparisons": [
+    {
+      "baseline": "files-bare",
+      "completionDeltaPercentagePoints": 19.999999999999996,
+      "completionDeltaPercentagePoints95": {
+        "low": 0,
+        "high": 60
+      },
+      "failures": [],
+      "hybridCompletionDeltaPercentagePoints": 20,
+      "hybridCompletionDeltaPercentagePoints95": {
+        "low": 0,
+        "high": 60
+      },
+      "insufficiencies": [],
+      "status": "passed",
+      "target": "threadnote-preloaded-resume",
+      "timeReductionPercent": 46.14034165571616,
+      "timeReductionPercent95": {
+        "low": 25.251495290190846,
+        "high": 73.3762293152256
+      },
+      "tokenReductionPercent": 65.61847366386066,
+      "tokenReductionPercent95": {
+        "low": 50.80232961453874,
+        "high": 81.55624868587225
+      }
+    }
+  ],
+  "limitations": [
+    "Claims apply only to the frozen repositories, tasks, candidate, model configuration, and 2 continuation treatments.",
+    "Each workflow observation includes the matched Phase 1 checkpoint cost plus its Phase 2 continuation cost; under the intent-to-treat estimand, a known failed provider attempt remains assigned as a non-completion and its retained provider usage stays in the numerator.",
+    "A runtime-unavailable row is not treated as a failed task; it makes the corresponding completion intervals unavailable.",
+    "Missing provider or elapsed accounting makes the corresponding efficiency estimate unavailable rather than treating the failure as cheap.",
+    "Repository-cluster bootstrap intervals describe this held-out corpus and do not establish population validity beyond it.",
+    "Attempt order was randomized but not position-balanced (files-bare: 1 at position 1, 4 at position 2; threadnote-preloaded-resume: 4 at position 1, 1 at position 2); order effects may influence the paired estimates.",
+    "Manual handoff is an oracle-like control; preloaded Threadnote continuation is the primary comparison.",
+    "Raw prompts, transcripts, local paths, and handoff contents remain outside this publishable report."
+  ],
+  "primaryComparison": {
+    "baseline": "files-bare",
+    "target": "threadnote-preloaded-resume"
+  },
+  "sourceEvidence": {
+    "corpusHash": "704d46b7386561807d9393403daadad4675c5e9f61a180506b6afa3af9ca7046",
+    "exposureAuditSha256": "75c28f28bea0b5f041bc31ec17a82099e096fa7221046b411a83c3bc7378de86",
+    "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+    "matchedPreparationReceiptSha256": "76f2d84a708d396ebe0e63451bdefc6a6a11bb7dfe05ab6af50d253d299d8685",
+    "matchedStudyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+    "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0"
+  },
+  "sharedCheckpointAccounting": {
+    "elapsedMilliseconds": 391659,
+    "providerTokens": {
+      "cachedInputTokens": 508416,
+      "inputTokens": 624535,
+      "outputTokens": 10062,
+      "reasoningOutputTokens": 1842,
+      "totalTokens": 634597
+    }
+  },
+  "studyHash": "945b5466e0c2f86af7052916f2c29199dd7f913d01b94b427b39d285047a8046",
+  "supportedClaims": [
+    "Preloaded Threadnote continuation reduced failure-inclusive provider tokens per deterministically verified completion by 65.62% versus files-only while satisfying the preregistered token, completion, and safety gates on study threadnote-continuation-v19-final."
+  ],
+  "variants": [
+    {
+      "assigned": 5,
+      "authorizationLeaks": 0,
+      "completed": 5,
+      "failed": 0,
+      "falseCurrentOutcomes": 3,
+      "fullLifecycleMilliseconds": 1141500,
+      "fullLifecycleMillisecondsPerVerifiedCompletion": 285375,
+      "fullLifecycleProviderTokens": {
+        "cachedInputTokens": 2642944,
+        "inputTokens": 2982959,
+        "outputTokens": 32707,
+        "reasoningOutputTokens": 7907,
+        "totalTokens": 3015666
+      },
+      "harmfulActions": 0,
+      "hybridVerifiedCompletions": 4,
+      "invalid": 0,
+      "missingElapsedAccounting": 0,
+      "missingProviderUsage": 0,
+      "phaseOneElapsedMilliseconds": 391659,
+      "phaseOneProviderTokens": {
+        "cachedInputTokens": 508416,
+        "inputTokens": 624535,
+        "outputTokens": 10062,
+        "reasoningOutputTokens": 1842,
+        "totalTokens": 634597
+      },
+      "phaseTwoElapsedMilliseconds": 749841,
+      "phaseTwoProviderTokens": {
+        "cachedInputTokens": 2134528,
+        "inputTokens": 2358424,
+        "outputTokens": 22645,
+        "reasoningOutputTokens": 6065,
+        "totalTokens": 2381069
+      },
+      "tokensPerVerifiedCompletion": 753916.5,
+      "unassessed": 0,
+      "unavailable": 0,
+      "variant": "files-bare",
+      "verifiedCompletionRate": 0.8,
+      "verifiedCompletions": 4
+    },
+    {
+      "assigned": 5,
+      "authorizationLeaks": 0,
+      "completed": 5,
+      "failed": 0,
+      "falseCurrentOutcomes": 3,
+      "fullLifecycleMilliseconds": 768510,
+      "fullLifecycleMillisecondsPerVerifiedCompletion": 153702,
+      "fullLifecycleProviderTokens": {
+        "cachedInputTokens": 1074432,
+        "inputTokens": 1278258,
+        "outputTokens": 17782,
+        "reasoningOutputTokens": 3924,
+        "totalTokens": 1296040
+      },
+      "harmfulActions": 0,
+      "hybridVerifiedCompletions": 5,
+      "invalid": 0,
+      "missingElapsedAccounting": 0,
+      "missingProviderUsage": 0,
+      "phaseOneElapsedMilliseconds": 391659,
+      "phaseOneProviderTokens": {
+        "cachedInputTokens": 508416,
+        "inputTokens": 624535,
+        "outputTokens": 10062,
+        "reasoningOutputTokens": 1842,
+        "totalTokens": 634597
+      },
+      "phaseTwoElapsedMilliseconds": 376851,
+      "phaseTwoProviderTokens": {
+        "cachedInputTokens": 566016,
+        "inputTokens": 653723,
+        "outputTokens": 7720,
+        "reasoningOutputTokens": 2082,
+        "totalTokens": 661443
+      },
+      "tokensPerVerifiedCompletion": 259208,
+      "unassessed": 0,
+      "unavailable": 0,
+      "variant": "threadnote-preloaded-resume",
+      "verifiedCompletionRate": 1,
+      "verifiedCompletions": 5
+    }
+  ],
+  "version": 1,
+  "workflowAccounting": "phase-one-plus-phase-two-per-attempt",
+  "reportHash": "4a491c64ea2af984d0b79f2001fdbcad903a95b0171d7eea0763bb067bf35c49"
+}

@@ -1,0 +1,36 @@
+diff --git a/routes_test.go b/routes_test.go
+index e9a8925..2157e44 100644
+--- a/routes_test.go
++++ b/routes_test.go
+@@ -87,6 +87,31 @@ func testRouteNotOK2(method string, t *testing.T) {
+ 	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
+ }
+ 
++func TestIssue4818_MethodNotAllowedLookupDoesNotPanic(t *testing.T) {
++	router := New()
++	router.HandleMethodNotAllowed = true
++	handler := func(c *Context) {}
++
++	router.OPTIONS("/:p0/:p1/a/:p2", handler)
++	router.GET("/:p0/:p1/a/:p2", handler)
++	router.PATCH("/b/:p0/:p1/c", handler)
++	router.DELETE("/b/:p0/:p1/d/:p3", handler)
++	router.GET("/b/:p0/:p1/e/f", handler)
++	router.POST("/b/:p0/:p1/g/:p4/h", handler)
++	router.OPTIONS("/b/:p0/:p1/g/:p4/h", handler)
++	router.DELETE("/b/cache", handler)
++	router.GET("/b/clients/:p1/g", handler)
++	router.POST("/b/clients/:p1/g", handler)
++	router.PATCH("/b/clients/:p1/g/:p4", handler)
++	router.OPTIONS("/b/clients/:p1/g/:p4", handler)
++
++	var w *httptest.ResponseRecorder
++	assert.NotPanics(t, func() {
++		w = PerformRequest(router, http.MethodPost, "/b/clients/42")
++	})
++	assert.Equal(t, http.StatusNotFound, w.Code)
++}
++
+ // TestRouteQuery tests that a QUERY route is invoked and can read the request
+ // body, which is the whole point of the method (RFC 10008).
+ func TestRouteQuery(t *testing.T) {

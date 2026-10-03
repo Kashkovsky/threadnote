@@ -1,0 +1,135 @@
+{
+  "attempts": [
+    {
+      "blindLabel": "A",
+      "runNonce": "run_fd9e151b26af4308ec5356b60d20bec1",
+      "runOrder": 1,
+      "variant": "threadnote-preloaded-resume"
+    },
+    {
+      "blindLabel": "B",
+      "runNonce": "run_2ef1bfb5beec05fb5d3a61e40c20814d",
+      "runOrder": 2,
+      "variant": "files-bare"
+    }
+  ],
+  "candidate": {
+    "toolArtifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+    "toolVersion": "5.1.0-beta.2"
+  },
+  "checkpoint": {
+    "automaticHandoffUri": "threadnote://user/evaluation-user/memories/handoffs/active/threadnote/continuation-tsk_3e2e9ab2f03a7d743856d6fd.md",
+    "handoff": "Task: threadnote-resume-30c04e319859e54b2316. skippedNodes ownership lifecycle and all getValue call sites\nDecisions: Phase 1 added only the committed regression in routes_test.go; production code is unchanged.\nObserved: Added TestIssue4818_MethodNotAllowedLookupDoesNotPanic with the specified method-tree matrix; POST /b/clients/42 panics because gin.go reuses c.skippedNodes across method-tree getValue calls (routes_test.go:89-113; gin.go:744-781; tree.go:418-470).\nRejected hypothesis: The failure is not an ordinary unmatched-path 404 regression; the focused verifier reproduced a panic during method-not-allowed probing before a response was produced.\nVerified invariant: The focused check reaches the reported defect with the exact route set and request, and the regression is confined to routes_test.go.\nUntested invariant: After clearing the stack per lookup, unmatched paths must return 404 while matched alternate methods return 405 with the correct Allow header.\nUnresolved: Determine the production fix location that preserves the pooled skipped-node backing allocation while resetting its logical length before each getValue lookup.\nGraph question: Which context lifecycle and lookup call sites share c.skippedNodes, and where can its length be reset without changing normal route backtracking semantics?\nGraph query: skippedNodes ownership lifecycle and all getValue call sites\nAnchors: regression routes_test.go:89-113; source gin.go:744-781, tree.go:418-470\nAttempted: Phase 1 added the regression, inspected the cited production path, narrowed the diagnosis, and stopped before the production fix.\nConstraints: Keep the committed regression unchanged, preserve public behavior, use no network access, and implement the smallest general production correction.\nRationale: The direct-child checkpoint isolates cross-session continuation from initial test discovery and makes every treatment start from the same failing regression.\nVerification: v19-verifier.py gin fails with exit code 1 at this checkpoint, as required before the production fix.\nBlockers: none.\nAvoid repeat: The sealed baseline failure is already established; do not rerun it before changing production code. Do not reread unchanged cited anchors. First run exactly one inspect_code_graph query using the Graph query above, then inspect only the source needed to resolve the named gap.\nRisks: Adjacent compatibility behavior may encode the old implementation and must remain covered by the sealed Phase 2 checks.\nNext step: First inspect_code_graph query: skippedNodes ownership lifecycle and all getValue call sites. Then resolve the named gap, implement the smallest general correction, and run the sealed check.",
+    "handoffSha256": "10c0a3b33643fa0ed16c2444d2d5a1857875a9f4025bc189446dd61b79a5e054",
+    "phaseOneAccounting": {
+      "elapsedMilliseconds": 103875,
+      "providerTokens": {
+        "cachedInputTokens": 127744,
+        "inputTokens": 152049,
+        "outputTokens": 2285,
+        "reasoningOutputTokens": 301,
+        "totalTokens": 154334
+      },
+      "providerTokensMeasured": true
+    },
+    "repositoryFixtureHash": "5fda22c2e68fae8715b888280027d9fc6053929ed7957c9f660925ae39c0bec2",
+    "repositoryRevision": "07e522f9eb5881d76410bb802eb040d25e08bb96",
+    "resumeEvidenceMarker": "threadnote-resume-30c04e319859e54b2316",
+    "automaticHandoffReadSha256": "0f3c9c881a5ee6d97a6c264a625c54c2ee7675036e0d421a7c1beac0d4b73a32",
+    "adapterConfigurations": {
+      "threadnoteCompactSha256": "b28736122f64ed76524ea12fa567a086324028dabbf2130b027304423814752c",
+      "threadnoteGraphSha256": "1033fadd79776cef443f9773becbfd503c79304bf964f662fb0c911da3e0d289"
+    },
+    "phaseOnePatchSha256": "30c04e319859e54b23164864fd23b0c3b7f0b8a13b84b78d3282013b83785247",
+    "phaseOneExecution": {
+      "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+      "adapterConfigurationFileSha256": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterProtocol": "matched-evaluation-adapter-v5",
+      "appServerExecutableSha256": "5e29ab10ca1171be158f7335dd6bd8ce1aaf9af1556939db36a5ee338be6f5f2",
+      "appServerVersion": "codex-cli 0.144.5",
+      "artifactSha256": "015c5cae7899b06cc6f468ccade78875ee0c7ea3e3134ff409ed0b608b6b6b56",
+      "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+      "model": {
+        "id": "gpt-5.6-luna",
+        "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+        "provider": "openai",
+        "reasoningEffort": "low"
+      },
+      "requestSha256": "b44c3a932f56b400525f8cd4650bcdfa4a33240d899b1b9c6d714974d6ff64ee",
+      "responseSha256": "47a37208d5053122d847b9101f23ddbc6fcc675e1666a2818f09a44fd67b7eb1",
+      "runNonce": "run_ecc5f06664b059a7eeb57ef4f2833a55",
+      "transcriptHash": "f67140fbd5cb9e489fd2576f08253aa8dc593bbee84063568a57fe5ab6edd38b",
+      "transcriptSha256": "f67140fbd5cb9e489fd2576f08253aa8dc593bbee84063568a57fe5ab6edd38b"
+    },
+    "phaseOnePrompt": "With `HandleMethodNotAllowed` enabled and several method trees containing wildcard alternatives, a missing path can panic in radix-tree lookup because skipped-node backtracking entries accumulate across successive method-tree searches. Make each `getValue` lookup start with an empty skipped-node stack while retaining the pooled allocation. Preserve correct 404 behavior for an unmatched path and 405 behavior, including the `Allow` header, when another method is registered. Add focused stress coverage across many method trees.\n\nPhase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Name the focused regression with the prefix `TestIssue4818_`. Reproduce the fixed-method-tree failure with OPTIONS and GET on `/:p0/:p1/a/:p2`; PATCH on `/b/:p0/:p1/c`; DELETE on `/b/:p0/:p1/d/:p3`; GET on `/b/:p0/:p1/e/f`; POST and OPTIONS on `/b/:p0/:p1/g/:p4/h`; DELETE on `/b/cache`; GET and POST on `/b/clients/:p1/g`; and PATCH and OPTIONS on `/b/clients/:p1/g/:p4`. Assert that POST `/b/clients/42` does not panic and returns 404. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.\nCONTINUATION DIAGNOSIS/1\nAdd the failing regression and inspect the production source deeply enough to leave a decision-grade diagnosis, but do not edit production code or implement the fix.\nYour citations must include both the changed regression and at least one unchanged production-source anchor.\nWrite the summary as exactly these seven nonempty lines:\nDiagnosis: <source-grounded conclusion>\nRejected hypothesis: <attempted explanation that evidence ruled out or narrowed>\nVerified invariant: <behavior established by source or the focused check>\nUntested invariant: <important behavior still requiring verification>\nUnresolved gap: <one exact decision still blocking the production fix>\nGraph question: <one bounded source-relationship question whose answer advances that decision>\nGraph query: <one concise inspect_code_graph query for that question>\n\nRequired focused check (run exactly as written; do not change its flags or selector):\nv19-verifier.py gin",
+    "phaseOnePromptSha256": "379bc363c826a1872d5904bae7b34b9b092837c1c9eb82b3cc648bc5916db222",
+    "preparedContext": {
+      "graphContentHash": "67e6b5f80f3841fa3ae4bca241b1a789c4089fe8074db4fdba894b458a027482",
+      "graphSnapshotHash": "a3433b09e04d214a638dbe5d01123098c6e01d6f177478254f66214a951b2dba",
+      "linkReceiptsHash": "b03515dfc7e507418d6efd1fe8cbdc8c34e78c9b9fefecddbc0d333679b6431b",
+      "taskContextHash": "2bfc083578b605747a0e350f7e45671dce8710bda9e004456eed9f083498126b"
+    },
+    "diagnosticEvidence": {
+      "diagnosticConclusion": "Added TestIssue4818_MethodNotAllowedLookupDoesNotPanic with the specified method-tree matrix; POST /b/clients/42 panics because gin.go reuses c.skippedNodes across method-tree getValue calls (routes_test.go:89-113; gin.go:744-781; tree.go:418-470).",
+      "graphQuery": "skippedNodes ownership lifecycle and all getValue call sites",
+      "graphQuestion": "Which context lifecycle and lookup call sites share c.skippedNodes, and where can its length be reset without changing normal route backtracking semantics?",
+      "rejectedHypothesis": "The failure is not an ordinary unmatched-path 404 regression; the focused verifier reproduced a panic during method-not-allowed probing before a response was produced.",
+      "sourceCitations": [
+        {
+          "endLine": 781,
+          "path": "gin.go",
+          "startLine": 744
+        },
+        {
+          "endLine": 470,
+          "path": "tree.go",
+          "startLine": 418
+        }
+      ],
+      "unresolvedGap": "Determine the production fix location that preserves the pooled skipped-node backing allocation while resetting its logical length before each getValue lookup.",
+      "untestedInvariant": "After clearing the stack per lookup, unmatched paths must return 404 while matched alternate methods return 405 with the correct Allow header.",
+      "verifiedInvariant": "The focused check reaches the reported defect with the exact route set and request, and the regression is confined to routes_test.go."
+    },
+    "preparedGraphHome": {
+      "fixtureHash": "1a69807ebed617e00b89218c54d3ee5875f3614a9923c43099b21f6a85d2da8b",
+      "identitySha256": "a233cf30c08635547ce64a47e0e22044d2791b4ca683a7005b8d2b678ec72ec4"
+    },
+    "preparedHome": {
+      "fixtureHash": "1574499b88f704ed664447687bbed6c97b8b89a6922a861278af1d6286b3f6a2",
+      "identitySha256": "a233cf30c08635547ce64a47e0e22044d2791b4ca683a7005b8d2b678ec72ec4"
+    }
+  },
+  "retries": 0,
+  "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+  "phaseTwoPrompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+  "phaseTwoPromptSha256": "465d670de843de10bedb8691407924fe38917e9654463b28c707817300b2b4c0",
+  "sourceTask": {
+    "prompt": "With `HandleMethodNotAllowed` enabled and several method trees containing wildcard alternatives, a missing path can panic in radix-tree lookup because skipped-node backtracking entries accumulate across successive method-tree searches. Make each `getValue` lookup start with an empty skipped-node stack while retaining the pooled allocation. Preserve correct 404 behavior for an unmatched path and 405 behavior, including the `Allow` header, when another method is registered. Add focused stress coverage across many method trees.",
+    "promptSha256": "44301e3ccf7ba64929abd47ebec31b686ac8fd03df80adc0653cfd32b876df89",
+    "repositoryFixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+    "repositoryRevision": "d8f2d588d7573b3438cfc95b7a47f9ec8966273c",
+    "taskId": "tsk_3e2e9ab2f03a7d743856d6fd"
+  },
+  "phaseTwoVerification": {
+    "checks": [
+      {
+        "allowedBaselineFailureIds": [],
+        "checkId": "15b3306f5ed5f56c9ef1fb374b8edd339a5463b625b48c5c9f85f85f1cd2b600",
+        "commandTokens": [
+          "v19-verifier.py",
+          "gin"
+        ],
+        "diagnosticParser": "threadnote-verifier-v1",
+        "policy": "must-pass"
+      }
+    ],
+    "protectedPaths": [
+      "routes_test.go"
+    ],
+    "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+    "version": 1,
+    "planHash": "5c3356a9bb4ec1fbed64c8ac5f00525da18bab48ec815d6348b5a1b420255086"
+  },
+  "version": 4
+}

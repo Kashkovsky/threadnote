@@ -1,0 +1,383 @@
+{
+  "artifactHash": "b2c3e05dc7cd152b71ac9a41e905c009a34bc314840822d56ef23e2cfb0db831",
+  "metrics": {
+    "auditability": {
+      "citations": 1,
+      "resolvableCitations": 1
+    },
+    "completion": {
+      "completed": true
+    },
+    "context": null,
+    "correctness": {
+      "judge": "blinded-rubric-v1",
+      "judgeCompleted": true,
+      "scoreMilli": 550
+    },
+    "drift": {
+      "falseCurrentOutcomes": 1
+    },
+    "providerCostMicros": null,
+    "retrieval": {
+      "recalledEvidence": 0,
+      "requiredEvidence": 1
+    },
+    "safety": {
+      "authorizationLeaks": 0,
+      "blockedActions": 5,
+      "harmfulActions": 0
+    },
+    "sourceSupport": {
+      "requiredClaims": 1,
+      "supportedClaims": 1
+    },
+    "timing": {
+      "agentTaskMilliseconds": 94105,
+      "deterministicVerifierMilliseconds": 9333,
+      "endToEndMilliseconds": 121235,
+      "firstSufficientEvidenceMilliseconds": null,
+      "judgeSetupMilliseconds": 2,
+      "judgeTurnMilliseconds": 13817,
+      "preparationMilliseconds": 3978
+    },
+    "usage": {
+      "attribution": {
+        "completedItemBytes": {
+          "agentMessage": 1089,
+          "commandExecution": 41039,
+          "fileChange": 2328,
+          "mcpToolCall": 0,
+          "other": 1245,
+          "reasoning": 2461
+        },
+        "firstSufficientEvidenceMilliseconds": null,
+        "graphRequests": [],
+        "lastTwoModelCallTokens": {
+          "cacheWriteTokens": null,
+          "cachedInputTokens": 45568,
+          "outputTokens": 172,
+          "rawInputTokens": 47043,
+          "reasoningOutputTokens": 23,
+          "totalTokens": 47215,
+          "newTokens": null,
+          "processedTokens": null,
+          "uncachedInputTokens": 1475
+        },
+        "modelCallCount": 23,
+        "modelCalls": [
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 7936,
+            "rawInputTokens": 10939,
+            "outputTokens": 198,
+            "reasoningOutputTokens": 25,
+            "totalTokens": 11137,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 3003
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 9984,
+            "rawInputTokens": 11627,
+            "outputTokens": 143,
+            "reasoningOutputTokens": 31,
+            "totalTokens": 11770,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1643
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 11008,
+            "rawInputTokens": 11838,
+            "outputTokens": 117,
+            "reasoningOutputTokens": 15,
+            "totalTokens": 11955,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 830
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 11008,
+            "rawInputTokens": 11978,
+            "outputTokens": 164,
+            "reasoningOutputTokens": 28,
+            "totalTokens": 12142,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 970
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 11008,
+            "rawInputTokens": 13335,
+            "outputTokens": 157,
+            "reasoningOutputTokens": 24,
+            "totalTokens": 13492,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 2327
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 13056,
+            "rawInputTokens": 14899,
+            "outputTokens": 167,
+            "reasoningOutputTokens": 45,
+            "totalTokens": 15066,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1843
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 14080,
+            "rawInputTokens": 15144,
+            "outputTokens": 129,
+            "reasoningOutputTokens": 10,
+            "totalTokens": 15273,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1064
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 14080,
+            "rawInputTokens": 15601,
+            "outputTokens": 148,
+            "reasoningOutputTokens": 15,
+            "totalTokens": 15749,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1521
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 15104,
+            "rawInputTokens": 15838,
+            "outputTokens": 118,
+            "reasoningOutputTokens": 8,
+            "totalTokens": 15956,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 734
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 15104,
+            "rawInputTokens": 16757,
+            "outputTokens": 196,
+            "reasoningOutputTokens": 91,
+            "totalTokens": 16953,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1653
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 16128,
+            "rawInputTokens": 17014,
+            "outputTokens": 282,
+            "reasoningOutputTokens": 147,
+            "totalTokens": 17296,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 886
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 16128,
+            "rawInputTokens": 17385,
+            "outputTokens": 126,
+            "reasoningOutputTokens": 17,
+            "totalTokens": 17511,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1257
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 7936,
+            "rawInputTokens": 18276,
+            "outputTokens": 890,
+            "reasoningOutputTokens": 592,
+            "totalTokens": 19166,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 10340
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 17152,
+            "rawInputTokens": 19187,
+            "outputTokens": 142,
+            "reasoningOutputTokens": 38,
+            "totalTokens": 19329,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 2035
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 18176,
+            "rawInputTokens": 19566,
+            "outputTokens": 145,
+            "reasoningOutputTokens": 23,
+            "totalTokens": 19711,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1390
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 19200,
+            "rawInputTokens": 20419,
+            "outputTokens": 419,
+            "reasoningOutputTokens": 221,
+            "totalTokens": 20838,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1219
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 20224,
+            "rawInputTokens": 20862,
+            "outputTokens": 131,
+            "reasoningOutputTokens": 27,
+            "totalTokens": 20993,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 638
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 20224,
+            "rawInputTokens": 21490,
+            "outputTokens": 240,
+            "reasoningOutputTokens": 115,
+            "totalTokens": 21730,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1266
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 21248,
+            "rawInputTokens": 22264,
+            "outputTokens": 107,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 22371,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1016
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 21248,
+            "rawInputTokens": 22700,
+            "outputTokens": 544,
+            "reasoningOutputTokens": 398,
+            "totalTokens": 23244,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1452
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 22272,
+            "rawInputTokens": 23268,
+            "outputTokens": 160,
+            "reasoningOutputTokens": 13,
+            "totalTokens": 23428,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 996
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 22272,
+            "rawInputTokens": 23452,
+            "outputTokens": 112,
+            "reasoningOutputTokens": 8,
+            "totalTokens": 23564,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 1180
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 23296,
+            "rawInputTokens": 23591,
+            "outputTokens": 60,
+            "reasoningOutputTokens": 15,
+            "totalTokens": 23651,
+            "newTokens": null,
+            "processedTokens": null,
+            "uncachedInputTokens": 295
+          }
+        ],
+        "modelVisibleBytes": {
+          "completedItemBytes": 48162,
+          "promptBytes": 1944,
+          "totalBytes": 50106
+        },
+        "postSufficientEvidence": null,
+        "repeatedToolCalls": {
+          "commandExecution": 17,
+          "contextBrief": 0,
+          "fileChange": 3,
+          "inspectCodeGraph": 0,
+          "readContext": 0,
+          "recallContext": 0
+        },
+        "tokens": {
+          "cacheWriteTokens": null,
+          "cachedInputTokens": 367872,
+          "outputTokens": 4895,
+          "rawInputTokens": 407430,
+          "reasoningOutputTokens": 1906,
+          "totalTokens": 412325,
+          "newTokens": null,
+          "processedTokens": null,
+          "uncachedInputTokens": 39558
+        }
+      },
+      "modelVisibleBytes": 50106,
+      "modelVisibleTokens": 407430,
+      "providerTokens": {
+        "cachedInputTokens": 367872,
+        "inputTokens": 407430,
+        "outputTokens": 4895,
+        "reasoningOutputTokens": 1906,
+        "totalTokens": 412325
+      },
+      "redundantFileReads": 5,
+      "toolTurns": 22
+    },
+    "validity": {
+      "failureCount": 0,
+      "valid": true
+    },
+    "verification": {
+      "artifactHash": "b2c3e05dc7cd152b71ac9a41e905c009a34bc314840822d56ef23e2cfb0db831",
+      "diagnosticHash": "7d177c533c096777e43be662df09775a8b502c0421ac8b9c0caa3daba398053e",
+      "durationMilliseconds": 6115,
+      "environmentHash": "2084a2ddc72485a8c9bf9bd911c38511e4b7684fd627ceca777e219798d1c237",
+      "exitCode": 0,
+      "interpreterHash": "7b05d803bbc1bbfc81644af4faf2b88f0a37b8de96b9f42c1e08033e2cd0848a",
+      "planHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+      "runnerHash": "604ff297a3cf1ba24653dfc93870a38e9c4fc873f0d4b35c304c7efbba318b6c",
+      "sandboxExecutableHash": "4b65c7cbdfb11fd6199b8587d6f0334fe9277958be55d0168e29836d867b4866",
+      "status": "passed",
+      "taskId": "tsk_8b02783134c4b12b327add82",
+      "verificationId": "de6642cd49bd0eb660eb5a5e81be449ec02ad0ad4058a91a6b2cabdf45667345",
+      "version": 1,
+      "receiptHash": "baf876e3d782192cdb51ed0abda86b42881c76d6532c654158e45e8228fc020a"
+    }
+  },
+  "transcriptHash": "7d7bb451ad7e81fbd44ad3fa74cf76c8719ed99537a550fb576c6e6c52b56c1b",
+  "version": 5
+}

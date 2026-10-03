@@ -1,0 +1,9 @@
+{
+  "appliedAndReverted": true,
+  "approvedActions": 7,
+  "receiptHash": "f265d873f9de8a139ee609977cd81aa86666cbd7420bac47359591bd63f64e70",
+  "rejectedActions": 4,
+  "sourcePath": ".devcontainer/devcontainer.json",
+  "sourceReadSha256": "a6fb08fda1acb957b6116bd37811a1fe41a01611c0631edbf786d6889a27a55c",
+  "version": 1
+}

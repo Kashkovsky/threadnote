@@ -1,0 +1,109 @@
+{
+  "tasks": [
+    {
+      "appliedPaths": [
+        "tree.go"
+      ],
+      "baseFixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+      "baseRevision": "d8f2d588d7573b3438cfc95b7a47f9ec8966273c",
+      "commands": [
+        {
+          "commandHash": "e1c311d6b477aa7b597dbd9df21b8242ecd1b30e0205b5695cb319ce8df9966a",
+          "diagnosticHash": "6a6c56bebecb5740463cbb31bbcf68aa0f9cb1a90b162813ba1b7c4e1cf570f5",
+          "exitCode": 0
+        }
+      ],
+      "fixRevision": "3b08cd7235bd5ad2f055aa9e38135f111f6c5926",
+      "fixFixtureHash": "cdfdfd2012bba0cbed7a8f834caf127a72b8580a67a328f191edcf42f4cb4098",
+      "protectedPaths": [
+        "routes_test.go"
+      ],
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd"
+    },
+    {
+      "appliedPaths": [
+        "CHANGES.md",
+        "src/click/utils.py"
+      ],
+      "baseFixtureHash": "cf735873115f4962330218946edd4428637acc302be18c3511e1fa9c7cfaea32",
+      "baseRevision": "d036881798e34289a49b18a5c550c7cf687e5a7a",
+      "commands": [
+        {
+          "commandHash": "8acdb79b6b08ece1e07fd7870e1e71f412f7a9c9730078975e0d6680d2a5b5fb",
+          "diagnosticHash": "7f337cd75cb4902499165956f1ed7e5c897da866a011b7c61b87043eeb2d74d6",
+          "exitCode": 0
+        }
+      ],
+      "fixRevision": "70689853e39c30e36eb0d83d586cc914a74db9d3",
+      "fixFixtureHash": "031afd2ac9a0066d7ee8284dd50f85f5e58f262b547b48c9c0822d5a8bec31ee",
+      "protectedPaths": [
+        "tests/test_utils/test_make_default_short_help.py"
+      ],
+      "taskId": "tsk_6f8c95b80697e7612413ed04"
+    },
+    {
+      "appliedPaths": [
+        "tree.go"
+      ],
+      "baseFixtureHash": "a27735dae0269d1e60732cfaa010b04200928592ff50171f9eadf117ebb66f4e",
+      "baseRevision": "bc02284e9db220c644912320fe1db6bc9b4a087c",
+      "commands": [
+        {
+          "commandHash": "a888b3dfd291234153f0d0c60bcc41f236a0c387cfcaba9b1922a3388f9b6a36",
+          "diagnosticHash": "adbdb9ce1fa6089697f92e480086cb7d469734892bfbc560966d2fc053487d31",
+          "exitCode": 0
+        }
+      ],
+      "fixRevision": "29164f023bf9319e74d5961a21a712653bb98c83",
+      "fixFixtureHash": "5bce70c6724a3617ebf260dc9340d129332caec2f3d58f764e613c4ddc545249",
+      "protectedPaths": [
+        "tree_test.go"
+      ],
+      "taskId": "tsk_8b02783134c4b12b327add82"
+    },
+    {
+      "appliedPaths": [
+        "src/pluggy/_hooks.py",
+        "src/pluggy/_manager.py"
+      ],
+      "baseFixtureHash": "89af053a162e2516689656fd1d2cbd0cc3321280d386ea3cbfbbc32d7d078d72",
+      "baseRevision": "6e1d0f13a259776bbf137f90bd7ab8b4474f68e7",
+      "commands": [
+        {
+          "commandHash": "dfc53aa9498d0b730ec4fc3885d7212e5fbf40296d8dd8d8b1196c423a62136a",
+          "diagnosticHash": "c99157db92cde45bf074fbe1d1704ede4a93422674c408bb9b359fe8febbc0fe",
+          "exitCode": 0
+        }
+      ],
+      "fixRevision": "20d8143f127a4d7526dbbea441857b4b80ec8bdd",
+      "fixFixtureHash": "261b92e9190a3ff3b78dff2f1624b8c7a51e9d96b9d7140628fcea71d8f5e189",
+      "protectedPaths": [
+        "changelog/431.bugfix.rst",
+        "testing/test_pluginmanager.py"
+      ],
+      "taskId": "tsk_a009739c16abeecaeafe13cb"
+    },
+    {
+      "appliedPaths": [
+        "rfc9457.go"
+      ],
+      "baseFixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+      "baseRevision": "90702e71a7cde342da70b1f97e8e6420c509f939",
+      "commands": [
+        {
+          "commandHash": "8cf9a115dd788ff60c81e478e32ba585af09ebd95d4671d072b4ff78c91acba8",
+          "diagnosticHash": "b792df0d406b739528bea52596f68f3a6de5e41468243de15a619e7d4a0f0674",
+          "exitCode": 0
+        }
+      ],
+      "fixRevision": "df5edd9146e40342726d71cbb71300b7fea096d0",
+      "fixFixtureHash": "ca86ef52e168401823bce8b60b3665251c71b42b4eaa6c96cdaba6f8c50172fc",
+      "protectedPaths": [
+        "rfc9457_test.go"
+      ],
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed"
+    }
+  ],
+  "version": 1,
+  "receiptHash": "35796d2c2e9a7432a1392ccd1cf1a8bbf3dff76381887ba216d1ba005cb3ffc4"
+}

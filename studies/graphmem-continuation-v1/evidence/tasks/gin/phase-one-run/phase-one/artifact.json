@@ -1,0 +1,37 @@
+{
+  "agentResult": {
+    "citations": [
+      {
+        "endLine": 113,
+        "path": "routes_test.go",
+        "startLine": 89
+      },
+      {
+        "endLine": 781,
+        "path": "gin.go",
+        "startLine": 744
+      },
+      {
+        "endLine": 470,
+        "path": "tree.go",
+        "startLine": 418
+      }
+    ],
+    "completed": true,
+    "summary": "Diagnosis: Added TestIssue4818_MethodNotAllowedLookupDoesNotPanic with the specified method-tree matrix; POST /b/clients/42 panics because gin.go reuses c.skippedNodes across method-tree getValue calls (routes_test.go:89-113; gin.go:744-781; tree.go:418-470).\nRejected hypothesis: The failure is not an ordinary unmatched-path 404 regression; the focused verifier reproduced a panic during method-not-allowed probing before a response was produced.\nVerified invariant: The focused check reaches the reported defect with the exact route set and request, and the regression is confined to routes_test.go.\nUntested invariant: After clearing the stack per lookup, unmatched paths must return 404 while matched alternate methods return 405 with the correct Allow header.\nUnresolved gap: Determine the production fix location that preserves the pooled skipped-node backing allocation while resetting its logical length before each getValue lookup.\nGraph question: Which context lifecycle and lookup call sites share c.skippedNodes, and where can its length be reset without changing normal route backtracking semantics?\nGraph query: inspect_code_graph(\"skippedNodes ownership lifecycle and all getValue call sites\")"
+  },
+  "agentTerminal": null,
+  "arm": "files",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/routes_test.go b/routes_test.go\nindex e9a8925..2157e44 100644\n--- a/routes_test.go\n+++ b/routes_test.go\n@@ -87,6 +87,31 @@ func testRouteNotOK2(method string, t *testing.T) {\n \tassert.Equal(t, http.StatusMethodNotAllowed, w.Code)\n }\n \n+func TestIssue4818_MethodNotAllowedLookupDoesNotPanic(t *testing.T) {\n+\trouter := New()\n+\trouter.HandleMethodNotAllowed = true\n+\thandler := func(c *Context) {}\n+\n+\trouter.OPTIONS(\"/:p0/:p1/a/:p2\", handler)\n+\trouter.GET(\"/:p0/:p1/a/:p2\", handler)\n+\trouter.PATCH(\"/b/:p0/:p1/c\", handler)\n+\trouter.DELETE(\"/b/:p0/:p1/d/:p3\", handler)\n+\trouter.GET(\"/b/:p0/:p1/e/f\", handler)\n+\trouter.POST(\"/b/:p0/:p1/g/:p4/h\", handler)\n+\trouter.OPTIONS(\"/b/:p0/:p1/g/:p4/h\", handler)\n+\trouter.DELETE(\"/b/cache\", handler)\n+\trouter.GET(\"/b/clients/:p1/g\", handler)\n+\trouter.POST(\"/b/clients/:p1/g\", handler)\n+\trouter.PATCH(\"/b/clients/:p1/g/:p4\", handler)\n+\trouter.OPTIONS(\"/b/clients/:p1/g/:p4\", handler)\n+\n+\tvar w *httptest.ResponseRecorder\n+\tassert.NotPanics(t, func() {\n+\t\tw = PerformRequest(router, http.MethodPost, \"/b/clients/42\")\n+\t})\n+\tassert.Equal(t, http.StatusNotFound, w.Code)\n+}\n+\n // TestRouteQuery tests that a QUERY route is invoked and can read the request\n // body, which is the whole point of the method (RFC 10008).\n func TestRouteQuery(t *testing.T) {\n",
+  "patchSha256": "c503c7d22265a097e1926db63422d595a3ef9a7b0e770d27c54c6dcbcfaa7ea4",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+    "identityHash": "32a6812b574138d9a8af93f5d36ad4fd0eaf3b50c4b44e4795f15828181ab6f9",
+    "revision": "d8f2d588d7573b3438cfc95b7a47f9ec8966273c"
+  },
+  "runNonce": "run_ecc5f06664b059a7eeb57ef4f2833a55",
+  "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+  "version": 4
+}

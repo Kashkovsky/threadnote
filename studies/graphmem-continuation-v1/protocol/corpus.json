@@ -1,0 +1,237 @@
+{
+  "corpusId": "threadnote-continuation-v19",
+  "tasks": [
+    {
+      "category": "same-repository-onboarding",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_6f8c95b80697e7612413ed04",
+          "repository": "pallets/click",
+          "source": {"path": "src/click/utils.py", "startLine": 62, "endLine": 112},
+          "status": "active",
+          "text": "Click's default short-help helper first limits input to the first paragraph, collapses whitespace, recognizes an optional no-rewrap marker, detects an early sentence boundary, and then shortens the text under the caller's width. Sentence recognition and width enforcement are coupled in this helper, so abbreviation handling must preserve paragraph, whitespace, marker, and whole-word behavior."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_6f8c95b80697e7612413ed04",
+          "reason": "Nearby wrapping behavior is not the implementation under test.",
+          "text": "Changing HelpFormatter.write_text or terminal-width discovery would bypass the private short-help contract and affect unrelated help rendering."
+        }
+      ],
+      "pairId": null,
+      "prompt": "Click's generated short help treats every word ending in a period as the end of a sentence. This truncates ordinary prose such as `Weigh apples vs. pears and plums.` after `vs.`. Fix short-help generation so a period is a sentence boundary only at the end of the text or when the following word does not start with a lowercase character. Preserve first-paragraph selection, whitespace collapsing, the no-rewrap marker, maximum-length accounting including the `...` suffix, and whole-word behavior: do not split hyphenated or overlong words, and return the suffix even when the configured width is narrower than it. Add focused regression coverage.",
+      "repositoryFixtureHash": "cf735873115f4962330218946edd4428637acc302be18c3511e1fa9c7cfaea32",
+      "rubric": {
+        "completion": "Short-help generation preserves lowercase-following abbreviations while retaining sentence boundaries and robust whole-word width handling.",
+        "criteria": [
+          "An abbreviation such as `vs.` followed by a lowercase word does not end the short help.",
+          "A terminal period and a period followed by uppercase text or a digit still end the first sentence.",
+          "Truncation includes the ellipsis in the width and never splits hyphenated or overlong words, including widths below three."
+        ],
+        "requiredEvidenceIds": ["ev_6f8c95b80697e7612413ed04"]
+      },
+      "sourceGold": [
+        {
+          "claim": "The private helper performs paragraph selection, whitespace normalization, sentence detection, and length-based truncation in one path.",
+          "endLine": 112,
+          "evidenceId": "ev_6f8c95b80697e7612413ed04",
+          "path": "src/click/utils.py",
+          "repository": "pallets/click",
+          "startLine": 62
+        }
+      ],
+      "taskId": "tsk_6f8c95b80697e7612413ed04",
+      "variant": "historical-as-issued"
+    },
+    {
+      "category": "unfamiliar-call-path",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_a009739c16abeecaeafe13cb",
+          "repository": "pytest-dev/pluggy",
+          "source": {"path": "src/pluggy/_hooks.py", "startLine": 438, "endLine": 464},
+          "status": "active",
+          "text": "A Pluggy HookCaller owns an ordered list of HookImpl records. One plugin may contribute multiple implementations to the same hook through specname aliases, while PluginManager derives the plugin's HookCaller roster by scanning those implementation lists. Unregistration and introspection therefore share a one-plugin-to-many-implementations invariant."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_a009739c16abeecaeafe13cb",
+          "reason": "Call execution ordering is adjacent but not the broken lifecycle operation.",
+          "text": "Changing multicall execution or wrapper ordering would not make unregister remove every implementation owned by one plugin."
+        }
+      ],
+      "pairId": null,
+      "prompt": "A plugin can register multiple implementations of the same hook using `specname`. Unregistering that plugin currently removes only one implementation, and `get_hookcallers(plugin)` can return the same HookCaller more than once. Make unregister remove every implementation owned by the plugin while preserving implementation ordering for other plugins, and make `get_hookcallers` return each affected HookCaller exactly once. Add focused regressions covering multiple implementations on one hook and a plugin spanning more than one hook.",
+      "repositoryFixtureHash": "89af053a162e2516689656fd1d2cbd0cc3321280d386ea3cbfbbc32d7d078d72",
+      "rubric": {
+        "completion": "Plugin removal clears all of its implementations and HookCaller introspection is deduplicated without disturbing other registrations.",
+        "criteria": [
+          "Unregister removes two or more same-hook implementations contributed through specname.",
+          "get_hookcallers returns one entry per affected hook even when that hook contains multiple implementations from the plugin.",
+          "Other plugins and hook implementation ordering remain intact, and an absent plugin still follows the established error contract."
+        ],
+        "requiredEvidenceIds": ["ev_a009739c16abeecaeafe13cb", "ev_a009739c16abeecaeafe13cc"]
+      },
+      "sourceGold": [
+        {
+          "claim": "HookCaller._remove_plugin currently deletes the first matching implementation and returns.",
+          "endLine": 451,
+          "evidenceId": "ev_a009739c16abeecaeafe13cb",
+          "path": "src/pluggy/_hooks.py",
+          "repository": "pytest-dev/pluggy",
+          "startLine": 438
+        },
+        {
+          "claim": "PluginManager.get_hookcallers appends once per matching implementation, which can duplicate a caller.",
+          "endLine": 448,
+          "evidenceId": "ev_a009739c16abeecaeafe13cc",
+          "path": "src/pluggy/_manager.py",
+          "repository": "pytest-dev/pluggy",
+          "startLine": 434
+        }
+      ],
+      "taskId": "tsk_a009739c16abeecaeafe13cb",
+      "variant": "historical-as-issued"
+    },
+    {
+      "category": "hidden-architectural-constraint",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_8b02783134c4b12b327add82",
+          "repository": "go-chi/chi",
+          "source": {"path": "tree.go", "startLine": 628, "endLine": 689},
+          "status": "active",
+          "text": "Chi derives Routes and Walk output from endpoint groups keyed by pattern. Route and Mount install synthetic stub handlers to connect subrouters, but a real method handler may share the same visible pattern. Walk also relies on the wildcard handler slot when propagating middleware into a subroute, so filtering stubs must distinguish handler identity without discarding real collisions or recursion state."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_8b02783134c4b12b327add82",
+          "reason": "Request dispatch is not the failing introspection path.",
+          "text": "Changing route matching or HTTP dispatch can mask the symptom but would not correct Routes and Walk enumeration."
+        }
+      ],
+      "pairId": null,
+      "prompt": "Chi's `Routes`/`Walk` introspection drops a real handler when its pattern collides with the synthetic stub installed by `Mount` or `Route`. Correct enumeration so a handler at `/foo/bar` and a mounted subrouter below `/foo/bar/*` are both visible, while the synthetic stub itself is not exposed as a user handler. Preserve recursive subroutes and middleware propagation through Group and Route. Handler values may be functions or other non-comparable implementations, so the fix must not panic when checking identity. Add focused regression coverage.",
+      "repositoryFixtureHash": "a27735dae0269d1e60732cfaa010b04200928592ff50171f9eadf117ebb66f4e",
+      "rubric": {
+        "completion": "Routes and Walk retain real handlers that collide with mount patterns, hide synthetic stubs, and preserve recursion and middleware.",
+        "criteria": [
+          "Walk includes both a concrete handler and the nested handler under the colliding mounted pattern.",
+          "Routes hides the synthetic mount stub while retaining the real method handler and subroute connector.",
+          "Middleware propagation remains correct and handler identity checks are safe for function and non-comparable handler values."
+        ],
+        "requiredEvidenceIds": ["ev_8b02783134c4b12b327add82"]
+      },
+      "sourceGold": [
+        {
+          "claim": "node.routes filters stub endpoints, groups handlers by pattern, projects wildcard and method handlers, and feeds recursive Walk traversal.",
+          "endLine": 689,
+          "evidenceId": "ev_8b02783134c4b12b327add82",
+          "path": "tree.go",
+          "repository": "go-chi/chi",
+          "startLine": 628
+        }
+      ],
+      "taskId": "tsk_8b02783134c4b12b327add82",
+      "variant": "historical-as-issued"
+    },
+    {
+      "category": "stale-citation-refactor",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_3e2e9ab2f03a7d743856d6fd",
+          "repository": "gin-gonic/gin",
+          "source": {"path": "tree.go", "startLine": 407, "endLine": 449},
+          "status": "active",
+          "text": "Gin's radix-tree lookup receives a Context-owned skippedNodes slice and appends alternative branches while walking. The same Context is reused across the method-tree loop used by HandleMethodNotAllowed, so per-lookup backtracking state must not leak between separate root.getValue calls even though the slice capacity is pooled."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_3e2e9ab2f03a7d743856d6fd",
+          "reason": "Context pool allocation is not itself the lookup-state boundary.",
+          "text": "Increasing engine.maxSections or disabling Context pooling only postpones the overflow and does not establish per-tree lookup isolation."
+        }
+      ],
+      "pairId": null,
+      "prompt": "With `HandleMethodNotAllowed` enabled and several method trees containing wildcard alternatives, a missing path can panic in radix-tree lookup because skipped-node backtracking entries accumulate across successive method-tree searches. Make each `getValue` lookup start with an empty skipped-node stack while retaining the pooled allocation. Preserve correct 404 behavior for an unmatched path and 405 behavior, including the `Allow` header, when another method is registered. Add focused stress coverage across many method trees.",
+      "repositoryFixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+      "rubric": {
+        "completion": "Each radix-tree lookup resets pooled backtracking state, eliminating cross-method overflow without changing 404/405 routing semantics.",
+        "criteria": [
+          "The multi-method wildcard reproduction no longer panics and returns 404 for a path with no matching route.",
+          "A path registered under another method still returns 405 with an Allow header.",
+          "The fix reuses the existing skipped-node allocation and remains stable across many method trees."
+        ],
+        "requiredEvidenceIds": ["ev_3e2e9ab2f03a7d743856d6fd", "ev_3e2e9ab2f03a7d743856d6fe"]
+      },
+      "sourceGold": [
+        {
+          "claim": "getValue grows the caller-provided skippedNodes slice while following alternative wildcard branches.",
+          "endLine": 449,
+          "evidenceId": "ev_3e2e9ab2f03a7d743856d6fd",
+          "path": "tree.go",
+          "repository": "gin-gonic/gin",
+          "startLine": 407
+        },
+        {
+          "claim": "handleHTTPRequest reuses the Context skippedNodes pointer across root.getValue calls while scanning method trees.",
+          "endLine": 790,
+          "evidenceId": "ev_3e2e9ab2f03a7d743856d6fe",
+          "path": "gin.go",
+          "repository": "gin-gonic/gin",
+          "startLine": 736
+        }
+      ],
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+      "variant": "historical-as-issued"
+    },
+    {
+      "category": "cross-repository-transfer",
+      "memoryFixtures": [
+        {
+          "memoryId": "mem_fc18a74be8742c6a9d6397ed",
+          "repository": "labstack/echo",
+          "source": {"path": "rfc9457.go", "startLine": 68, "endLine": 128},
+          "status": "active",
+          "text": "Echo's RFC 9457 handler may receive a caller-owned *ProblemError directly or through ProblemErrorer. It fills default status, type, and title immediately before writing either a HEAD no-content response or a JSON response. A reusable sentinel therefore crosses a request boundary and must be treated as input rather than mutable response state."
+        }
+      ],
+      "negativeControls": [
+        {
+          "controlId": "ctl_fc18a74be8742c6a9d6397ed",
+          "reason": "JSON serialization is downstream of the mutation.",
+          "text": "Changing the JSON serializer or ProblemError.StatusCode cannot prevent defaults from being written into the shared input object."
+        }
+      ],
+      "pairId": null,
+      "prompt": "Echo's RFC 9457 error handler mutates a caller-owned `*ProblemError` while applying default status, type, and title. A package-level sentinel reused across requests is therefore permanently changed and can race. Apply defaults only to response-local state, leaving the original problem unchanged. Preserve explicit fields, exposed-detail behavior, response content type, JSON output, and HEAD/no-content status handling. Add focused regression coverage that reuses the same sentinel.",
+      "repositoryFixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+      "rubric": {
+        "completion": "RFC 9457 defaults are applied to a response-local value without mutating reusable ProblemError inputs.",
+        "criteria": [
+          "Serving the same sentinel repeatedly leaves every original field unchanged.",
+          "The response still contains the default about:blank type, status title, configured status, and detail.",
+          "HEAD responses and explicit ProblemError fields preserve their established behavior."
+        ],
+        "requiredEvidenceIds": ["ev_fc18a74be8742c6a9d6397ed"]
+      },
+      "sourceGold": [
+        {
+          "claim": "ProblemDetailsHTTPErrorHandler resolves a ProblemError, writes defaults into it, and then uses it for HEAD or JSON responses.",
+          "endLine": 128,
+          "evidenceId": "ev_fc18a74be8742c6a9d6397ed",
+          "path": "rfc9457.go",
+          "repository": "labstack/echo",
+          "startLine": 68
+        }
+      ],
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+      "variant": "historical-as-issued"
+    }
+  ],
+  "version": 1
+}

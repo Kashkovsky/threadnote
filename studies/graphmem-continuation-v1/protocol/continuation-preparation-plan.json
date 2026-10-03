@@ -1,0 +1,52 @@
+{
+  "bootstrap": {
+    "confidenceLevelBasisPoints": 9500,
+    "iterations": 10000,
+    "seed": "1c5006081593fcea72d63283f2057800c3f38007e605deb6986a8d34d4838dc6"
+  },
+  "exposureAuditPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/exposure-audit.json",
+  "gates": {
+    "completionNonInferiorityBasisPoints": 500,
+    "maximumAuthorizationLeaks": 0,
+    "maximumFalseCurrentOutcomes": 1000,
+    "maximumHarmfulActions": 0,
+    "minimumClusters": 5,
+    "minimumCorrectnessScoreMilli": 0,
+    "minimumTokenReductionBasisPoints": 500
+  },
+  "sourceCommit": "8da0eae878aaedc419319e32fd10fdcb5abccbb1",
+  "studyId": "threadnote-continuation-v19-final",
+  "tasks": [
+    {
+      "clusterId": "cluster_cc386a2d43df6fdd",
+      "pilotDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/click/pilot",
+      "planPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/click/phase-one-run/continuation-plan.json",
+      "runtimePath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/click/phase-one-run/continuation-runtime.json"
+    },
+    {
+      "clusterId": "cluster_bee055c9b9ce1ce3",
+      "pilotDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/pluggy/pilot",
+      "planPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/pluggy/phase-one-run/continuation-plan.json",
+      "runtimePath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/pluggy/phase-one-run/continuation-runtime.json"
+    },
+    {
+      "clusterId": "cluster_f27d359e0c2d0671",
+      "pilotDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/chi/pilot",
+      "planPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/chi/phase-one-run/continuation-plan.json",
+      "runtimePath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/chi/phase-one-run/continuation-runtime.json"
+    },
+    {
+      "clusterId": "cluster_db78cae6e3269e7c",
+      "pilotDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/gin/pilot",
+      "planPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/gin/phase-one-run/continuation-plan.json",
+      "runtimePath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/gin/phase-one-run/continuation-runtime.json"
+    },
+    {
+      "clusterId": "cluster_a084322c85405c82",
+      "pilotDirectory": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/echo/pilot",
+      "planPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/echo/phase-one-run/continuation-plan.json",
+      "runtimePath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/echo/phase-one-run/continuation-runtime.json"
+    }
+  ],
+  "version": 1
+}

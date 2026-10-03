@@ -1,0 +1,51 @@
+{
+  "continuationAttempts": [
+    {
+      "blindLabel": "A",
+      "runNonce": "run_387d8448e65c0e612c5461a3b258957d",
+      "runOrder": 1,
+      "variant": "files-bare"
+    },
+    {
+      "blindLabel": "B",
+      "runNonce": "run_3eb38cfd490f353f69d401faeda728bb",
+      "runOrder": 2,
+      "variant": "threadnote-preloaded-resume"
+    }
+  ],
+  "phaseOnePrompt": "Chi's `Routes`/`Walk` introspection drops a real handler when its pattern collides with the synthetic stub installed by `Mount` or `Route`. Correct enumeration so a handler at `/foo/bar` and a mounted subrouter below `/foo/bar/*` are both visible, while the synthetic stub itself is not exposed as a user handler. Preserve recursive subroutes and middleware propagation through Group and Route. Handler values may be functions or other non-comparable implementations, so the fix must not panic when checking identity. Add focused regression coverage.\n\nPhase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Add the focused regression as `TestWalkRouteWithHandlerAndSubrouter`. Build `/foo` with a nested `/bar` Route containing `GET /{id}`, then register `GET /bar` on the `/foo` router; assert that Walk includes both `GET /foo/bar` and `GET /foo/bar/{id}`. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.\nCONTINUATION DIAGNOSIS/1\nAdd the failing regression and inspect the production source deeply enough to leave a decision-grade diagnosis, but do not edit production code or implement the fix.\nYour citations must include both the changed regression and at least one unchanged production-source anchor.\nWrite the summary as exactly these seven nonempty lines:\nDiagnosis: <source-grounded conclusion>\nRejected hypothesis: <attempted explanation that evidence ruled out or narrowed>\nVerified invariant: <behavior established by source or the focused check>\nUntested invariant: <important behavior still requiring verification>\nUnresolved gap: <one exact decision still blocking the production fix>\nGraph question: <one bounded source-relationship question whose answer advances that decision>\nGraph query: <one concise inspect_code_graph query for that question>\n\nRequired focused check (run exactly as written; do not change its flags or selector):\nv19-verifier.py chi",
+  "phaseOnePromptSha256": "3c6b6e2cccb2f37524d585f1d336457e6804d16233e67cbafd8269131c4b10ea",
+  "phaseOneRunNonce": "run_e5cccb0a334cb1233301a5cb2a455e8f",
+  "sourceTask": {
+    "prompt": "Chi's `Routes`/`Walk` introspection drops a real handler when its pattern collides with the synthetic stub installed by `Mount` or `Route`. Correct enumeration so a handler at `/foo/bar` and a mounted subrouter below `/foo/bar/*` are both visible, while the synthetic stub itself is not exposed as a user handler. Preserve recursive subroutes and middleware propagation through Group and Route. Handler values may be functions or other non-comparable implementations, so the fix must not panic when checking identity. Add focused regression coverage.",
+    "promptSha256": "3b137f97079ece44eadc24046046d88ac2cc90cd15f8ee7571211381c5398066",
+    "repositoryFixtureHash": "a27735dae0269d1e60732cfaa010b04200928592ff50171f9eadf117ebb66f4e",
+    "repositoryRevision": "bc02284e9db220c644912320fe1db6bc9b4a087c",
+    "taskId": "tsk_8b02783134c4b12b327add82"
+  },
+  "taskPacket": {
+    "phaseOneAllowedPaths": [
+      "tree_test.go"
+    ],
+    "phaseOneDirective": "Phase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Add the focused regression as `TestWalkRouteWithHandlerAndSubrouter`. Build `/foo` with a nested `/bar` Route containing `GET /{id}`, then register `GET /bar` on the `/foo` router; assert that Walk includes both `GET /foo/bar` and `GET /foo/bar/{id}`. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.",
+    "phaseOneFocusedChecks": [
+      "v19-verifier.py chi"
+    ],
+    "phaseTwoFocusedChecks": [
+      "v19-verifier.py chi"
+    ],
+    "phaseTwoPrompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryName": "chi",
+    "sourceRevision": "bc02284e9db220c644912320fe1db6bc9b4a087c",
+    "sourceTaskPrompt": "Chi's `Routes`/`Walk` introspection drops a real handler when its pattern collides with the synthetic stub installed by `Mount` or `Route`. Correct enumeration so a handler at `/foo/bar` and a mounted subrouter below `/foo/bar/*` are both visible, while the synthetic stub itself is not exposed as a user handler. Preserve recursive subroutes and middleware propagation through Group and Route. Handler values may be functions or other non-comparable implementations, so the fix must not panic when checking identity. Add focused regression coverage.",
+    "status": "draft-unsealed",
+    "taskKey": "chi-walk-route-collision",
+    "phaseTwoProtectedPaths": [
+      "tree_test.go"
+    ],
+    "treatmentSet": "automated-context-graph-v1",
+    "version": 4
+  },
+  "taskPacketSha256": "e320017622ca0281b88d9a229b2c27bd8b40b118d3e9b887e76bccec91350901",
+  "version": 1
+}

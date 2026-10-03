@@ -1,0 +1,74 @@
+{
+  "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+  "adapterProtocol": "matched-evaluation-adapter-v5",
+  "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+  "arm": "files",
+  "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+  "agentTask": {
+    "category": "cross-repository-transfer",
+    "memoryFixtures": [],
+    "prompt": "Echo's RFC 9457 error handler mutates a caller-owned `*ProblemError` while applying default status, type, and title. A package-level sentinel reused across requests is therefore permanently changed and can race. Apply defaults only to response-local state, leaving the original problem unchanged. Preserve explicit fields, exposed-detail behavior, response content type, JSON output, and HEAD/no-content status handling. Add focused regression coverage that reuses the same sentinel.\n\nPhase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Add the focused regression as `TestProblemDetailsHTTPErrorHandler_DoesNotMutateSharedProblem`. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.\nCONTINUATION DIAGNOSIS/1\nAdd the failing regression and inspect the production source deeply enough to leave a decision-grade diagnosis, but do not edit production code or implement the fix.\nYour citations must include both the changed regression and at least one unchanged production-source anchor.\nWrite the summary as exactly these seven nonempty lines:\nDiagnosis: <source-grounded conclusion>\nRejected hypothesis: <attempted explanation that evidence ruled out or narrowed>\nVerified invariant: <behavior established by source or the focused check>\nUntested invariant: <important behavior still requiring verification>\nUnresolved gap: <one exact decision still blocking the production fix>\nGraph question: <one bounded source-relationship question whose answer advances that decision>\nGraph query: <one concise inspect_code_graph query for that question>\n\nRequired focused check (run exactly as written; do not change its flags or selector):\nv19-verifier.py echo",
+    "repositoryFixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+    "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+    "variant": "historical-as-issued"
+  },
+  "artifactPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/echo/phase-one-run/phase-one-execution/runs/run_8b299e760d644ab61006120dcbee4ab3/artifact.json",
+  "blindLabel": "E",
+  "continuationTreatment": null,
+  "judgeTask": {
+    "negativeControls": [
+      {
+        "controlId": "ctl_fc18a74be8742c6a9d6397ed",
+        "reason": "JSON serialization is downstream of the mutation.",
+        "text": "Changing the JSON serializer or ProblemError.StatusCode cannot prevent defaults from being written into the shared input object."
+      }
+    ],
+    "rubric": {
+      "completion": "RFC 9457 defaults are applied to a response-local value without mutating reusable ProblemError inputs.",
+      "criteria": [
+        "Serving the same sentinel repeatedly leaves every original field unchanged.",
+        "The response still contains the default about:blank type, status title, configured status, and detail.",
+        "HEAD responses and explicit ProblemError fields preserve their established behavior."
+      ],
+      "requiredEvidenceIds": [
+        "ev_fc18a74be8742c6a9d6397ed"
+      ]
+    },
+    "sourceGold": [
+      {
+        "claim": "ProblemDetailsHTTPErrorHandler resolves a ProblemError, writes defaults into it, and then uses it for HEAD or JSON responses.",
+        "endLine": 128,
+        "evidenceId": "ev_fc18a74be8742c6a9d6397ed",
+        "path": "rfc9457.go",
+        "repository": "labstack/echo",
+        "startLine": 68
+      }
+    ]
+  },
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "model": {
+    "model": "gpt-5.6-luna",
+    "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+    "provider": "openai"
+  },
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+    "identityHash": "38449e1e0f8dda75617e11f582deb34bd9ffdae521a56887ffbe1c15fdf76abc",
+    "revision": "90702e71a7cde342da70b1f97e8e6420c509f939"
+  },
+  "preparedContext": null,
+  "runNonce": "run_8b299e760d644ab61006120dcbee4ab3",
+  "runOrder": 0,
+  "tool": {
+    "artifactHash": null,
+    "detail": null,
+    "executable": null,
+    "lockIdentityHash": null,
+    "name": "repository-files",
+    "version": "builtin-v1"
+  },
+  "transcriptPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/echo/phase-one-run/phase-one-execution/transcripts/run_8b299e760d644ab61006120dcbee4ab3.jsonl",
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "version": 4
+}

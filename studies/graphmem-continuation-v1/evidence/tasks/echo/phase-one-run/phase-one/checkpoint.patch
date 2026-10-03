@@ -1,0 +1,29 @@
+diff --git a/rfc9457_test.go b/rfc9457_test.go
+index 5902e11bf1d2f3958505600d29cc45ee6e1d4ede..dcddd2a501b8f0dbadbc2a93e35d30020c7af0f9 100644
+--- a/rfc9457_test.go
++++ b/rfc9457_test.go
+@@ -157,6 +157,24 @@ func TestProblemDetailsHTTPErrorHandler(t *testing.T) {
+ 	}
+ }
+ 
++func TestProblemDetailsHTTPErrorHandler_DoesNotMutateSharedProblem(t *testing.T) {
++	sentinel := &ProblemError{}
++	errHandler := ProblemDetailsHTTPErrorHandler(false)
++
++	for range 2 {
++		e := New()
++		req := httptest.NewRequest(http.MethodGet, "/", nil)
++		resp := httptest.NewRecorder()
++		c := e.NewContext(req, resp)
++
++		errHandler(c, sentinel)
++
++		assert.Equal(t, http.StatusInternalServerError, resp.Code)
++		assert.Equal(t, `{"type":"about:blank","title":"Internal Server Error","status":500}`+"\n", resp.Body.String())
++		assert.Equal(t, &ProblemError{}, sentinel)
++	}
++}
++
+ func TestProblemDetailsHTTPErrorHandler_CommittedResponse(t *testing.T) {
+ 	e := New()
+ 	req := httptest.NewRequest(http.MethodGet, "/", nil)

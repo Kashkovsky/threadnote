@@ -1,0 +1,29 @@
+diff --git a/rfc9457_test.go b/rfc9457_test.go
+index 5902e11..dcddd2a 100644
+--- a/rfc9457_test.go
++++ b/rfc9457_test.go
+@@ -157,6 +157,24 @@ func TestProblemDetailsHTTPErrorHandler(t *testing.T) {
+ 	}
+ }
+ 
++func TestProblemDetailsHTTPErrorHandler_DoesNotMutateSharedProblem(t *testing.T) {
++	sentinel := &ProblemError{}
++	errHandler := ProblemDetailsHTTPErrorHandler(false)
++
++	for range 2 {
++		e := New()
++		req := httptest.NewRequest(http.MethodGet, "/", nil)
++		resp := httptest.NewRecorder()
++		c := e.NewContext(req, resp)
++
++		errHandler(c, sentinel)
++
++		assert.Equal(t, http.StatusInternalServerError, resp.Code)
++		assert.Equal(t, `{"type":"about:blank","title":"Internal Server Error","status":500}`+"\n", resp.Body.String())
++		assert.Equal(t, &ProblemError{}, sentinel)
++	}
++}
++
+ func TestProblemDetailsHTTPErrorHandler_CommittedResponse(t *testing.T) {
+ 	e := New()
+ 	req := httptest.NewRequest(http.MethodGet, "/", nil)

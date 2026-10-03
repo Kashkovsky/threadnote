@@ -1,0 +1,129 @@
+{
+  "candidate": {
+    "toolArtifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+    "toolVersion": "5.1.0-beta.2"
+  },
+  "checkpoint": {
+    "automaticHandoffUri": "threadnote://user/evaluation-user/memories/handoffs/active/threadnote/continuation-tsk_fc18a74be8742c6a9d6397ed.md",
+    "handoffSha256": "063f31554f6d65833e9df6a4408a13d34f02b3286bf069cf8ed0ca998e3e2168",
+    "adapterConfigurations": {
+      "threadnoteCompactSha256": "ef04ea53938bf3a4c09a1df61c4d34fa6d304eaea3d42e5a541050de9d402dc6",
+      "threadnoteGraphSha256": "4d6b5a4793c81124569f9c313799cac372a3ec88338a67fabacb0738fdd32d90"
+    },
+    "diagnosticEvidence": {
+      "diagnosticConclusion": "`errors.As` returns the shared `*ProblemError`, and defaulting mutates its Status, Type, and Title in `rfc9457.go:74-112`; regression `rfc9457_test.go:158-176` reproduces this across two requests.",
+      "graphQuery": "callers and data flow for ProblemDetailsHTTPErrorHandler pe defaulting JSON HEAD",
+      "graphQuestion": "Which handler construction and response-writing paths consume the problem pointer, and can a shallow response-local copy preserve their current semantics?",
+      "rejectedHypothesis": "The response writer or JSON serialization was not the mutation source; the focused failure shows the sentinel itself changed immediately after handler execution.",
+      "sourceCitations": [
+        {
+          "endLine": 112,
+          "path": "rfc9457.go",
+          "startLine": 74
+        }
+      ],
+      "unresolvedGap": "Decide the smallest response-local copy strategy that preserves all caller-provided fields without mutating either direct or ProblemErrorer-returned problems.",
+      "untestedInvariant": "Explicit fields, exposed detail, content type, HEAD/no-content behavior, and concurrent reuse still require verification after the production fix.",
+      "verifiedInvariant": "Explicit response defaults and JSON status behavior remain observable, while the new regression fails because the original sentinel becomes status 500 with default type and title."
+    },
+    "phaseOneExecution": {
+      "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+      "adapterConfigurationFileSha256": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+      "adapterProtocol": "matched-evaluation-adapter-v5",
+      "appServerExecutableSha256": "5e29ab10ca1171be158f7335dd6bd8ce1aaf9af1556939db36a5ee338be6f5f2",
+      "appServerVersion": "codex-cli 0.144.5",
+      "artifactSha256": "fbf8f235568dc9d64271666dfd0aaf20398834ae535a68bc45cbbfca564246aa",
+      "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+      "model": {
+        "id": "gpt-5.6-luna",
+        "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+        "provider": "openai",
+        "reasoningEffort": "low"
+      },
+      "requestSha256": "10dc869f34b5098ce0634ae0f40e6aac9fd59941d7bfb56e20e823fc800ef00f",
+      "responseSha256": "8e26c258cc2cca47ed20b64338f638a6a9ff5cad004766bbbbdef2216c0ca9a9",
+      "runNonce": "run_8b299e760d644ab61006120dcbee4ab3",
+      "transcriptHash": "682c52df24b6aac8022cb0ae233767e0e2d15776ba1ba318f254c85eeb1b9308",
+      "transcriptSha256": "682c52df24b6aac8022cb0ae233767e0e2d15776ba1ba318f254c85eeb1b9308"
+    },
+    "phaseOnePatchSha256": "7eb1da8b4de2c16d4e42ba1b4fe83695459135598e32aa691c950c65fd6b998f",
+    "phaseOnePromptSha256": "ba5a9c55aa7bd1ad812a0d113133cd971100f5301ee54d319bb2bc518e285bbc",
+    "preparedContext": {
+      "graphContentHash": "edc529e87d2dbf716d8c56ef08fbf8aaa5b23dd273fd7f0e13aa232bc20bb84b",
+      "graphSnapshotHash": "9723b764d4a4ea4b2b5b9a6874bf22e0753a8a464796334d027d84b80a44db2c",
+      "linkReceiptsHash": "a7ede6d0f31b320e4b52771eb8676f5a5c3dd6d7f7ad55a9f434030177baa035",
+      "taskContextHash": "599c12b1ad724af07ee2d0cffff7b4a7833d122bb021be98d6a251e3cf0ba6a5"
+    },
+    "preparedGraphHome": {
+      "fixtureHash": "b47c41fd5d1390c0b3ec78118e2e0f6c9cb0d8b0f7699013d86b898218ccdc82",
+      "identitySha256": "71d7935afc7e1a2479eb87b46e2edd20135924d640a4f9d949d0050138eaf47a"
+    },
+    "preparedHome": {
+      "fixtureHash": "acfd5bd6fc9f917bebd7bdda779e2d4fc3311881f20d2fc680eb1215665ac8f8",
+      "identitySha256": "71d7935afc7e1a2479eb87b46e2edd20135924d640a4f9d949d0050138eaf47a"
+    },
+    "phaseOneAccounting": {
+      "elapsedMilliseconds": 53628,
+      "providerTokens": {
+        "cachedInputTokens": 42240,
+        "inputTokens": 73221,
+        "outputTokens": 1407,
+        "reasoningOutputTokens": 262,
+        "totalTokens": 74628
+      },
+      "providerTokensMeasured": true
+    },
+    "repositoryFixtureHash": "7d04d1963f6f0f3245feec30907836b5fa6e7068eb3a69b2cb5b7fa5d4eb43b0",
+    "repositoryRevision": "b75f83f7cd4538c18fd1985310165bffb75f4852",
+    "resumeEvidenceMarker": "threadnote-resume-7eb1da8b4de2c16d4e42",
+    "automaticHandoffReadSha256": "fa8d206d7b826f2688b8bce511ec7879e6f146e4be57c308bf311694693d6a5c"
+  },
+  "completionMeaning": "completed is true only when all 2 fresh phase-two adapter attempts completed; verified completion is verifier-authoritative per attempt.",
+  "comparativeClaimsEligible": false,
+  "identities": {
+    "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+    "planFileHash": "7702dcc3a91903da02de82ae710cb044f29b4ba191cc4d4026c609fd9ffafe5d",
+    "runtimeVersion": 4,
+    "studyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+    "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0"
+  },
+  "limitations": [
+    "One development-calibration task, one attempt per treatment, no confidence interval or general product claim.",
+    "The common phase-one checkpoint cost is reported separately and is not duplicated into each phase-two attempt.",
+    "No retries are allowed; failed attempts remain in failure-inclusive completion accounting."
+  ],
+  "phaseTwoPromptSha256": "465d670de843de10bedb8691407924fe38917e9654463b28c707817300b2b4c0",
+  "phaseTwoVerificationPlanHash": "dda2f229d8118b14fc76eae0303ed0d1ee4556f105c82834d83a61f03efab47e",
+  "planVersion": 4,
+  "sourceTask": {
+    "promptSha256": "1447457048fe12d0960c87a5def86fc277ff3aa2ba6f200d616ce01544bf2a95",
+    "repositoryFixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+    "repositoryRevision": "90702e71a7cde342da70b1f97e8e6420c509f939",
+    "taskId": "tsk_fc18a74be8742c6a9d6397ed"
+  },
+  "rows": [
+    {
+      "blindLabel": "A",
+      "position": 1,
+      "repetition": 1,
+      "runNonce": "run_109f05cc7c0e23327212ce60e9fa698b",
+      "runOrder": 1,
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+      "arm": "threadnote-compact",
+      "variant": "threadnote-preloaded-resume"
+    },
+    {
+      "blindLabel": "B",
+      "position": 2,
+      "repetition": 1,
+      "runNonce": "run_912a26ac81b33fc578a78c3c85952f4e",
+      "runOrder": 2,
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+      "arm": "files",
+      "variant": "files-bare"
+    }
+  ],
+  "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+  "version": 2
+}

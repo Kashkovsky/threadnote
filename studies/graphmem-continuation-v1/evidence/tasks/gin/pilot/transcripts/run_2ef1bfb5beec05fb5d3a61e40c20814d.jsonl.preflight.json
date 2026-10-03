@@ -1,0 +1,9 @@
+{
+  "appliedAndReverted": true,
+  "approvedActions": 7,
+  "receiptHash": "e1742bf1f13cf82b3b186607e3b78856638ef4900e0cf3e9a623cdefa40bc465",
+  "rejectedActions": 4,
+  "sourcePath": ".github/ISSUE_TEMPLATE/bug-report.yaml",
+  "sourceReadSha256": "23ba790793ade0aff6301aca738b95e49c5a6328bec2c7f2842b1b0a98ee83e7",
+  "version": 1
+}

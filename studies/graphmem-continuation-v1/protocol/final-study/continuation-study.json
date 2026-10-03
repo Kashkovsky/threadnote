@@ -1,0 +1,162 @@
+{
+  "bootstrap": {
+    "confidenceLevelBasisPoints": 9500,
+    "iterations": 10000,
+    "seed": "1c5006081593fcea72d63283f2057800c3f38007e605deb6986a8d34d4838dc6"
+  },
+  "candidate": {
+    "adapterArtifactSha256": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+    "sourceCommit": "8da0eae878aaedc419319e32fd10fdcb5abccbb1",
+    "toolArtifactHash": "75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6",
+    "toolVersion": "5.1.0-beta.2"
+  },
+  "gates": {
+    "completionNonInferiorityBasisPoints": 500,
+    "maximumAuthorizationLeaks": 0,
+    "maximumFalseCurrentOutcomes": 1000,
+    "maximumHarmfulActions": 0,
+    "minimumClusters": 5,
+    "minimumCorrectnessScoreMilli": 0,
+    "minimumTokenReductionBasisPoints": 500
+  },
+  "schedule": [
+    {
+      "globalRunOrder": 1,
+      "runNonce": "run_a51f7c019b6a96e15ba1ea3a078f805c",
+      "taskId": "tsk_6f8c95b80697e7612413ed04",
+      "variant": "threadnote-preloaded-resume",
+      "withinTaskRunOrder": 1
+    },
+    {
+      "globalRunOrder": 2,
+      "runNonce": "run_4178ed890e66d297d8fa755bed6328af",
+      "taskId": "tsk_6f8c95b80697e7612413ed04",
+      "variant": "files-bare",
+      "withinTaskRunOrder": 2
+    },
+    {
+      "globalRunOrder": 3,
+      "runNonce": "run_65917de36692400483fd3c2f6d4698c3",
+      "taskId": "tsk_a009739c16abeecaeafe13cb",
+      "variant": "threadnote-preloaded-resume",
+      "withinTaskRunOrder": 1
+    },
+    {
+      "globalRunOrder": 4,
+      "runNonce": "run_84a787357c101850e1c881cb2506c53d",
+      "taskId": "tsk_a009739c16abeecaeafe13cb",
+      "variant": "files-bare",
+      "withinTaskRunOrder": 2
+    },
+    {
+      "globalRunOrder": 5,
+      "runNonce": "run_387d8448e65c0e612c5461a3b258957d",
+      "taskId": "tsk_8b02783134c4b12b327add82",
+      "variant": "files-bare",
+      "withinTaskRunOrder": 1
+    },
+    {
+      "globalRunOrder": 6,
+      "runNonce": "run_3eb38cfd490f353f69d401faeda728bb",
+      "taskId": "tsk_8b02783134c4b12b327add82",
+      "variant": "threadnote-preloaded-resume",
+      "withinTaskRunOrder": 2
+    },
+    {
+      "globalRunOrder": 7,
+      "runNonce": "run_fd9e151b26af4308ec5356b60d20bec1",
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+      "variant": "threadnote-preloaded-resume",
+      "withinTaskRunOrder": 1
+    },
+    {
+      "globalRunOrder": 8,
+      "runNonce": "run_2ef1bfb5beec05fb5d3a61e40c20814d",
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+      "variant": "files-bare",
+      "withinTaskRunOrder": 2
+    },
+    {
+      "globalRunOrder": 9,
+      "runNonce": "run_109f05cc7c0e23327212ce60e9fa698b",
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+      "variant": "threadnote-preloaded-resume",
+      "withinTaskRunOrder": 1
+    },
+    {
+      "globalRunOrder": 10,
+      "runNonce": "run_912a26ac81b33fc578a78c3c85952f4e",
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed",
+      "variant": "files-bare",
+      "withinTaskRunOrder": 2
+    }
+  ],
+  "sourceEvidence": {
+    "corpusHash": "704d46b7386561807d9393403daadad4675c5e9f61a180506b6afa3af9ca7046",
+    "exposureAuditSha256": "75c28f28bea0b5f041bc31ec17a82099e096fa7221046b411a83c3bc7378de86",
+    "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+    "matchedPreparationReceiptSha256": "76f2d84a708d396ebe0e63451bdefc6a6a11bb7dfe05ab6af50d253d299d8685",
+    "matchedStudyHash": "5628f996682e6e721c0a83cea99f24020af0c72c844fecc1b19f0c5de1ed609a",
+    "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0"
+  },
+  "studyId": "threadnote-continuation-v19-final",
+  "tasks": [
+    {
+      "checkpointRepositoryFixtureHash": "5fda22c2e68fae8715b888280027d9fc6053929ed7957c9f660925ae39c0bec2",
+      "checkpointRevision": "07e522f9eb5881d76410bb802eb040d25e08bb96",
+      "clusterId": "cluster_db78cae6e3269e7c",
+      "planSha256": "c5527864d4c2eb16c4ee5d7cc2c5010f716797f6521904da6d2bcd72f9012686",
+      "repositoryUrl": "https://github.com/gin-gonic/gin.git",
+      "sourceRepositoryFixtureHash": "6371a660ad9691ba92c9a965cd521dabd12260b1d9c719068fa50d5d941985ed",
+      "sourceRevision": "d8f2d588d7573b3438cfc95b7a47f9ec8966273c",
+      "taskId": "tsk_3e2e9ab2f03a7d743856d6fd"
+    },
+    {
+      "checkpointRepositoryFixtureHash": "33bdc182440503c7439b656c03082251165f443aaaacf90190154bfa6bab7424",
+      "checkpointRevision": "0f2c0879d80a23cd10e799d7965520a13eb51e3d",
+      "clusterId": "cluster_cc386a2d43df6fdd",
+      "planSha256": "30e7fd89fdc453e471fd72e7d2b0b7843a2230e0cfbbcbc4fca0603b9f24247e",
+      "repositoryUrl": "https://github.com/pallets/click.git",
+      "sourceRepositoryFixtureHash": "cf735873115f4962330218946edd4428637acc302be18c3511e1fa9c7cfaea32",
+      "sourceRevision": "d036881798e34289a49b18a5c550c7cf687e5a7a",
+      "taskId": "tsk_6f8c95b80697e7612413ed04"
+    },
+    {
+      "checkpointRepositoryFixtureHash": "ec912675e99ca648247db2b24941b46b454e43cf67ec9ba30dabcc5644b97d97",
+      "checkpointRevision": "a67fe48735a92a2f3195952aea4ea120997e1b45",
+      "clusterId": "cluster_f27d359e0c2d0671",
+      "planSha256": "944d2e0ad633d1d005efe79c15bc0a90a6a85b33d37fc87fe3a0b14bfc808c2d",
+      "repositoryUrl": "https://github.com/go-chi/chi.git",
+      "sourceRepositoryFixtureHash": "a27735dae0269d1e60732cfaa010b04200928592ff50171f9eadf117ebb66f4e",
+      "sourceRevision": "bc02284e9db220c644912320fe1db6bc9b4a087c",
+      "taskId": "tsk_8b02783134c4b12b327add82"
+    },
+    {
+      "checkpointRepositoryFixtureHash": "f5edfbade5ead35246d970396a085e593efd24bec6b8bd8c93e01d2b24c22aab",
+      "checkpointRevision": "a48a4e3c283dbd789a1a16f499c8f101596bb9c0",
+      "clusterId": "cluster_bee055c9b9ce1ce3",
+      "planSha256": "c33069bc115cfc12143f1e940bcf119a0a464479cf4d747dbd45d11a0ceeace0",
+      "repositoryUrl": "https://github.com/pytest-dev/pluggy.git",
+      "sourceRepositoryFixtureHash": "89af053a162e2516689656fd1d2cbd0cc3321280d386ea3cbfbbc32d7d078d72",
+      "sourceRevision": "6e1d0f13a259776bbf137f90bd7ab8b4474f68e7",
+      "taskId": "tsk_a009739c16abeecaeafe13cb"
+    },
+    {
+      "checkpointRepositoryFixtureHash": "7d04d1963f6f0f3245feec30907836b5fa6e7068eb3a69b2cb5b7fa5d4eb43b0",
+      "checkpointRevision": "b75f83f7cd4538c18fd1985310165bffb75f4852",
+      "clusterId": "cluster_a084322c85405c82",
+      "planSha256": "7702dcc3a91903da02de82ae710cb044f29b4ba191cc4d4026c609fd9ffafe5d",
+      "repositoryUrl": "https://github.com/labstack/echo.git",
+      "sourceRepositoryFixtureHash": "03df3f41b413d2ccc0ff1d04c298802e17837553afc063feba10d68d42912ee8",
+      "sourceRevision": "90702e71a7cde342da70b1f97e8e6420c509f939",
+      "taskId": "tsk_fc18a74be8742c6a9d6397ed"
+    }
+  ],
+  "variants": [
+    "files-bare",
+    "threadnote-preloaded-resume"
+  ],
+  "workflowAccounting": "phase-one-plus-phase-two-per-attempt",
+  "studyHash": "945b5466e0c2f86af7052916f2c29199dd7f913d01b94b427b39d285047a8046",
+  "version": 1
+}

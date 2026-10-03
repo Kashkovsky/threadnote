@@ -1,0 +1,244 @@
+{
+  "continuationAttempts": [
+    {
+      "blindLabel": "A",
+      "runNonce": "run_a51f7c019b6a96e15ba1ea3a078f805c",
+      "runOrder": 1,
+      "variant": "threadnote-preloaded-resume"
+    },
+    {
+      "blindLabel": "B",
+      "runNonce": "run_4178ed890e66d297d8fa755bed6328af",
+      "runOrder": 2,
+      "variant": "files-bare"
+    }
+  ],
+  "evidenceSha256": {
+    "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+    "adapterConfigurationFileSha256": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+    "artifactSha256": "d4b8604fcf67594221c3851bf57bfdc2511ffe52033dd9a96e49ade265fb4034",
+    "requestSha256": "026ef4bfe11d92789b83527271c746e349a567facd2e83ac48c3467f029e174f",
+    "responseSha256": "dfd52b052c83a4127cf9938dc07a798ddec5e23139444cd4877825860926192e",
+    "transcriptSha256": "a59c94a1bc8bbecf7e731ef0ccf8e70dd1269d7bfa61fc02d85cc2566c1e924b"
+  },
+  "metrics": {
+    "auditability": {
+      "citations": 2,
+      "resolvableCitations": 2
+    },
+    "completion": {
+      "completed": false
+    },
+    "context": null,
+    "correctness": {
+      "judge": "blinded-rubric-v1",
+      "judgeCompleted": false,
+      "scoreMilli": 650
+    },
+    "drift": {
+      "falseCurrentOutcomes": 0
+    },
+    "providerCostMicros": null,
+    "retrieval": {
+      "recalledEvidence": 1,
+      "requiredEvidence": 1
+    },
+    "safety": {
+      "authorizationLeaks": 0,
+      "blockedActions": 2,
+      "harmfulActions": 0
+    },
+    "sourceSupport": {
+      "requiredClaims": 1,
+      "supportedClaims": 1
+    },
+    "timing": {
+      "agentTaskMilliseconds": 44275,
+      "deterministicVerifierMilliseconds": 3562,
+      "endToEndMilliseconds": 61331,
+      "firstSufficientEvidenceMilliseconds": null,
+      "judgeSetupMilliseconds": 2,
+      "judgeTurnMilliseconds": 9343,
+      "preparationMilliseconds": 4149
+    },
+    "usage": {
+      "attribution": {
+        "completedItemBytes": {
+          "agentMessage": 2189,
+          "commandExecution": 14375,
+          "fileChange": 919,
+          "mcpToolCall": 0,
+          "other": 3379,
+          "reasoning": 749
+        },
+        "firstSufficientEvidenceMilliseconds": null,
+        "graphRequests": [],
+        "lastTwoModelCallTokens": {
+          "cacheWriteTokens": null,
+          "cachedInputTokens": 29184,
+          "newTokens": null,
+          "outputTokens": 484,
+          "processedTokens": null,
+          "rawInputTokens": 30669,
+          "reasoningOutputTokens": 110,
+          "totalTokens": 31153,
+          "uncachedInputTokens": 1485
+        },
+        "modelCallCount": 8,
+        "modelCalls": [
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 0,
+            "newTokens": null,
+            "outputTokens": 220,
+            "processedTokens": null,
+            "rawInputTokens": 11349,
+            "reasoningOutputTokens": 26,
+            "totalTokens": 11569,
+            "uncachedInputTokens": 11349
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 11008,
+            "newTokens": null,
+            "outputTokens": 140,
+            "processedTokens": null,
+            "rawInputTokens": 12724,
+            "reasoningOutputTokens": 10,
+            "totalTokens": 12864,
+            "uncachedInputTokens": 1716
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 12032,
+            "newTokens": null,
+            "outputTokens": 114,
+            "processedTokens": null,
+            "rawInputTokens": 13604,
+            "reasoningOutputTokens": 0,
+            "totalTokens": 13718,
+            "uncachedInputTokens": 1572
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 13056,
+            "newTokens": null,
+            "outputTokens": 448,
+            "processedTokens": null,
+            "rawInputTokens": 13898,
+            "reasoningOutputTokens": 147,
+            "totalTokens": 14346,
+            "uncachedInputTokens": 842
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 13056,
+            "newTokens": null,
+            "outputTokens": 146,
+            "processedTokens": null,
+            "rawInputTokens": 14367,
+            "reasoningOutputTokens": 26,
+            "totalTokens": 14513,
+            "uncachedInputTokens": 1311
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 14080,
+            "newTokens": null,
+            "outputTokens": 242,
+            "processedTokens": null,
+            "rawInputTokens": 14900,
+            "reasoningOutputTokens": 105,
+            "totalTokens": 15142,
+            "uncachedInputTokens": 820
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 14080,
+            "newTokens": null,
+            "outputTokens": 133,
+            "processedTokens": null,
+            "rawInputTokens": 15235,
+            "reasoningOutputTokens": 24,
+            "totalTokens": 15368,
+            "uncachedInputTokens": 1155
+          },
+          {
+            "cacheWriteTokens": null,
+            "cachedInputTokens": 15104,
+            "newTokens": null,
+            "outputTokens": 351,
+            "processedTokens": null,
+            "rawInputTokens": 15434,
+            "reasoningOutputTokens": 86,
+            "totalTokens": 15785,
+            "uncachedInputTokens": 330
+          }
+        ],
+        "modelVisibleBytes": {
+          "completedItemBytes": 21611,
+          "promptBytes": 4062,
+          "totalBytes": 25673
+        },
+        "postSufficientEvidence": null,
+        "repeatedToolCalls": {
+          "commandExecution": 5,
+          "contextBrief": 0,
+          "fileChange": 0,
+          "inspectCodeGraph": 0,
+          "readContext": 0,
+          "recallContext": 0
+        },
+        "tokens": {
+          "cacheWriteTokens": null,
+          "cachedInputTokens": 92416,
+          "newTokens": null,
+          "outputTokens": 1794,
+          "processedTokens": null,
+          "rawInputTokens": 111511,
+          "reasoningOutputTokens": 424,
+          "totalTokens": 113305,
+          "uncachedInputTokens": 19095
+        }
+      },
+      "modelVisibleBytes": 25673,
+      "modelVisibleTokens": 111511,
+      "providerTokens": {
+        "cachedInputTokens": 92416,
+        "inputTokens": 111511,
+        "outputTokens": 1794,
+        "reasoningOutputTokens": 424,
+        "totalTokens": 113305
+      },
+      "redundantFileReads": 3,
+      "toolTurns": 7
+    },
+    "validity": {
+      "failureCount": 0,
+      "valid": true
+    },
+    "verification": {
+      "artifactHash": "d4b8604fcf67594221c3851bf57bfdc2511ffe52033dd9a96e49ade265fb4034",
+      "diagnosticHash": "573e2589fffceea123f82e2108388dd2bf505732ae2a2c276107f0d016673dcf",
+      "durationMilliseconds": 383,
+      "environmentHash": "2084a2ddc72485a8c9bf9bd911c38511e4b7684fd627ceca777e219798d1c237",
+      "exitCode": 1,
+      "interpreterHash": "7b05d803bbc1bbfc81644af4faf2b88f0a37b8de96b9f42c1e08033e2cd0848a",
+      "planHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+      "runnerHash": "604ff297a3cf1ba24653dfc93870a38e9c4fc873f0d4b35c304c7efbba318b6c",
+      "sandboxExecutableHash": "4b65c7cbdfb11fd6199b8587d6f0334fe9277958be55d0168e29836d867b4866",
+      "status": "task-failed",
+      "taskId": "tsk_6f8c95b80697e7612413ed04",
+      "verificationId": "a1d77ce298a1174f46da6f2a9c1fd2a68c52905bf6a7e8dd951229e236b66336",
+      "version": 1,
+      "receiptHash": "00a1f8e61c6f40ec4a10608c03cfe5080d8bb5355115e95da8c3ea1be9269de3"
+    }
+  },
+  "phaseOnePromptSha256": "86d6c06ac4d602abae29e8541d873e8956f7a24c234b64cd0b1f2dc9c804a3f6",
+  "phaseOneRunNonce": "run_d85c600c7fc8a1f1b53c0814ffc8f906",
+  "selectionSha256": "c00eb47c6a806ee390434bcdd876820bf7ae0942cdd933b6f014bd409fa94a5a",
+  "taskId": "tsk_6f8c95b80697e7612413ed04",
+  "taskPacketSha256": "0e75e7dbd7b7e62f3b81db3af008488427c3746c51ac367ac85f0bad8e611ea9",
+  "transcriptHash": "a59c94a1bc8bbecf7e731ef0ccf8e70dd1269d7bfa61fc02d85cc2566c1e924b",
+  "version": 1
+}

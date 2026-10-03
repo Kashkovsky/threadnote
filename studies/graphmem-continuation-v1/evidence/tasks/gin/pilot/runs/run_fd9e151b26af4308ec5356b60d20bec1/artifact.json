@@ -1,0 +1,32 @@
+{
+  "agentResult": {
+    "citations": [
+      {
+        "endLine": 748,
+        "path": "gin.go",
+        "startLine": 746
+      },
+      {
+        "endLine": 777,
+        "path": "gin.go",
+        "startLine": 775
+      }
+    ],
+    "completed": true,
+    "summary": "Cleared skippedNodes before each independent getValue lookup. v19-verifier.py gin passed."
+  },
+  "agentTerminal": null,
+  "arm": "threadnote-compact",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/gin.go b/gin.go\nindex a160727..3ceb196 100644\n--- a/gin.go\n+++ b/gin.go\n@@ -741,6 +741,7 @@ func (engine *Engine) handleHTTPRequest(c *Context) {\n \t\t}\n \t\troot := t[i].root\n \t\t// Find route in tree\n+\t\t*c.skippedNodes = (*c.skippedNodes)[:0]\n \t\tvalue := root.getValue(rPath, c.params, c.skippedNodes, unescape)\n \t\tif value.params != nil {\n \t\t\tc.Params = *value.params\n@@ -772,6 +773,7 @@ func (engine *Engine) handleHTTPRequest(c *Context) {\n \t\t\tif tree.method == httpMethod {\n \t\t\t\tcontinue\n \t\t\t}\n+\t\t\t*c.skippedNodes = (*c.skippedNodes)[:0]\n \t\t\tif value := tree.root.getValue(rPath, nil, c.skippedNodes, unescape); value.handlers != nil {\n \t\t\t\tallowed = append(allowed, tree.method)\n \t\t\t}\n",
+  "patchSha256": "7fba02e86c13a28bb38a7602ac220ba90d3c9aff030c35fcd24557aad4d3414a",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "5fda22c2e68fae8715b888280027d9fc6053929ed7957c9f660925ae39c0bec2",
+    "identityHash": "32a6812b574138d9a8af93f5d36ad4fd0eaf3b50c4b44e4795f15828181ab6f9",
+    "revision": "07e522f9eb5881d76410bb802eb040d25e08bb96"
+  },
+  "runNonce": "run_fd9e151b26af4308ec5356b60d20bec1",
+  "taskId": "tsk_3e2e9ab2f03a7d743856d6fd",
+  "version": 4
+}

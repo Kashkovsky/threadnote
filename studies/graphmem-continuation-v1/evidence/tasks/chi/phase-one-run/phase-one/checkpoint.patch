@@ -1,0 +1,44 @@
+diff --git a/tree_test.go b/tree_test.go
+index c07e8309a10a447e6327ab1c6f89dca9e9d35b8e..408958a6072dec161c5cf3efe217587b7c99598b 100644
+--- a/tree_test.go
++++ b/tree_test.go
+@@ -522,6 +522,39 @@ func TestWalker(t *testing.T) {
+ 	}
+ }
+ 
++func TestWalkRouteWithHandlerAndSubrouter(t *testing.T) {
++	r := NewRouter()
++	handler := func(w http.ResponseWriter, req *http.Request) {}
++
++	r.Route("/foo", func(r Router) {
++		r.Route("/bar", func(r Router) {
++			r.Get("/{id}", handler)
++		})
++		r.Get("/bar", handler)
++	})
++
++	var routes []string
++	if err := Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
++		routes = append(routes, method+" "+route)
++		return nil
++	}); err != nil {
++		t.Fatal(err)
++	}
++
++	for _, want := range []string{"GET /foo/bar", "GET /foo/bar/{id}"} {
++		found := false
++		for _, route := range routes {
++			if route == want {
++				found = true
++				break
++			}
++		}
++		if !found {
++			t.Errorf("Walk missing %q in %v", want, routes)
++		}
++	}
++}
++
+ func TestWalkInlineMiddlewaresAcrossSubrouter(t *testing.T) {
+ 	mw := func(next http.Handler) http.Handler { return next }
+ 	handler := func(w http.ResponseWriter, r *http.Request) {}

@@ -1,0 +1,82 @@
+{
+  "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+  "adapterProtocol": "matched-evaluation-adapter-v5",
+  "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+  "arm": "files",
+  "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+  "agentTask": {
+    "category": "hidden-architectural-constraint",
+    "memoryFixtures": [],
+    "prompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryFixtureHash": "ec912675e99ca648247db2b24941b46b454e43cf67ec9ba30dabcc5644b97d97",
+    "taskId": "tsk_8b02783134c4b12b327add82",
+    "variant": "historical-as-issued"
+  },
+  "artifactPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/chi/pilot/runs/run_387d8448e65c0e612c5461a3b258957d/artifact.json",
+  "blindLabel": "A",
+  "continuationTreatment": {
+    "automaticHandoffUri": null,
+    "contextMode": null,
+    "manualHandoff": null,
+    "manualHandoffSha256": null,
+    "requiredGraphQuery": null,
+    "resumeEvidenceMarker": null,
+    "variant": "files-bare"
+  },
+  "judgeTask": {
+    "negativeControls": [
+      {
+        "controlId": "ctl_8b02783134c4b12b327add82",
+        "reason": "Request dispatch is not the failing introspection path.",
+        "text": "Changing route matching or HTTP dispatch can mask the symptom but would not correct Routes and Walk enumeration."
+      }
+    ],
+    "rubric": {
+      "completion": "Routes and Walk retain real handlers that collide with mount patterns, hide synthetic stubs, and preserve recursion and middleware.",
+      "criteria": [
+        "Walk includes both a concrete handler and the nested handler under the colliding mounted pattern.",
+        "Routes hides the synthetic mount stub while retaining the real method handler and subroute connector.",
+        "Middleware propagation remains correct and handler identity checks are safe for function and non-comparable handler values."
+      ],
+      "requiredEvidenceIds": [
+        "ev_8b02783134c4b12b327add82"
+      ]
+    },
+    "sourceGold": [
+      {
+        "claim": "node.routes filters stub endpoints, groups handlers by pattern, projects wildcard and method handlers, and feeds recursive Walk traversal.",
+        "endLine": 689,
+        "evidenceId": "ev_8b02783134c4b12b327add82",
+        "path": "tree.go",
+        "repository": "go-chi/chi",
+        "startLine": 628
+      }
+    ]
+  },
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "model": {
+    "model": "gpt-5.6-luna",
+    "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+    "provider": "openai"
+  },
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "ec912675e99ca648247db2b24941b46b454e43cf67ec9ba30dabcc5644b97d97",
+    "identityHash": "0fed5fdd675e6215aefb073803ec28d90cd0ffccd7163b7680566f5f7d558248",
+    "revision": "a67fe48735a92a2f3195952aea4ea120997e1b45"
+  },
+  "preparedContext": null,
+  "runNonce": "run_387d8448e65c0e612c5461a3b258957d",
+  "runOrder": 1,
+  "tool": {
+    "artifactHash": null,
+    "detail": null,
+    "executable": null,
+    "lockIdentityHash": null,
+    "name": "repository-files",
+    "version": "builtin-v1"
+  },
+  "transcriptPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/chi/pilot/transcripts/run_387d8448e65c0e612c5461a3b258957d.jsonl",
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "version": 4
+}

@@ -1,0 +1,32 @@
+{
+  "agentResult": {
+    "citations": [
+      {
+        "endLine": 448,
+        "path": "src/pluggy/_manager.py",
+        "startLine": 444
+      },
+      {
+        "endLine": 447,
+        "path": "src/pluggy/_hooks.py",
+        "startLine": 442
+      }
+    ],
+    "completed": true,
+    "summary": "Implemented unique HookCaller traversal and removal of all implementations for a plugin. `v19-verifier.py pluggy` passed."
+  },
+  "agentTerminal": null,
+  "arm": "threadnote-compact",
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "patch": "diff --git a/src/pluggy/_hooks.py b/src/pluggy/_hooks.py\nindex 7fde78c..02fe612 100644\n--- a/src/pluggy/_hooks.py\n+++ b/src/pluggy/_hooks.py\n@@ -440,11 +440,9 @@ class HookCaller:\n         return self._call_history is not None\n \n     def _remove_plugin(self, plugin: _Plugin) -> None:\n-        for i, method in enumerate(self._hookimpls):\n-            if method.plugin == plugin:\n-                del self._hookimpls[i]\n-                return\n-        raise ValueError(f\"plugin {plugin!r} not found\")\n+        self._hookimpls[:] = [\n+            method for method in self._hookimpls if method.plugin != plugin\n+        ]\n \n     def get_hookimpls(self) -> list[HookImpl]:\n         \"\"\"Get all registered hook implementations for this hook.\"\"\"\ndiff --git a/src/pluggy/_manager.py b/src/pluggy/_manager.py\nindex 1b994f2..9e51a4f 100644\n--- a/src/pluggy/_manager.py\n+++ b/src/pluggy/_manager.py\n@@ -445,6 +445,7 @@ class PluginManager:\n             for hookimpl in hookcaller.get_hookimpls():\n                 if hookimpl.plugin is plugin:\n                     hookcallers.append(hookcaller)\n+                    break\n         return hookcallers\n \n     def add_hookcall_monitoring(\n",
+  "patchSha256": "e0e66bb2baf2e6484848c3d98d9647c4817f984af236d20fb470bdd984e3df3b",
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "f5edfbade5ead35246d970396a085e593efd24bec6b8bd8c93e01d2b24c22aab",
+    "identityHash": "39b62cb8ca199660d20b40a9a23974fcd50bf8e69e7f1f79bf009752f4b8cc74",
+    "revision": "a48a4e3c283dbd789a1a16f499c8f101596bb9c0"
+  },
+  "runNonce": "run_65917de36692400483fd3c2f6d4698c3",
+  "taskId": "tsk_a009739c16abeecaeafe13cb",
+  "version": 4
+}

@@ -1,0 +1,23 @@
+{
+  "phaseOneAllowedPaths": [
+    "tests/test_utils/test_make_default_short_help.py"
+  ],
+  "phaseOneDirective": "Phase 1 only: add the smallest focused regression that reproduces the reported defect, and edit no file outside the allowed regression path. Update the existing `sentence < max` parameter input from `123 567 9. aaaa bbb` to `123 567 9. Aaaa bbb` while keeping its expected value, then add a focused parameter case with the id `lowercase-following-abbreviation`. Inspect the unchanged production source deeply enough to diagnose the defect, but stop before changing production code or implementing the fix. Run the required focused check once after adding the regression; failure that demonstrates the defect is expected. In the final seven-line diagnosis, cite the regression and at least one unchanged production source anchor as repository-relative `path:start-end` ranges.",
+  "phaseOneFocusedChecks": [
+    "v19-verifier.py click"
+  ],
+  "phaseTwoFocusedChecks": [
+    "v19-verifier.py click"
+  ],
+  "phaseTwoPrompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+  "repositoryName": "click",
+  "sourceRevision": "d036881798e34289a49b18a5c550c7cf687e5a7a",
+  "sourceTaskPrompt": "Click's generated short help treats every word ending in a period as the end of a sentence. This truncates ordinary prose such as `Weigh apples vs. pears and plums.` after `vs.`. Fix short-help generation so a period is a sentence boundary only at the end of the text or when the following word does not start with a lowercase character. Preserve first-paragraph selection, whitespace collapsing, the no-rewrap marker, maximum-length accounting including the `...` suffix, and whole-word behavior: do not split hyphenated or overlong words, and return the suffix even when the configured width is narrower than it. Add focused regression coverage.",
+  "status": "draft-unsealed",
+  "taskKey": "click-short-help",
+  "phaseTwoProtectedPaths": [
+    "tests/test_utils/test_make_default_short_help.py"
+  ],
+  "treatmentSet": "automated-context-graph-v1",
+  "version": 4
+}

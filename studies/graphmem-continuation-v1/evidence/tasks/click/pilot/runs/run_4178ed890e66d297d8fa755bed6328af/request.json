@@ -1,0 +1,82 @@
+{
+  "adapterArtifactHash": "a4292dd8dc900566223a25c77f8a0f4c415751a607e020441e72973c33dfe106",
+  "adapterProtocol": "matched-evaluation-adapter-v5",
+  "adapterConfigurationHash": "ffcdd680d56eb933a57fb63c249b58ed6dd35016ffc1da81e0be5f56eebf6b97",
+  "arm": "files",
+  "environmentPolicyHash": "9c4b6eedc921df9932223fc245400274fb171810b16c9d62bbd18d4d59a996f4",
+  "agentTask": {
+    "category": "same-repository-onboarding",
+    "memoryFixtures": [],
+    "prompt": "Continue from the sealed Phase 1 checkpoint. Implement the smallest general production correction for the reported defect while keeping the committed regression unchanged and preserving adjacent public behavior. Run the required sealed focused check after the implementation.",
+    "repositoryFixtureHash": "33bdc182440503c7439b656c03082251165f443aaaacf90190154bfa6bab7424",
+    "taskId": "tsk_6f8c95b80697e7612413ed04",
+    "variant": "historical-as-issued"
+  },
+  "artifactPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/click/pilot/runs/run_4178ed890e66d297d8fa755bed6328af/artifact.json",
+  "blindLabel": "B",
+  "continuationTreatment": {
+    "automaticHandoffUri": null,
+    "contextMode": null,
+    "manualHandoff": null,
+    "manualHandoffSha256": null,
+    "requiredGraphQuery": null,
+    "resumeEvidenceMarker": null,
+    "variant": "files-bare"
+  },
+  "judgeTask": {
+    "negativeControls": [
+      {
+        "controlId": "ctl_6f8c95b80697e7612413ed04",
+        "reason": "Nearby wrapping behavior is not the implementation under test.",
+        "text": "Changing HelpFormatter.write_text or terminal-width discovery would bypass the private short-help contract and affect unrelated help rendering."
+      }
+    ],
+    "rubric": {
+      "completion": "Short-help generation preserves lowercase-following abbreviations while retaining sentence boundaries and robust whole-word width handling.",
+      "criteria": [
+        "An abbreviation such as `vs.` followed by a lowercase word does not end the short help.",
+        "A terminal period and a period followed by uppercase text or a digit still end the first sentence.",
+        "Truncation includes the ellipsis in the width and never splits hyphenated or overlong words, including widths below three."
+      ],
+      "requiredEvidenceIds": [
+        "ev_6f8c95b80697e7612413ed04"
+      ]
+    },
+    "sourceGold": [
+      {
+        "claim": "The private helper performs paragraph selection, whitespace normalization, sentence detection, and length-based truncation in one path.",
+        "endLine": 112,
+        "evidenceId": "ev_6f8c95b80697e7612413ed04",
+        "path": "src/click/utils.py",
+        "repository": "pallets/click",
+        "startLine": 62
+      }
+    ]
+  },
+  "manifestHash": "369c650f07160061d19afee71dd34eb251019a8d7819c1a1230d2bead625ff48",
+  "model": {
+    "model": "gpt-5.6-luna",
+    "parametersHash": "1e3761be7d16aadea8e4f34dc2469279bf40d303fbe2bef889fc6c4855f8b818",
+    "provider": "openai"
+  },
+  "repository": {
+    "dirty": false,
+    "fixtureHash": "33bdc182440503c7439b656c03082251165f443aaaacf90190154bfa6bab7424",
+    "identityHash": "60bb20143d5c034afb55cc5e18cdaf27168572a4ddb2b15a749f0eef4f994318",
+    "revision": "0f2c0879d80a23cd10e799d7965520a13eb51e3d"
+  },
+  "preparedContext": null,
+  "runNonce": "run_4178ed890e66d297d8fa755bed6328af",
+  "runOrder": 2,
+  "tool": {
+    "artifactHash": null,
+    "detail": null,
+    "executable": null,
+    "lockIdentityHash": null,
+    "name": "repository-files",
+    "version": "builtin-v1"
+  },
+  "transcriptPath": "/Users/denyskashkovskyi/.codex/worktrees/5-1-beta-release/threadnote/.context/actual-token-study-v19-20261003/tasks/click/pilot/transcripts/run_4178ed890e66d297d8fa755bed6328af.jsonl",
+  "verificationPlanHash": "5c09cfe7765e43125760fd4309398b6d9ca33a4fa85618566ebd0914988960c0",
+  "version": 4
+}

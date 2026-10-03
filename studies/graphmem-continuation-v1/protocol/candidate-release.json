@@ -1,0 +1,13 @@
+{
+  "codeGraphAssets": {
+    "manifest": "assets/code-graph/manifest.json",
+    "version": 1
+  },
+  "codeSignature": "developer-id",
+  "executable": "threadnote",
+  "nativeRuntime": "runtime/node-llama-cpp.js",
+  "nativeRuntimePackage": "@node-llama-cpp/mac-arm64-metal",
+  "runtime": "bun-1.4.2",
+  "target": "bun-darwin-arm64",
+  "version": "5.1.0-beta.2.local.g8da0eae878aaedc419319e32fd10fdcb5abccbb1"
+}

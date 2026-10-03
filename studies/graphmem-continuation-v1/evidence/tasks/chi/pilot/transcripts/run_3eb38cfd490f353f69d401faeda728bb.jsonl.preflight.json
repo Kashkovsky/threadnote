@@ -1,0 +1,9 @@
+{
+  "appliedAndReverted": true,
+  "approvedActions": 7,
+  "receiptHash": "399ff404f2e5c5d825d501c9685dbf7ec7cc1f8fa0e289816ac1020bd6b26edc",
+  "rejectedActions": 4,
+  "sourcePath": ".github/FUNDING.yml",
+  "sourceReadSha256": "4139426517682437c25d59c7924d2cac5ba50a0aa0b7bcb786891bc880dbbc1b",
+  "version": 1
+}
