@@ -403,7 +403,7 @@
   "devDependencies": {
     "@effect/sql-sqlite-bun": "4.0.0-rc.115",
     "@effect/tsgo": "0.45.0",
-    "@effect/vitest": "4.0.0-rc.115",
+    "@effect/vitest": "4.0.0-rc.118",
     "@threadnote/testing": "workspace:*",
     "fast-check": "4.10.1",
     "fflate": "0.8.3",

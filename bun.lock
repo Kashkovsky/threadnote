@@ -41,7 +41,7 @@
       "devDependencies": {
         "@effect/ai-openai-compat": "4.0.0-rc.115",
         "@effect/tsgo": "0.45.0",
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@expo-google-fonts/spline-sans": "0.4.2",
         "@fontsource-variable/jetbrains-mono": "5.3.0",
         "@fontsource-variable/spline-sans": "5.3.0",
@@ -110,7 +110,7 @@
       "devDependencies": {
         "@effect/sql-sqlite-bun": "4.0.0-rc.115",
         "@effect/tsgo": "0.45.0",
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "fflate": "0.8.3",
@@ -165,7 +165,7 @@
       },
       "devDependencies": {
         "@effect/platform-bun": "4.0.0-rc.115",
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "vitest": "5.0.1",
@@ -202,7 +202,7 @@
         "web-tree-sitter": "0.27.0",
       },
       "devDependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@modelcontextprotocol/sdk": "1.30.0",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
@@ -217,7 +217,7 @@
         "node-llama-cpp": "3.21.1",
       },
       "devDependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "vitest": "5.0.1",
@@ -247,7 +247,7 @@
         "three": "^0.186.0",
       },
       "devDependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "vitest": "5.0.1",
@@ -262,7 +262,7 @@
         "effect": "4.0.0-rc.115",
       },
       "devDependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "vitest": "5.0.1",
@@ -275,7 +275,7 @@
         "effect": "4.0.0-rc.115",
       },
       "devDependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "vitest": "5.0.1",
@@ -305,7 +305,7 @@
         "effect": "4.0.0-rc.115",
       },
       "devDependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "vitest": "5.0.1",
@@ -326,7 +326,7 @@
         "postgres": "3.4.9",
       },
       "devDependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "vitest": "5.0.1",
@@ -339,7 +339,7 @@
         "effect": "4.0.0-rc.115",
       },
       "devDependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "vitest": "5.0.1",
@@ -348,7 +348,7 @@
     "packages/testing": {
       "name": "@threadnote/testing",
       "dependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "effect": "4.0.0-rc.115",
         "fast-check": "4.10.1",
       },
@@ -362,7 +362,7 @@
         "js-yaml": "^5.4.2",
       },
       "devDependencies": {
-        "@effect/vitest": "4.0.0-rc.115",
+        "@effect/vitest": "4.0.0-rc.118",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
         "vitest": "5.0.1",
@@ -432,7 +432,7 @@
 
     "@effect/tsgo-win32-x64": ["@effect/tsgo-win32-x64@0.45.0", "", { "os": "win32", "cpu": "x64" }, "sha512-1Hsr/sT5dmIafoY9L0ASJo4VqGyPNzM1nwTb4Wj1Lmjq6kGuwO/PVozFg3WZZ0piChFmgiU3nx1AKZfyqgjGUw=="],
 
-    "@effect/vitest": ["@effect/vitest@4.0.0-rc.115", "", { "peerDependencies": { "effect": "^4.0.0-rc.115", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-DJR0hfdr3HNXAkzW8AzfvUz6VmrNFLrKk9tZGDURi33faMyxkc7ZewxELMMZwGpOTGN4mfqYVbX2CXgI+ZJBeQ=="],
+    "@effect/vitest": ["@effect/vitest@4.0.0-rc.118", "", { "peerDependencies": { "effect": "^4.0.0-rc.118", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-O0CPgtFVhkB+pyFtjP4up2XF4uVWsPgUmlv4hMjq8ARLOPKYix+uu3AUFIUKRHjzzQpx+JPce6KPhD6Flkrfag=="],
 
     "@expo-google-fonts/spline-sans": ["@expo-google-fonts/spline-sans@0.4.2", "", {}, "sha512-/28sbzpAdGIzSMlchblyJ5w0zEBGlOPPgFokgBF/f92CdSsIB1qpeKDDUkJfKCUPTvNujJr2YiJ+b6bbVyCaIA=="],
 
