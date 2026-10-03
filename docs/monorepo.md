@@ -9,10 +9,15 @@ Bazel declarations, and run the repository contracts plus the narrowest affected
 test:
 
 ```bash
+bun apps/website/tools/site-prepared-metadata.ts --output apps/website/.bazel-inputs/metadata.json
 bun run bazel:generate
 bun run check:repo
 bun run bazel -- test //packages/<owner>:test
 ```
+
+Prepare website metadata before generation or repository checks, including for
+non-website changes. Generation validates every target's declared data, and the
+ignored metadata file is absent in a fresh checkout.
 
 Use `apps/threadnote` for product entrypoints and cross-domain composition,
 `apps/website` for the public site, an existing `packages/*` workspace for a
@@ -55,8 +60,8 @@ The repository has no root `src/` or `test/` tree. Production code belongs to an
    imports and discovers referenced scripts, fixtures, assets, documentation,
    and executable entrypoints automatically. Add an explicit target-spec input
    only for a genuinely dynamic path that cannot be inferred.
-5. Add the manifest to `MODULE.bazel`, run `bun install`, then run
-   `bun run bazel:generate` and `bun run check:repo`.
+5. Add the manifest to `MODULE.bazel`, run `bun install`, prepare website metadata
+   as shown above, then run `bun run bazel:generate` and `bun run check:repo`.
 
 Generated `BUILD.bazel` files and `tools/bazel/targets.json` are reviewable build
 artifacts, not editing surfaces. Resource and infrastructure BUILD files are
