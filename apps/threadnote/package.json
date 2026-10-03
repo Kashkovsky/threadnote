@@ -401,7 +401,7 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@effect/sql-sqlite-bun": "4.0.0-rc.115",
+    "@effect/sql-sqlite-bun": "4.0.0-rc.118",
     "@effect/tsgo": "0.45.0",
     "@effect/vitest": "4.0.0-rc.115",
     "@threadnote/testing": "workspace:*",
