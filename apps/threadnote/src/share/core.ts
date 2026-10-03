@@ -1201,7 +1201,7 @@ export function sharedMemoryIdentityConflict(
   if (incomingMemoryId !== establishedMemoryId) {
     return {
       kind: 'changed',
-      message: `Refusing shared update for ${uri}: remote content has changed stable memory_id ${establishedMemoryId} to ${incomingMemoryId}.`,
+      message: `Refusing shared update for ${uri}: remote content cannot drop or change stable memory_id ${establishedMemoryId}; incoming content changed stable memory_id to ${incomingMemoryId}.`,
     };
   }
 }
