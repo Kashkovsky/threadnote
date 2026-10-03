@@ -197,7 +197,7 @@ describe('Codex resume preload', () => {
     expect(projection.text).toContain(
       'Observed: The new regression receives an empty dictionary instead of its default.',
     );
-    expect(projection.text).toContain('Unknown: Root cause and broader invariants are not established.');
+    expect(projection.text).toContain('Before complete: Root cause and broader invariants are not established.');
     expect(projection.text).toContain(
       'Graph query: rest_framework/fields.py Which callers and sibling HTML collection fields depend on DictField.get_value returning parse_html_dict output for an absent prefix?',
     );

@@ -403,7 +403,7 @@ export function renderCodexResumePreloadContext(
     ['Constraints', compact.invariants],
     ['Why', compact.rationale],
     ['Verified', compact.verification],
-    ['Unknown', compact.unresolved],
+    ['Before complete', compact.unresolved],
     ['Graph query', compact.graphQuery],
     ['Avoid', compact.avoidRepeat],
     sourceLeads.length === 0

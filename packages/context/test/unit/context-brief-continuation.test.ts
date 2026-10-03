@@ -248,6 +248,7 @@ describe('Context Brief continuation contracts', () => {
           'observed: the focused check fails only in the new regression',
           'anchors: packages/context/src/projector.ts:10-20',
           'tried: inspected the regression and ran the focused check',
+          'untested invariant: verify real request behavior after the correction',
           'unresolved: root cause is not established',
           'avoid repeat: do not reread the cited regression unless source changed',
           'constraints: preserve source evidence',
@@ -275,7 +276,7 @@ describe('Context Brief continuation contracts', () => {
       rationale: 'bounded evidence is easier to resume',
       risks: 'stale graph',
       task: 'implement the card',
-      unresolved: 'root cause is not established',
+      unresolved: 'verify real request behavior after the correction root cause is not established',
       verification: 'focused tests pass',
     });
   });
@@ -298,6 +299,23 @@ describe('Context Brief continuation contracts', () => {
         ].join('\n'),
       ),
     ).toEqual({task: 'retained outside examples'});
+  });
+
+  it('routes arbitrary untested-invariant labels into unresolved completion state', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom('untested invariant', 'untested_invariant', 'UNTESTED INVARIANT'),
+        fc
+          .string({minLength: 1, maxLength: 128})
+          .filter(value => value.trim().length > 0 && !value.includes('/') && !/[\r\n]/u.test(value)),
+        (label, value) => {
+          const card = parseContextBriefContinuationCard(`${label}: ${value}`);
+          expect(card).toEqual({unresolved: value.replace(/\s+/gu, ' ').trim()});
+          expect(card).not.toHaveProperty('observations');
+        },
+      ),
+      {numRuns: 64},
+    );
   });
 
   it('caps repeated continuation text per field without changing its UTF-8 boundary', () => {

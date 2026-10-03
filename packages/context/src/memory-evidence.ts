@@ -512,7 +512,7 @@ export function parseContextBriefContinuationCard(body: string): ContextBriefCon
       continue;
     }
     const match = rawLine.match(
-      /^\s{0,3}(?:#{1,6}\s*)?(task|decisions|graph_query|graph query|graph_question|graph question|observed|observations|findings|anchors|attempted|tried|avoid_repeat|avoid repeat|constraints|invariants|rationale|verification|unresolved|unknowns|blockers|risks|next_step|next step)\s*:\s*(.*)$/iu,
+      /^\s{0,3}(?:#{1,6}\s*)?(task|decisions|graph_query|graph query|graph_question|graph question|observed|observations|findings|anchors|attempted|tried|avoid_repeat|avoid repeat|constraints|invariants|rationale|verification|untested_invariant|untested invariant|unresolved|unknowns|blockers|risks|next_step|next step)\s*:\s*(.*)$/iu,
     );
     if (match !== null) {
       const key = continuationKey(match[1]);
@@ -621,6 +621,7 @@ function continuationKey(value: string): keyof ContextBriefContinuationCardV1 {
     case 'attempted':
       return 'attempted';
     case 'unknowns':
+    case 'untested_invariant':
     case 'unresolved':
       return 'unresolved';
     case 'avoid_repeat':
