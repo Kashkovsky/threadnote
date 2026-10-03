@@ -297,8 +297,11 @@ function isProtectedRepositoryPath(protectedPath: string, changedPath: string): 
 export function parseMatchedContinuationPytestFailureIdsV1(stdout: string, stderr: string): readonly string[] {
   const failures: string[] = [];
   for (const line of `${stdout}\n${stderr}`.split(/\r?\n/u)) {
-    const match = /^(?:FAILED|ERROR)\s+(\S+?)(?:\s+-\s+.*)?$/u.exec(line.trim());
-    if (match?.[1]) failures.push(match[1]);
+    const trimmed = line.trim();
+    const payload = diagnosticPayload(trimmed, 'FAILED') ?? diagnosticPayload(trimmed, 'ERROR');
+    if (payload === undefined) continue;
+    const separator = firstAsciiWhitespaceIndex(payload);
+    failures.push(separator === -1 ? payload : payload.slice(0, separator));
   }
   return canonicalFailureIds(failures, 'pytest failure ids');
 }
@@ -306,10 +309,28 @@ export function parseMatchedContinuationPytestFailureIdsV1(stdout: string, stder
 export function parseMatchedContinuationVitestFailureIdsV1(stdout: string, stderr: string): readonly string[] {
   const failures = new Set<string>();
   for (const line of `${stdout}\n${stderr}`.split(/\r?\n/u)) {
-    const match = /^FAIL\s+(.+?)$/u.exec(stripAnsiControlSequencesV1(line).trim());
-    if (match?.[1]) failures.add(match[1]);
+    const payload = diagnosticPayload(stripAnsiControlSequencesV1(line).trim(), 'FAIL');
+    if (payload !== undefined) failures.add(payload);
   }
   return canonicalFailureIds([...failures], 'vitest failure ids');
+}
+
+function diagnosticPayload(line: string, marker: string): string | undefined {
+  if (!line.startsWith(marker) || !isAsciiWhitespace(line[marker.length])) return undefined;
+  let start = marker.length + 1;
+  while (start < line.length && isAsciiWhitespace(line[start])) start += 1;
+  return start === line.length ? undefined : line.slice(start);
+}
+
+function firstAsciiWhitespaceIndex(value: string): number {
+  for (let index = 0; index < value.length; index += 1) {
+    if (isAsciiWhitespace(value[index])) return index;
+  }
+  return -1;
+}
+
+function isAsciiWhitespace(value: string | undefined): boolean {
+  return value === ' ' || value === '\t' || value === '\n' || value === '\r' || value === '\f' || value === '\v';
 }
 
 export function parseMatchedContinuationThreadnoteVerifierFailureIdsV1(

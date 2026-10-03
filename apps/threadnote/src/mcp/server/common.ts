@@ -296,8 +296,12 @@ export function compactPersonalMemoryReferences(text: string, user: string, enab
 }
 
 function compactPersonalMemoryReference(candidate: string, user: string): string {
-  const trailingPunctuation = candidate.match(/[.,;:]+$/u)?.[0] ?? '';
-  const uri = candidate.slice(0, candidate.length - trailingPunctuation.length);
+  let trailingStart = candidate.length;
+  while (trailingStart > 0 && isCompactReferenceTrailingPunctuation(candidate[trailingStart - 1])) {
+    trailingStart -= 1;
+  }
+  const trailingPunctuation = candidate.slice(trailingStart);
+  const uri = candidate.slice(0, trailingStart);
   try {
     const parsed = parseResourceId(uri);
     const currentUserSegment = uriSegment(user);
@@ -313,6 +317,10 @@ function compactPersonalMemoryReference(candidate: string, user: string): string
   } catch {
     return candidate;
   }
+}
+
+function isCompactReferenceTrailingPunctuation(value: string | undefined): boolean {
+  return value === '.' || value === ',' || value === ';' || value === ':';
 }
 
 function expandPersonalMemoryReference(value: string, user: string | undefined): string {

@@ -356,11 +356,13 @@ describe('Threadnote MCP toolsets', () => {
   });
 
   it('preserves Markdown delimiters around compacted personal memory references', () => {
+    const trailingPunctuation = ','.repeat(10_000);
     const text = [
       '`threadnote://user/test-user/memories/durable/projects/threadnote/inline.md`',
       '```text',
       'threadnote://user/test-user/memories/durable/projects/threadnote/fenced.md',
       '```',
+      `threadnote://user/test-user/memories/durable/projects/threadnote/punctuated.md${trailingPunctuation}`,
     ].join('\n');
 
     expect(compactPersonalMemoryReferences(text, 'test user')).toBe(
@@ -369,6 +371,7 @@ describe('Threadnote MCP toolsets', () => {
         '```text',
         'memories/durable/projects/threadnote/fenced.md',
         '```',
+        `memories/durable/projects/threadnote/punctuated.md${trailingPunctuation}`,
       ].join('\n'),
     );
   });

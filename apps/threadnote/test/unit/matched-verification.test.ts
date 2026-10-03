@@ -237,6 +237,22 @@ describe('matched evaluation deterministic verification', () => {
     ).toEqual(['tests/test_text.py::test_a', 'tests/test_text.py::test_b', 'tests/test_text.py::test_c']);
   });
 
+  it('extracts failure ids in linear time from diagnostics with long whitespace runs', () => {
+    const whitespace = '\t'.repeat(10_000);
+    expect(
+      parseMatchedContinuationPytestFailureIdsV1(
+        `FAILED${whitespace}tests/test_text.py::test_a${whitespace}-${whitespace}AssertionError`,
+        '',
+      ),
+    ).toEqual(['tests/test_text.py::test_a']);
+    expect(
+      parseMatchedContinuationVitestFailureIdsV1(
+        `FAIL${whitespace}packages/example.test.ts > schema > handles whitespace`,
+        '',
+      ),
+    ).toEqual(['packages/example.test.ts > schema > handles whitespace']);
+  });
+
   it('extracts and dispatches canonical Vitest failure ids', () => {
     const escape = String.fromCodePoint(27);
     const stdout = [
