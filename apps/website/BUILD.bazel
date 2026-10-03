@@ -132,6 +132,7 @@ bun_test(
         "//apps/website:test/helpers/test-error.ts",
         "//apps/website:test/website-content.test.ts",
         "//apps/website:test/website-site-meta.test.ts",
+        "//apps/website:test/whats-new-page.test.ts",
         "//apps/website:tools/effect/errors.ts",
         "//apps/website:tools/site-articles.ts",
         "//apps/website:tools/site-doc-pages.ts",
@@ -197,6 +198,7 @@ bun_test(
         "tools/bazel/project-vitest.config.ts",
         "apps/website/test/website-content.test.ts",
         "apps/website/test/website-site-meta.test.ts",
+        "apps/website/test/whats-new-page.test.ts",
     ],
 )
 
