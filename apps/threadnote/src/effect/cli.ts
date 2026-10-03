@@ -7,10 +7,11 @@ import {
   makeRecallFeedbackCommand,
   makeValueCommand,
 } from './workflow_cli.js';
-import {makeCursorHookCommand, makeInstallHooksCommand, makePreCompactHookCommand} from './hooks_cli.js';
+import * as hooksCli from './hooks_cli.js';
 import {agentsCommandMetadata, makeAgentsCommand} from './agents_cli.js';
 import {makeSetupCommand, setupCommandMetadata} from './setup_cli.js';
 import {guidanceCommandMetadata, makeGuidanceCommand} from './guidance_cli.js';
+import {makeDevelopmentInstallRepairCommand} from './development_install_cli.js';
 import {runCursorHook} from '../cursor/hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
@@ -18,7 +19,7 @@ import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {makeComposerAttachFlags} from './composer/attach_flags.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
 import {
-  runDevelopmentInstallRepair,
+  runDevelopmentInstallMaintenance,
   runDoctor,
   runInstall,
   runRepair,
@@ -162,6 +163,7 @@ import {
 import {runProcessDiagnostics} from '../process/diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
 import {runCodeBriefEditHook} from '../context_brief/edit_hook.js';
+import {runCodexResumeHook} from '../codex/resume_hook.js';
 import {runImageProjectionCommand} from '../image_projection/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import * as valueReportCommands from '../value_report/commands.js';
@@ -384,13 +386,11 @@ const postUpdate = Command.make(
   options => withRuntimeEffect(config => runPostUpdate(config, options)),
 ).pipe(Command.withDescription('Run packaged post-update action prompts'), Command.unlisted);
 
-const developmentInstallRepair = Command.make(
-  'development-install-repair',
-  {
-    expectedVersion: requiredString('expected-version', 'Exact active development release version'),
-  },
-  options => withRuntimeEffect(config => runDevelopmentInstallRepair(config, options.expectedVersion)),
-).pipe(Command.withDescription('Repair state inside an exact-HEAD development activation'), Command.unlisted);
+const developmentInstallRepair = makeDevelopmentInstallRepairCommand(options =>
+  withRuntimeEffect(config =>
+    runDevelopmentInstallMaintenance(config, options.expectedVersion, options.activateIntegrations),
+  ),
+);
 
 const repair = Command.make(
   'repair',
@@ -1241,14 +1241,14 @@ const mcpInstall = Command.make(
   ({agent, ...options}) => withRuntimeEffect(config => runMcpInstall(config, agent, options)),
 ).pipe(Command.withDescription('Install the Threadnote MCP config, instructions, and skills for one supported agent'));
 
-const installHooks = makeInstallHooksCommand((agent, options) =>
+const installHooks = hooksCli.makeInstallHooksCommand((agent, options) =>
   withRuntimeEffect(config => runHooksInstall(config, agent, options)),
 );
-const cursorHook = makeCursorHookCommand((event, options) =>
+const cursorHook = hooksCli.makeCursorHookCommand((event, options) =>
   withRuntimeEffect(config => runCursorHook(config, event, options)),
 );
 
-const preCompactHook = makePreCompactHookCommand(options =>
+const preCompactHook = hooksCli.makePreCompactHookCommand(options =>
   withRuntimeEffect(config => runPreCompactHook(config, options)),
 );
 
@@ -1258,11 +1258,12 @@ const sessionStartHook = Command.make(
   options => withRuntimeEffect(config => runSessionStartHook(config, options)),
 ).pipe(Command.withDescription('Print current repo handoff context at session start'), Command.unlisted);
 
-const codeBriefHook = Command.make(
-  'code-brief-hook',
-  {diagnostic: boolean('diagnostic', 'Print a privacy-safe delivery status to stderr')},
-  options => withRuntimeEffect(config => runCodeBriefEditHook(config, options)),
-).pipe(Command.withDescription('Inject current cited memory before a Claude file edit'), Command.unlisted);
+const codeBriefHook = hooksCli.makeCodeBriefHookCommand(options =>
+  withRuntimeEffect(config => runCodeBriefEditHook(config, options)),
+);
+const codexResumeHook = hooksCli.makeCodexResumeHookCommand(options =>
+  withRuntimeEffect(config => runCodexResumeHook(config, options)),
+);
 const remember = Command.make(
   'remember',
   {
@@ -1941,6 +1942,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('cursor-hook', cursorHook),
   registerTopLevelCommand('session-start-hook', sessionStartHook),
   registerTopLevelCommand('code-brief-hook', codeBriefHook),
+  registerTopLevelCommand('codex-resume-hook', codexResumeHook),
   registerTopLevelCommand('remember', remember),
   registerTopLevelCommand('finalize-code-refs', finalizeCodeRefs),
   registerTopLevelCommand('migrate', migrateHome, {productionLog: {mode: 'requires-apply'}}),

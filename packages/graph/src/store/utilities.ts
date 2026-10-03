@@ -56,6 +56,26 @@ export function normalizedTerms(value: string): readonly string[] {
   return [...new Set(expanded.match(/[\p{L}\p{N}_$.-]{2,}/gu) ?? [])].slice(0, 32);
 }
 
+/** Preserve explicit code identities embedded in a longer natural-language query. */
+export function codeGraphIdentitySelectors(value: string): readonly string[] {
+  const candidates =
+    value
+      .normalize('NFKC')
+      .replaceAll('\\', '/')
+      .match(/[\p{L}\p{N}_$@./:-]{2,}/gu) ?? [];
+  const selectors = candidates.flatMap(candidate => {
+    if (candidate.includes('/')) return [];
+    const identityBearing =
+      /[\p{L}\p{N}_$][.:][\p{L}\p{N}_$]/u.test(candidate) ||
+      /[_$]/u.test(candidate) ||
+      /[\p{Ll}\p{N}][\p{Lu}]/u.test(candidate);
+    if (!identityBearing) return [];
+    const leaf = candidate.split(/[.:]/u).at(-1);
+    return leaf && leaf !== candidate && /[_$]|[\p{Ll}\p{N}][\p{Lu}]/u.test(leaf) ? [candidate, leaf] : [candidate];
+  });
+  return [...new Set(selectors)].slice(0, 8);
+}
+
 function sqlTextOption(value: unknown): Option.Option<string> {
   return typeof value === 'string' ? Option.some(value) : Option.none();
 }

@@ -1,5 +1,6 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {
+  CONTEXT_BRIEF_MODES,
   CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
@@ -583,7 +584,7 @@ export function ContextPanel(props: ContextPanelProps): React.ReactElement {
                 onChange={event => setMode(event.target.value as ContextBriefMode)}
                 value={mode}
               >
-                {(['brief', 'locate', 'explain', 'trace', 'impact'] as const).map(value => (
+                {CONTEXT_BRIEF_MODES.map(value => (
                   <option key={value}>{value}</option>
                 ))}
               </select>
@@ -1491,21 +1492,6 @@ function FollowUpAction(props: {
         type="button"
       >
         {codeRefs === undefined ? 'Narrow Workset and rerun' : 'Inspect node and rerun'}
-      </button>
-    );
-  }
-  if (followUp.operation === 'prepare-workset') {
-    return (
-      <button
-        onClick={() =>
-          props.onRerun({
-            task: `Explain the current readiness and evidence gaps for Workset ${followUp.workset}.`,
-            workset: followUp.workset,
-          })
-        }
-        type="button"
-      >
-        Switch to {followUp.workset} scope and rerun
       </button>
     );
   }

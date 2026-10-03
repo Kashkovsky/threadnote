@@ -370,6 +370,14 @@ describe('code graph query budgets', () => {
             (yield* Ref.get(commandCalls)).filter(call => call.executable === 'git' && call.args.includes('status')),
           ).toHaveLength(1);
 
+          yield* Ref.set(snapshotRef, {...snapshot, repositoryId: 'f'.repeat(64)});
+          const changedRemoteStatus = yield* query.statusForIdentity(fixtureRoot.home, identity, {
+            observeWorktree: true,
+            requestMaintenance: false,
+          });
+          expect(changedRemoteStatus).toMatchObject({freshness: 'stale', readySnapshot: undefined, stale: true});
+          yield* Ref.set(snapshotRef, snapshot);
+
           const racedPublished = yield* query.statusForPublishedIdentity(
             fixtureRoot.home,
             fixtureRoot.repository,
@@ -415,6 +423,9 @@ describe('code graph query budgets', () => {
           );
           expect(observationFromCodeGraphStatus(deferredColdStatus)?.overlay).toBeUndefined();
           expect(observationFromCodeGraphStatus(exactColdAttach)?.overlay).toEqual({dirty: false});
+          expect(observationFromCodeGraphStatus(exactColdAttach)?.readySnapshotId).toBe(
+            exactColdAttach.readySnapshot?.id,
+          );
           expect(telemetryEvents.splice(0)).toEqual([
             {
               disposition: 'fallback',

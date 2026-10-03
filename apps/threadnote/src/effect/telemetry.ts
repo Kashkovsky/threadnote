@@ -181,7 +181,14 @@ const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS = ['current', 'deferred', 'st
 const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS = ['active', 'borrowed', 'none', 'promoted'] as const;
 export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES = ['local', 'workset'] as const;
 export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CONTRACTS = ['code-anchored-v3', 'task-only-v2'] as const;
-export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES = ['brief', 'explain', 'impact', 'locate', 'trace'] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES = [
+  'brief',
+  'explain',
+  'impact',
+  'locate',
+  'resume',
+  'trace',
+] as const;
 export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CODE_ANCHOR_COVERAGES = ['complete', 'partial', 'unavailable'] as const;
 export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_GAP_CLASSES = [
   'mixed',

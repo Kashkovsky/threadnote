@@ -450,18 +450,22 @@ export const writeArtifact = Effect.fn('agentIntegrations.writeArtifact')(functi
   } else if (current !== undefined && current !== artifact.content) {
     const currentBlock = extractManagedBlock(current);
     const expectedBlock = extractManagedBlock(artifact.content);
-    if (currentBlock === undefined || expectedBlock === undefined) {
+    const unmanagedContent = currentBlock === undefined ? undefined : removeManagedBlock(current);
+    const generatedFile =
+      unmanagedContent !== undefined &&
+      (isExactLegacyCopilotInstructionFrontmatter(unmanagedContent) ||
+        isGeneratedInstructionFrontmatter(unmanagedContent) ||
+        (artifact.name.startsWith('skill ') && isGeneratedSkillFrontmatter(unmanagedContent)));
+    const markerlessLegacyInstruction =
+      currentBlock === undefined &&
+      artifact.name === 'instructions' &&
+      isExactLegacyCopilotInstructionFrontmatter(current);
+    if (expectedBlock === undefined || (currentBlock === undefined && !markerlessLegacyInstruction)) {
       return yield* AgentIntegrationError.make({
         message: `${artifact.path} is not managed by Threadnote; not modifying it.`,
       });
     }
-    const unmanagedContent = removeManagedBlock(current);
-    next =
-      unmanagedContent !== undefined &&
-      (isGeneratedInstructionFrontmatter(unmanagedContent) ||
-        (artifact.name.startsWith('skill ') && isGeneratedSkillFrontmatter(unmanagedContent)))
-        ? artifact.content
-        : upsertManagedBlock(current, expectedBlock);
+    next = generatedFile || markerlessLegacyInstruction ? artifact.content : upsertManagedBlock(current, expectedBlock);
   }
   if (next === undefined) {
     return yield* AgentIntegrationError.make({
@@ -532,6 +536,18 @@ function isGeneratedInstructionFrontmatter(content: string): boolean {
     trimmed.includes('description: Route non-trivial work through installed Threadnote skills') &&
     (trimmed.includes('alwaysApply: true') || trimmed.includes('applyTo: "**"'))
   );
+}
+
+const LEGACY_COPILOT_INSTRUCTION_FRONTMATTER = [
+  '---',
+  'name: Threadnote',
+  'description: Shared local context and handoffs through Threadnote',
+  'applyTo: "**"',
+  '---',
+].join('\n');
+
+export function isExactLegacyCopilotInstructionFrontmatter(content: string): boolean {
+  return content.replaceAll('\r\n', '\n').replace(/\n+$/u, '') === LEGACY_COPILOT_INSTRUCTION_FRONTMATTER;
 }
 
 function isGeneratedSkillFrontmatter(content: string): boolean {
