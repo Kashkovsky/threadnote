@@ -682,25 +682,29 @@ describe('registered analyze_code_graph snapshot resolution', () => {
     }).pipe(provideTestLayer(harness.layer));
   });
 
-  effectIt.effect('keeps canonical analysis structured content behind explicit dual format', () => {
-    const ready = codeGraphStatus({ready: true, stale: false});
-    const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});
+  effectIt.effect(
+    'keeps canonical analysis structured content behind explicit dual format without duplicating metadata in text',
+    () => {
+      const ready = codeGraphStatus({ready: true, stale: false});
+      const harness = analyzeHandlerHarness({attachResults: [], refresh: false, statuses: [ready]});
 
-    return Effect.gen(function* () {
-      const result = yield* harness.invoke({
-        callerCwd: ready.identity.repoRoot,
-        operation: 'stats',
-        responseFormat: 'dual',
-      });
+      return Effect.gen(function* () {
+        const result = yield* harness.invoke({
+          callerCwd: ready.identity.repoRoot,
+          operation: 'stats',
+          responseFormat: 'dual',
+        });
 
-      expect(result.isError, JSON.stringify(result)).not.toBe(true);
-      expect(result.structuredContent).toMatchObject({operation: 'stats', type: 'code-graph-analysis'});
-      const text = (result.content[0] as {readonly text: string}).text;
-      expect(text.startsWith('Read: ')).toBe(true);
-      expect(text).toContain(ready.identity.repositoryId);
-      expect(text).toContain(ready.readySnapshot!.id);
-    }).pipe(provideTestLayer(harness.layer));
-  });
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({operation: 'stats', type: 'code-graph-analysis'});
+        const text = (result.content[0] as {readonly text: string}).text;
+        expect(text).toContain('Graph analysis:');
+        expect(text).not.toContain('Read:');
+        expect(text).not.toContain(ready.identity.repositoryId);
+        expect(text).not.toContain(ready.readySnapshot!.id);
+      }).pipe(provideTestLayer(harness.layer));
+    },
+  );
 
   for (const freshness of ['ready', 'allow-stale'] as const) {
     effectIt.effect(`analyzes the selected stale snapshot with ${freshness} and starts no watcher`, () => {

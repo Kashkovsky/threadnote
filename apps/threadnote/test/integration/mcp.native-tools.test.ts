@@ -3091,6 +3091,12 @@ describe('Threadnote MCP toolsets', () => {
               '',
           ).byteLength,
         ).toBeLessThanOrEqual(24 * 1_024);
+        const analysisText =
+          ((Array.isArray(analysis.content) ? analysis.content[0] : undefined) as TextContent | undefined)?.text ?? '';
+        expect(analysisText).toContain('Graph analysis:');
+        expect(analysisText).not.toContain('Read:');
+        expect(analysisText).not.toContain('repositoryId');
+        expect(analysisText).not.toContain('instructionPolicy');
 
         const defaultAnalysis = await client.callTool(
           {

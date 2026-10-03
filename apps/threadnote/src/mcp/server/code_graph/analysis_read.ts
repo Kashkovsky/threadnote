@@ -59,10 +59,7 @@ export function codeGraphAnalysisReadStateResponse(
       item.type === 'text'
         ? {
             ...item,
-            text:
-              responseFormat === 'dual'
-                ? `Read: ${JSON.stringify(metadata)}\n${item.text}`
-                : `${agentProvenance}${item.text}`,
+            text: `${agentProvenance}${item.text}`,
           }
         : item,
     ),
