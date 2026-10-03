@@ -684,24 +684,24 @@ The body remains ordinary **Markdown**.
     expect(source).not.toMatch(/\b(?:TODO|TBD)\b|publication placeholder|\{\{[^}]+}}|<insert\b/i);
   });
 
-  it('publishes Threadnote 5.0.0 as the latest workflow-oriented article', async () => {
+  it('publishes the GraphMem continuation study as the latest evidence article', async () => {
     const articles = await loadWebsiteArticles(root);
     const latest = articles[0];
     const landingSource = await readFile(join(root, 'apps', 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8');
 
     expect(latest).toMatchObject({
-      publishedAt: '2026-09-18T08:00:00Z',
-      slug: 'threadnote-5-context-lifecycle',
-      title: 'Threadnote 5.0.0 — Context that keeps up with the work',
+      publishedAt: '2026-10-03T12:30:00Z',
+      slug: 'graphmem-agent-continuation-study',
+      title: 'GraphMem: Measuring Memory and Code Graphs in Agent Continuation',
     });
-    expect(latest?.summary).toContain('trustworthy context lifecycle');
-    expect(latest?.body).toContain('## Begin a task with a Context Brief');
-    expect(latest?.body).toContain('## End with a Knowledge Delta, not a transcript');
-    expect(latest?.body).toContain('## Keep context healthy as the code changes');
-    expect(latest?.body).toContain('## Measure whether the loop helps');
-    expect(latest?.body).toContain('graph scope');
-    expect(latest?.body).not.toContain('SetupReceiptV1');
-    expect(latest?.body).not.toMatch(/Codex, Claude(?: Code)?, Cursor, (?:and )?Copilot/i);
+    expect(latest?.summary).toContain('65.62% fewer failure-inclusive provider tokens');
+    expect(latest?.body).toContain('## Experimental design');
+    expect(latest?.body).toContain('## Lifecycle accounting');
+    expect(latest?.body).toContain('## Statistical method');
+    expect(latest?.body).toContain('## Limitations');
+    expect(latest?.body).toContain('50.80% to 81.56%');
+    expect(latest?.body).toContain('2b9ede3e031790f9798517504027870dacbc0f74');
+    expect(latest?.body).not.toMatch(/\b(?:TODO|TBD)\b|publication placeholder|\{\{[^}]+}}|<insert\b/i);
     expect(landingSource).toContain("import articles from 'virtual:threadnote-articles'");
     expect(landingSource).toContain("import latestRelease from 'virtual:threadnote-latest-release'");
     expect(landingSource).toContain('whatsNewArticleHref(latestArticle.slug)');
