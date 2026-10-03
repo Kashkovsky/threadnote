@@ -1333,6 +1333,7 @@ const selectSearchSymbols = Effect.fn('codeGraph.selectSearchSymbols')(function*
 
 interface SearchSymbolRow extends SymbolRow {
   readonly exact_rank: number;
+  readonly rankingScore?: number;
   readonly score: number;
 }
 
@@ -1446,7 +1447,7 @@ function searchSymbolRowComparator(
     codeGraphSymbolSearchScoreMultiplier(right.path, right.kind, right.name, queryTerms) -
       codeGraphSymbolSearchScoreMultiplier(left.path, left.kind, left.name, queryTerms) ||
     right.exact_rank - left.exact_rank ||
-    right.score - left.score ||
+    (right.rankingScore ?? right.score) - (left.rankingScore ?? left.score) ||
     right.exported - left.exported ||
     searchSymbolKindOrder(left.kind) - searchSymbolKindOrder(right.kind) ||
     compareCodeUnits(left.name, right.name) ||
@@ -1518,13 +1519,31 @@ const selectSearchSymbolsWithSql = Effect.fn('codeGraph.selectSearchSymbolsWithS
     baseSnapshotId,
     termCandidates.map(candidate => candidate.symbol_id),
   )).map(row => ({...row, score: termScores.get(row.id) ?? 0}));
+  const exactEvidence = new Map<string, Pick<SearchSymbolRow, 'exact_rank' | 'score'>>();
+  for (const row of exactRows) {
+    const current = exactEvidence.get(row.id);
+    exactEvidence.set(row.id, {
+      exact_rank: Math.max(current?.exact_rank ?? 0, row.exact_rank),
+      score: Math.max(current?.score ?? 0, row.score),
+    });
+  }
   const byId = new Map<string, SearchSymbolRow>();
   for (const row of [...termRows.map(row => ({...row, exact_rank: 0})), ...exactRows]) {
     const current = byId.get(row.id);
     if (!current || compareRows(row, current) < 0) byId.set(row.id, row);
   }
-  const ranked = [...byId.values()].sort(compareRows);
-  const exactIds = new Set(exactRows.map(row => row.id));
+  const ranked = [...byId.values()]
+    .map(row => {
+      const exact = exactEvidence.get(row.id);
+      return {
+        ...row,
+        exact_rank: exact?.exact_rank ?? 0,
+        rankingScore: termScores.get(row.id) ?? exact?.score ?? row.score,
+        score: exact?.score ?? termScores.get(row.id) ?? row.score,
+      };
+    })
+    .sort(compareRows);
+  const exactIds = new Set(exactEvidence.keys());
   // Admit exact identities before the bounded page is truncated, then retain
   // the established path and side-effect-owner ordering within that page.
   const reservedExact = ranked.filter(row => exactIds.has(row.id)).slice(0, safeLimit);
