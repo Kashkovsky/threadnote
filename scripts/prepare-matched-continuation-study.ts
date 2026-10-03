@@ -55,6 +55,7 @@ interface MatchedContinuationPreparationPlanV1 {
     readonly clusterId: string;
     readonly pilotDirectory: string;
     readonly planPath: string;
+    readonly runtimePath: string;
   }[];
   readonly version: typeof MATCHED_CONTINUATION_PREPARATION_VERSION;
 }
@@ -102,12 +103,14 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
   const corpus = parseMatchedEvaluationCorpusV1(parseJson(corpusBytes, 'corpus'));
   const manifest = parseMatchedEvaluationManifestV1(parseJson(manifestBytes, 'manifest'));
   const matchedStudy = parseMatchedTokenEfficiencyStudyV1(parseJson(matchedStudyBytes, 'matched study'));
-  const matchedRuntime = parseMatchedEvaluationRuntimeV1(parseJson(matchedRuntimeBytes, 'matched runtime'));
+  parseMatchedEvaluationRuntimeV1(parseJson(matchedRuntimeBytes, 'matched runtime'));
   const matchedPreparationReceipt = parseMatchedPreparationReceipt(
     parseJson(matchedPreparationReceiptBytes, 'matched preparation receipt'),
   );
   assertQualificationReceiptBindingV1(matchedPreparationReceipt, qualificationReceiptBytes);
-  const preparation = parsePreparationPlanV1(parseJson(preparationPlanBytes, 'continuation preparation plan'));
+  const preparation = parseMatchedContinuationPreparationPlanV1(
+    parseJson(preparationPlanBytes, 'continuation preparation plan'),
+  );
   const exposureAuditBytes = await readBoundedRegularFile(
     preparation.exposureAuditPath,
     8 * 1_024 * 1_024,
@@ -154,23 +157,25 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
 
   const taskInputs = await Promise.all(
     preparation.tasks.map(async (entry, taskIndex) => {
-      const planBytes = await readBoundedRegularFile(
-        entry.planPath,
-        8 * 1_024 * 1_024,
-        `continuation plan ${taskIndex}`,
-      );
+      const [planBytes, taskRuntimeBytes] = await Promise.all([
+        readBoundedRegularFile(entry.planPath, 8 * 1_024 * 1_024, `continuation plan ${taskIndex}`),
+        readBoundedRegularFile(entry.runtimePath, 8 * 1_024 * 1_024, `continuation runtime ${taskIndex}`),
+      ]);
       const plan = parseMatchedEvaluationContinuationPilotPlanV1(
         parseJson(planBytes, `continuation plan ${taskIndex}`),
       );
-      if (plan.version !== 3) {
-        throw new Error(`Continuation plan ${taskIndex} must use the full-verification v3 contract.`);
+      const taskRuntime = parseMatchedEvaluationRuntimeV1(
+        parseJson(taskRuntimeBytes, `continuation runtime ${taskIndex}`),
+      );
+      if (plan.version !== 3 && plan.version !== 4) {
+        throw new Error(`Continuation plan ${taskIndex} must use the full-verification v3 or v4 contract.`);
       }
       await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
         manifest,
         plan,
         planPath: entry.planPath,
         requiredArms: new Set(['threadnote-compact', 'threadnote-graph']),
-        runtime: matchedRuntime,
+        runtime: taskRuntime,
       });
       if (
         plan.candidate.toolArtifactHash !== compactArm.tool.artifactHash ||
@@ -201,7 +206,7 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
       }
       continuationCheckpointStudyV2(matchedStudy, plan.sourceTask, plan.checkpoint);
       const runtimeRepository = required(
-        matchedRuntime.repositories.find(repository => repository.clusterId === entry.clusterId),
+        taskRuntime.repositories.find(repository => repository.clusterId === entry.clusterId),
         `runtime repository ${entry.clusterId}`,
       );
       if (runtimeRepository.repositoryIdentityHash !== cluster.repositoryIdentityHash) {
@@ -571,7 +576,7 @@ function safeRelativePath(value: unknown, label: string): string {
   return path;
 }
 
-function parsePreparationPlanV1(value: unknown): MatchedContinuationPreparationPlanV1 {
+export function parseMatchedContinuationPreparationPlanV1(value: unknown): MatchedContinuationPreparationPlanV1 {
   const plan = object(value, 'continuation preparation plan');
   exactKeys(plan, ['bootstrap', 'exposureAuditPath', 'gates', 'sourceCommit', 'studyId', 'tasks', 'version']);
   if (plan.version !== MATCHED_CONTINUATION_PREPARATION_VERSION) invalid('preparation plan version must be 1');
@@ -590,11 +595,12 @@ function parsePreparationPlanV1(value: unknown): MatchedContinuationPreparationP
   ]);
   const tasks = array(plan.tasks, 'continuation preparation tasks').map((entry, index) => {
     const task = object(entry, `continuation preparation task ${index}`);
-    exactKeys(task, ['clusterId', 'pilotDirectory', 'planPath']);
+    exactKeys(task, ['clusterId', 'pilotDirectory', 'planPath', 'runtimePath']);
     return {
       clusterId: matching(task.clusterId, /^cluster_[0-9a-f]{16,64}$/u, `continuation task ${index} cluster`),
       pilotDirectory: absolutePath(task.pilotDirectory, `continuation task ${index} pilot directory`),
       planPath: absolutePath(task.planPath, `continuation task ${index} plan path`),
+      runtimePath: absolutePath(task.runtimePath, `continuation task ${index} runtime path`),
     };
   });
   unique(
@@ -608,6 +614,10 @@ function parsePreparationPlanV1(value: unknown): MatchedContinuationPreparationP
   unique(
     tasks.map(task => task.pilotDirectory),
     'continuation preparation pilot directories',
+  );
+  unique(
+    tasks.map(task => task.runtimePath),
+    'continuation preparation runtime paths',
   );
   return {
     bootstrap: {

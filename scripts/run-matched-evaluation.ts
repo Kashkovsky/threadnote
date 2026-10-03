@@ -942,15 +942,12 @@ export function buildMatchedEvaluationContinuationAnchoredGraphQueryV1(input: {
   readonly graphQuestion: string;
   readonly sourceCitations: readonly {readonly path: string}[];
 }): string {
-  const fallback = normalizeMatchedEvaluationContinuationGraphQueryV1(input.fallbackQuery).replace(/\s+/gu, ' ').trim();
-  const sourcePath = input.sourceCitations[0]?.path;
-  if (sourcePath === undefined || Buffer.byteLength(sourcePath, 'utf8') > 160) {
-    return matchedEvaluationUtf8Prefix(fallback, 256).trim();
-  }
-  const availableQueryBytes = 256 - Buffer.byteLength(sourcePath, 'utf8') - 1;
-  if (availableQueryBytes < 8) return matchedEvaluationUtf8Prefix(fallback, 256).trim();
-  const boundedQuery = matchedEvaluationUtf8Prefix(fallback, availableQueryBytes).trim();
-  return `${sourcePath} ${boundedQuery}`;
+  const normalized = normalizeMatchedEvaluationContinuationGraphQueryV1(input.fallbackQuery)
+    .replace(/\s+/gu, ' ')
+    .trim();
+  const semanticQuery = normalized.replace(/^inspect_code_graph(?:\s+query)?(?:\s+for|\s*:)?\s*/iu, '').trim();
+  const fallback = semanticQuery || normalized || input.graphQuestion.replace(/\s+/gu, ' ').trim();
+  return matchedEvaluationUtf8Prefix(fallback, 256).trim();
 }
 
 function matchedEvaluationUtf8Prefix(value: string, maximumBytes: number): string {
@@ -5128,13 +5125,14 @@ export function matchedContinuationDiagnosticParserForCommandV1(
   diagnosticOutput?: {readonly stderr: string; readonly stdout: string},
 ): MatchedContinuationPhaseTwoDiagnosticParser {
   const executableName = commandTokens[0]?.split('/').at(-1) ?? '';
+  if (executableName === 'v19-verifier.py') return 'threadnote-verifier-v1';
   const usesPytest = commandTokens.includes('pytest') || /^pytest(?:$|-)/u.test(executableName);
   const usesVitest = commandTokens.includes('vitest') || /^vitest(?:$|-)/u.test(executableName);
   if (usesPytest !== usesVitest) {
     return usesPytest ? 'pytest-summary-v1' : 'vitest-summary-v1';
   }
   if (!usesPytest && diagnosticOutput !== undefined) {
-    const inferred = (['pytest-summary-v1', 'vitest-summary-v1'] as const).filter(
+    const inferred = (['pytest-summary-v1', 'threadnote-verifier-v1', 'vitest-summary-v1'] as const).filter(
       parser =>
         parseMatchedContinuationFailureIdsV1(parser, diagnosticOutput.stdout, diagnosticOutput.stderr).length > 0,
     );

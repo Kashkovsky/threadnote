@@ -12,6 +12,7 @@ import {
   parseMatchedContinuationPhaseTwoVerificationPlanV1,
   parseMatchedContinuationPhaseTwoVerificationReceiptV1,
   parseMatchedContinuationPytestFailureIdsV1,
+  parseMatchedContinuationThreadnoteVerifierFailureIdsV1,
   parseMatchedContinuationVitestFailureIdsV1,
   parseMatchedEvaluationVerificationPlanV1,
   parseMatchedEvaluationVerificationReceiptV1,
@@ -257,6 +258,31 @@ describe('matched evaluation deterministic verification', () => {
         '',
       ),
     ).toEqual(['tests/test_text.py::test_a']);
+  });
+
+  it('reduces a sealed Threadnote verifier diagnostic to one stable failure id', () => {
+    const stderr =
+      'pluggy verifier failed: {"completed":true,"failures":["held-out-contract exited 1: assertion failed"]}\n';
+    expect(parseMatchedContinuationThreadnoteVerifierFailureIdsV1('', stderr)).toEqual(['sealed-verifier-failure']);
+    expect(parseMatchedContinuationFailureIdsV1('threadnote-verifier-v1', '', stderr)).toEqual([
+      'sealed-verifier-failure',
+    ]);
+    expect(
+      parseMatchedContinuationThreadnoteVerifierFailureIdsV1(
+        '',
+        'pluggy verifier failed: {"completed":false,"infrastructureError":"sandbox unavailable"}\n',
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps the Threadnote verifier failure identity independent of private diagnostic text', () => {
+    fc.assert(
+      fc.property(fc.string({minLength: 1, maxLength: 256}), failure => {
+        const stderr = `echo verifier failed: ${JSON.stringify({completed: true, failures: [failure]})}\n`;
+        expect(parseMatchedContinuationThreadnoteVerifierFailureIdsV1('', stderr)).toEqual(['sealed-verifier-failure']);
+      }),
+      {numRuns: 50},
+    );
   });
 
   it('canonicalizes Vitest failure ids independently of diagnostic order and duplicates', () => {

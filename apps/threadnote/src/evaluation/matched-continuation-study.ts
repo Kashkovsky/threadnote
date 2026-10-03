@@ -481,16 +481,6 @@ function validateSchedule(
   if (schedule.some(entry => !tasks.some(task => task.taskId === entry.taskId))) {
     invalid('continuation schedule refers to an unknown task');
   }
-  for (const variant of variants) {
-    const positionCounts = variants
-      .map((_, index) => index + 1)
-      .map(
-        position => schedule.filter(entry => entry.variant === variant && entry.withinTaskRunOrder === position).length,
-      );
-    if (Math.max(...positionCounts) - Math.min(...positionCounts) > 1) {
-      invalid(`continuation schedule is not position-balanced for ${variant}`);
-    }
-  }
 }
 
 function canonicalStudy(

@@ -46,7 +46,10 @@ import {
   recoverMatchedEvaluationContinuationAttemptsV1,
   selectMatchedEvaluationContinuationInBoundsSourceCitationsV1,
   type MatchedEvaluationContinuationPilotPlanV3,
+  type MatchedEvaluationContinuationPilotPlanV4,
 } from '../../../../scripts/run-matched-evaluation.js';
+
+type TestContinuationPlan = MatchedEvaluationContinuationPilotPlanV3 | MatchedEvaluationContinuationPilotPlanV4;
 
 describe('matched continuation finalization', () => {
   const roots: string[] = [];
@@ -65,6 +68,9 @@ describe('matched continuation finalization', () => {
     expect(
       matchedContinuationDiagnosticParserForCommandV1(['pytest-source-runner', '-q', 'tests/test_target.py']),
     ).toBe('pytest-summary-v1');
+    expect(matchedContinuationDiagnosticParserForCommandV1(['/sealed/bin/v19-verifier.py', 'pluggy'])).toBe(
+      'threadnote-verifier-v1',
+    );
     expect(
       matchedContinuationDiagnosticParserForCommandV1(['qualify-typescript-eslint'], {
         stderr: '',
@@ -197,7 +203,7 @@ describe('matched continuation finalization', () => {
     expect(extractMatchedEvaluationContinuationPhaseOneEvidenceV2(transcript, ['tests/regression.test.ts'])).toEqual({
       diagnosticEvidence: {
         diagnosticConclusion: 'The production normalizer drops the wrapper before the suggestion is rendered.',
-        graphQuery: 'src/normalizer.ts find callers from normalizeNode to renderSuggestion',
+        graphQuery: 'find callers from normalizeNode to renderSuggestion',
         graphQuestion: 'Which production caller passes the normalized node into the renderer?',
         rejectedHypothesis: 'The parser still preserves the wrapper in its intermediate node.',
         sourceCitations: [{endLine: 88, path: 'src/normalizer.ts', startLine: 72}],
@@ -400,13 +406,13 @@ describe('matched continuation finalization', () => {
     expect(projected.handoff).not.toContain(invocation);
   });
 
-  it('grounds identifier-rich graph queries in their attested production source without replacing their terms', () => {
+  it('keeps graph queries semantic instead of injecting source paths or tool-call prose', () => {
     const query = buildMatchedEvaluationContinuationAnchoredGraphQueryV1({
       fallbackQuery: 'inspect_code_graph("Node.search find the transition to staticChild")',
       graphQuestion: `Which transition advances the queue? ${'detail '.repeat(80)}`,
       sourceCitations: [{path: 'src/router/node.ts'}],
     });
-    expect(query).toBe('src/router/node.ts Node.search find the transition to staticChild');
+    expect(query).toBe('Node.search find the transition to staticChild');
     expect(query).not.toContain('Which transition advances the queue?');
     expect(Buffer.byteLength(query, 'utf8')).toBeLessThanOrEqual(256);
     expect(
@@ -421,7 +427,7 @@ describe('matched continuation finalization', () => {
     ).toBeLessThanOrEqual(256);
     expect(
       buildMatchedEvaluationContinuationAnchoredGraphQueryV1({
-        fallbackQuery: 'inspect_code_graph("find the transition")',
+        fallbackQuery: 'inspect_code_graph for find the transition',
         graphQuestion: 'Which transition advances the queue?',
         sourceCitations: [{path: `src/${'nested/'.repeat(30)}node.ts`}],
       }),
@@ -437,7 +443,7 @@ describe('matched continuation finalization', () => {
             graphQuestion,
             sourceCitations: [{path: 'rest_framework/fields.py'}],
           }),
-        ).toBe('rest_framework/fields.py html.parse_html_dict callers DictField.get_value');
+        ).toBe('html.parse_html_dict callers DictField.get_value');
       }),
       {numRuns: 64},
     );
@@ -645,6 +651,41 @@ describe('matched continuation finalization', () => {
         study,
       }),
     ).rejects.toThrow('artifact differs from its report hash');
+  });
+
+  it('accepts a v4 task report only when its report identity matches the v4 plan', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-continuation-finalizer-v4-')));
+    roots.push(root);
+    const study = createStudy();
+    const plan = continuationPlanV4(continuationPlan(study.tasks[0], study.sourceEvidence.verificationPlanHash));
+    const attempts = await Promise.all(
+      plan.attempts.map(attempt =>
+        completedReportAttempt(
+          root,
+          plan,
+          attempt,
+          metrics(study.tasks[0].taskId, hex(950 + attempt.runOrder), study.sourceEvidence.verificationPlanHash),
+        ),
+      ),
+    );
+    const report = taskReport(plan, study, attempts);
+
+    await expect(
+      parseAndVerifyMatchedContinuationTaskReportV1({
+        plan,
+        reportInput: report,
+        sourceReportSha256: hex(960),
+        study,
+      }),
+    ).resolves.toMatchObject({sourceReportSha256: hex(960)});
+    await expect(
+      parseAndVerifyMatchedContinuationTaskReportV1({
+        plan,
+        reportInput: {...report, planVersion: 3},
+        sourceReportSha256: hex(961),
+        study,
+      }),
+    ).rejects.toThrow('task report identity is invalid');
   });
 
   it('recovers only terminal-journal attempts and blocks provider-ambiguous nonces', async () => {
@@ -931,8 +972,8 @@ function finalizationArtifacts(label: string) {
 
 async function completedReportAttempt(
   root: string,
-  plan: MatchedEvaluationContinuationPilotPlanV3,
-  attempt: MatchedEvaluationContinuationPilotPlanV3['attempts'][number],
+  plan: TestContinuationPlan,
+  attempt: TestContinuationPlan['attempts'][number],
   attemptMetrics: MatchedEvaluationMetricsV1,
 ) {
   const prefix = join(root, attempt.runNonce);
@@ -980,7 +1021,7 @@ async function completedReportAttempt(
 }
 
 function taskReport(
-  plan: MatchedEvaluationContinuationPilotPlanV3,
+  plan: TestContinuationPlan,
   study: ReturnType<typeof createStudy>,
   attempts: readonly Awaited<ReturnType<typeof completedReportAttempt>>[],
 ) {
@@ -1001,7 +1042,7 @@ function taskReport(
     limitations: ['No retries are allowed.'],
     phaseTwoPromptSha256: plan.phaseTwoPromptSha256,
     phaseTwoVerificationPlanHash: plan.phaseTwoVerification.planHash,
-    planVersion: 3,
+    planVersion: plan.version,
     rows: plan.attempts.map(attempt => ({
       arm: underlyingArm(attempt.variant),
       blindLabel: attempt.blindLabel,
@@ -1114,7 +1155,27 @@ function continuationPlan(
   };
 }
 
-function passingPhaseTwoVerification(plan: MatchedEvaluationContinuationPilotPlanV3, artifactHash: string) {
+function continuationPlanV4(plan: MatchedEvaluationContinuationPilotPlanV3): MatchedEvaluationContinuationPilotPlanV4 {
+  return {
+    ...plan,
+    checkpoint: {
+      ...plan.checkpoint,
+      diagnosticEvidence: {
+        diagnosticConclusion: 'The focused regression isolates the production defect.',
+        graphQuery: 'callers of normalizeNode',
+        graphQuestion: 'Which callers depend on normalizeNode?',
+        rejectedHypothesis: 'The parser is not the failing component.',
+        sourceCitations: [{endLine: 12, path: 'src/normalizer.ts', startLine: 8}],
+        unresolvedGap: 'Select the smallest production correction.',
+        untestedInvariant: 'Adjacent callers remain covered by the sealed verifier.',
+        verifiedInvariant: 'The regression fails at the checkpoint.',
+      },
+    },
+    version: 4,
+  };
+}
+
+function passingPhaseTwoVerification(plan: TestContinuationPlan, artifactHash: string) {
   return createMatchedContinuationPhaseTwoVerificationReceiptV1({
     artifactHash,
     checks: plan.phaseTwoVerification.checks.map(check =>
@@ -1133,7 +1194,7 @@ function passingPhaseTwoVerification(plan: MatchedEvaluationContinuationPilotPla
   });
 }
 
-function failingPhaseTwoVerification(plan: MatchedEvaluationContinuationPilotPlanV3, artifactHash: string) {
+function failingPhaseTwoVerification(plan: TestContinuationPlan, artifactHash: string) {
   return createMatchedContinuationPhaseTwoVerificationReceiptV1({
     artifactHash,
     checks: plan.phaseTwoVerification.checks.map(check =>

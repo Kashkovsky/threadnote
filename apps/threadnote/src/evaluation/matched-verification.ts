@@ -4,7 +4,11 @@ export const MATCHED_EVALUATION_VERIFICATION_PLAN_VERSION = 1 as const;
 export const MATCHED_EVALUATION_VERIFICATION_STATUSES = ['passed', 'task-failed'] as const;
 export const MATCHED_CONTINUATION_PHASE_TWO_VERIFICATION_VERSION = 1 as const;
 export const MATCHED_CONTINUATION_PHASE_TWO_CHECK_POLICIES = ['must-pass', 'no-new-failures'] as const;
-export const MATCHED_CONTINUATION_PHASE_TWO_DIAGNOSTIC_PARSERS = ['pytest-summary-v1', 'vitest-summary-v1'] as const;
+export const MATCHED_CONTINUATION_PHASE_TWO_DIAGNOSTIC_PARSERS = [
+  'pytest-summary-v1',
+  'threadnote-verifier-v1',
+  'vitest-summary-v1',
+] as const;
 
 export type MatchedEvaluationVerificationStatus = (typeof MATCHED_EVALUATION_VERIFICATION_STATUSES)[number];
 export type MatchedContinuationPhaseTwoCheckPolicy = (typeof MATCHED_CONTINUATION_PHASE_TWO_CHECK_POLICIES)[number];
@@ -308,6 +312,26 @@ export function parseMatchedContinuationVitestFailureIdsV1(stdout: string, stder
   return canonicalFailureIds([...failures], 'vitest failure ids');
 }
 
+export function parseMatchedContinuationThreadnoteVerifierFailureIdsV1(
+  stdout: string,
+  stderr: string,
+): readonly string[] {
+  if (stdout.trim() !== '') return [];
+  for (const line of stderr.split(/\r?\n/u)) {
+    const match = /^[a-z][a-z0-9-]* verifier failed:\s*(\{.*\})$/u.exec(line.trim());
+    if (match?.[1] === undefined) continue;
+    try {
+      const diagnostic = JSON.parse(match[1]) as {readonly completed?: unknown; readonly failures?: unknown};
+      if (diagnostic.completed === true && Array.isArray(diagnostic.failures) && diagnostic.failures.length > 0) {
+        return ['sealed-verifier-failure'];
+      }
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 export function parseMatchedContinuationFailureIdsV1(
   diagnosticParser: MatchedContinuationPhaseTwoDiagnosticParser,
   stdout: string,
@@ -316,6 +340,8 @@ export function parseMatchedContinuationFailureIdsV1(
   switch (diagnosticParser) {
     case 'pytest-summary-v1':
       return parseMatchedContinuationPytestFailureIdsV1(stdout, stderr);
+    case 'threadnote-verifier-v1':
+      return parseMatchedContinuationThreadnoteVerifierFailureIdsV1(stdout, stderr);
     case 'vitest-summary-v1':
       return parseMatchedContinuationVitestFailureIdsV1(stdout, stderr);
   }

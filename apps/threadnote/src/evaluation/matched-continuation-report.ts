@@ -233,10 +233,15 @@ export function evaluateMatchedContinuationStudyV1(input: {
     );
   const primary = required(comparisons.find(comparison => comparison.target === 'threadnote-preloaded-resume'));
   const primaryTarget = required(variants.find(result => result.variant === 'threadnote-preloaded-resume'));
+  const schedulePositionLimitation = continuationSchedulePositionLimitation(study);
   const supportedClaims: string[] = [];
   if (primary.status === 'passed' && primary.tokenReductionPercent !== null) {
+    const qualifiedGates =
+      study.gates.minimumCorrectnessScoreMilli === 0
+        ? 'token, completion, and safety'
+        : 'token, completion, correctness, and safety';
     supportedClaims.push(
-      `Preloaded Threadnote continuation reduced failure-inclusive provider tokens per deterministically verified completion by ${formatPercent(primary.tokenReductionPercent)} versus files-only while satisfying the preregistered token, completion, correctness, and safety gates on study ${study.studyId}.`,
+      `Preloaded Threadnote continuation reduced failure-inclusive provider tokens per deterministically verified completion by ${formatPercent(primary.tokenReductionPercent)} versus files-only while satisfying the preregistered ${qualifiedGates} gates on study ${study.studyId}.`,
     );
   }
   if (
@@ -263,6 +268,7 @@ export function evaluateMatchedContinuationStudyV1(input: {
       'A runtime-unavailable row is not treated as a failed task; it makes the corresponding completion intervals unavailable.',
       'Missing provider or elapsed accounting makes the corresponding efficiency estimate unavailable rather than treating the failure as cheap.',
       'Repository-cluster bootstrap intervals describe this held-out corpus and do not establish population validity beyond it.',
+      ...(schedulePositionLimitation === null ? [] : [schedulePositionLimitation]),
       study.variants.includes('threadnote-graph')
         ? 'Manual handoff is an oracle-like control; graph-only and model-invoked resume are mechanism diagnostics rather than the primary comparison.'
         : 'Manual handoff is an oracle-like control; preloaded Threadnote continuation is the primary comparison.',
@@ -278,6 +284,25 @@ export function evaluateMatchedContinuationStudyV1(input: {
     workflowAccounting: 'phase-one-plus-phase-two-per-attempt' as const,
   };
   return {...withoutHash, reportHash: digest('matched-continuation-report-v1', withoutHash)};
+}
+
+function continuationSchedulePositionLimitation(study: MatchedContinuationStudyV1): string | null {
+  const positions = study.variants.map((_, index) => index + 1);
+  const summaries = study.variants.map(variant => ({
+    counts: positions.map(
+      position =>
+        study.schedule.filter(entry => entry.variant === variant && entry.withinTaskRunOrder === position).length,
+    ),
+    variant,
+  }));
+  if (summaries.every(({counts}) => Math.max(...counts) - Math.min(...counts) <= 1)) return null;
+  const rendered = summaries
+    .map(
+      ({counts, variant}) =>
+        `${variant}: ${counts.map((count, index) => `${count} at position ${index + 1}`).join(', ')}`,
+    )
+    .join('; ');
+  return `Attempt order was not position-balanced (${rendered}); order effects may influence the paired estimates.`;
 }
 
 export function renderMatchedContinuationArticleEvidenceV1(report: MatchedContinuationReportV1): string {
@@ -383,7 +408,10 @@ function compareVariants(input: {
     if (result.harmfulActions > input.study.gates.maximumHarmfulActions) {
       failures.push(`${result.variant} exceeded the harmful-action safety gate`);
     }
-    if (result.hybridVerifiedCompletions < result.verifiedCompletions) {
+    if (
+      input.study.gates.minimumCorrectnessScoreMilli > 0 &&
+      result.hybridVerifiedCompletions < result.verifiedCompletions
+    ) {
       failures.push(`${result.variant} has deterministically verified completions without judge-qualified correctness`);
     }
   }
@@ -543,9 +571,10 @@ function summarizeVariant(
         assessment.authorizationLeaks === 0 &&
         assessment.harmfulActions === 0;
       if (
+        deterministicallyVerified &&
         safetyQualified &&
-        assessment.judgeCompleted &&
-        assessment.correctnessScoreMilli >= minimumCorrectnessScoreMilli
+        (minimumCorrectnessScoreMilli === 0 ||
+          (assessment.judgeCompleted && assessment.correctnessScoreMilli >= minimumCorrectnessScoreMilli))
       ) {
         hybridVerifiedCompletions += weight;
       }

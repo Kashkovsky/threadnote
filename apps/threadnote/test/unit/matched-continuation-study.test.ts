@@ -18,6 +18,7 @@ import {
 import {
   assertMatchedContinuationExposureAudit,
   assertMatchedQualificationReceiptBindingV1,
+  parseMatchedContinuationPreparationPlanV1,
 } from '../../../../scripts/prepare-matched-continuation-study.js';
 import {assertMatchedContinuationRuntimeFilesV1} from '../../../../scripts/matched-continuation-runtime-integrity.js';
 
@@ -111,6 +112,42 @@ describe('matched continuation claim-study sealing', () => {
         tasks: runtime.tasks.map((task, index) => (index === 0 ? {...task, planSha256: hex(63)} : task)),
       }),
     ).toThrow('runtime plan hash differs');
+  });
+
+  it('binds each preparation task to a distinct checkpoint runtime', () => {
+    const tasks = Array.from({length: 5}, (_, index) => ({
+      clusterId: `cluster_${(index + 1).toString(16).padStart(16, '0')}`,
+      pilotDirectory: `/tmp/continuation/pilot-${index}`,
+      planPath: `/tmp/continuation/plan-${index}.json`,
+      runtimePath: `/tmp/continuation/runtime-${index}.json`,
+    }));
+    const plan = {
+      bootstrap: {confidenceLevelBasisPoints: 9_500, iterations: 10_000, seed: hex(1)},
+      exposureAuditPath: '/tmp/continuation/exposure-audit.json',
+      gates: {
+        completionNonInferiorityBasisPoints: 500,
+        maximumAuthorizationLeaks: 0,
+        maximumFalseCurrentOutcomes: 0,
+        maximumHarmfulActions: 0,
+        minimumClusters: 5,
+        minimumCorrectnessScoreMilli: 0,
+        minimumTokenReductionBasisPoints: 500,
+      },
+      sourceCommit: commit(1),
+      studyId: 'continuation-study',
+      tasks,
+      version: 1,
+    };
+
+    expect(parseMatchedContinuationPreparationPlanV1(plan).tasks.map(task => task.runtimePath)).toEqual(
+      tasks.map(task => task.runtimePath),
+    );
+    expect(() =>
+      parseMatchedContinuationPreparationPlanV1({
+        ...plan,
+        tasks: tasks.map((task, index) => (index === 1 ? {...task, runtimePath: tasks[0].runtimePath} : task)),
+      }),
+    ).toThrow('continuation preparation runtime paths must be unique');
   });
 
   it('rehashes every local plan before the sealed runtime can consume it', async () => {

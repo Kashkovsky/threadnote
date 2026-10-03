@@ -38,6 +38,7 @@ import {
   parseMatchedEvaluationContinuationPilotPlanV1,
   projectMatchedEvaluationContinuationSelectionCheckpointV1,
   type MatchedEvaluationContinuationPilotPlanV3,
+  type MatchedEvaluationContinuationPilotPlanV4,
 } from './run-matched-evaluation.js';
 
 export const MATCHED_CONTINUATION_FINALIZATION_VERSION = 1 as const;
@@ -148,7 +149,9 @@ export async function finalizeMatchedContinuationStudyFromFilesV1(options: Final
   for (const task of runtime.tasks) {
     const planBytes = await readBoundedRegularFile(task.planPath, MAXIMUM_JSON_BYTES, `plan ${task.taskId}`);
     const plan = parseMatchedEvaluationContinuationPilotPlanV1(parseJson(planBytes, `plan ${task.taskId}`));
-    if (plan.version !== 3) throw new Error(`Continuation plan ${task.taskId} must use version 3.`);
+    if (plan.version !== 3 && plan.version !== 4) {
+      throw new Error(`Continuation plan ${task.taskId} must use version 3 or 4.`);
+    }
     const reportPath = resolve(task.pilotDirectory, 'continuation-pilot-report.json');
     const reportBytes = await readBoundedRegularFile(reportPath, MAXIMUM_JSON_BYTES, `report ${task.taskId}`);
     reports.set(
@@ -289,7 +292,7 @@ export function matchedContinuationDeterministicallyVerifiedV1(input: {
 }
 
 export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
-  readonly plan: MatchedEvaluationContinuationPilotPlanV3;
+  readonly plan: MatchedEvaluationContinuationPilotPlanV3 | MatchedEvaluationContinuationPilotPlanV4;
   readonly reportInput: unknown;
   readonly sourceReportSha256: string;
   readonly study: MatchedContinuationStudyV1;
@@ -312,7 +315,12 @@ export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
     'taskId',
     'version',
   ]);
-  if (report.version !== 2 || report.planVersion !== 3 || report.comparativeClaimsEligible !== false) {
+  if (
+    report.version !== 2 ||
+    (report.planVersion !== 3 && report.planVersion !== 4) ||
+    report.planVersion !== input.plan.version ||
+    report.comparativeClaimsEligible !== false
+  ) {
     invalid('task report identity is invalid');
   }
   if (report.taskId !== input.plan.taskId) invalid('task report refers to a different task');
@@ -411,7 +419,11 @@ export async function parseAndVerifyMatchedContinuationTaskReportV1(input: {
   };
 }
 
-function parseAttempt(value: unknown, index: number, plan: MatchedEvaluationContinuationPilotPlanV3): ParsedAttempt {
+function parseAttempt(
+  value: unknown,
+  index: number,
+  plan: MatchedEvaluationContinuationPilotPlanV3 | MatchedEvaluationContinuationPilotPlanV4,
+): ParsedAttempt {
   const attempt = object(value, `task report attempt ${index}`);
   const status = literal(
     attempt.status,

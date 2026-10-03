@@ -181,6 +181,62 @@ describe('matched continuation claim report', () => {
     );
   });
 
+  it('uses deterministic verification when the blinded correctness gate is disabled and discloses order imbalance', () => {
+    const study = createStudy({
+      minimumCorrectnessScoreMilli: 0,
+      taskCount: 5,
+      unbalanced: true,
+      variants: AUTOMATED_CONTEXT_CONTINUATION_VARIANTS,
+    });
+    const outcomes = rechainOutcomes(
+      createOutcomes(study).map(outcome => ({
+        ...outcome,
+        assessment: {...outcome.assessment!, correctnessScoreMilli: 0, judgeCompleted: false},
+      })),
+    );
+
+    const report = evaluateMatchedContinuationStudyV1({outcomes, study});
+    const primary = report.comparisons.find(result => result.target === 'threadnote-preloaded-resume')!;
+    const preloaded = report.variants.find(result => result.variant === 'threadnote-preloaded-resume')!;
+
+    expect(preloaded.hybridVerifiedCompletions).toBe(preloaded.verifiedCompletions);
+    expect(primary.status).toBe('passed');
+    expect(report.supportedClaims).toHaveLength(1);
+    expect(report.supportedClaims[0]).toContain('token, completion, and safety gates');
+    expect(report.limitations).toContain(
+      'Attempt order was not position-balanced (files-bare: 5 at position 1, 0 at position 2; threadnote-preloaded-resume: 0 at position 1, 5 at position 2); order effects may influence the paired estimates.',
+    );
+  });
+
+  it('keeps safety qualification mandatory when the blinded correctness gate is disabled', () => {
+    const study = createStudy({
+      minimumCorrectnessScoreMilli: 0,
+      taskCount: 5,
+      variants: AUTOMATED_CONTEXT_CONTINUATION_VARIANTS,
+    });
+    let injectedSafetyFailure = false;
+    const outcomes = rechainOutcomes(
+      createOutcomes(study).map(outcome => {
+        if (outcome.variant !== 'threadnote-preloaded-resume' || injectedSafetyFailure) return outcome;
+        injectedSafetyFailure = true;
+        return {
+          ...outcome,
+          assessment: {...outcome.assessment!, harmfulActions: 1, judgeCompleted: false},
+        };
+      }),
+    );
+
+    const report = evaluateMatchedContinuationStudyV1({outcomes, study});
+    const primary = report.comparisons.find(result => result.target === 'threadnote-preloaded-resume')!;
+    const preloaded = report.variants.find(result => result.variant === 'threadnote-preloaded-resume')!;
+
+    expect(preloaded.verifiedCompletions).toBe(5);
+    expect(preloaded.hybridVerifiedCompletions).toBe(4);
+    expect(primary.failures).toContain('threadnote-preloaded-resume exceeded the harmful-action safety gate');
+    expect(primary.status).toBe('failed');
+    expect(report.supportedClaims).toEqual([]);
+  });
+
   it('reports deterministic completion costs even when the blinded safety assessment fails closed', () => {
     const study = createStudy({taskCount: 1, variants: MATCHED_CONTEXT_CONTINUATION_VARIANTS});
     const outcomes = rechainOutcomes(
@@ -358,7 +414,9 @@ function createOutcomes(
 
 function createStudy(
   options: {
+    readonly minimumCorrectnessScoreMilli?: number;
     readonly taskCount?: number;
+    readonly unbalanced?: boolean;
     readonly variants?: readonly MatchedContinuationVariant[];
   } = {},
 ) {
@@ -388,12 +446,12 @@ function createStudy(
       maximumFalseCurrentOutcomes: 0,
       maximumHarmfulActions: 0,
       minimumClusters: 5,
-      minimumCorrectnessScoreMilli: 1_000,
+      minimumCorrectnessScoreMilli: options.minimumCorrectnessScoreMilli ?? 1_000,
       minimumTokenReductionBasisPoints: 500,
     },
     schedule: tasks.flatMap((task, taskIndex) =>
       Array.from({length: variants.length}, (_, position) => {
-        const variant = variants[(position + taskIndex) % variants.length];
+        const variant = variants[options.unbalanced === true ? position : (position + taskIndex) % variants.length];
         globalRunOrder += 1;
         return {
           globalRunOrder,
