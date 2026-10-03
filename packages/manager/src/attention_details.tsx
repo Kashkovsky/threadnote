@@ -42,15 +42,19 @@ export function ReviewDetail(props: {
   }, [props.project, props.reviewId]);
   const candidate = preview?.review.candidates.find(item => item.candidateId === props.candidateId);
   const mutation = preview?.delta.items.find(item => item.candidateId === props.candidateId)?.mutationPreview;
+  const reviewedOperation =
+    mutation?.operation === 'create' || mutation?.operation === 'replace' ? mutation.operation : '';
+  const selectedOperation = operation || reviewedOperation;
   const needsSafetyRefresh = mutation?.replacementSafety?.classification === 'review-required';
-  const canCreateMissingTarget = needsSafetyRefresh && missingTarget && operation === 'create' && missingTargetApproved;
+  const canCreateMissingTarget =
+    needsSafetyRefresh && missingTarget && selectedOperation === 'create' && missingTargetApproved;
   const replacementCheckSatisfied =
     canCreateMissingTarget ||
     (!needsSafetyRefresh && (!mutation?.replacementSafety?.requiresExplicitApproval || replacementApproved));
   const canApprove =
     mutation &&
     !mutation.truncated &&
-    (mutation.operation !== 'requires_explicit_operation' || operation !== '') &&
+    (mutation.operation !== 'requires_explicit_operation' || selectedOperation !== '') &&
     replacementCheckSatisfied;
   async function refreshSafety(): Promise<void> {
     if (!preview || busy) return;
@@ -94,7 +98,7 @@ export function ReviewDetail(props: {
         approved: action === 'approve',
         allowDestructiveReplacement: replacementApproved,
         allowMissingReplacementCreate: canCreateMissingTarget,
-        ...(operation ? {operation} : {}),
+        ...(selectedOperation ? {operation: selectedOperation} : {}),
       });
       props.onChanged();
       props.onClose();
@@ -210,7 +214,7 @@ export function ReviewDetail(props: {
           ) : null}
           <footer>
             <button disabled={busy || !canApprove} onClick={() => void decide('approve')} type="button">
-              {missingTarget && operation === 'create'
+              {missingTarget && selectedOperation === 'create'
                 ? 'Create current memory'
                 : mutation?.operation === 'no_action'
                   ? 'Confirm no change needed'
