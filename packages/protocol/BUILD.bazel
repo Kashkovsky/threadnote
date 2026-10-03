@@ -405,6 +405,7 @@ bun_test(
         "//packages/graph:src/vector/retirement/schema.ts",
         "//packages/graph:src/view_removal.ts",
         "//packages/graph:src/watcher.ts",
+        "//packages/graph:src/watcher_reconciliation.ts",
         "//packages/graph:src/watcher_resume_scheduler.ts",
         "//packages/graph:src/worker_protocol.ts",
         "//packages/graph:src/workset/evidence.ts",
