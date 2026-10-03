@@ -692,15 +692,30 @@ The body remains ordinary **Markdown**.
     expect(latest).toMatchObject({
       publishedAt: '2026-10-03T12:30:00Z',
       slug: 'graphmem-agent-continuation-study',
-      title: 'GraphMem: Measuring Memory and Code Graphs in Agent Continuation',
+      title: 'How much do coding agents spend rediscovering a codebase?',
     });
-    expect(latest?.summary).toContain('65.62% fewer failure-inclusive provider tokens');
-    expect(latest?.body).toContain('## Experimental design');
-    expect(latest?.body).toContain('## Lifecycle accounting');
-    expect(latest?.body).toContain('## Statistical method');
-    expect(latest?.body).toContain('## Limitations');
+    expect(latest?.summary).toContain('65.62% fewer lifecycle tokens per verified completion');
+    expect(latest?.body).toContain('## Same checkpoint, different starting context');
+    expect(latest?.body).toContain('## Count finished work, including the cost of failure');
+    expect(latest?.body).toContain('## Fewer tokens in every task pair');
+    expect(latest?.body).toContain('## What this study does not settle');
+    expect(latest?.body).toContain('57.02%');
+    expect(latest?.body).toContain('5.1.0-beta.2');
+    expect(latest?.body).toContain('baseline had **no handoff**');
+    expect(latest?.body).toContain('not a claim of equivalent dollar savings');
+    expect(latest?.body).toContain('do not claim an established completion-rate advantage');
+    expect(latest?.body).toContain('Were these unseen tasks?');
     expect(latest?.body).toContain('50.80% to 81.56%');
     expect(latest?.body).toContain('2b9ede3e031790f9798517504027870dacbc0f74');
+    expect(latest?.body).not.toMatch(/github\.com\/threadnote\/threadnote\/(?:blob|tree)\/(?:main|codex\/)/);
+    const chart = await readFile(join(root, 'apps', 'website', 'public', 'graphmem-continuation-tokens.svg'), 'utf8');
+    expect(latest?.body).toContain('](/graphmem-continuation-tokens.svg)');
+    expect(chart).toContain('aria-labelledby="title description"');
+    expect(chart).toContain('zero-based scale from 0 to 700,000 tokens');
+    for (const tokens of [560404, 209818, 621988, 319182, 526224, 201392, 657529, 390933, 649521, 174715]) {
+      expect(chart).toContain(`data-tokens="${tokens}"`);
+      expect(latest?.body).toContain(tokens.toLocaleString('en-US'));
+    }
     expect(latest?.body).not.toMatch(/\b(?:TODO|TBD)\b|publication placeholder|\{\{[^}]+}}|<insert\b/i);
     expect(landingSource).toContain("import articles from 'virtual:threadnote-articles'");
     expect(landingSource).toContain("import latestRelease from 'virtual:threadnote-latest-release'");

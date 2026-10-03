@@ -2,215 +2,192 @@
 author: Denys Kashkovskyi
 publishedAt: 2026-10-03T12:30:00Z
 slug: graphmem-agent-continuation-study
-summary: 'A controlled five-repository study found that Threadnote continuation used 65.62% fewer failure-inclusive provider tokens per verified completion than files-only continuation.'
-title: 'GraphMem: Measuring Memory and Code Graphs in Agent Continuation'
+summary: 'Five repository tasks. Ten fresh continuations. Threadnote used 65.62% fewer lifecycle tokens per verified completion than restarting from files alone. Here is what we measured, and what we still cannot claim.'
+title: How much do coding agents spend rediscovering a codebase?
 ---
 
-## Abstract
+The agent found the bug. Added a regression test. Figured out which assumption was wrong.
 
-Long-running coding work often crosses a session boundary. The second agent can rediscover the repository state from
-files, or it can start with a compact account of what the previous session learned and a focused way to navigate the
-code. We measured the cost of those two continuation strategies on five public-repository tasks.
+Then the session ended.
 
-The experiment compared a files-only continuation session with a Threadnote continuation session preloaded from the
-first session's memory and required to execute one task-specific code-graph query. We counted the full matched workflow:
-the shared first session plus the assigned continuation, including failed attempts, divided by deterministically
-verified completions.
+The next agent gets the same repository and starts investigating. Again. You have hired a second detective who has
+the crime scene, but not the first detective's notes.
 
-Threadnote used 1,296,040 lifecycle provider tokens and produced five verified completions. Files-only used 3,015,666
-tokens and produced four. That is 259,208 versus 753,916.5 tokens per verified completion, a 65.62% reduction with a
-repository-cluster bootstrap 95% interval of 50.80% to 81.56%. Lifecycle time per verified completion was 46.14% lower
-(95% interval: 25.25% to 73.38%). The observed completion-rate difference was +20 percentage points, but its interval
-included no difference (0 to 60 points), so this study does not establish completion superiority.
+We built Threadnote to carry useful engineering context between sessions. For the 5.1 release cycle, we wanted to
+measure something less photogenic than a memory demo: **does that context actually reduce the work needed to finish
+a task?**
 
-## Hypothesis
+So we ran a paired continuation experiment on five public repositories. Each task started with the same completed
+first phase, then split into two fresh sessions: one with files alone, the other with a Threadnote handoff and a
+focused code-graph query.
 
-The primary hypothesis was narrow: for multi-session implementation work, preloaded Threadnote continuation would
-reduce failure-inclusive provider tokens per deterministically verified completion relative to files-only continuation,
-without violating the preregistered completion and safety gates.
+> Across these five tasks, Threadnote used **65.62% fewer lifecycle provider tokens per verified completion** and
+> **46.14% less lifecycle time per verified completion** than files-only continuation. Threadnote passed verification
+> on 5/5 tasks; files-only passed on 4/5.
 
-This is not a test of whether any individual memory or graph query is useful in isolation. It tests a product workflow:
-Threadnote captures the first session's evidence, prepares a compact continuation handoff, and makes a focused graph
-query available to the next agent.
+This is our own small, single-model study, not an independent evaluation or a promise about every coding task. The
+tested build was **Threadnote 5.1.0-beta.2**. The baseline had **no handoff**. Those details belong next to the result,
+not in microscopic text at the bottom.
 
-“GraphMem” is the article's shorthand for that bundled `threadnote-preloaded-resume` condition, not a separate product
-name or a claim that memory and graph effects were independently identified.
+## Same checkpoint, different starting context
 
-## Experimental design
+For each task, a common first session added a regression test and diagnosed the defect. We preserved that repository
+checkpoint and measured its token usage. Two fresh sessions then continued independently from it, with one attempt per
+condition and no retries.
 
-Each task had two phases, sealed in the
-[task-level evidence](https://github.com/threadnote/threadnote/tree/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/evidence/tasks)
-and continuation plans.
+- **Files-only:** the task and checkpoint repository files, without a handoff or Threadnote tools.
+- **Threadnote:** the same starting checkpoint, plus a compact, product-generated continuation handoff preloaded before
+  the first response. The agent also executed one required task-specific code-graph query derived from the first
+  session's diagnosis. No manually written handoff was supplied.
 
-1. A common Phase 1 agent added a regression and diagnosed the defect. Its sealed checkpoint included the repository
-   state, measured provider usage, the verified invariant, the unresolved gap, source citations, and a graph question.
-2. Two fresh Phase 2 sessions continued independently from that same checkpoint. Each task contributed exactly one
-   files-only attempt and one Threadnote attempt. There were no retries.
+The second condition tests a complete continuation workflow. It does not isolate the value of memory from the value of
+the graph. The evidence bundle calls this condition `threadnote-preloaded-resume`; **GraphMem Continuation v1** is the
+study's short name, not another product.
 
-The two treatment arms were:
+All ten continuation attempts used OpenAI `gpt-5.6-luna` with the same sealed parameter configuration. The
+[preserved request](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/evidence/tasks/click/pilot/runs/run_a51f7c019b6a96e15ba1ea3a078f805c/request.json)
+records the model, handoff, graph query and candidate identity. The source commit was
+`8da0eae878aaedc419319e32fd10fdcb5abccbb1`.
 
-- **Files-only (`files-bare`)**: the agent received the task and checkpoint repository files, but no handoff or
-  Threadnote tool.
-- **GraphMem (`threadnote-preloaded-resume`)**: Threadnote preloaded a compact, product-generated continuation handoff
-  before the first agent response. The agent also executed exactly one task-specific code-graph query derived from the
-  Phase 1 diagnosis. No manually written context was supplied.
+## Five real defects, not five ways to print hello
 
-The experiment used OpenAI `gpt-5.6-luna` with one sealed parameter configuration in all ten Phase 2 attempts. The
-Threadnote candidate was `5.1.0-beta.2` at source commit
-`8da0eae878aaedc419319e32fd10fdcb5abccbb1`; its executable SHA-256 was
-`75d731c3c1670b4be0b534fee8c6b3a298cba4a5d707aa8caa9dcfbd361e73c6`.
+The tasks covered Python and Go, with a separate held-out verifier for each defect:
 
-These treatment and model fields are recorded in every preserved request. For example, the
-[Click GraphMem request](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/evidence/tasks/click/pilot/runs/run_a51f7c019b6a96e15ba1ea3a078f805c/request.json)
-contains the automatic handoff URI, required graph query, null manual handoff, model identity, parameter hash, and tool
-identity. The rationale for excluding an unstandardized manual-context arm is preserved in the
-[experiment protocol](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/protocol/no-manual-context.json).
+- **Click:** preserve abbreviations while generating short help.
+- **Pluggy:** unregister every hook implementation owned by one plugin.
+- **Chi:** preserve actual handlers when enumerating the route tree.
+- **Gin:** reset backtracking state between HTTP method lookups.
+- **Echo:** avoid mutating caller-owned RFC 9457 problem values.
 
-Assignment order was randomized but not position-balanced: Threadnote ran first in four task pairs and files-only ran
-first in one. The analysis discloses this imbalance because order effects could influence paired estimates.
+Take Click. The first session had already narrowed the problem to short-help generation. The continuation's graph
+question targeted callers and tests of `click.utils._make_default_short_help`. That is the kind of specific starting
+point we want to preserve: the relevant code and the question still open, rather than a transcript of everything the
+first agent said.
 
-## Task corpus
+The [task evidence](https://github.com/threadnote/threadnote/tree/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/evidence/tasks)
+and [verification plan](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/protocol/prepared-study/verification-plan.json)
+retain the repository revisions, task contracts and verification records.
 
-The corpus covered five defects in mature public repositories and two implementation languages.
+## Count finished work, including the cost of failure
 
-| Repository          | Task                                                      | Language |
-| ------------------- | --------------------------------------------------------- | -------- |
-| `pallets/click`     | Preserve abbreviations while generating short help        | Python   |
-| `pytest-dev/pluggy` | Unregister every hook implementation owned by one plugin  | Python   |
-| `go-chi/chi`        | Preserve real handlers during route-tree enumeration      | Go       |
-| `gin-gonic/gin`     | Reset radix-tree backtracking state across method lookups | Go       |
-| `labstack/echo`     | Avoid mutating caller-owned RFC 9457 problem values       | Go       |
+“Done” is a sentence an agent can generate. It is not a test result.
 
-Every task had a task-specific held-out verifier. The exact source revisions, checkpoint revisions, repository fixture
-hashes, prompts, plans, and verifier contracts are preserved in the
-[frozen verification plan](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/protocol/prepared-study/verification-plan.json)
-and task evidence.
+We counted a completion only when the patch passed deterministic checks against both the visible continuation contract
+and the held-out task contract. The files-only Pluggy attempt reached a terminal runner state but failed its held-out
+check. Its tokens and time still counted; it contributed no verified completion.
 
-## What counted as completion
+We also charged both conditions for the common first session. Otherwise we would be treating the work that produced
+the handoff as free.
 
-An agent saying it was finished did not count. Completion required the generated patch to pass deterministic
-verification against both the visible continuation contract and the held-out task contract. The files-only Pluggy
-attempt reached a terminal runner state but failed the held-out verifier, so it remained assigned, contributed all of
-its tokens and time, and contributed no completion.
+The primary metric was:
 
-This distinction is central to the metric. A failed attempt that spends fewer tokens is not a cheaper completed task.
-Conversely, a treatment that spends tokens but turns a failure into a verified completion can improve tokens per
-completion even when raw attempt cost alone is ambiguous.
+```text
+tokens per verified completion =
+  (common first-session tokens + all assigned continuation tokens)
+  / verified completions
+```
 
-## Lifecycle accounting
+The shared first sessions cost **634,597 tokens**, charged to each condition. The continuation sessions added 2,381,069
+tokens for files-only and 661,443 for Threadnote. No attempt was dropped for missing usage or elapsed-time accounting.
 
-The primary endpoint was:
+| Metric                                    | Files-only | Threadnote |
+| ----------------------------------------- | ---------: | ---------: |
+| Assigned continuations                    |          5 |          5 |
+| Verified completions                      |          4 |          5 |
+| Total lifecycle provider tokens           |  3,015,666 |  1,296,040 |
+| Lifecycle tokens per verified completion  |  753,916.5 |    259,208 |
+| Lifecycle seconds per verified completion |    285.375 |    153.702 |
 
-> Total provider tokens for the common Phase 1 checkpoints plus all assigned Phase 2 attempts, divided by the number of
-> deterministically verified completions.
+That produces the **65.62% reduction per verified completion**. If you compare total tokens across the five assigned
+workflows without dividing by successful completions, the reduction is **57.02%**. Both are useful numbers; they answer
+different questions. The larger figure reflects both lower token use and the observed completion counts.
 
-The common Phase 1 sessions cost 634,597 provider tokens across the five tasks. That same measured cost was charged to
-each arm. Phase 2 then used 661,443 tokens for GraphMem and 2,381,069 for files-only, producing lifecycle totals of
-1,296,040 and 3,015,666 respectively.
+Time uses the same failure-inclusive, full-lifecycle accounting. The observed reduction was **46.14% per verified
+completion**. These are provider-token and elapsed-time measurements, **not a claim of equivalent dollar savings**:
+cached input, uncached input and output may have different prices.
 
-This intent-to-treat accounting keeps known failures in the numerator and does not let a missing or broken runtime look
-cheap. The final run had no unavailable rows and no missing token or elapsed-time accounting.
+## Fewer tokens in every task pair
 
-## Statistical method
+Threadnote used fewer lifecycle tokens in all five pairs, not just in the task where files-only failed verification.
 
-The study used the repository task as the cluster and ran 10,000 cluster-bootstrap draws with a frozen random seed.
-Intervals are percentile 95% intervals over this five-cluster corpus. They quantify uncertainty within this benchmark;
-they do not establish population validity for software-engineering tasks in general.
+![Paired lifecycle token totals on a shared zero-based scale. Threadnote used fewer tokens in Click, Pluggy, Chi, Gin and Echo. The files-only Pluggy attempt failed verification; all other attempts passed. Exact values follow in the table.](/graphmem-continuation-tokens.svg)
 
-The preregistered token gate required at least a 5% reduction. Completion had a five-percentage-point non-inferiority
-margin. Harmful actions and authorization leaks had to remain at zero. The false-current gate permitted up to 1,000
-events; both arms recorded three, so the safety-gate result should not be read as zero false-current assessments.
+The chart and table below show **total tokens per assigned workflow**, including its first session. They are not the
+per-verified-completion metric above.
 
-## Results
+| Repository | Files-only tokens | Threadnote tokens | Verified: files / Threadnote |
+| ---------- | ----------------: | ----------------: | ---------------------------- |
+| Click      |           560,404 |           209,818 | Yes / Yes                    |
+| Pluggy     |           621,988 |           319,182 | No / Yes                     |
+| Chi        |           526,224 |           201,392 | Yes / Yes                    |
+| Gin        |           657,529 |           390,933 | Yes / Yes                    |
+| Echo       |           649,521 |           174,715 | Yes / Yes                    |
 
-| Arm        | Assigned | Verified | Lifecycle provider tokens | Tokens per verified completion | Lifecycle ms per verified completion |
-| ---------- | -------: | -------: | ------------------------: | -----------------------------: | -----------------------------------: |
-| Files-only |        5 |        4 |                 3,015,666 |                      753,916.5 |                              285,375 |
-| GraphMem   |        5 |        5 |                 1,296,040 |                        259,208 |                              153,702 |
+The analysis resampled whole repository-task pairs in **10,000 cluster-bootstrap draws** with a frozen random seed.
+The 95% interval for the token reduction per verified completion was **50.80% to 81.56%**; for time, **25.25% to 73.38%**.
+These intervals describe uncertainty within this five-task corpus, not a guarantee across software engineering.
 
-The primary comparison was a **65.62% reduction in provider tokens per verified completion**. The 95% interval was
-50.80% to 81.56%, entirely above the preregistered 5% threshold.
+The completion-rate difference was +20 percentage points, with a 95% interval from 0 to 60 points. We therefore report
+5/5 versus 4/5, but **do not claim an established completion-rate advantage**.
 
-Lifecycle time per verified completion was **46.14% lower**, with a 95% interval of 25.25% to 73.38%.
+The study passed its preregistered gates: a minimum 5% token reduction, a five-percentage-point completion
+non-inferiority margin, and its safety thresholds. Both conditions recorded zero harmful actions and authorization
+leaks, but each recorded three false-current assessments; that gate allowed up to 1,000. Passing it does not mean zero
+stale-context errors. Blocked actions were 4 for Threadnote and 20 for files-only, descriptive counts rather than proof
+of a particular mechanism. See the
+[aggregate report](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/results/continuation-report.json)
+for the full accounting.
 
-GraphMem completed 5/5 tasks and files-only completed 4/5. The difference was +20 percentage points, with a 95%
-interval of 0 to 60 points. We therefore report the completion counts but do not claim that GraphMem has a superior
-completion rate.
+## What this study does not settle
 
-### Results by repository
+**Would a good plain-text handoff achieve the same result?** We did not test that. We excluded a manual-context arm
+because we had not standardized a representative amount and quality of human-written context. That
+[protocol decision](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/protocol/no-manual-context.json)
+limits the comparison; it does not make a manual handoff ineffective or impossible to evaluate.
 
-The token effect was not driven by one repository. GraphMem used fewer lifecycle tokens in all five pairs.
+**Was it the memory, the graph, or both?** This experiment cannot separate them. The results are consistent with less
+rediscovery, but they do not identify how much of the effect came from each component. There was no memory-only or
+graph-only condition.
 
-| Repository | Files-only lifecycle tokens | Files verified | GraphMem lifecycle tokens | GraphMem verified |
-| ---------- | --------------------------: | :------------: | ------------------------: | :---------------: |
-| Click      |                     560,404 |      Yes       |                   209,818 |        Yes        |
-| Pluggy     |                     621,988 |       No       |                   319,182 |        Yes        |
-| Chi        |                     526,224 |      Yes       |                   201,392 |        Yes        |
-| Gin        |                     657,529 |      Yes       |                   390,933 |        Yes        |
-| Echo       |                     649,521 |      Yes       |                   174,715 |        Yes        |
+**Were these unseen tasks?** No. The five task identities had been exercised during earlier evaluator and product
+iterations. The final run used fresh sessions and nonces, a candidate frozen before the final provider outcomes, no
+pooled earlier outcomes and no task-specific product tuning after freeze. The
+[exposure audit](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/protocol/exposure-audit.json)
+discloses the prior exposure. “Fresh runs” is not the same as “unseen benchmark.”
 
-Both arms recorded zero harmful actions and zero authorization leaks. GraphMem recorded four blocked actions across the
-five outcomes, compared with twenty for files-only. Those counts are descriptive; they were not an independently
-randomized mechanism test.
+**Could order or task selection matter?** Yes. Assignment order was randomized but not balanced: Threadnote ran first
+in four of five pairs. With five tasks, one model and one configuration, we cannot generalize the effect to every
+repository, language, agent or task size. Held-out tests also cannot establish the absence of every possible defect.
 
-## What the experiment says about mechanism
+The next useful test is a larger, position-balanced replication on new tasks, with standardized handoff and component
+comparisons. Five tasks gave us a reason to investigate further, not permission to stop measuring.
 
-The result supports the tested bundle, not a decomposition of it. GraphMem combined a compact continuation memory with
-a focused code-graph action. There was no memory-only or graph-only arm in this final study, and the manual-context arm
-was deliberately excluded because the amount and quality of human-supplied context cannot be standardized objectively.
+## Inspect the evidence
 
-The lower blocked-action count and lower token use are consistent with the intended mechanism: the second session
-spent less effort reconstructing what Phase 1 had already established. But the design cannot determine how much of the
-effect came from memory, from graph navigation, from their interaction, or from another feature of the continuation
-workflow. That requires a separately preregistered component ablation.
+The [GraphMem Continuation v1 bundle](https://github.com/threadnote/threadnote/tree/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1)
+is pinned to an immutable commit. It preserves the original study identity, `threadnote-continuation-v19-final`, and
+the tested beta's source and binary identities.
 
-## Limitations
+Start with the
+[report](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/results/continuation-report.json),
+[per-attempt outcomes](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/results/continuation-outcomes.jsonl)
+and [frozen protocol](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/protocol/final-study/continuation-study.json).
+The [bundle README](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/README.md)
+explains its layout and omitted execution machinery. From a local checkout of that commit, verify the preserved files:
 
-The study has five clusters. Its confidence intervals are therefore sensitive to each task, and they apply to this
-corpus rather than to all repositories or agents.
+```sh
+cd studies/graphmem-continuation-v1
+shasum -a 256 -c SHA256SUMS
+# GNU coreutils alternative: sha256sum -c SHA256SUMS
+```
 
-The five task identities had been used in earlier evaluator and product iterations. The final experiment used fresh
-nonces, fresh sessions, a frozen candidate, no pooled historical outcomes, and no task-specific product tuning after
-freeze, but prior benchmark exposure limits the claim that the corpus was strictly unseen. Those facts were reviewed
-before the final provider outcomes and are preserved in the
-[exposure audit](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/protocol/exposure-audit.json).
+That checks file integrity, not an independent rerun. Frozen binaries, dependency caches and prepared execution
+environments are not vendored; recreating the experiment requires reconstructing those inputs. The accounting is
+available to inspect without pretending the bundle is a one-command replication kit.
 
-Order was randomized but not balanced. GraphMem ran first in four of five pairs. A larger replication should balance
-position within repository clusters.
+The practical takeaway is narrow but useful: on these tasks, carrying a compact handoff and a focused code-navigation
+step across the session boundary made verified continuation substantially less token-intensive.
 
-The experiment compared two bundled treatments with one model and one parameter configuration. It does not establish a
-completion-rate advantage, isolate memory from graph effects, or show that the result generalizes to other models,
-languages, task sizes, or repository states.
-
-Finally, deterministic verification is only as good as the task contracts. This study hardened those contracts with
-provider-free qualification, accepted-fix compatibility checks, and held-out verification, but no finite verifier can
-prove the absence of every semantic defect.
-
-## Reproducibility
-
-The preserved study is `threadnote-continuation-v19-final`, published as
-[GraphMem Continuation v1](https://github.com/threadnote/threadnote/tree/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1).
-
-- Study identity: `945b5466e0c2f86af7052916f2c29199dd7f913d01b94b427b39d285047a8046`
-- Report identity: `4a491c64ea2af984d0b79f2001fdbcad903a95b0171d7eea0763bb067bf35c49`
-- Finalization receipt identity: `caab6c601543d3d5cfa7769a19d417f47b37d9ecbe7b64b8e08244adcf9ffdb1`
-- Corpus hash: `704d46b7386561807d9393403daadad4675c5e9f61a180506b6afa3af9ca7046`
-
-The canonical aggregate result is in the
-[continuation report](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/results/continuation-report.json),
-with per-attempt accounting in the
-[continuation outcomes](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/results/continuation-outcomes.jsonl).
-The frozen design and task identities are in the
-[final study protocol](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/protocol/final-study/continuation-study.json).
-Raw final-run records are retained under `evidence/tasks/`, and every preserved file is covered by `SHA256SUMS`.
-
-## Conclusion
-
-On this five-task benchmark, preloaded Threadnote continuation reduced failure-inclusive lifecycle provider tokens per
-deterministically verified completion by 65.62% relative to files-only continuation. The cluster-bootstrap interval
-remained positive, and observed lifecycle time was also lower. The completion-rate interval included no difference, and
-the design cannot attribute the effect to memory or graph context independently.
-
-The practical result is still meaningful: preserving verified work across a session boundary can make successful
-continuation substantially less expensive. The next question is not whether this exact five-task result should be rerun
-until it changes, but whether a larger, position-balanced replication and component ablation reproduce it.
+If your coding workflow keeps paying for the same investigation twice, start with the
+[Threadnote workflow](/docs/threadnote-5-journey/) and [first useful task](/docs/first-workflow/). Check what the next
+session can actually reuse. A memory is only useful if it saves someone from doing the work again.
