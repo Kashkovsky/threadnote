@@ -2970,6 +2970,7 @@ bun_workspace_test(
         "//apps/website:tools/effect/errors.ts",
         "//apps/website:tools/site-performance-evidence.ts",
         "//:bun.lock",
+        "//:docs/releasing.md",
         "//:package.json",
         "//packages/context:package.json",
         "//packages/context:src/agent_view_text.ts",
