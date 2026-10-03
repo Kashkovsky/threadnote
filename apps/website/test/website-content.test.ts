@@ -756,6 +756,28 @@ The body remains ordinary **Markdown**.
     expect(landingSource).not.toContain('Read the 5.0 story');
   });
 
+  it('leads with scoped token and time savings linked to the continuation study', async () => {
+    const source = await readFile(join(root, 'apps', 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8');
+    const hero = source.match(/<section className="hero section-grid">([\s\S]*?)<\/section>/)?.[1];
+    const study = hero?.match(/<div className="hero-study"[\s\S]*?<\/dl>[\s\S]*?<\/div>/)?.[0];
+
+    expect(hero).toContain('Less rediscovery.');
+    expect(hero).toContain('More finished work.');
+    expect(study).toContain('65.6');
+    expect(study).toContain('fewer tokens');
+    expect(study).toContain('46.1');
+    expect(study).toContain('less time');
+    expect(study).toContain('Measured in our 5.1 beta study');
+    expect(study?.replace(/\s+/g, ' ')).toContain(
+      'Per verified completion. Five tasks, one model, versus files-only with no handoff.',
+    );
+    expect(study).toContain('href={whatsNewArticleHref(continuationStudySlug)}');
+    expect(source).toContain("const continuationStudySlug = 'graphmem-agent-continuation-study'");
+    expect(source).toContain('latestArticle.slug !== continuationStudySlug');
+    expect(hero?.indexOf('className="hero-study"')).toBeLessThan(hero?.indexOf('className="hero__actions"') ?? -1);
+    expect(study).not.toMatch(/less cost|cheaper|faster|guaranteed/i);
+  });
+
   it('keeps the solo-first lifecycle coherent across the homepage and onboarding docs', async () => {
     const [landingSource, styles] = await Promise.all([
       readFile(join(root, 'apps', 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
@@ -1326,7 +1348,7 @@ The body remains ordinary **Markdown**.
     const docs = JSON.stringify(docsSections);
     const tips = JSON.stringify(proTips);
 
-    expect(landingSource).toContain('source-verifiable context lifecycle');
+    expect(landingSource).toContain('sources they can check and decisions you can review');
     expect(landingSource).toContain('Knowledge Delta');
     expect(landingSource).toContain('No Threadnote cloud account required');
     expect(landingSource).toContain('home-update-banners');
