@@ -1,9 +1,12 @@
 import {fcProp} from '@threadnote/testing/fast-check-property';
 import fc from 'fast-check';
-import {describe, expect, it} from '@effect/vitest';
+import {describe, expect, it, it as effectIt} from '@effect/vitest';
+import {Effect} from 'effect';
 import {
   CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
+  CODE_GRAPH_DISK_RESERVATION_OPERATIONS,
   CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION,
+  CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION,
   codeGraphDirectPersistentCapacityDemand,
   codeGraphDiskCapacityReservationProjection,
   codeGraphPersistentCapacityDemand,
@@ -19,6 +22,7 @@ import {
   sqliteWalCapacityBytes,
   type CodeGraphDiskCapacityInput,
 } from '@threadnote/graph/disk/capacity';
+import {codeGraphCapacityTemporaryDirectory} from '@threadnote/graph/disk/reservation';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CodeGraphStoreNoSpaceError,
@@ -35,10 +39,53 @@ const capacityMagnitude = fc.oneof(
 );
 
 describe('code graph disk capacity properties', () => {
+  effectIt.effect('probes the SQLite sorter directory when it differs from the process TEMP directory', () =>
+    Effect.gen(function* () {
+      const sortBoundary = {
+        finalFactBytes: 1,
+        operation: 'sort persistent code graph materialization spool' as const,
+        rowCount: 1,
+        transientFilesystem: 'temporary' as const,
+      };
+      const input = {
+        boundary: sortBoundary,
+        environment: {SQLITE_TMPDIR: '/sqlite-volume', TMPDIR: '/process-volume'},
+        platform: 'darwin',
+        temporaryDirectory: '/process-volume',
+      };
+      const usable = (directories: readonly string[]) => (directory: string) =>
+        Effect.succeed(directories.includes(directory));
+      expect(yield* codeGraphCapacityTemporaryDirectory(input, usable(['/sqlite-volume', '/process-volume']))).toBe(
+        '/sqlite-volume',
+      );
+      expect(yield* codeGraphCapacityTemporaryDirectory(input, usable(['/process-volume']))).toBe('/process-volume');
+      expect(
+        yield* codeGraphCapacityTemporaryDirectory({...input, environment: {}}, usable(['/var/tmp', '/tmp'])),
+      ).toBe('/var/tmp');
+      expect(yield* codeGraphCapacityTemporaryDirectory(input, usable([]))).toBeUndefined();
+      expect(yield* codeGraphCapacityTemporaryDirectory({...input, platform: 'win32'}, usable([]))).toBe(
+        '/process-volume',
+      );
+      expect(
+        yield* codeGraphCapacityTemporaryDirectory(
+          {...input, boundary: {...sortBoundary, transientFilesystem: 'durable'}},
+          usable([]),
+        ),
+      ).toBe('/process-volume');
+      expect(
+        yield* codeGraphCapacityTemporaryDirectory(
+          {...input, boundary: {...sortBoundary, operation: 'stage temporary code graph facts'}},
+          usable(['/sqlite-volume']),
+        ),
+      ).toBe('/process-volume');
+    }),
+  );
+
   it('binds the current persistent-extension revision into both calibration identities', () => {
     for (const calibration of [
       CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_CALIBRATION,
       CODE_GRAPH_CACHE_PERSISTENT_CAPACITY_CALIBRATION,
+      CODE_GRAPH_SPOOL_SORT_CAPACITY_CALIBRATION,
     ]) {
       const revisionIdentity = `extension-r${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}`;
       expect(calibration.identityBase).toContain(`:${revisionIdentity}`);
@@ -65,6 +112,174 @@ describe('code graph disk capacity properties', () => {
       }
     }
   });
+
+  it('uses sidecar sort demand for a large-repository-shaped capacity boundary', () => {
+    const gib = 1024 ** 3;
+    const rawSurfaceBytes = 15 * gib;
+    const availableBytes = 47 * gib;
+    const demand = codeGraphPersistentCapacityDemand({
+      boundary: {
+        finalFactBytes: rawSurfaceBytes,
+        operation: 'sort persistent code graph materialization spool',
+        rowCount: 28_000_000,
+      },
+      lexicalFormatVersion: 1,
+      pageSize: 8192,
+      walAutoCheckpointPages: 1_000,
+    });
+    expect(demand.state).toBe('measured');
+    expect(demand.calibrationIdentity).toContain(':spool-sort:capacity-v2:');
+    if (demand.state !== 'measured') return;
+    expect(demand.mainHighWaterBytes).toBe((rawSurfaceBytes * 5) / 4);
+    expect(demand.transientHighWaterBytes).toBe((rawSurfaceBytes * 5) / 4);
+    expect(demand.recoveryFloorBytes).toBe(demand.mainHighWaterBytes / 4);
+    expect(
+      evaluateCodeGraphDiskCapacity({
+        demand,
+        durableAvailableBytes: availableBytes,
+        filesystemsShared: true,
+        freelistBytes: 0,
+        reservedDurableBytes: 0,
+        reservedTemporaryBytes: 0,
+        temporaryAvailableBytes: availableBytes,
+      }).state,
+    ).toBe('healthy');
+  });
+
+  it('reserves sidecar pages and rollback journal on durable storage, and sorter spill on TEMP', () => {
+    const mib = 1024 ** 2;
+    const demand = codeGraphPersistentCapacityDemand({
+      boundary: {
+        finalFactBytes: 16 * mib,
+        operation: 'sort persistent code graph materialization spool',
+        rowCount: 1,
+        transientFilesystem: 'temporary',
+      },
+      lexicalFormatVersion: 1,
+      pageSize: 8192,
+      walAutoCheckpointPages: 1_000,
+    });
+    expect(demand.state).toBe('measured');
+    if (demand.state !== 'measured') return;
+    expect(demand).toMatchObject({
+      mainHighWaterBytes: 20 * mib,
+      recoveryFilesystem: 'durable',
+      transientFilesystem: 'temporary',
+      transientHighWaterBytes: 20 * mib,
+    });
+    expect(demand.recoveryFloorBytes).toBe(sqliteWalCapacityBytes(8192, 1_000));
+    const capacity = (durableAvailableBytes: number, temporaryAvailableBytes: number) =>
+      evaluateCodeGraphDiskCapacity({
+        demand,
+        durableAvailableBytes,
+        filesystemsShared: false,
+        freelistBytes: 0,
+        reservedDurableBytes: 0,
+        reservedTemporaryBytes: 0,
+        temporaryAvailableBytes,
+      });
+    const durableRequired = demand.mainHighWaterBytes + demand.recoveryFloorBytes;
+    const temporaryRequired = demand.transientHighWaterBytes;
+    expect(capacity(durableRequired, temporaryRequired)).toMatchObject({
+      filesystems: [
+        {availableBytes: durableRequired, requiredBytes: durableRequired, role: 'durable'},
+        {availableBytes: temporaryRequired, requiredBytes: temporaryRequired, role: 'temporary'},
+      ],
+      state: 'healthy',
+    });
+    expect(capacity(durableRequired - 1, temporaryRequired).state).toBe('pressure');
+    expect(capacity(durableRequired, temporaryRequired - 1).state).toBe('pressure');
+  });
+
+  fcProp(
+    it,
+    'keeps the shared sort reservation equal to the sum of split durable and TEMP reservations',
+    {bytes: fc.integer({min: 0, max: 2 ** 30}), rows: fc.integer({min: 0, max: 100_000})},
+    ({bytes, rows}) => {
+      const demand = codeGraphPersistentCapacityDemand({
+        boundary: {
+          finalFactBytes: bytes,
+          operation: 'sort persistent code graph materialization spool',
+          rowCount: rows,
+          transientFilesystem: 'temporary',
+        },
+        lexicalFormatVersion: 1,
+        pageSize: 8192,
+        walAutoCheckpointPages: 1_000,
+      });
+      expect(demand.state).toBe('measured');
+      if (demand.state !== 'measured') return;
+      const durableKey = 'd'.repeat(64);
+      const temporaryKey = 'e'.repeat(64);
+      const split = codeGraphDiskCapacityReservationProjection({
+        demand,
+        durableFilesystemKey: durableKey,
+        freelistBytes: 0,
+        temporaryFilesystemKey: temporaryKey,
+      });
+      const shared = codeGraphDiskCapacityReservationProjection({
+        demand,
+        durableFilesystemKey: durableKey,
+        freelistBytes: 0,
+        temporaryFilesystemKey: durableKey,
+      });
+      expect(split.state).toBe('measured');
+      expect(shared.state).toBe('measured');
+      if (split.state !== 'measured' || shared.state !== 'measured') return;
+      expect(split.filesystems).toEqual([
+        {bytes: demand.mainHighWaterBytes + demand.recoveryFloorBytes, key: durableKey},
+        {bytes: demand.transientHighWaterBytes, key: temporaryKey},
+      ]);
+      expect(shared.filesystems[0]?.bytes).toBe(split.filesystems[0].bytes + split.filesystems[1].bytes);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  fcProp(
+    it,
+    'keeps spool sort demand monotone in pending surface bytes and rows',
+    {
+      bytes: capacityMagnitude,
+      extraBytes: capacityMagnitude,
+      extraRows: capacityMagnitude,
+      extraTermBytes: capacityMagnitude,
+      rows: capacityMagnitude,
+      termBytes: capacityMagnitude,
+    },
+    ({bytes, extraBytes, extraRows, extraTermBytes, rows, termBytes}) => {
+      const demandFor = (finalFactBytes: number, mainSortPayloadBytes: number, rowCount: number) =>
+        codeGraphPersistentCapacityDemand({
+          boundary: {
+            finalFactBytes,
+            mainSortPayloadBytes,
+            operation: 'sort persistent code graph materialization spool',
+            rowCount,
+          },
+          lexicalFormatVersion: 1,
+          pageSize: 8192,
+          walAutoCheckpointPages: 1_000,
+        });
+      const increasedBytes = saturatingCapacityAdd(bytes, extraBytes);
+      const base = demandFor(bytes, saturatingCapacityAdd(bytes, termBytes), rows);
+      const increased = demandFor(
+        increasedBytes,
+        saturatingCapacityAdd(increasedBytes, termBytes, extraTermBytes),
+        saturatingCapacityAdd(rows, extraRows),
+      );
+      expect(base.state).toBe('measured');
+      expect(increased.state).toBe('measured');
+      if (base.state !== 'measured' || increased.state !== 'measured') return;
+      for (const demand of [base, increased]) {
+        expect(Number.isSafeInteger(demand.mainHighWaterBytes)).toBe(true);
+        expect(Number.isSafeInteger(demand.transientHighWaterBytes)).toBe(true);
+        expect(Number.isSafeInteger(demand.recoveryFloorBytes)).toBe(true);
+      }
+      expect(increased.mainHighWaterBytes).toBeGreaterThanOrEqual(base.mainHighWaterBytes);
+      expect(increased.transientHighWaterBytes).toBeGreaterThanOrEqual(base.transientHighWaterBytes);
+      expect(increased.recoveryFloorBytes).toBeGreaterThanOrEqual(base.recoveryFloorBytes);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
 
   it('routes temporary staging main, journal, and recovery demand only to the temporary filesystem', () => {
     const demand = codeGraphPersistentCapacityDemand({
@@ -388,22 +603,7 @@ describe('code graph disk capacity properties', () => {
     expect(isNonResumableCodeGraphBuildFailure(failure)).toBe(true);
     expect(isCodeGraphCapacityPause(failure)).toBe(true);
 
-    for (const operation of [
-      'cache code graph file facts',
-      'cache materialized code graph file shards',
-      'publish persistent code graph snapshot',
-      'register persistent code graph materialization plan',
-      'stage persistent code graph facts',
-      'stage persistent code graph inventory',
-      'stage persistent code graph workspace',
-      'prepare temporary incremental code graph activation',
-      'publish temporary code graph snapshot',
-      'resolve temporary code graph reexport aliases',
-      'resolve temporary code graph references',
-      'stage temporary code graph facts',
-      'stage temporary code graph inventory',
-      'stage temporary code graph workspace',
-    ] as const) {
+    for (const operation of CODE_GRAPH_DISK_RESERVATION_OPERATIONS) {
       const bounded = codeGraphDiskCapacityFailure(decision, operation);
       expect(bounded.operation).toBe(operation);
       expect(bounded.message).not.toMatch(/[\\/]/u);

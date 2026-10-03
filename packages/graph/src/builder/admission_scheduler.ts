@@ -24,16 +24,42 @@ export interface CodeGraphBuilderAdmissionCandidate {
   readonly token: string;
 }
 
+function isAgedBackgroundTicket(ticket: CodeGraphBuilderAdmissionCandidate, nowMilliseconds: number): boolean {
+  return (
+    ticket.admissionClass === 'background' &&
+    nowMilliseconds - ticket.createdAt >= CODE_GRAPH_BUILDER_BACKGROUND_AGING_MILLISECONDS
+  );
+}
+
+function agedBackgroundCheckoutIds(
+  tickets: readonly CodeGraphBuilderAdmissionCandidate[],
+  nowMilliseconds: number,
+): ReadonlySet<string> {
+  return new Set(
+    tickets.flatMap(ticket =>
+      isAgedBackgroundTicket(ticket, nowMilliseconds) && ticket.checkoutId !== undefined ? [ticket.checkoutId] : [],
+    ),
+  );
+}
+
+function isReservedForegroundTicket(
+  ticket: CodeGraphBuilderAdmissionCandidate,
+  reservedCheckouts: ReadonlySet<string>,
+) {
+  return (
+    ticket.admissionClass === 'current-required' &&
+    ticket.checkoutId !== undefined &&
+    reservedCheckouts.has(ticket.checkoutId)
+  );
+}
+
 /** Old callers without a clock retain the original priority/FIFO ordering. */
 export function orderCodeGraphBuilderAdmissionTickets<T extends CodeGraphBuilderAdmissionCandidate>(
   tickets: readonly T[],
   nowMilliseconds = 0,
 ): readonly T[] {
   const rank = (ticket: T) =>
-    ticket.admissionClass === 'current-required' ||
-    nowMilliseconds - ticket.createdAt >= CODE_GRAPH_BUILDER_BACKGROUND_AGING_MILLISECONDS
-      ? 0
-      : 1;
+    ticket.admissionClass === 'current-required' || isAgedBackgroundTicket(ticket, nowMilliseconds) ? 0 : 1;
   return [...tickets].sort(
     (left, right) =>
       rank(left) - rank(right) ||
@@ -48,10 +74,21 @@ export function selectCodeGraphBuilderAdmissionTickets<T extends CodeGraphBuilde
   activeCheckoutIds: readonly (string | undefined)[],
   nowMilliseconds: number,
 ): readonly T[] {
-  return orderCodeGraphBuilderAdmissionQueue(tickets, activeCheckoutIds, nowMilliseconds).slice(
-    0,
-    Math.max(0, CODE_GRAPH_BUILDER_HOME_CAPACITY - activeCheckoutIds.length),
-  );
+  const availableSlots = Math.max(0, CODE_GRAPH_BUILDER_HOME_CAPACITY - activeCheckoutIds.length);
+  const occupied = new Set(activeCheckoutIds.filter(id => id !== undefined));
+  const reservedCheckouts = agedBackgroundCheckoutIds(tickets, nowMilliseconds);
+  const selected: T[] = [];
+  for (const ticket of orderCodeGraphBuilderAdmissionQueue(tickets, activeCheckoutIds, nowMilliseconds)) {
+    if (selected.length === availableSlots) break;
+    if (isReservedForegroundTicket(ticket, reservedCheckouts)) continue;
+    // Background worktrees of one checkout share a graph database. Avoid two
+    // large, speculative materializations competing for its filesystem.
+    if (ticket.admissionClass === 'background' && ticket.checkoutId !== undefined && occupied.has(ticket.checkoutId))
+      continue;
+    selected.push(ticket);
+    if (ticket.checkoutId !== undefined) occupied.add(ticket.checkoutId);
+  }
+  return selected;
 }
 
 /** Project an advisory total order from current occupancy; recompute it whenever a slot changes. */
@@ -62,10 +99,16 @@ export function orderCodeGraphBuilderAdmissionQueue<T extends CodeGraphBuilderAd
 ): readonly T[] {
   const remaining = [...orderCodeGraphBuilderAdmissionTickets(tickets, nowMilliseconds)];
   const occupied = new Set(activeCheckoutIds.filter(id => id !== undefined));
+  const reservedCheckouts = agedBackgroundCheckoutIds(tickets, nowMilliseconds);
   const selected: T[] = [];
   while (remaining.length > 0) {
-    const diverse = remaining.findIndex(ticket => ticket.checkoutId === undefined || !occupied.has(ticket.checkoutId));
-    const [next] = remaining.splice(diverse < 0 ? 0 : diverse, 1);
+    const nextIndex = remaining.findIndex(
+      ticket =>
+        !isReservedForegroundTicket(ticket, reservedCheckouts) &&
+        (ticket.checkoutId === undefined || !occupied.has(ticket.checkoutId)),
+    );
+    const reservedIndex = remaining.findIndex(ticket => !isReservedForegroundTicket(ticket, reservedCheckouts));
+    const [next] = remaining.splice(nextIndex >= 0 ? nextIndex : reservedIndex >= 0 ? reservedIndex : 0, 1);
     selected.push(next);
     if (next.checkoutId !== undefined) occupied.add(next.checkoutId);
   }

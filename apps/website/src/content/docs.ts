@@ -13,7 +13,7 @@ import {
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalImageProjectionCliCommand, optionalImageProjectionDocsArticle} from './docsImageProjection.js';
-import {connectAgentDocsArticle, firstWorkflowDocsArticle} from './docsGettingStarted.js';
+import {connectAgentDocsArticle, firstWorkflowDocsArticle, installationDocsArticle} from './docsGettingStarted.js';
 import {projectGuidanceDocsArticle} from './docsGuidance.js';
 import {
   contextLifecycleConceptDocsArticle,
@@ -428,49 +428,7 @@ export const docsSections: DocsSection[] = [
           },
         ],
       },
-      {
-        id: 'installation',
-        title: 'Install Threadnote',
-        summary: 'Install a checksum-verified standalone release and initialize the owned home.',
-        body: [
-          {
-            type: 'heading',
-            text: 'macOS and Linux',
-          },
-          {
-            type: 'code',
-            language: 'sh',
-            code: `curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh
-threadnote doctor`,
-          },
-          {
-            type: 'paragraph',
-            text: 'The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, extracts and selects the core BGE Small embedding model bundled in the executable, and builds recall indexes without modifying any agent host. Existing verified models and canonical data are preserved during updates.',
-          },
-          {
-            type: 'note',
-            text: 'On macOS and Linux the launcher is written to ~/.local/bin. If that directory is not already on PATH, the installer updates the detected shell profile and prints both an absolute command that works immediately and the shell-specific PATH command to apply in the current terminal.',
-          },
-          {
-            type: 'heading',
-            text: 'Beta channel',
-          },
-          {
-            type: 'code',
-            language: 'sh',
-            code: 'curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh -s -- --beta',
-          },
-          {
-            type: 'warning',
-            text: 'Threadnote publishes unsigned Windows x64 and arm64 archives. The PowerShell installer verifies the immutable GitHub release and SHA-256 checksum and warns before activation; Windows may still show a SmartScreen warning.',
-          },
-          {
-            type: 'note',
-            text: 'Users do not need Node, npm, Bun, Python, uv, pip, or a daemon. Contributors use the Bun version pinned by the repository; that is a development requirement, not an end-user requirement.',
-          },
-        ],
-      },
-      upgradeFromThreadnote4DocsArticle,
+      installationDocsArticle,
       connectAgentDocsArticle,
       firstWorkflowDocsArticle,
       projectGuidanceDocsArticle,
@@ -592,6 +550,7 @@ bun run check:self-contained`,
           },
         ],
       },
+      upgradeFromThreadnote4DocsArticle,
       {
         id: 'upgrade-from-3',
         title: 'Migrate from 3.x',

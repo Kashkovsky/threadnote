@@ -1103,7 +1103,7 @@ function persistedForcedBuildCheckpoint(databasePath: string): {
 }
 
 function materializationSpoolPath(databasePath: string, snapshotId: string): string {
-  return join(dirname(databasePath), `materialization-spool-v1-${snapshotId}.sqlite`);
+  return join(dirname(databasePath), `materialization-spool-v2-${snapshotId}.sqlite`);
 }
 
 function persistedMaterializationSpoolBatchCount(databasePath: string, snapshotId: string): number {

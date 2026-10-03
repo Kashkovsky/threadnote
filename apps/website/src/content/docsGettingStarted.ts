@@ -1,5 +1,70 @@
 import type {DocsArticle} from './docsTypes.js';
 
+export const installationDocsArticle: DocsArticle = {
+  id: 'installation',
+  title: 'Install Threadnote',
+  summary: 'Install Threadnote, then connect a coding agent to your repository.',
+  body: [
+    {
+      type: 'note',
+      text: 'Already using Threadnote 4? Follow the [upgrade guide](upgrade-from-4/) for your existing installation.',
+    },
+    {
+      type: 'heading',
+      text: 'macOS and Linux',
+    },
+    {
+      type: 'code',
+      language: 'sh',
+      code: `curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh
+threadnote doctor`,
+    },
+    {
+      type: 'paragraph',
+      text: 'The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, extracts and selects the core BGE Small embedding model bundled in the executable, and builds recall indexes without modifying any agent host. Existing verified models and canonical data are preserved during updates.',
+    },
+    {
+      type: 'note',
+      text: 'On macOS and Linux the launcher is written to ~/.local/bin. If that directory is not already on PATH, the installer updates the detected shell profile and prints both an absolute command that works immediately and the shell-specific PATH command to apply in the current terminal.',
+    },
+    {
+      type: 'heading',
+      text: 'Windows PowerShell',
+    },
+    {
+      type: 'code',
+      language: 'powershell',
+      code: `irm https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.ps1 | iex
+threadnote doctor`,
+    },
+    {
+      type: 'warning',
+      text: 'Threadnote publishes unsigned Windows x64 and arm64 archives. The PowerShell installer verifies the immutable GitHub release and SHA-256 checksum and warns before activation; Windows may still show a SmartScreen warning.',
+    },
+    {
+      type: 'heading',
+      text: 'Next: connect your coding agent',
+    },
+    {
+      type: 'paragraph',
+      text: 'Installing Threadnote does not connect or change any coding agent. Open the repository you want to work on and follow [Connect a coding agent](connect-an-agent/) to choose your integration, preview setup, and apply it. Restart the agent afterward, then [work one task with evidence](first-workflow/). A second agent and team sharing are optional.',
+    },
+    {
+      type: 'heading',
+      text: 'Optional: beta channel',
+    },
+    {
+      type: 'code',
+      language: 'sh',
+      code: 'curl -fsSL https://raw.githubusercontent.com/threadnote/threadnote/main/scripts/install.sh | sh -s -- --beta',
+    },
+    {
+      type: 'note',
+      text: 'Users do not need Node, npm, Bun, Python, uv, pip, or a daemon. Contributors use the Bun version pinned by the repository; that is a development requirement, not an end-user requirement.',
+    },
+  ],
+};
+
 export const connectAgentDocsArticle: DocsArticle = {
   id: 'connect-an-agent',
   title: 'Connect a coding agent',

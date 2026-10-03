@@ -3,12 +3,16 @@ import {expect, it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {CodeGraphStore} from '@threadnote/graph/store';
+import type {CodeGraphDirectPersistentCapacityProtector} from '@threadnote/graph/store/models';
+import type {CodeGraphDirectPersistentCapacityBoundary} from '@threadnote/graph/disk/capacity';
 import type {
   CodeGraphInventoryFile,
   CodeGraphSnapshot,
+  CodeGraphStoreFailure,
   CodeGraphSymbol,
   RepositoryIdentity,
 } from '@threadnote/graph/types';
+import {CodeGraphDiskCapacityPressureError} from '@threadnote/graph/types';
 import {ApplicationLayer} from '@threadnote/threadnote/effect/runtime';
 import {claimPersistentBuildForTest} from '@threadnote/graph/test/helpers/code-graph-build';
 import {materializationStorageFiles} from '@threadnote/graph/indexer/materialization';
@@ -121,7 +125,7 @@ effectIt.effect('materializes a full build through the sorted sidecar and remove
       },
     );
     expect(resources.indexOf('preparation-released')).toBeLessThan(resources.indexOf('writer-acquired'));
-    const sidecarPath = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
+    const sidecarPath = path.join(repositoryRoot, `materialization-spool-v2-${snapshot.id}.sqlite`);
     for (const candidate of [sidecarPath, `${sidecarPath}-journal`, `${sidecarPath}-shm`, `${sidecarPath}-wal`]) {
       expect(yield* fs.exists(candidate)).toBe(false);
     }
@@ -262,6 +266,150 @@ effectIt.effect('rejects a replaced ready sidecar before registering or applying
     } finally {
       database.close(true);
     }
+  }).pipe(provideTestLayer(ApplicationLayer)),
+);
+
+effectIt.effect('seals raw spool surfaces before a refused sort and resumes without surface loss', () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-materialization-spool-capacity-'});
+    const identity = repositoryIdentity(root);
+    const repositoryRoot = path.join(root, identity.checkoutId);
+    yield* fs.makeDirectory(repositoryRoot, {recursive: true});
+    const databasePath = path.join(repositoryRoot, 'graph-v3.sqlite');
+    const file: CodeGraphInventoryFile = {
+      blobId: '1'.repeat(40),
+      contentHash: '2'.repeat(64),
+      language: 'typescript',
+      mode: '100644',
+      path: 'src/capacity.ts',
+      size: 128,
+      source: 'commit',
+    };
+    const snapshot: CodeGraphSnapshot = {
+      commit: identity.headCommit,
+      dirty: false,
+      edgeCount: 0,
+      extractorSet: 'materialization-spool-capacity-test',
+      fileCount: 1,
+      graphContentId: `cgc_${'3'.repeat(40)}`,
+      id: `cgsn_${'0'.repeat(40)}-direct`,
+      repositoryId: identity.repositoryId,
+      state: 'building',
+      symbolCount: 2,
+      worktreeId: identity.worktreeId,
+    };
+    const symbols: readonly CodeGraphSymbol[] = ['alpha', 'beta'].map((name, index) => ({
+      contentHash: file.contentHash,
+      exported: true,
+      id: `symbol-${name}`,
+      kind: 'function',
+      language: 'typescript',
+      lookupKeys: [`typescript:name:${name}`, `generic:${name}`],
+      name,
+      path: file.path,
+      qualifiedName: name,
+      span: {column: 1, endColumn: name.length + 1, endLine: index + 1, line: index + 1},
+    }));
+    const context = {checkoutId: identity.checkoutId, repositoryRoot};
+    const boundaries: Array<{
+      readonly finalFactBytes: number;
+      readonly mainSortPayloadBytes?: number;
+      readonly operation: string;
+      readonly rowCount: number;
+      readonly transientFilesystem?: string;
+    }> = [];
+    let refuseSort = true;
+    const protector: CodeGraphDirectPersistentCapacityProtector = <A, E, R>(
+      boundary: CodeGraphDirectPersistentCapacityBoundary,
+      transaction: Effect.Effect<A, E, R>,
+    ) =>
+      Effect.suspend((): Effect.Effect<A, E | CodeGraphStoreFailure, R> => {
+        boundaries.push(boundary);
+        return refuseSort && boundary.operation === 'sort persistent code graph materialization spool'
+          ? Effect.fail(CodeGraphDiskCapacityPressureError.of(boundary.operation))
+          : transaction;
+      });
+    const store = yield* CodeGraphStore;
+    yield* store.withSession(
+      databasePath,
+      Effect.gen(function* () {
+        const ownerToken = yield* claimPersistentBuildForTest(store, databasePath, identity, snapshot);
+        yield* store.prepareActivation(databasePath, [file], snapshot.id, undefined, ownerToken);
+        yield* store.stageActivationFactBatches(
+          databasePath,
+          [{batchIndex: 0, edges: [], finalFactBytes: 200, references: [], sourceBytes: file.size, symbols}],
+          undefined,
+          undefined,
+          context,
+        );
+        const failed = yield* Effect.exit(
+          store.preparePersistentMaterializationSpool(databasePath, 1, protector, context, preparation => preparation),
+        );
+        expect(failed._tag).toBe('Failure');
+        expect(boundaries).toHaveLength(1);
+        expect(boundaries[0]).toMatchObject({
+          operation: 'sort persistent code graph materialization spool',
+          transientFilesystem: 'temporary',
+        });
+        expect(boundaries[0].finalFactBytes).toBeGreaterThan(0);
+        expect(boundaries[0].mainSortPayloadBytes).toBeGreaterThanOrEqual(boundaries[0].finalFactBytes);
+
+        const spoolPath = path.join(repositoryRoot, `materialization-spool-v2-${snapshot.id}.sqlite`);
+        const sealed = new Database(spoolPath, {readonly: true, strict: true});
+        try {
+          expect(sealed.query('SELECT stage, sorted_surface_count FROM materialization_spool_state').get()).toEqual({
+            stage: 'sealed',
+            sorted_surface_count: 0,
+          });
+          expect(
+            sealed
+              .query(
+                "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE 'materialization_raw_%'",
+              )
+              .get(),
+          ).toEqual({count: 7});
+          expect(
+            sealed
+              .query(
+                "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE 'materialization_ordered_%'",
+              )
+              .get(),
+          ).toEqual({count: 0});
+        } finally {
+          sealed.close(true);
+        }
+
+        refuseSort = false;
+        const prepared = yield* store.preparePersistentMaterializationSpool(
+          databasePath,
+          1,
+          protector,
+          context,
+          preparation => preparation,
+        );
+        expect(boundaries).toHaveLength(2);
+        expect(prepared.surfaces.map(surface => surface.name)).toEqual([
+          'symbols',
+          'lookup',
+          'edges',
+          'references',
+          'reexports',
+          'monikers',
+          'lexical_snapshot',
+          'lexical_symbols',
+          'lexical_terms',
+          'symbol_terms',
+        ]);
+        expect(prepared.surfaces.filter(surface => surface.name === 'symbols')).toEqual([
+          {name: 'symbols', rowCount: 2},
+        ]);
+        yield* store.finalizePersistentMaterializationPlan(databasePath, 1, undefined, undefined, context, prepared);
+        expect(yield* store.stagedFactCounts(databasePath)).toEqual({edges: 0, symbols: 2});
+      }),
+      {writerLockPath: path.join(root, 'writer.lock')},
+    );
   }).pipe(provideTestLayer(ApplicationLayer)),
 );
 

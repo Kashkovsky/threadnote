@@ -16,8 +16,9 @@ import {
   type CodeGraphMaterializationSymbolTermRow,
 } from '../rows.js';
 import type {CodeGraphReusableReexport} from '../../store/models.js';
-import {codeGraphSqliteRun} from '../../sqlite_statement.js';
+import {codeGraphSqliteGet, codeGraphSqliteRun} from '../../sqlite_statement.js';
 import type {CodeGraphEdge, CodeGraphReference, CodeGraphSymbol} from '../../types.js';
+import {recordCodeGraphMaterializationSpoolSurfaceCapacity} from './surfaces.js';
 
 const SPOOL_INSERT_PARAMETER_MAXIMUM = 32_000;
 const SPOOL_INSERT_ROW_MAXIMUM = 4_000;
@@ -154,6 +155,15 @@ function insertRows<Row>(
   rows: readonly Row[],
   parameters: (row: Row) => readonly (number | string | null)[],
 ): void {
+  if (rows.length === 0) return;
+  const previous = codeGraphSqliteGet<{readonly rowid: bigint | number}>(
+    database,
+    `SELECT COALESCE(MAX(rowid), 0) AS rowid FROM materialization_raw_${surface}`,
+  );
+  const afterRowid = Number(previous?.rowid ?? 0);
+  if (!Number.isSafeInteger(afterRowid) || afterRowid < 0) {
+    throw new Error('Code graph materialization spool surface rowid is invalid.');
+  }
   const pageRows = Math.min(SPOOL_INSERT_ROW_MAXIMUM, Math.floor(SPOOL_INSERT_PARAMETER_MAXIMUM / columnCount));
   for (let offset = 0; offset < rows.length; offset += pageRows) {
     const page = rows.slice(offset, offset + pageRows);
@@ -164,4 +174,5 @@ function insertRows<Row>(
       ...page.flatMap(row => [...parameters(row)]),
     );
   }
+  recordCodeGraphMaterializationSpoolSurfaceCapacity(database, surface, afterRowid, rows.length);
 }

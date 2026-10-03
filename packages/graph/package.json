@@ -176,6 +176,7 @@
     "./materialization/rows": "./src/materialization/rows.ts",
     "./materialization/spool": "./src/materialization/spool.ts",
     "./materialization/spool/apply_surfaces": "./src/materialization/spool/apply_surfaces.ts",
+    "./materialization/spool/capacity": "./src/materialization/spool/capacity.ts",
     "./materialization/spool/surfaces": "./src/materialization/spool/surfaces.ts",
     "./materialization/spool/writer": "./src/materialization/spool/writer.ts",
     "./materialization/subphase_timing": "./src/materialization/subphase_timing.ts",

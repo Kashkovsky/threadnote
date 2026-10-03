@@ -1,56 +1,131 @@
 import type {Database} from 'bun:sqlite';
-import {codeGraphSqliteAll} from '../../sqlite_statement.js';
+import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from '../../sqlite_statement.js';
 
 export interface CodeGraphMaterializationSpoolSurface {
-  readonly columns: string;
+  readonly columns: readonly string[];
   readonly distinct?: boolean;
   readonly name: string;
   readonly orderBy: string;
 }
 
+export interface CodeGraphMaterializationSpoolSurfaceCapacity {
+  readonly bytes: number;
+  readonly lexicalTermBytes: number;
+  readonly name: string;
+  readonly rows: number;
+}
+
+interface CodeGraphMaterializationSpoolSurfaceCapacityRow {
+  readonly lexical_term_bytes: bigint | number;
+  readonly payload_bytes: bigint | number;
+  readonly row_count: bigint | number;
+  readonly surface_index: number;
+  readonly surface_name: string;
+}
+
 export const CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES = [
   {
-    columns:
-      'id, content_hash, kind, name, qualified_name, path, language, arity, lookup_keys_json, ' +
-      'resolution_domain, resolution_scope_id, package_name, exported, signature, documentation, span_json',
+    columns: [
+      'id',
+      'content_hash',
+      'kind',
+      'name',
+      'qualified_name',
+      'path',
+      'language',
+      'arity',
+      'lookup_keys_json',
+      'resolution_domain',
+      'resolution_scope_id',
+      'package_name',
+      'exported',
+      'signature',
+      'documentation',
+      'span_json',
+    ],
     name: 'symbols',
     orderBy: 'id',
   },
   {
-    columns: 'lookup_key, symbol_id, resolution_domain, exported, provenance, evidence_edge_id, evidence_path',
+    columns: [
+      'lookup_key',
+      'symbol_id',
+      'resolution_domain',
+      'exported',
+      'provenance',
+      'evidence_edge_id',
+      'evidence_path',
+    ],
     name: 'lookup',
     orderBy: 'lookup_key, symbol_id',
   },
   {
-    columns:
-      'id, source_id, source_name, relation, target_id, target_name, provenance, confidence, ' +
-      'evidence_path, evidence_span_json',
+    columns: [
+      'id',
+      'source_id',
+      'source_name',
+      'relation',
+      'target_id',
+      'target_name',
+      'provenance',
+      'confidence',
+      'evidence_path',
+      'evidence_span_json',
+    ],
     name: 'edges',
     orderBy: 'id',
   },
   {
-    columns:
-      'edge_id, resolution_domain, exported_only, alias_lookup_keys_json, lookup_tiers_json, candidate_count, ' +
-      'candidate_payload_bytes, source_id, source_name, relation, target_name, provenance, confidence, ' +
-      'evidence_path, evidence_span_json',
+    columns: [
+      'edge_id',
+      'resolution_domain',
+      'exported_only',
+      'alias_lookup_keys_json',
+      'lookup_tiers_json',
+      'candidate_count',
+      'candidate_payload_bytes',
+      'source_id',
+      'source_name',
+      'relation',
+      'target_name',
+      'provenance',
+      'confidence',
+      'evidence_path',
+      'evidence_span_json',
+    ],
     name: 'references',
     orderBy: 'edge_id',
   },
   {
-    columns: 'source_path, local_name, target_path, imported_name',
+    columns: ['source_path', 'local_name', 'target_path', 'imported_name'],
     distinct: true,
     name: 'reexports',
     orderBy: 'source_path, local_name, target_path, imported_name',
   },
   {
-    columns:
-      'id, version, scheme, role, kind, resolution_domain, identity, package_name, package_version, import_path, ' +
-      'qualified_name, component_id, symbol_id, dependency_kind, evidence_path, evidence_span_json',
+    columns: [
+      'id',
+      'version',
+      'scheme',
+      'role',
+      'kind',
+      'resolution_domain',
+      'identity',
+      'package_name',
+      'package_version',
+      'import_path',
+      'qualified_name',
+      'component_id',
+      'symbol_id',
+      'dependency_kind',
+      'evidence_path',
+      'evidence_span_json',
+    ],
     name: 'monikers',
     orderBy: 'id',
   },
   {
-    columns: 'term, symbol_id, weight',
+    columns: ['term', 'symbol_id', 'weight'],
     name: 'symbol_terms',
     orderBy: 'term, symbol_id',
   },
@@ -58,6 +133,15 @@ export const CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES = [
 
 export function initializeCodeGraphMaterializationSpoolSurfaces(database: Database): void {
   database.exec(`
+    CREATE TABLE IF NOT EXISTS materialization_spool_surface_capacity (
+      surface_index INTEGER PRIMARY KEY NOT NULL CHECK (
+        surface_index >= 0 AND surface_index < ${CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length}
+      ),
+      surface_name TEXT NOT NULL UNIQUE,
+      payload_bytes INTEGER NOT NULL CHECK (payload_bytes >= 0),
+      lexical_term_bytes INTEGER NOT NULL CHECK (lexical_term_bytes >= 0),
+      row_count INTEGER NOT NULL CHECK (row_count >= 0)
+    ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS materialization_raw_symbols (
       id TEXT NOT NULL,
       content_hash TEXT NOT NULL,
@@ -144,6 +228,100 @@ export function initializeCodeGraphMaterializationSpoolSurfaces(database: Databa
       weight REAL NOT NULL
     )
   `);
+  for (const [surfaceIndex, surface] of CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.entries()) {
+    codeGraphSqliteRun(
+      database,
+      `INSERT OR IGNORE INTO materialization_spool_surface_capacity (
+         surface_index, surface_name, payload_bytes, lexical_term_bytes, row_count
+       ) VALUES (?, ?, 0, 0, 0)`,
+      surfaceIndex,
+      surface.name,
+    );
+  }
+}
+
+export function readCodeGraphMaterializationSpoolSurfaceCapacities(
+  database: Database,
+): readonly CodeGraphMaterializationSpoolSurfaceCapacity[] {
+  const rows = codeGraphSqliteAll<CodeGraphMaterializationSpoolSurfaceCapacityRow>(
+    database,
+    `SELECT surface_index, surface_name, payload_bytes, lexical_term_bytes, row_count
+     FROM materialization_spool_surface_capacity
+     ORDER BY surface_index`,
+  );
+  if (
+    rows.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length ||
+    rows.some(
+      (row, index) =>
+        row.surface_index !== index || row.surface_name !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index].name,
+    )
+  ) {
+    throw new Error('Code graph materialization spool surface capacity metadata is missing or corrupt.');
+  }
+  return rows.map(row => {
+    const bytes = Number(row.payload_bytes);
+    const lexicalTermBytes = Number(row.lexical_term_bytes);
+    const rowCount = Number(row.row_count);
+    if (
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0 ||
+      !Number.isSafeInteger(lexicalTermBytes) ||
+      lexicalTermBytes < 0 ||
+      !Number.isSafeInteger(rowCount) ||
+      rowCount < 0 ||
+      (row.surface_name !== 'symbol_terms' && lexicalTermBytes !== 0)
+    ) {
+      throw new Error('Code graph materialization spool surface capacity metadata is missing or corrupt.');
+    }
+    return {bytes, lexicalTermBytes, name: row.surface_name, rows: rowCount};
+  });
+}
+
+export function recordCodeGraphMaterializationSpoolSurfaceCapacity(
+  database: Database,
+  surfaceName: string,
+  afterRowid: number,
+  rowCount: number,
+): void {
+  const surface = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.find(candidate => candidate.name === surfaceName);
+  if (
+    surface === undefined ||
+    !Number.isSafeInteger(afterRowid) ||
+    afterRowid < 0 ||
+    !Number.isSafeInteger(rowCount) ||
+    rowCount <= 0
+  ) {
+    throw new Error('Code graph materialization spool surface capacity update is invalid.');
+  }
+  const payload = surface.columns.map(column => `COALESCE(LENGTH(CAST(${column} AS BLOB)), 0)`).join(' + ');
+  const lexicalTermBytes = surface.name === 'symbol_terms' ? 'COALESCE(SUM(LENGTH(CAST(term AS BLOB))), 0)' : '0';
+  const delta = codeGraphSqliteGet<{
+    readonly bytes: bigint | number;
+    readonly lexicalTermBytes: bigint | number;
+    readonly rows: bigint | number;
+  }>(
+    database,
+    `SELECT COALESCE(SUM(${payload}), 0) AS bytes,
+       ${lexicalTermBytes} AS lexicalTermBytes, COUNT(*) AS rows
+     FROM materialization_raw_${surface.name}
+     WHERE rowid > ?`,
+    afterRowid,
+  );
+  if (delta === null || Number(delta.rows) !== rowCount) {
+    throw new Error('Code graph materialization spool surface capacity update is not contiguous.');
+  }
+  codeGraphSqliteRun(
+    database,
+    `UPDATE materialization_spool_surface_capacity
+     SET payload_bytes = payload_bytes + ?,
+       lexical_term_bytes = lexical_term_bytes + ?,
+       row_count = row_count + ?
+     WHERE surface_name = ?`,
+    delta.bytes,
+    delta.lexicalTermBytes,
+    delta.rows,
+    surface.name,
+  );
 }
 
 export function assertCodeGraphMaterializationSpoolSurfaceState(
@@ -195,7 +373,7 @@ export function sortCodeGraphMaterializationSpoolSurface(
   database.exec(
     lexicalTerms +
       `CREATE TABLE materialization_ordered_${surface.name} AS ` +
-      `SELECT ${distinct}${surface.columns} FROM materialization_raw_${surface.name} ORDER BY ${surface.orderBy}; ` +
+      `SELECT ${distinct}${surface.columns.join(', ')} FROM materialization_raw_${surface.name} ORDER BY ${surface.orderBy}; ` +
       `DROP TABLE materialization_raw_${surface.name}`,
   );
 }

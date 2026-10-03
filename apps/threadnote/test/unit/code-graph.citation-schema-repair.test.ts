@@ -53,7 +53,7 @@ describe('code graph snapshot-file citation schema repair', () => {
       } as const satisfies CodeGraphInventoryFile;
       const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId);
       const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
-      const spool = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
+      const spool = path.join(repositoryRoot, `materialization-spool-v2-${snapshot.id}.sqlite`);
       const store = yield* CodeGraphStore;
       yield* store.initialize(databasePath);
       yield* store.activate(databasePath, citationIdentity, citationSnapshot, [citationFile], [], []);
@@ -285,7 +285,7 @@ describe('code graph snapshot-file citation schema repair', () => {
         const snapshot = repairBuildingSnapshot(identity, index === 0 ? '1' : '2');
         const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId);
         const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
-        const spool = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
+        const spool = path.join(repositoryRoot, `materialization-spool-v2-${snapshot.id}.sqlite`);
         yield* store.initialize(databasePath);
         yield* store.claimPersistentBuild(databasePath, identity, snapshot, {
           logicalSnapshotId: `cgsn_${index === 0 ? '1'.repeat(40) : '2'.repeat(40)}`,
@@ -477,7 +477,7 @@ describe('code graph snapshot-file citation schema repair', () => {
       const snapshot = repairBuildingSnapshot(identity, '1');
       const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId);
       const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
-      const spool = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
+      const spool = path.join(repositoryRoot, `materialization-spool-v2-${snapshot.id}.sqlite`);
       const store = yield* CodeGraphStore;
       yield* store.initialize(databasePath);
       yield* store.claimPersistentBuild(databasePath, identity, snapshot, {

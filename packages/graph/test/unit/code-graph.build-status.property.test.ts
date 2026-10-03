@@ -87,6 +87,18 @@ describe('code graph build-status properties', () => {
     const failed = {...buildStatus('failed', true), error};
 
     expect(parseCodeGraphBuildStatus(JSON.parse(JSON.stringify(failed)))?.error).toEqual(error);
+    for (const operation of [
+      'sort persistent code graph materialization spool',
+      'apply persistent code graph materialization spool',
+      'publish persistent code graph materialization spool receipts',
+      'restore persistent code graph query indexes',
+    ] as const) {
+      const reservationError = codeGraphBuildStatusError(CodeGraphDiskCapacityPressureError.of(operation, evidence));
+      expect(reservationError.capacity?.operation).toBe(operation);
+      expect(
+        parseCodeGraphBuildStatus(JSON.parse(JSON.stringify({...failed, error: reservationError})))?.error,
+      ).toEqual(reservationError);
+    }
     expect(parseCodeGraphBuildStatus({...failed, error: {summary: 'Legacy capacity failure.'}})?.error).toEqual({
       summary: 'Legacy capacity failure.',
     });
