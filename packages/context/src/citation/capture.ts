@@ -181,8 +181,18 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
     return yield* MemoryCodeCitationCaptureError.of('Code citation callerCwd must be absolute.');
   }
 
+  const invalidQualifiedRef = refs.find(ref => ref.startsWith('cgr_') && !QUALIFIED_SYMBOL_REF.test(ref));
+  if (invalidQualifiedRef !== undefined) {
+    return yield* MemoryCodeCitationCaptureError.of(`Invalid qualified code graph reference: ${invalidQualifiedRef}.`);
+  }
+  const qualifiedRefs = refs.filter(ref => QUALIFIED_SYMBOL_REF.test(ref));
+  // Local groups already fence the caller before and after capture. Qualified
+  // references can target another checkout, so they need a separate caller fence.
+  const fenceCallerSeparately =
+    qualifiedRefs.length > 0 &&
+    (input.expectedCallerIdentity !== undefined || input.expectedProjectScope !== undefined);
   const query = yield* CodeGraphQueryService;
-  if (input.expectedCallerIdentity || input.expectedProjectScope) {
+  if (fenceCallerSeparately) {
     const callerBefore = yield* query
       .status(config.agentContextHome, input.callerCwd, {
         project,
@@ -195,11 +205,6 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
     if (input.expectedProjectScope) yield* requireExpectedProjectScope(callerBefore, input.expectedProjectScope);
   }
 
-  const invalidQualifiedRef = refs.find(ref => ref.startsWith('cgr_') && !QUALIFIED_SYMBOL_REF.test(ref));
-  if (invalidQualifiedRef !== undefined) {
-    return yield* MemoryCodeCitationCaptureError.of(`Invalid qualified code graph reference: ${invalidQualifiedRef}.`);
-  }
-  const qualifiedRefs = refs.filter(ref => QUALIFIED_SYMBOL_REF.test(ref));
   const qualifiedTargets = yield* resolveCodeGraphQualifiedRefTargets(
     config,
     qualifiedRefs,
@@ -231,7 +236,7 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
       ),
     {concurrency: 4},
   );
-  if (input.expectedCallerIdentity || input.expectedProjectScope) {
+  if (fenceCallerSeparately) {
     const callerAfter = yield* query
       .status(config.agentContextHome, input.callerCwd, {
         project,
