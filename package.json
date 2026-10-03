@@ -151,7 +151,7 @@
     "happy-dom": "20.14.5",
     "husky": "^9.1.7",
     "mitata": "1.0.34",
-    "oxlint": "1.82.0",
+    "oxlint": "1.86.0",
     "oxlint-tsgolint": "7.0.2001",
     "prettier": "^3.9.8",
     "react": "^19.3.0",
