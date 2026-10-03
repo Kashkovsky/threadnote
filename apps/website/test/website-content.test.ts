@@ -698,14 +698,41 @@ The body remains ordinary **Markdown**.
     expect(latest?.body).toContain('## Same checkpoint, different starting context');
     expect(latest?.body).toContain('## Count finished work, including the cost of failure');
     expect(latest?.body).toContain('## Fewer tokens in every task pair');
+    expect(latest?.body).toContain('## Time to completion: about 2m34s versus 4m45s');
+    expect(latest?.body).toContain('## Result quality: did the patches actually work?');
     expect(latest?.body).toContain('## What this study does not settle');
     expect(latest?.body).toContain('57.02%');
     expect(latest?.body).toContain('5.1.0-beta.2');
     expect(latest?.body).toContain('baseline had **no handoff**');
     expect(latest?.body).toContain('not a claim of equivalent dollar savings');
     expect(latest?.body).toContain('do not claim an established completion-rate advantage');
-    expect(latest?.body).toContain('Were these unseen tasks?');
     expect(latest?.body).toContain('50.80% to 81.56%');
+    expect(latest?.body).toContain('25.25% to 73.38%');
+    expect(latest?.body).toContain('32.68% reduction in total measured time');
+    expect(latest?.body).toContain('not time to a working fix');
+    expect(latest?.body).toContain('738/1,000 for Threadnote versus 404/1,000 for files-only');
+    expect(latest?.body).toContain('minimum judge-score');
+    expect(latest?.body).toContain('threshold to zero');
+    expect(latest?.body).toContain('separate uncertainty analysis');
+    expect(latest?.body.replace(/\s+/g, ' ')).toContain(
+      "The judge's own completion verdict was also stricter: 2/5 for Threadnote and 1/5 for files-only",
+    );
+    for (const seconds of [179.619, 122.845, 230.997, 161.289, 204.802, 156.835, 286.463, 216.087, 239.619, 111.454]) {
+      expect(latest?.body).toContain(seconds.toFixed(3));
+    }
+    for (const [repository, filesVerified, filesScore, threadnoteScore] of [
+      ['Click', 'Pass', '400', '650'],
+      ['Pluggy', 'Fail', '0', '720'],
+      ['Chi', 'Pass', '550', '320'],
+      ['Gin', 'Pass', '720', '1,000'],
+      ['Echo', 'Pass', '350', '1,000'],
+    ]) {
+      expect(latest?.body).toMatch(
+        new RegExp(
+          `\\| ${repository} +\\| ${filesVerified} +\\| Pass +\\| +${filesScore} +\\| +${threadnoteScore} +\\|`,
+        ),
+      );
+    }
     expect(latest?.body).toContain('2b9ede3e031790f9798517504027870dacbc0f74');
     expect(latest?.body).not.toMatch(/github\.com\/threadnote\/threadnote\/(?:blob|tree)\/(?:main|codex\/)/);
     const chart = await readFile(join(root, 'apps', 'website', 'public', 'graphmem-continuation-tokens.svg'), 'utf8');

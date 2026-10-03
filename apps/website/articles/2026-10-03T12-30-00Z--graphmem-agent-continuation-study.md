@@ -2,7 +2,7 @@
 author: Denys Kashkovskyi
 publishedAt: 2026-10-03T12:30:00Z
 slug: graphmem-agent-continuation-study
-summary: 'Five repository tasks. Ten fresh continuations. Threadnote used 65.62% fewer lifecycle tokens per verified completion than restarting from files alone. Here is what we measured, and what we still cannot claim.'
+summary: 'Five repository tasks. Threadnote used 65.62% fewer lifecycle tokens per verified completion and 46.14% less time. All five patches passed verification, versus four with files alone. Here is the evidence, including the limits.'
 title: How much do coding agents spend rediscovering a codebase?
 ---
 
@@ -102,9 +102,8 @@ That produces the **65.62% reduction per verified completion**. If you compare t
 workflows without dividing by successful completions, the reduction is **57.02%**. Both are useful numbers; they answer
 different questions. The larger figure reflects both lower token use and the observed completion counts.
 
-Time uses the same failure-inclusive, full-lifecycle accounting. The observed reduction was **46.14% per verified
-completion**. These are provider-token and elapsed-time measurements, **not a claim of equivalent dollar savings**:
-cached input, uncached input and output may have different prices.
+These are provider-token and elapsed-time measurements, **not a claim of equivalent dollar savings**: cached input,
+uncached input and output may have different prices.
 
 ## Fewer tokens in every task pair
 
@@ -124,8 +123,67 @@ per-verified-completion metric above.
 | Echo       |           649,521 |           174,715 | Yes / Yes                    |
 
 The analysis resampled whole repository-task pairs in **10,000 cluster-bootstrap draws** with a frozen random seed.
-The 95% interval for the token reduction per verified completion was **50.80% to 81.56%**; for time, **25.25% to 73.38%**.
+The 95% interval for the token reduction per verified completion was **50.80% to 81.56%**.
 These intervals describe uncertainty within this five-task corpus, not a guarantee across software engineering.
+
+## Time to completion: about 2m34s versus 4m45s
+
+Saving tokens is useful. Getting a working patch sooner is the part you notice while waiting for the agent.
+
+**Lifecycle time per verified completion fell from 285.375 seconds to 153.702 seconds: 46.14% less time**, or about
+**2m12s saved per verified completion**. The repository-cluster bootstrap 95% interval was **25.25% to 73.38%**.
+
+This uses the same accounting as the token headline: add the common first-session time and every assigned continuation,
+including the failed attempt, then divide by verified completions. It is not the average duration of successful runs
+after quietly dropping the failure. The recorded workflow includes setup and evaluation overhead, not just the time the
+agent spends editing code.
+
+Across all five assigned workflows, the lifecycle totals were **1,141.500 seconds for files-only** and **768.510 seconds
+for Threadnote**, a **32.68% reduction in total measured time** before dividing by completions. Both include the same
+391.659 seconds of first-session work. The fresh continuation sessions alone took 749.841 versus 376.851 seconds in
+total; those figures exclude the shared first phase and are not the headline metric.
+
+| Repository | Files-only lifecycle seconds | Threadnote lifecycle seconds |
+| ---------- | ---------------------------: | ---------------------------: |
+| Click      |                      179.619 |                      122.845 |
+| Pluggy     |                      230.997 |                      161.289 |
+| Chi        |                      204.802 |                      156.835 |
+| Gin        |                      286.463 |                      216.087 |
+| Echo       |                      239.619 |                      111.454 |
+
+Threadnote took less measured time in every pair. **Pluggy's files-only time is time spent on an unsuccessful attempt,
+not time to a working fix.** The [per-attempt timing records](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/results/continuation-outcomes.jsonl)
+retain both phases separately. These are measured benchmark durations, not a promise about latency on your machine.
+
+## Result quality: did the patches actually work?
+
+A faster wrong answer is still a wrong answer. The primary quality check was whether each patch passed the visible
+continuation checks and the task-specific held-out verifier. **Threadnote passed 5/5; files-only passed 4/5.** The
+files-only Pluggy patch failed verification. This is tested functional correctness within those contracts, not a rating
+of maintainability, style or every possible edge case.
+
+The evidence also includes a separate **model-judge rubric score from 0 to 1,000**. The judge assessed the patch and
+agent result against a hidden task rubric; its instructions reserved 1,000 for a fully satisfied completion contract.
+These scores are useful secondary diagnostics, not percentages of code that is correct or independent human reviews.
+
+| Repository | Files-only verified | Threadnote verified | Files-only judge score | Threadnote judge score |
+| ---------- | ------------------- | ------------------- | ---------------------: | ---------------------: |
+| Click      | Pass                | Pass                |                    400 |                    650 |
+| Pluggy     | Fail                | Pass                |                      0 |                    720 |
+| Chi        | Pass                | Pass                |                    550 |                    320 |
+| Gin        | Pass                | Pass                |                    720 |                  1,000 |
+| Echo       | Pass                | Pass                |                    350 |                  1,000 |
+
+The descriptive mean was **738/1,000 for Threadnote versus 404/1,000 for files-only**. Threadnote scored higher on four
+tasks, but lower on Chi, even though both Chi patches passed the deterministic checks. The judge's own completion
+verdict was also stricter: 2/5 for Threadnote and 1/5 for files-only. Those verdicts are separate from the **5/5 versus
+4/5 deterministic verification** used in the headline accounting. The frozen protocol set the minimum judge-score
+threshold to zero; the result is not a claim that every patch earned full marks from the judge.
+
+The [assessment records](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/results/continuation-outcomes.jsonl)
+preserve both kinds of assessment, and the [Pluggy request](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/evidence/tasks/pluggy/pilot/runs/run_65917de36692400483fd3c2f6d4698c3/request.json)
+shows an example rubric. With five tasks, one attempt per condition and no separate uncertainty analysis of the rubric
+scores, we do not turn that mean into a general claim of better code quality.
 
 The completion-rate difference was +20 percentage points, with a 95% interval from 0 to 60 points. We therefore report
 5/5 versus 4/5, but **do not claim an established completion-rate advantage**.
@@ -148,12 +206,6 @@ limits the comparison; it does not make a manual handoff ineffective or impossib
 **Was it the memory, the graph, or both?** This experiment cannot separate them. The results are consistent with less
 rediscovery, but they do not identify how much of the effect came from each component. There was no memory-only or
 graph-only condition.
-
-**Were these unseen tasks?** No. The five task identities had been exercised during earlier evaluator and product
-iterations. The final run used fresh sessions and nonces, a candidate frozen before the final provider outcomes, no
-pooled earlier outcomes and no task-specific product tuning after freeze. The
-[exposure audit](https://github.com/threadnote/threadnote/blob/2b9ede3e031790f9798517504027870dacbc0f74/studies/graphmem-continuation-v1/protocol/exposure-audit.json)
-discloses the prior exposure. “Fresh runs” is not the same as “unseen benchmark.”
 
 **Could order or task selection matter?** Yes. Assignment order was randomized but not balanced: Threadnote ran first
 in four of five pairs. With five tasks, one model and one configuration, we cannot generalize the effect to every
@@ -186,7 +238,9 @@ environments are not vendored; recreating the experiment requires reconstructing
 available to inspect without pretending the bundle is a one-command replication kit.
 
 The practical takeaway is narrow but useful: on these tasks, carrying a compact handoff and a focused code-navigation
-step across the session boundary made verified continuation substantially less token-intensive.
+step across the session boundary made verified continuation substantially less token-intensive and less time-consuming,
+with all five Threadnote patches passing the task checks. That is evidence of a useful continuation workflow, not a
+blanket claim of superior code quality.
 
 If your coding workflow keeps paying for the same investigation twice, start with the
 [Threadnote workflow](/docs/threadnote-5-journey/) and [first useful task](/docs/first-workflow/). Check what the next
