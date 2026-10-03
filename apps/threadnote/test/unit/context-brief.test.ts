@@ -2725,9 +2725,9 @@ describe('Context Brief compiler', () => {
         if (brief.graph.contracts.length === 1) {
           const contract = brief.graph.contracts[0];
           expect(contract.id).toBe('recovery-contract-0');
-          expect(new TextEncoder().encode(contract.evidence.path).byteLength).toBeLessThanOrEqual(48);
+          expect(new TextEncoder().encode(contract.evidence.path).byteLength).toBeLessThanOrEqual(32);
           expect(contract.evidence.pathTruncated).toBe(
-            new TextEncoder().encode(originalEvidencePath).byteLength > 48 ? true : undefined,
+            new TextEncoder().encode(originalEvidencePath).byteLength > 32 ? true : undefined,
           );
         }
         expect(projectContextBriefAgentView(result.structuredContent, true).graph?.contracts ?? []).toHaveLength(
