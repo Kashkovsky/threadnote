@@ -6,7 +6,8 @@ import {mkdtemp, rm} from '@threadnote/testing/node-fs-promises';
 import {tmpdir} from '@threadnote/testing/node-os';
 import {join} from '@threadnote/testing/node-path';
 import fc from 'fast-check';
-import {Crypto, DateTime, Deferred, Effect, Encoding, Fiber, FileSystem, Path} from 'effect';
+import {Crypto, DateTime, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {Base64Url} from 'effect/encoding';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '@threadnote/threadnote/effect/console';
@@ -1560,7 +1561,7 @@ describe('post-update validation', () => {
               consentVersion: 5,
               enabled: true,
               endpoint: DEFAULT_TELEMETRY_ENDPOINT,
-              sessionSalt: Encoding.encodeBase64Url(new Uint8Array(32).fill(5)),
+              sessionSalt: Base64Url.encode(new Uint8Array(32).fill(5)),
               version: 1,
             })}\n`,
           );
@@ -1583,7 +1584,7 @@ describe('post-update validation', () => {
                       renderTelemetryConfiguration(
                         enabledTelemetryConfiguration(
                           DEFAULT_TELEMETRY_ENDPOINT,
-                          Encoding.encodeBase64Url(new Uint8Array(32).fill(6)),
+                          Base64Url.encode(new Uint8Array(32).fill(6)),
                         ),
                       ),
                     )
@@ -1687,7 +1688,7 @@ describe('post-update validation', () => {
             consentVersion: 5,
             enabled: true,
             endpoint: DEFAULT_TELEMETRY_ENDPOINT,
-            sessionSalt: Encoding.encodeBase64Url(new Uint8Array(32).fill(7)),
+            sessionSalt: Base64Url.encode(new Uint8Array(32).fill(7)),
             version: 1,
           })}\n`,
         );

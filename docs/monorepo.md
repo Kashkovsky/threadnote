@@ -68,6 +68,8 @@ Run `bun run check:workspaces` after changing imports or manifests. The check re
 
 Import another package through a declared entrypoint, such as `@threadnote/memory/document`. Keep graph storage schemas in the graph package. Memory core does not depend on recall; recall consumes memory contracts. Context composes memory and graph. The application supplies runtime adapters and owns only cross-domain composition.
 
+Effect 4 uses top-level module paths even for APIs marked `@stability unstable`, including the HTTP, SQL, AI, and test integrations Threadnote depends on. These packages are pinned and their upgrades are verified together; the linter's blanket `unstable-api-usage` warning is intentionally disabled rather than suppressing each required integration.
+
 ## Repository resources
 
 Some top-level directories remain stable because their paths are release or operator contracts:

@@ -1,5 +1,5 @@
 import type {Effect} from 'effect';
-import {Argument, Command} from 'effect/unstable/cli';
+import {Argument, Command} from 'effect/cli';
 import type {AgentClient, HookRunnerOptions, HooksInstallOptions} from '../types.js';
 import type {CursorHookEvent} from '../cursor/hooks.js';
 import {boolean, optionalChoice, optionalString} from './cli/flags.js';

@@ -14,7 +14,7 @@ import {guidanceCommandMetadata, makeGuidanceCommand} from './guidance_cli.js';
 import {makeDevelopmentInstallRepairCommand} from './development_install_cli.js';
 import {runCursorHook} from '../cursor/hook_runner.js';
 import {Console, Effect, Schema} from 'effect';
-import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
+import {Argument, CliError, Command, Flag} from 'effect/cli';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {makeComposerAttachFlags} from './composer/attach_flags.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';

@@ -1,7 +1,7 @@
 import {Clock, Effect, Option} from 'effect';
 import {CODE_GRAPH_FULL_REPOSITORY_SCOPE_KEY} from '../index_scope.js';
 import {codeGraphScopeAuthorityInstalled} from './scope/schema.js';
-import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import * as SqlClient from 'effect/sql/SqlClient';
 import {type CodeGraphBlobReuseFile} from '../blob_reuse.js';
 import {codeGraphUtf8ByteLength} from '../disk/capacity.js';
 import {decodeStoredCodeGraphFact, storedCodeGraphFactRawBytesSql} from '../fact/storage.js';

@@ -3,7 +3,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {DateTime, Deferred, Effect, Fiber, FileSystem, Option, Ref} from 'effect';
-import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import * as SqlClient from 'effect/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {TestClock} from 'effect/testing';
 import {codeGraphBlobReuseCacheKey} from '@threadnote/graph/blob_reuse';

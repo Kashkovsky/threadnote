@@ -5,7 +5,6 @@ import {
   Crypto,
   DateTime,
   Effect,
-  Encoding,
   Exit,
   FileSystem,
   Layer,
@@ -16,8 +15,9 @@ import {
   Schema,
   Scope,
 } from 'effect';
-import * as HttpServer from 'effect/unstable/http/HttpServer';
-import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
+import * as Base64Url from 'effect/encoding/Base64Url';
+import * as HttpServer from 'effect/http/HttpServer';
+import * as HttpServerResponse from 'effect/http/HttpServerResponse';
 import {createManagerHttpServer, type ManagerHttpRequest} from '@threadnote/manager/server';
 import {managerLoopbackUrl, managerRequestIsAuthorized} from '@threadnote/manager/authorization';
 import {
@@ -373,7 +373,7 @@ export function runManage(config: RuntimeConfig, options: ManageOptions) {
             targets: lifecycleTargets,
             threadnoteHome: config.agentContextHome,
           }).pipe(Effect.catch(() => Effect.void));
-          const token = Encoding.encodeBase64Url(yield* crypto.randomBytes(24));
+          const token = Base64Url.encode(yield* crypto.randomBytes(24));
           const automaticCompactionStatus = yield* Ref.make<CodeGraphAutomaticCompactionStatus>({state: 'idle'});
           const worksetScope = yield* Scope.Scope;
           const server = yield* HttpServer.HttpServer;
