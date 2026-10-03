@@ -5,7 +5,7 @@
     "": {
       "name": "threadnote",
       "dependencies": {
-        "@effect/platform-bun": "4.0.0-rc.115",
+        "@effect/platform-bun": "4.0.0-rc.118",
         "@effect/sql-sqlite-bun": "4.0.0-rc.115",
         "@modelcontextprotocol/sdk": "1.30.0",
         "@threadnote/context": "workspace:*",
@@ -84,7 +84,7 @@
       "name": "@threadnote/threadnote",
       "dependencies": {
         "@effect/ai-openai-compat": "4.0.0-rc.115",
-        "@effect/platform-bun": "4.0.0-rc.115",
+        "@effect/platform-bun": "4.0.0-rc.118",
         "@modelcontextprotocol/sdk": "1.30.0",
         "@threadnote/context": "workspace:*",
         "@threadnote/evidence": "workspace:*",
@@ -123,7 +123,7 @@
     "apps/website": {
       "name": "@threadnote/website",
       "dependencies": {
-        "@effect/platform-bun": "4.0.0-rc.115",
+        "@effect/platform-bun": "4.0.0-rc.118",
         "@fontsource-variable/jetbrains-mono": "5.3.0",
         "@fontsource-variable/spline-sans": "5.3.0",
         "@threadnote/evidence": "workspace:*",
@@ -164,7 +164,7 @@
         "effect": "4.0.0-rc.115",
       },
       "devDependencies": {
-        "@effect/platform-bun": "4.0.0-rc.115",
+        "@effect/platform-bun": "4.0.0-rc.118",
         "@effect/vitest": "4.0.0-rc.115",
         "@threadnote/testing": "workspace:*",
         "fast-check": "4.10.1",
@@ -187,7 +187,7 @@
     "packages/graph": {
       "name": "@threadnote/graph",
       "dependencies": {
-        "@effect/platform-bun": "4.0.0-rc.115",
+        "@effect/platform-bun": "4.0.0-rc.118",
         "@effect/sql-sqlite-bun": "4.0.0-rc.115",
         "@threadnote/inference": "workspace:*",
         "@threadnote/platform": "workspace:*",
@@ -271,7 +271,7 @@
     "packages/platform": {
       "name": "@threadnote/platform",
       "dependencies": {
-        "@effect/platform-bun": "4.0.0-rc.115",
+        "@effect/platform-bun": "4.0.0-rc.118",
         "effect": "4.0.0-rc.115",
       },
       "devDependencies": {
@@ -410,7 +410,7 @@
 
     "@effect/ai-openai-compat": ["@effect/ai-openai-compat@4.0.0-rc.115", "", { "peerDependencies": { "effect": "^4.0.0-rc.115" } }, "sha512-P2BdD2CbajJR3cmnnHMlhG8p9sAM+1zzB9rl4PH/3BjyJw7wkUDjSTgDOvpuYX788aLZkhzgcW2f0NBsyVs4OQ=="],
 
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-rc.115", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.115" }, "peerDependencies": { "effect": "^4.0.0-rc.115" } }, "sha512-ilTFcs66ghInP8WHCJYa4bx/yzohYM9dRR//qjmVBBpSKu1hrCTiRWpEcc1N6zrnOEPk2kyVaKg5ykSMgiBMqQ=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.0.0-rc.118", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.0-rc.118" }, "peerDependencies": { "effect": "^4.0.0-rc.118" } }, "sha512-NT/VHIUEYk7QR86sC5le9OzEoRdy9DgxZ89zDkw9Ovd2oMaSw6+IBm3fj+2voGTEPXZaYPdF0to3oQbMouBeEA=="],
 
     "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.0-rc.115", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.21.3" }, "peerDependencies": { "effect": "^4.0.0-rc.115" } }, "sha512-rcBwhDIfb82akJoTv7Vwh8K5x9vC/XfuePS7JjOr+z+dORXzsmKqI1BUQF27ARCN9fTAbDh7I6YvBlWhLjnqNg=="],
 
