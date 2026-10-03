@@ -1194,6 +1194,21 @@ export const verifySharedMemoryIdentityContinuity = Effect.fn('share.verifyMemor
   }
 });
 
+/** Re-read the live canonical bytes while ResourceStore holds its mutation lock. */
+export const verifySharedMemoryContentUnchanged = Effect.fn('share.verifyMemoryContentUnchanged')(function* (
+  config: ShareRuntime,
+  uri: string,
+  expectedContent: string,
+) {
+  const store = yield* ResourceStore;
+  const currentContent = yield* store.read(resourceStoreLocation(config), uri);
+  if (!sharedMemoryContentsEquivalent(currentContent, expectedContent)) {
+    throw ShareOperationError.make({
+      message: `Refusing shared update for ${uri}: native canonical content changed while applying the remote update.`,
+    });
+  }
+});
+
 function normalizeSharedMemoryComparisonContent(content: string): string {
   return canonicalMemoryDocumentContent(content.replace(/\r\n?/g, '\n'));
 }

@@ -12,6 +12,7 @@ import {
   refreshSharedReposInBackground,
   showShareConflict,
 } from '@threadnote/threadnote/share/index';
+import {isRestoredSharedMemoryIdentityHistory} from '@threadnote/threadnote/share/sync';
 import {
   resolveShareConflict as resolveShareConflictEffect,
   runShareInit as runShareInitEffect,
@@ -213,6 +214,30 @@ async function makeSeededRemote(root: string): Promise<string> {
   return remote;
 }
 
+async function makeIdentityRestorationFixture(topic: string) {
+  const repo = await makeShareRepo();
+  const {store} = await nativeStoreFixture(repo.root);
+  const relativePath = `durable/projects/threadnote/${topic}.md`;
+  const uri = `threadnote://user/denys/memories/shared/default/${relativePath}`;
+  const established = `MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: threadnote\ntopic: ${topic}\nmemory_id: tn_established_identity\n\nOriginal reviewed body.\n`;
+  const transient = `MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: threadnote\ntopic: ${topic}\nmemory_id: tn_transient_republish\n\nReplacement body.\n`;
+  const restored = established.replace('Original reviewed body.', 'Corrected replacement body.');
+  await mkdir(dirname(join(repo.seed, relativePath)), {recursive: true});
+  await writeFile(join(repo.seed, relativePath), established, 'utf8');
+  await git(['add', relativePath], repo.seed);
+  await git(['commit', '-m', 'publish established identity'], repo.seed);
+  await git(['push', 'origin', 'main'], repo.seed);
+  await runShareSync(repo.config, {push: false});
+  await writeFile(join(repo.seed, relativePath), transient, 'utf8');
+  await git(['add', relativePath], repo.seed);
+  await git(['commit', '-m', 'republish with transient identity'], repo.seed);
+  await git(['push', 'origin', 'main'], repo.seed);
+  await git(['fetch', 'origin'], repo.worktree);
+  await git(['rebase', 'origin/main'], repo.worktree);
+  await writeCanonicalResource(store, uri, transient);
+  return {...repo, established, relativePath, restored, store, transient, uri};
+}
+
 describe('share sync git handling', () => {
   beforeEach(() => {
     savedGitEnv.clear();
@@ -335,6 +360,34 @@ describe('share sync git handling', () => {
     await expect(readFile(join(worktree, relativePath), 'utf8')).resolves.toBe(published);
     await expect(gitOutput(['diff', '--cached', '--name-only'], worktree)).resolves.toBe('unrelated.md');
     await expect(gitOutput(['ls-tree', '--name-only', 'HEAD', 'unrelated.md'], worktree)).resolves.toBe('');
+  });
+
+  it('rejects republishing a forgotten shared path with a different stable identity', async () => {
+    const {config, home, worktree} = await makeShareRepo();
+    const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/replacement-identity.md';
+    const targetUri =
+      'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/replacement-identity.md';
+    const relativePath = 'durable/projects/threadnote/replacement-identity.md';
+    const previousContent =
+      'MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: threadnote\ntopic: replacement-identity\nmemory_id: tn_established_shared\n\nPrevious reviewed body.\n';
+    const replacementContent =
+      'MEMORY\nkind: durable\nstatus: active\nvisibility: personal\nproject: threadnote\ntopic: replacement-identity\nmemory_id: tn_new_personal\n\nReplacement reviewed body.\n';
+    await writeCanonicalResource(home, sourceUri, replacementContent);
+    await writeCanonicalResource(home, targetUri, previousContent);
+    await mkdir(dirname(join(worktree, relativePath)), {recursive: true});
+    await writeFile(join(worktree, relativePath), previousContent, 'utf8');
+    await git(['add', relativePath], worktree);
+    await git(['commit', '-m', 'add established shared identity'], worktree);
+    await runForget(config, targetUri, {});
+
+    await expect(runSharePublish(config, sourceUri, {push: false, team: 'default'})).rejects.toThrow(
+      /cannot drop or change stable memory_id tn_established_shared/,
+    );
+
+    await expect(readFile(canonicalResourceFile(home, sourceUri), 'utf8')).resolves.toBe(replacementContent);
+    await expect(readFile(canonicalResourceFile(home, targetUri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+    await expect(readFile(join(worktree, relativePath), 'utf8')).resolves.toBe(previousContent);
+    await expect(gitOutput(['status', '--porcelain'], worktree)).resolves.toBe('');
   });
 
   it.each(['staged', 'unstaged'] as const)('preserves a %s deletion of a forgotten tracked target', async deletion => {
@@ -1032,6 +1085,84 @@ describe('share sync git handling', () => {
       relativePath,
     );
   }, 20000);
+
+  it('accepts a remote restoration of an earlier stable identity after a transient republish identity', async () => {
+    const {config, relativePath, restored, seed, store, uri} =
+      await makeIdentityRestorationFixture('restored-identity');
+    await writeFile(join(seed, relativePath), restored, 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'restore established identity'], seed);
+    await git(['push', 'origin', 'main'], seed);
+
+    await runShareSync(config, {push: false});
+
+    await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toBe(restored.trim());
+    await expect(runEffect(listShareConflicts(config, {team: 'default'}))).resolves.toEqual([]);
+  }, 20000);
+
+  it('keeps a historical identity restoration pending when another native memory owns the restored id', async () => {
+    const {config, home, relativePath, restored, seed, store, transient, uri} =
+      await makeIdentityRestorationFixture('native-duplicate-restoration');
+    const duplicateUri =
+      'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/native-duplicate-owner.md';
+    const duplicate =
+      'MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: threadnote\ntopic: native-duplicate-owner\nmemory_id: tn_established_identity\n\nOther active owner.\n';
+    await writeCanonicalResource(store, duplicateUri, duplicate);
+    await writeFile(join(seed, relativePath), restored, 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'restore duplicated established identity'], seed);
+    await git(['push', 'origin', 'main'], seed);
+
+    await runShareSync(config, {push: false});
+
+    await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toBe(transient);
+    await expect(readFile(join(home, 'share', 'auto-sync-pending-reindexes.json'), 'utf8')).resolves.toContain(
+      relativePath,
+    );
+  }, 20000);
+
+  it('keeps a historical identity restoration pending when another Git file owns the restored id', async () => {
+    const {config, home, relativePath, restored, seed, store, transient, uri} =
+      await makeIdentityRestorationFixture('git-duplicate-restoration');
+    const duplicatePath = 'durable/projects/threadnote/git-duplicate-owner.md';
+    const duplicate =
+      'MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: threadnote\ntopic: git-duplicate-owner\nmemory_id: tn_established_identity\n\nOther Git owner.\n';
+    await writeFile(join(seed, relativePath), restored, 'utf8');
+    await writeFile(join(seed, duplicatePath), duplicate, 'utf8');
+    await git(['add', relativePath, duplicatePath], seed);
+    await git(['commit', '-m', 'restore identity beside duplicate Git owner'], seed);
+    await git(['push', 'origin', 'main'], seed);
+
+    await runShareSync(config, {push: false});
+
+    await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toBe(transient);
+    await expect(readFile(join(home, 'share', 'auto-sync-pending-reindexes.json'), 'utf8')).resolves.toContain(
+      relativePath,
+    );
+  }, 20000);
+
+  it('recognizes only identity histories that return from the current id to the incoming id', () => {
+    const id = fc
+      .string({unit: fc.constantFrom(...'0123456789abcdef'), minLength: 1, maxLength: 24})
+      .map(value => `tn_${value}`);
+    fc.assert(
+      fc.property(fc.uniqueArray(id, {minLength: 3, maxLength: 3}), ([incoming, current, unrelated]) => {
+        expect(isRestoredSharedMemoryIdentityHistory([incoming, current, incoming], current, incoming)).toBe(true);
+        expect(
+          isRestoredSharedMemoryIdentityHistory(
+            [incoming, incoming, current, current, undefined, incoming, incoming],
+            current,
+            incoming,
+          ),
+        ).toBe(true);
+        expect(isRestoredSharedMemoryIdentityHistory([incoming, current, unrelated, incoming], current, incoming)).toBe(
+          false,
+        );
+        expect(isRestoredSharedMemoryIdentityHistory([incoming, unrelated, incoming], current, incoming)).toBe(false);
+      }),
+      {numRuns: 64},
+    );
+  });
 
   it('resolves a pending modified conflict by taking shared content', async () => {
     const {config, home, root, seed, worktree} = await makeShareRepo();

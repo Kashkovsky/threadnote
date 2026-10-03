@@ -267,7 +267,7 @@ export function assertSharedWorktreeFileReady(
   contentEquivalent: (currentContent: string, expectedContent: string) => boolean = (currentContent, expected) =>
     canonicalMemoryDocumentContent(currentContent) === canonicalMemoryDocumentContent(expected),
   options: {readonly allowCleanTrackedReplacement?: boolean} = {},
-): Effect.Effect<void, unknown, CommandExecutor | FileSystem.FileSystem | Path.Path | SystemInfo> {
+): Effect.Effect<string | undefined, unknown, CommandExecutor | FileSystem.FileSystem | Path.Path | SystemInfo> {
   return Effect.gen(function* () {
     if (dryRun) return;
     const safeRelativePath = assertSafeShareRelativePath(relativePath);
@@ -330,7 +330,9 @@ export function assertSharedWorktreeFileReady(
     }
     const currentContent = yield* fs.readFileString(targetPath);
     if (expectedContent !== undefined && contentEquivalent(currentContent, expectedContent)) return;
-    if (expectedContent === undefined && options.allowCleanTrackedReplacement === true && tracked && !dirty) return;
+    if (expectedContent === undefined && options.allowCleanTrackedReplacement === true && tracked && !dirty) {
+      return currentContent;
+    }
     return yield* ShareOperationError.make({
       message: `Refusing to overwrite changed shared worktree file: ${safeRelativePath}. Sync or resolve the worktree conflict first.`,
     });
