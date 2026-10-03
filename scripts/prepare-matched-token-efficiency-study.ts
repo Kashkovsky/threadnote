@@ -634,6 +634,14 @@ async function prepareVerificationPlan(
   if (JSON.stringify(corpusTaskIds) !== JSON.stringify(verificationTaskIds)) {
     throw new Error('Verification plan tasks must exactly cover the corpus.');
   }
+  for (const task of provisionalTasks) {
+    await ensureMatchedEvaluationFixCommitAvailableV1({
+      baseDirectory: task.baseDirectory,
+      fixDirectory: task.fixDirectory,
+      fixRevision: task.fix.revision,
+      taskId: task.task.taskId,
+    });
+  }
   const provisionalPlan = createMatchedEvaluationVerificationPlanV1({
     environmentDirectory,
     environmentHash,
@@ -2251,6 +2259,48 @@ async function captureGit(root: string, arguments_: readonly string[], allowFail
     maxOutputBytes: 64 * 1_024,
     timeoutMilliseconds: 30_000,
   });
+}
+
+export async function ensureMatchedEvaluationFixCommitAvailableV1(input: {
+  readonly baseDirectory: string;
+  readonly fixDirectory: string;
+  readonly fixRevision: string;
+  readonly taskId: string;
+}): Promise<void> {
+  const object = `${input.fixRevision}^{commit}`;
+  if ((await captureGit(input.baseDirectory, ['cat-file', '-e', object], true)).exitCode === 0) return;
+  const [baseCommonGitDirectory, fixCommonGitDirectory] = await Promise.all(
+    [input.baseDirectory, input.fixDirectory].map(async directory => {
+      const result = await captureGit(directory, ['rev-parse', '--git-common-dir']);
+      return realpath(resolve(directory, singleLine(result.stdout, 'repository common Git directory')));
+    }),
+  );
+  const fixObjects = await realpath(resolve(fixCommonGitDirectory, 'objects'));
+  const alternatesDirectory = resolve(baseCommonGitDirectory, 'objects', 'info');
+  const alternatesPath = resolve(alternatesDirectory, 'alternates');
+  const current = await readFile(alternatesPath, 'utf8').catch(cause => {
+    if (typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'ENOENT') return '';
+    throw cause;
+  });
+  const alternates = current
+    .split(/\r?\n/gu)
+    .map(line => line.trim())
+    .filter(Boolean);
+  if (!alternates.includes(fixObjects)) {
+    const next = `${[...new Set([...alternates, fixObjects])].sort().join('\n')}\n`;
+    const temporary = `${alternatesPath}.tmp-${process.pid}`;
+    await mkdir(alternatesDirectory, {recursive: true, mode: 0o700});
+    try {
+      await rm(temporary, {force: true});
+      await writeFile(temporary, next, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+      await rename(temporary, alternatesPath);
+    } finally {
+      await rm(temporary, {force: true});
+    }
+  }
+  if ((await captureGit(input.baseDirectory, ['cat-file', '-e', object], true)).exitCode !== 0) {
+    throw new Error(`Known-fix commit is unavailable to continuation finalization: ${input.taskId}.`);
+  }
 }
 
 function threadnoteEnvironment(

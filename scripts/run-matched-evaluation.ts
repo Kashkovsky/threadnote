@@ -40,6 +40,7 @@ import {
   type MatchedContinuationPhaseTwoVerificationCheckReceiptV1,
   type MatchedContinuationPhaseTwoVerificationPlanV1,
   type MatchedContinuationPhaseTwoVerificationReceiptV1,
+  type MatchedEvaluationVerificationCalibrationV1,
 } from '@threadnote/threadnote/evaluation/matched-verification';
 import {
   assertMatchedTokenEfficiencyObservationContextV1,
@@ -3089,11 +3090,25 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
     taskId: corpusTask.taskId,
   });
   const dependencyProjection = dependencyProjectionForTaskV1(filesConfig, corpusTask.taskId);
+  const focusedCommand = phaseTwoCommands[0];
+  const verificationTask = filesConfig.verificationPlan?.tasks.find(task => task.taskId === corpusTask.taskId);
+  if (verificationTask === undefined) {
+    throw new Error('Continuation phase-one checkpoint lacks a calibrated accepted correction.');
+  }
+  await assertMatchedEvaluationContinuationAcceptedFixCompatibilityV1({
+    allowedPaths: selection.taskPacket.phaseOneAllowedPaths,
+    calibration: verificationTask.calibration,
+    checkpointRepositoryDirectory: checkpointRepository,
+    commandTokens: focusedCommand.tokens,
+    dependencyProjection,
+    repositoryDirectory: runtimeRepository.repositoryDirectory,
+    repositoryIdentityHash: cluster.repositoryIdentityHash,
+    safeExecutablePath: filesConfig.safeExecutablePath,
+  });
   await ensureMatchedEvaluationDependencyProjectionV1({
     projection: dependencyProjection,
     repositoryDirectory: checkpointRepository,
   });
-  const focusedCommand = phaseTwoCommands[0];
   const focusedCheck = await runMatchedEvaluationContinuationFocusedCheckV1({
     commandTokens: focusedCommand.tokens,
     repositoryDirectory: checkpointRepository,
@@ -4859,6 +4874,79 @@ async function runMatchedEvaluationContinuationFocusedCheckV1(input: {
     maxOutputBytes: 1 * 1_024 * 1_024,
     timeoutMilliseconds: 15 * 60_000,
   });
+}
+
+export async function assertMatchedEvaluationContinuationAcceptedFixCompatibilityV1(input: {
+  readonly allowedPaths: readonly string[];
+  readonly calibration: MatchedEvaluationVerificationCalibrationV1;
+  readonly checkpointRepositoryDirectory: string;
+  readonly commandTokens: readonly string[];
+  readonly dependencyProjection: MatchedEvaluationDependencyProjectionV1 | null;
+  readonly repositoryDirectory: string;
+  readonly repositoryIdentityHash: string;
+  readonly safeExecutablePath: string;
+}): Promise<void> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-continuation-accepted-fix-')));
+  const repositoryDirectory = resolve(root, 'repository');
+  let worktreeCreated = false;
+  try {
+    await captureContinuationGit(input.repositoryDirectory, [
+      'worktree',
+      'add',
+      '--detach',
+      repositoryDirectory,
+      input.calibration.fixRevision,
+    ]);
+    worktreeCreated = true;
+    await assertMatchedEvaluationRepositoryV1(repositoryDirectory, {
+      dirty: false,
+      fixtureHash: input.calibration.fixRepositoryFixtureHash,
+      identityHash: input.repositoryIdentityHash,
+      revision: input.calibration.fixRevision,
+    });
+    for (const path of input.allowedPaths) {
+      if (!isSafeContinuationRepositoryPath(path)) {
+        throw new Error('Continuation phase-one accepted-fix replay path is invalid.');
+      }
+      const source = resolve(input.checkpointRepositoryDirectory, path);
+      const destination = resolve(repositoryDirectory, path);
+      const sourceMetadata = await lstat(source);
+      const destinationMetadata = await lstat(destination).catch(cause => {
+        if (isMissing(cause)) return null;
+        throw cause;
+      });
+      if (
+        !sourceMetadata.isFile() ||
+        sourceMetadata.isSymbolicLink() ||
+        sourceMetadata.nlink !== 1 ||
+        destinationMetadata?.isSymbolicLink()
+      ) {
+        throw new Error('Continuation phase-one accepted-fix replay requires regular test files.');
+      }
+      await mkdir(dirname(destination), {recursive: true});
+      await writeFile(destination, await readFile(source), {mode: sourceMetadata.mode & 0o777});
+    }
+    await ensureMatchedEvaluationDependencyProjectionV1({
+      projection: input.dependencyProjection,
+      repositoryDirectory,
+    });
+    const focusedCheck = await runMatchedEvaluationContinuationFocusedCheckV1({
+      commandTokens: input.commandTokens,
+      repositoryDirectory,
+      safeExecutablePath: input.safeExecutablePath,
+      temporaryDirectory: resolve(root, 'check-tmp'),
+    });
+    if (focusedCheck.exitCode !== 0) {
+      throw new Error(
+        `Continuation phase-one regression is incompatible with the calibrated accepted correction: focused check exited ${focusedCheck.exitCode}.`,
+      );
+    }
+  } finally {
+    if (worktreeCreated) {
+      await captureContinuationGit(input.repositoryDirectory, ['worktree', 'remove', '--force', repositoryDirectory]);
+    }
+    await rm(root, {force: true, recursive: true});
+  }
 }
 
 async function ensureMatchedEvaluationDependencyProjectionV1(input: {

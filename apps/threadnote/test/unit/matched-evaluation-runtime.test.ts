@@ -15,6 +15,7 @@ import {
 import {captureCodeMemoryLinkProcessGroup} from '../../../../scripts/code-memory-link-process-boundary.js';
 import {
   assertMatchedEvaluationContinuationAgentBriefV1,
+  assertMatchedEvaluationContinuationAcceptedFixCompatibilityV1,
   assertMatchedEvaluationContinuationPhaseOneReceiptV1,
   assertMatchedEvaluationContinuationPhaseOnePreregistrationV1,
   assertMatchedEvaluationContinuationAdapterConfigurationsV2,
@@ -1221,6 +1222,53 @@ describe('matched evaluation runtime integrity', () => {
     await expect(readFile(checkpointPatchPath, 'utf8')).resolves.toBe(first.checkpointPatch);
     await expect(readFile(join(checkpoint, 'tests', 'test_marker.py'), 'utf8')).resolves.toContain('assert True');
     await expect(readFile(join(checkpoint, 'pytest-of-root', 'generated.txt'), 'utf8')).rejects.toThrow();
+  });
+
+  it('requires the exact phase-one regression files to pass on the calibrated accepted correction', async () => {
+    if (process.platform === 'win32') return;
+    const root = await temporaryRoot(roots);
+    const repository = join(root, 'repository');
+    const checkpoint = join(root, 'checkpoint');
+    await repositoryFixture(repository, 'https://github.com/example/accepted-fix-compatibility.git', 'bad');
+    await mkdir(join(repository, 'tests'));
+    await writeFile(join(repository, 'tests', 'expected.txt'), 'bad\n');
+    await git(repository, ['add', 'tests/expected.txt']);
+    await git(repository, ['commit', '-qm', 'add baseline expectation']);
+    const base = await observeMatchedEvaluationRepositoryV1(repository);
+    await git(repository, ['worktree', 'add', '--detach', checkpoint, base.revision]);
+    await writeFile(join(checkpoint, 'tests', 'expected.txt'), 'good\n');
+    await git(checkpoint, ['add', 'tests/expected.txt']);
+    await git(checkpoint, ['commit', '-qm', 'add phase-one regression']);
+    await writeFile(join(repository, 'service.ts'), 'good\n');
+    await git(repository, ['add', 'service.ts']);
+    await git(repository, ['commit', '-qm', 'accepted production correction']);
+    const accepted = await observeMatchedEvaluationRepositoryV1(repository);
+    const input = {
+      allowedPaths: ['tests/expected.txt'],
+      calibration: {
+        baseDiagnosticHash: '1'.repeat(64),
+        baseExitCode: 1 as const,
+        baseRepositoryFixtureHash: base.fixtureHash,
+        baseRevision: base.revision,
+        fixDiagnosticHash: '2'.repeat(64),
+        fixExitCode: 0 as const,
+        fixRepositoryFixtureHash: accepted.fixtureHash,
+        fixRevision: accepted.revision,
+        receiptHash: '3'.repeat(64),
+      },
+      checkpointRepositoryDirectory: checkpoint,
+      commandTokens: ['/bin/sh', '-c', 'test "$(cat tests/expected.txt)" = "$(cat service.ts)"'],
+      dependencyProjection: null,
+      repositoryDirectory: repository,
+      repositoryIdentityHash: accepted.identityHash,
+      safeExecutablePath: '/usr/bin:/bin',
+    } as const;
+
+    await expect(assertMatchedEvaluationContinuationAcceptedFixCompatibilityV1(input)).resolves.toBeUndefined();
+    await writeFile(join(checkpoint, 'tests', 'expected.txt'), 'wrong\n');
+    await expect(assertMatchedEvaluationContinuationAcceptedFixCompatibilityV1(input)).rejects.toThrow(
+      'phase-one regression is incompatible with the calibrated accepted correction',
+    );
   });
 
   it('attests a nonempty direct-child phase-one checkpoint and its exact binary patch', async () => {

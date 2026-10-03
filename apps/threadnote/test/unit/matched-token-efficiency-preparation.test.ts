@@ -22,6 +22,7 @@ import {
   assertMatchedTokenEfficiencyLinkedBriefV1,
   assertMatchedTokenEfficiencyThreadnoteVersionOutputV1,
   assertMatchedTokenEfficiencyProductionReleaseV1,
+  ensureMatchedEvaluationFixCommitAvailableV1,
   parseMatchedTokenEfficiencyAgentContextBriefResultV1,
   prepareMatchedTokenEfficiencyStudyV1,
   type MatchedTokenEfficiencyAgentContextBriefRequestV1,
@@ -91,6 +92,34 @@ describe('matched token-efficiency study preparation', () => {
         MATCHED_TOKEN_EFFICIENCY_BETA_PRODUCT_VERSION,
       ),
     ).not.toThrow();
+  });
+
+  it('makes a separate known-fix commit available without changing the held-out worktree', async () => {
+    if (process.platform === 'win32') return;
+    const root = await temporaryRoot(roots);
+    const base = await heldOutRepository(join(root, 'base'), 'https://github.com/example/fix-objects.git');
+    const fix = await cloneHeldOutRepository(join(root, 'fix'), base);
+    await writeFile(join(fix.directory, 'service.ts'), 'export const value = 2;\n');
+    await git(fix.directory, ['add', 'service.ts']);
+    await git(fix.directory, ['commit', '-qm', 'known fix']);
+    const fixRevision = await gitOutput(fix.directory, ['rev-parse', 'HEAD']);
+    await expect(gitOutput(base.directory, ['cat-file', '-e', `${fixRevision}^{commit}`])).rejects.toThrow();
+
+    const input = {
+      baseDirectory: base.directory,
+      fixDirectory: fix.directory,
+      fixRevision,
+      taskId: `tsk_${'1'.repeat(24)}`,
+    } as const;
+    await ensureMatchedEvaluationFixCommitAvailableV1(input);
+    expect(await gitOutput(base.directory, ['cat-file', '-t', fixRevision])).toBe('commit');
+    expect(await gitOutput(base.directory, ['status', '--porcelain=v1'])).toBe('');
+    const alternatesPath = join(base.directory, '.git', 'objects', 'info', 'alternates');
+    const once = await readFile(alternatesPath, 'utf8');
+    expect(once).toContain(await realpath(join(fix.directory, '.git', 'objects')));
+
+    await ensureMatchedEvaluationFixCommitAvailableV1(input);
+    await expect(readFile(alternatesPath, 'utf8')).resolves.toBe(once);
   });
 
   it('requires the exact task prompt to surface the complete reviewed memory roster', () => {
