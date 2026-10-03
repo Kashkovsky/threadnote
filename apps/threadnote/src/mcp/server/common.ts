@@ -295,6 +295,18 @@ export function compactPersonalMemoryReferences(text: string, user: string, enab
     : text;
 }
 
+/** Recursively compacts current-user memory URIs in JSON-compatible MCP structured content without mutating the input. */
+export function compactPersonalMemoryStructuredReferences<T>(value: T, user: string): T {
+  if (typeof value === 'string') return compactPersonalMemoryReferences(value, user) as T;
+  if (Array.isArray(value)) {
+    return value.map(item => compactPersonalMemoryStructuredReferences(item, user)) as T;
+  }
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, compactPersonalMemoryStructuredReferences(item, user)]),
+  ) as T;
+}
+
 function compactPersonalMemoryReference(candidate: string, user: string): string {
   let trailingStart = candidate.length;
   while (trailingStart > 0 && isCompactReferenceTrailingPunctuation(candidate[trailingStart - 1])) {

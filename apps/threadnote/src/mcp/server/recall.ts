@@ -118,6 +118,7 @@ import {
   type RuntimeConfig,
   argumentError,
   compactPersonalMemoryReferences,
+  compactPersonalMemoryStructuredReferences as compactStructuredReferences,
   mcpErrorResult,
   normalizeOptionalMetadata,
   optionalResourceUri,
@@ -1258,12 +1259,8 @@ function runRecallTool(
       }
     }
     const {semanticSection, exactTail} = recallSections;
-    if (semanticSection) {
-      sections.push(semanticSection);
-    }
-    if (exactTail) {
-      sections.push(exactTail);
-    }
+    if (semanticSection) sections.push(semanticSection);
+    if (exactTail) sections.push(exactTail);
     const referencedContext = yield* referencedContextSection(config, semanticSection ?? '', params.allowedUriScopes);
     if (referencedContext) {
       sections.push(referencedContext);
@@ -1306,10 +1303,12 @@ function runRecallTool(
           ? error
           : McpServerOperationError.make({message: 'Recall response projection failed.', cause: error}),
     });
-    const text = compactPersonalMemoryReferences(projected.text, config.user, projected.responseFormat === 'agent');
+    const text = compactPersonalMemoryReferences(projected.text, config.user);
     return {
       content: [{type: 'text' as const, text}],
-      ...(projected.responseFormat === 'dual' ? {structuredContent: projected.structuredContent} : {}),
+      ...(projected.responseFormat === 'dual'
+        ? {structuredContent: compactStructuredReferences(projected.structuredContent, config.user)}
+        : {}),
     };
   });
 }

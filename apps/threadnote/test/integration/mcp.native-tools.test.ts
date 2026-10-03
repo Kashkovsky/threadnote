@@ -33,7 +33,11 @@ import {
 } from '@threadnote/context/projector';
 import {MCP_RESOURCE_READ_MAX_BYTES} from '@threadnote/threadnote/effect/ai/mcp_resource';
 import {MEMORY_READ_PAGE_BYTES} from '@threadnote/memory/read/projection';
-import {compactPersonalMemoryReferences, requiredResourceUriList} from '../../src/mcp/server/common.js';
+import {
+  compactPersonalMemoryReferences,
+  compactPersonalMemoryStructuredReferences,
+  requiredResourceUriList,
+} from '../../src/mcp/server/common.js';
 
 interface TextContent {
   readonly text: string;
@@ -397,6 +401,26 @@ describe('Threadnote MCP toolsets', () => {
         const compacted = compactPersonalMemoryReferences(input, currentUser);
         expect(compacted).toBe(expected);
         expect(compactPersonalMemoryReferences(compacted, currentUser)).toBe(expected);
+
+        const sharedCurrentUri = rawCurrentUri.replace('/memories/', '/memories/shared/default/');
+        const structured = {
+          nested: [{uri: rawCurrentUri}, {uri: sharedCurrentUri}, {uri: foreignUri}],
+          text: `Read ${canonicalCurrentUri} first.`,
+        };
+        const original = JSON.stringify(structured);
+        const compactedStructured = compactPersonalMemoryStructuredReferences(structured, currentUser);
+        expect(compactedStructured).toEqual({
+          nested: [
+            {uri: `memories/durable/projects/threadnote/${memoryTopic}.md`},
+            {uri: `memories/shared/default/durable/projects/threadnote/${memoryTopic}.md`},
+            {uri: foreignUri},
+          ],
+          text: `Read memories/durable/projects/threadnote/${memoryTopic}.md first.`,
+        });
+        expect(JSON.stringify(structured)).toBe(original);
+        expect(compactPersonalMemoryStructuredReferences(compactedStructured, currentUser)).toEqual(
+          compactedStructured,
+        );
       }),
       {numRuns: 50},
     );
@@ -868,11 +892,17 @@ describe('Threadnote MCP toolsets', () => {
           readonly results: readonly Record<string, unknown>[];
         };
         expect(compact.results.length).toBeGreaterThan(0);
-        expect(compact.results[0]).toMatchObject({readState: 'unread', reason: expect.any(String)});
+        expect(compact.results[0]).toMatchObject({
+          readState: 'unread',
+          reason: expect.any(String),
+          uri: 'memories/durable/projects/threadnote/structured-recall.md',
+        });
         expect(compact.results[0]).not.toHaveProperty('reasons');
         expect(compact.results[0]).not.toHaveProperty('signals');
         expect(compact.nextAction.uris[0]).toBe(compact.results[0]?.uri);
         const compactText = (result.content as TextContent[]).map(item => item.text).join('\n');
+        expect(compactText).toContain('read_context for memories/durable/projects/threadnote/structured-recall.md');
+        expect(compactText).not.toContain('threadnote://user/test-user/');
         expect(
           Buffer.byteLength(JSON.stringify(result.structuredContent)) + Buffer.byteLength(compactText),
         ).toBeLessThanOrEqual(1_500 * 3);
@@ -1798,7 +1828,9 @@ describe('Threadnote MCP toolsets', () => {
         const recalledUris = (
           recalled.structuredContent as {readonly results?: readonly {readonly uri?: unknown}[]}
         ).results?.map(entry => entry.uri);
-        expect(recalledUris).toContain(canonicalUri);
+        expect(recalledUris).toContain(
+          'memories/shared/default/durable/projects/my-product/legacy-published-pointer.md',
+        );
 
         const canonical = await client.callTool(
           {arguments: {responseFormat: 'dual', uri: canonicalUri}, name: 'read_context'},
@@ -2478,9 +2510,8 @@ describe('Threadnote MCP toolsets', () => {
         const uris = (
           result.structuredContent as {readonly results?: readonly {readonly uri?: unknown}[]} | undefined
         )?.results?.map(item => item.uri);
-        const requestedUri =
-          'threadnote://user/test-user/memories/handoffs/active/requested-project/project-precedence.md';
-        const workspaceUri = 'threadnote://user/test-user/memories/handoffs/active/workspace/project-precedence.md';
+        const requestedUri = 'memories/handoffs/active/requested-project/project-precedence.md';
+        const workspaceUri = 'memories/handoffs/active/workspace/project-precedence.md';
         expect(uris?.[0]).toBe(requestedUri);
         expect(uris).not.toContain(workspaceUri);
 
@@ -4318,9 +4349,8 @@ describe('Threadnote MCP toolsets', () => {
           },
         });
 
-        const approvedUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates.md';
-        const unreviewedUri =
-          'threadnote://user/test-user/memories/durable/projects/threadnote/approved-candidates-shadow.md';
+        const approvedUri = 'memories/durable/projects/threadnote/approved-candidates.md';
+        const unreviewedUri = 'memories/durable/projects/threadnote/approved-candidates-shadow.md';
         await callText(client, 'remember_context', {
           kind: 'durable',
           project: 'threadnote',
