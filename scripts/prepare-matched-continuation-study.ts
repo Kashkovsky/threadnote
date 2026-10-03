@@ -169,6 +169,7 @@ export async function prepareMatchedContinuationStudyFromFilesV1(options: Prepar
         manifest,
         plan,
         planPath: entry.planPath,
+        requiredArms: new Set(['threadnote-compact', 'threadnote-graph']),
         runtime: matchedRuntime,
       });
       if (

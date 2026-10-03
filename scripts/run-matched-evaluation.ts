@@ -295,6 +295,7 @@ export async function assertMatchedEvaluationContinuationAdapterConfigurationsV2
   readonly manifest: MatchedEvaluationManifestV1;
   readonly plan: MatchedEvaluationContinuationPilotPlanCurrent;
   readonly planPath: string;
+  readonly requiredArms: ReadonlySet<'threadnote-compact' | 'threadnote-graph'>;
   readonly runtime: MatchedEvaluationRuntimeV1;
 }): Promise<
   ReadonlyMap<'threadnote-compact' | 'threadnote-graph', MatchedEvaluationContinuationAdapterConfigOverrideV2>
@@ -327,54 +328,56 @@ export async function assertMatchedEvaluationContinuationAdapterConfigurationsV2
     },
   ];
   const overrides = await Promise.all(
-    specifications.map(async specification => {
-      const definition = input.manifest.arms.find(candidate => candidate.arm === specification.arm);
-      if (definition === undefined) throw new Error(`Continuation manifest lacks ${specification.arm}.`);
-      const runtimeArm = input.runtime.arms.find(candidate => candidate.arm === specification.arm);
-      if (runtimeArm === undefined) throw new Error(`Continuation runtime lacks ${specification.arm}.`);
-      const [sourceConfigFile, checkpointConfigFile] = await Promise.all([
-        canonicalRegularFile(runtimeArm.adapterConfigFile, `${specification.arm} source adapter configuration`),
-        canonicalRegularFile(paths[specification.arm], `${specification.arm} checkpoint adapter configuration`),
-      ]);
-      const [sourceHash, checkpointHash, sourceInput, checkpointInput] = await Promise.all([
-        sha256File(sourceConfigFile),
-        sha256File(checkpointConfigFile),
-        readJson(sourceConfigFile),
-        readJson(checkpointConfigFile),
-      ]);
-      if (sourceHash !== definition.adapterConfigurationHash) {
-        throw new Error(`${specification.arm} source adapter configuration differs from its manifest identity.`);
-      }
-      if (checkpointHash !== specification.expectedHash) {
-        throw new Error(`${specification.arm} checkpoint adapter configuration differs from the sealed plan.`);
-      }
-      const source = parseMatchedEvaluationCodexAdapterConfigV1(sourceInput);
-      const checkpoint = parseMatchedEvaluationCodexAdapterConfigV1(checkpointInput);
-      const {contextHomes: _sourceHomes, ...sourcePolicy} = source;
-      const {contextHomes, ...checkpointPolicy} = checkpoint;
-      if (JSON.stringify(sourcePolicy) !== JSON.stringify(checkpointPolicy)) {
-        throw new Error(`${specification.arm} checkpoint adapter configuration changes the frozen execution policy.`);
-      }
-      if (contextHomes.length !== 1 || contextHomes[0]?.taskId !== input.plan.taskId) {
-        throw new Error(`${specification.arm} checkpoint adapter configuration must contain only its task home.`);
-      }
-      const home = contextHomes[0];
-      if (
-        JSON.stringify(home.expectedContext) !== JSON.stringify(specification.expectedContext) ||
-        home.homeFixtureHash !== specification.preparedHome.fixtureHash ||
-        matchedEvaluationContinuationPreparedHomeIdentityHashV2(home) !== specification.preparedHome.identitySha256
-      ) {
-        throw new Error(`${specification.arm} checkpoint prepared home differs from the sealed plan.`);
-      }
-      await canonicalDirectory(home.homeDirectory, `${specification.arm} checkpoint prepared home`);
-      if ((await matchedEvaluationPreparedHomeFixtureHashV1(home.homeDirectory)) !== home.homeFixtureHash) {
-        throw new Error(`${specification.arm} checkpoint prepared home differs from its fixture hash.`);
-      }
-      return [
-        specification.arm,
-        {adapterConfigFile: checkpointConfigFile, adapterConfigurationHash: checkpointHash},
-      ] as const;
-    }),
+    specifications
+      .filter(specification => input.requiredArms.has(specification.arm))
+      .map(async specification => {
+        const definition = input.manifest.arms.find(candidate => candidate.arm === specification.arm);
+        if (definition === undefined) throw new Error(`Continuation manifest lacks ${specification.arm}.`);
+        const runtimeArm = input.runtime.arms.find(candidate => candidate.arm === specification.arm);
+        if (runtimeArm === undefined) throw new Error(`Continuation runtime lacks ${specification.arm}.`);
+        const [sourceConfigFile, checkpointConfigFile] = await Promise.all([
+          canonicalRegularFile(runtimeArm.adapterConfigFile, `${specification.arm} source adapter configuration`),
+          canonicalRegularFile(paths[specification.arm], `${specification.arm} checkpoint adapter configuration`),
+        ]);
+        const [sourceHash, checkpointHash, sourceInput, checkpointInput] = await Promise.all([
+          sha256File(sourceConfigFile),
+          sha256File(checkpointConfigFile),
+          readJson(sourceConfigFile),
+          readJson(checkpointConfigFile),
+        ]);
+        if (sourceHash !== definition.adapterConfigurationHash) {
+          throw new Error(`${specification.arm} source adapter configuration differs from its manifest identity.`);
+        }
+        if (checkpointHash !== specification.expectedHash) {
+          throw new Error(`${specification.arm} checkpoint adapter configuration differs from the sealed plan.`);
+        }
+        const source = parseMatchedEvaluationCodexAdapterConfigV1(sourceInput);
+        const checkpoint = parseMatchedEvaluationCodexAdapterConfigV1(checkpointInput);
+        const {contextHomes: _sourceHomes, ...sourcePolicy} = source;
+        const {contextHomes, ...checkpointPolicy} = checkpoint;
+        if (JSON.stringify(sourcePolicy) !== JSON.stringify(checkpointPolicy)) {
+          throw new Error(`${specification.arm} checkpoint adapter configuration changes the frozen execution policy.`);
+        }
+        if (contextHomes.length !== 1 || contextHomes[0]?.taskId !== input.plan.taskId) {
+          throw new Error(`${specification.arm} checkpoint adapter configuration must contain only its task home.`);
+        }
+        const home = contextHomes[0];
+        if (
+          JSON.stringify(home.expectedContext) !== JSON.stringify(specification.expectedContext) ||
+          home.homeFixtureHash !== specification.preparedHome.fixtureHash ||
+          matchedEvaluationContinuationPreparedHomeIdentityHashV2(home) !== specification.preparedHome.identitySha256
+        ) {
+          throw new Error(`${specification.arm} checkpoint prepared home differs from the sealed plan.`);
+        }
+        await canonicalDirectory(home.homeDirectory, `${specification.arm} checkpoint prepared home`);
+        if ((await matchedEvaluationPreparedHomeFixtureHashV1(home.homeDirectory)) !== home.homeFixtureHash) {
+          throw new Error(`${specification.arm} checkpoint prepared home differs from its fixture hash.`);
+        }
+        return [
+          specification.arm,
+          {adapterConfigFile: checkpointConfigFile, adapterConfigurationHash: checkpointHash},
+        ] as const;
+      }),
   );
   return new Map(overrides);
 }
@@ -3608,6 +3611,7 @@ export async function finalizeMatchedEvaluationContinuationCheckpointFromFilesV1
       manifest,
       plan,
       planPath,
+      requiredArms: new Set(['threadnote-compact', 'threadnote-graph']),
       runtime,
     }),
   ]);
@@ -3685,6 +3689,14 @@ export async function runMatchedEvaluationContinuationPilotFromFilesV1(options: 
     manifest,
     plan,
     planPath: options.planPath,
+    requiredArms: new Set(
+      plan.attempts
+        .map(attempt => continuationTreatment(attempt.variant, plan.checkpoint).arm)
+        .filter(
+          (arm): arm is 'threadnote-compact' | 'threadnote-graph' =>
+            arm === 'threadnote-compact' || arm === 'threadnote-graph',
+        ),
+    ),
     runtime,
   });
   const task = corpus.tasks.find(candidate => candidate.taskId === plan.taskId);

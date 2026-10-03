@@ -1569,10 +1569,32 @@ describe('matched evaluation runtime integrity', () => {
       manifest,
       plan,
       planPath: join(root, 'plan.json'),
+      requiredArms: new Set(['threadnote-compact', 'threadnote-graph']),
       runtime,
     });
     expect(overrides.get('threadnote-graph')?.adapterConfigFile).toBe(checkpointGraphPath);
     expect(overrides.get('threadnote-compact')?.adapterConfigFile).toBe(checkpointCompactPath);
+
+    const unusedGraphDrift = join(graphHome, 'unused-graph-drift');
+    await writeFile(unusedGraphDrift, 'drift');
+    const compactOnly = await assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+      manifest,
+      plan,
+      planPath: join(root, 'plan.json'),
+      requiredArms: new Set(['threadnote-compact']),
+      runtime,
+    });
+    expect([...compactOnly.keys()]).toEqual(['threadnote-compact']);
+    await expect(
+      assertMatchedEvaluationContinuationAdapterConfigurationsV2({
+        manifest,
+        plan,
+        planPath: join(root, 'plan.json'),
+        requiredArms: new Set(['threadnote-graph']),
+        runtime,
+      }),
+    ).rejects.toThrow('checkpoint prepared home differs from its fixture hash');
+    await rm(unusedGraphDrift);
 
     const changedPolicy = {
       ...checkpointCompact,
@@ -1594,6 +1616,7 @@ describe('matched evaluation runtime integrity', () => {
           },
         },
         planPath: join(root, 'plan.json'),
+        requiredArms: new Set(['threadnote-compact', 'threadnote-graph']),
         runtime,
       }),
     ).rejects.toThrow('changes the frozen execution policy');
@@ -1632,6 +1655,7 @@ describe('matched evaluation runtime integrity', () => {
                 },
               },
               planPath: join(root, 'plan.json'),
+              requiredArms: new Set(['threadnote-compact', 'threadnote-graph']),
               runtime,
             }),
           ).rejects.toThrow('changes the frozen execution policy');
