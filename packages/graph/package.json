@@ -442,13 +442,13 @@
     "./worktree_reconciliation": "./src/worktree_reconciliation.ts"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-rc.115",
-    "@effect/sql-sqlite-bun": "4.0.0-rc.115",
+    "@effect/platform-bun": "4.0.0",
+    "@effect/sql-sqlite-bun": "4.0.0",
     "@threadnote/inference": "workspace:*",
     "@threadnote/platform": "workspace:*",
     "@threadnote/protocol": "workspace:*",
     "@threadnote/workspace": "workspace:*",
-    "effect": "4.0.0-rc.115",
+    "effect": "4.0.0",
     "fflate": "0.8.3",
     "jose": "6.2.12",
     "js-yaml": "^5.4.2",
@@ -457,7 +457,7 @@
     "web-tree-sitter": "0.27.0"
   },
   "devDependencies": {
-    "@effect/vitest": "4.0.0-rc.115",
+    "@effect/vitest": "4.0.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@threadnote/testing": "workspace:*",
     "fast-check": "4.10.1",

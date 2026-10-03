@@ -1,9 +1,9 @@
-import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
-import * as HttpClient from 'effect/unstable/http/HttpClient';
-import * as HttpClientResponse from 'effect/unstable/http/HttpClientResponse';
-import {OtlpSerialization, OtlpTracer} from 'effect/unstable/observability';
+import * as FetchHttpClient from 'effect/http/FetchHttpClient';
+import * as HttpClient from 'effect/http/HttpClient';
+import * as HttpClientResponse from 'effect/http/HttpClientResponse';
+import {OtlpSerialization, OtlpTracer} from 'effect/observability';
 import {Cause, Clock, ConfigProvider, Context, Effect, Exit, Layer, Result, Tracer} from 'effect';
-import type * as Headers from 'effect/unstable/http/Headers';
+import type * as Headers from 'effect/http/Headers';
 import type * as Duration from 'effect/Duration';
 import {SystemInfo, type SystemInfoShape} from '@threadnote/platform/system';
 import {

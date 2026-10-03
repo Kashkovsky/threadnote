@@ -1,5 +1,5 @@
 import {Schema, type Effect} from 'effect';
-import {Command, Flag} from 'effect/unstable/cli';
+import {Command, Flag} from 'effect/cli';
 import {withDefaultActionSubcommand} from './cli/help.js';
 import {
   argument,

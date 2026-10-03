@@ -5,9 +5,9 @@ import {BunFileSystem} from '@effect/platform-bun';
 import * as BunPath from '@effect/platform-bun/BunPath';
 import {it as effectIt} from '@effect/vitest';
 import fc from 'fast-check';
-import {Deferred, Effect, FileSystem, Fiber, Layer, Option} from 'effect';
+import {Deferred, Effect, FileSystem, Fiber, Layer, Option, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
-import {McpSchema, McpServer} from 'effect/unstable/ai';
+import {McpSchema, McpServer} from 'effect/ai';
 import {describe, expect, it} from 'vitest';
 import {CodeGraphAnalysis, analyzeCodeGraph} from '@threadnote/graph/analysis';
 import {CommandExecutor} from '@threadnote/platform/command';
@@ -1083,13 +1083,19 @@ function analyzeHandlerHarness(input: AnalyzeHandlerHarnessInput) {
       Effect.suspend(() => {
         const handle = analyzeHandle;
         if (handle === undefined) return Effect.die('analyze_code_graph was not registered.');
-        return handle(arguments_).pipe(Effect.provideService(McpSchema.McpServerClient, mcpServerClient()));
+        return handle(arguments_).pipe(
+          Effect.provideService(McpSchema.McpRequestContext, mcpServerClient()),
+          Effect.flatMap(Schema.decodeUnknownEffect(McpSchema.CallToolResult)),
+        );
       }),
     invokeInspect: (arguments_: Record<string, unknown>) =>
       Effect.suspend(() => {
         const handle = inspectHandle;
         if (handle === undefined) return Effect.die('inspect_code_graph was not registered.');
-        return handle(arguments_).pipe(Effect.provideService(McpSchema.McpServerClient, mcpServerClient()));
+        return handle(arguments_).pipe(
+          Effect.provideService(McpSchema.McpRequestContext, mcpServerClient()),
+          Effect.flatMap(Schema.decodeUnknownEffect(McpSchema.CallToolResult)),
+        );
       }),
     layer,
     observation: {

@@ -376,8 +376,8 @@
     "./workspace_component": "./src/workspace_component.ts"
   },
   "dependencies": {
-    "@effect/ai-openai-compat": "4.0.0-rc.115",
-    "@effect/platform-bun": "4.0.0-rc.115",
+    "@effect/ai-openai-compat": "4.0.0",
+    "@effect/platform-bun": "4.0.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@threadnote/context": "workspace:*",
     "@threadnote/evidence": "workspace:*",
@@ -392,7 +392,7 @@
     "@threadnote/remote-memory": "workspace:*",
     "@threadnote/store": "workspace:*",
     "@threadnote/workspace": "workspace:*",
-    "effect": "4.0.0-rc.115",
+    "effect": "4.0.0",
     "jose": "6.2.12",
     "js-yaml": "^5.4.2",
     "jsonc-parser": "3.3.1",
@@ -401,9 +401,9 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@effect/sql-sqlite-bun": "4.0.0-rc.115",
-    "@effect/tsgo": "0.45.0",
-    "@effect/vitest": "4.0.0-rc.115",
+    "@effect/sql-sqlite-bun": "4.0.0",
+    "@effect/tsgo": "0.48.0",
+    "@effect/vitest": "4.0.0",
     "@threadnote/testing": "workspace:*",
     "fast-check": "4.10.1",
     "fflate": "0.8.3",

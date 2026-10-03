@@ -10,7 +10,7 @@ import * as BunServices from '@effect/platform-bun/BunServices';
 import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Fiber, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
-import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import * as SqlClient from 'effect/sql/SqlClient';
 import {describe} from 'vitest';
 import type {CodeGraphEmbeddingIndexShape} from '@threadnote/graph/embedding';
 import {CodeGraphEmbeddingIndex} from '@threadnote/graph/embedding';
